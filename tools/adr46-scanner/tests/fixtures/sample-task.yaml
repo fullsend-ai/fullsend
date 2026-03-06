@@ -1,0 +1,12 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: sample-task
+spec:
+  steps:
+    - name: trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:abc123
+    - name: do-work
+      image: quay.io/konflux-ci/oras:latest@sha256:def456
+    - name: report
+      image: quay.io/konflux-ci/yq:latest@sha256:789abc
