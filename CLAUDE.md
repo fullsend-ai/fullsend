@@ -1,28 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## What this repo is
-
-Fullsend is a living design document exploring fully autonomous agentic development for the [konflux-ci](https://github.com/konflux-ci/) GitHub organization. It contains no application code — only prose documents organized by problem domain.
-
-## Repository structure
-
-```
-docs/
-  vision.md                         # The overarching goal and principles
-  problems/                         # One file per problem domain, evolving independently
-    intent-representation.md        # How to capture/verify what changes are wanted
-    security-threat-model.md        # Prompt injection, insider threats, agent drift, supply chain
-    agent-architecture.md           # Agent roles, authority, interaction patterns
-    autonomy-spectrum.md            # When to auto-merge vs. escalate
-    governance.md                   # Who controls the agents and their config
-    repo-readiness.md               # Test coverage baseline and readiness criteria
-    code-review.md                  # How agents review code, security sub-agents
-    architectural-invariants.md     # Enforcing things that must always be true
-  landscape.md                      # Survey of AI code review tools (time-sensitive)
-  experiments/                      # Logs/results from practical experiments
-```
+Fullsend is a living design document exploring fully autonomous agentic development for the [konflux-ci](https://github.com/konflux-ci/) GitHub organization. It contains no application code — only prose documents organized by problem domain. See [README.md](README.md) for the full document index.
 
 ## How to work in this repo
 
