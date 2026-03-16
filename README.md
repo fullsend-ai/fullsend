@@ -11,7 +11,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
 ## What's here
 
 - **[docs/vision.md](docs/vision.md)** — The big picture: what we're trying to achieve and why
-- **[docs/methodology.md](docs/methodology.md)** — How this exploration progresses through phases
+- **[docs/roadmap.md](docs/roadmap.md)** — How this exploration progresses through phases
 - **[docs/problems/](docs/problems/)** — Deep dives into each major problem domain, each evolving independently:
   - [Intent Representation](docs/problems/intent-representation.md) — How do we capture, verify, and enforce what changes are wanted?
   - [Security Threat Model](docs/problems/security-threat-model.md) — Prompt injection, insider threats, agent drift, supply chain attacks

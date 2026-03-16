@@ -1,4 +1,4 @@
-# Methodology
+# Roadmap
 
 How this exploration progresses. Not a rigid process — a description of the phases we expect to pass through and what characterizes each one.
 
