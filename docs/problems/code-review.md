@@ -160,14 +160,16 @@ A human reviewer can say "I'm not sure about this, let me think" or "I need some
 
 ### Dual-interpretation escalation
 
-When an agent escalates to a human, the quality of that escalation matters. A vague "I'm not confident" wastes the human's time. A more useful pattern: when the agent's uncertainty stems from a change being legitimately interpretable in two ways, it presents both interpretations as structured alternatives.
+When an agent escalates to a human, the quality of that escalation matters. A vague "I'm not confident" wastes the human's time. A more useful pattern: when the agent's uncertainty stems from a change being legitimately interpretable in multiple ways, it presents its best interpretations as structured alternatives — while explicitly inviting the human to reject all of them.
 
 For example, a review agent uncertain about tier classification could escalate with:
 
 - **Reading A:** "This is a bug fix (Tier 1) — the existing behavior doesn't match the documented intent, and the change is scoped to correcting that gap. Requires: linked issue."
 - **Reading B:** "This is a new feature (Tier 2) — the system never intended to do this, and the change adds new capability. Requires: authorized feature file in `approved/`."
 
-The human sees two coherent framings and picks the one that matches their understanding, rather than starting from scratch. This is faster and more structured than an open-ended "please review."
+Critically, the escalation must always include an explicit "none of the above" option — the human may see a framing the agent missed entirely, or may decide the change should be rejected outright. The agent's interpretations are a starting point for the human's decision, not an exhaustive menu. This avoids presenting a false dichotomy that pressures the human into picking whichever option seems least wrong.
+
+The human sees coherent framings and can pick the one that matches their understanding, offer their own, or reject the change — rather than starting from scratch. This is faster and more structured than an open-ended "please review."
 
 This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. It applies wherever agents interact with humans: tier classification (see [intent-representation.md](intent-representation.md#the-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
 

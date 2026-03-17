@@ -140,7 +140,7 @@ Without a coordinator, what happens when agents disagree? (e.g., correctness age
 
 - **Security and intent sub-agents have veto power** via required status checks. If they block, the PR doesn't merge. This is configured in branch protection, not in agent logic.
 - **The implementation agent can iterate** — push new commits to address blocking concerns, which re-triggers the review sub-agents
-- **Persistent disagreement escalates to humans** — if an implementation agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with both the approving and blocking agents' readings, so the human resolves the disagreement quickly rather than re-reviewing the entire PR.
+- **Persistent disagreement escalates to humans** — if an implementation agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with the approving and blocking agents' readings — while making clear the human can reject both framings or the PR itself — so the human resolves the disagreement quickly rather than re-reviewing the entire PR.
 - **Humans can always override** — a human with approval rights can approve despite agent objections. The system assists; humans retain ultimate authority.
 
 ## Open questions
