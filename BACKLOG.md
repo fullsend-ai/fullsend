@@ -1,5 +1,6 @@
 # Backlog
 
+- [ ] Review [the multi-agent trap](https://towardsdatascience.com/the-multi-agent-trap/) for questions about our architecture.
 - [ ] Review [arxiv.org/abs/2602.20021](https://arxiv.org/abs/2602.20021) for new insights relevant to our security threat model
 - [ ] Explore [OpenClaw](https://github.com/openclaw/openclaw) and evaluate relevance to fullsend's problem areas
 - [ ] Explore [Gastown](https://github.com/steveyegge/gastown) and evaluate relevance to fullsend's problem areas
