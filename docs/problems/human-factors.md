@@ -35,7 +35,7 @@ This is still fatiguing, in different ways:
 
 - **Volume.** Agents can generate and process changes faster than humans can evaluate whether the results match what they wanted. The bottleneck moves from "review this diff" to "verify this outcome aligns with what I meant."
 - **Abstraction gap.** Reviewing intent alignment is harder than reviewing code. With code, you can trace logic. With intent, you're asking "did the agent understand what I meant?" — a fuzzier question that requires holding both the intent document and the implementation in mind.
-- **Vigilance problem.** If agents correctly interpret intent 95% of the time, the remaining 5% becomes harder to catch. This is well-studied in automation research — humans are poor monitors of mostly-correct automated systems. The shift from code review to intent review doesn't fix this; it may make it worse, since intent misalignment is subtler than a logic bug.
+- **Vigilance problem.** If agents correctly interpret intent 95% of the time, the remaining 5% becomes harder to catch. This is well-studied in automation research (see [evidence section below](#evidence-from-automation-and-ai-research)) — humans are poor monitors of mostly-correct automated systems, and this complacency cannot be trained away. The shift from code review to intent review doesn't fix this; it may make it worse, since intent misalignment is subtler than a logic bug.
 
 ## Contributor motivation in open source
 
@@ -56,6 +56,48 @@ Most konflux-ci contributors are paid engineers. For them, the concerns above ha
 - "Humans set direction" is reassuring until you realize that direction-setting is a smaller team than implementation.
 
 This doesn't mean autonomous agents are wrong. But pretending this concern doesn't exist will generate resistance that looks like technical objections but is actually about something deeper.
+
+## Evidence from automation and AI research
+
+The concerns above are not speculative. There is a substantial body of research — from decades of automation studies and from recent AI-specific work — that supports them.
+
+### The ironies of automation
+
+Bainbridge's foundational ["Ironies of Automation" (1983)](https://doi.org/10.1016/0005-1098(83)90046-8) identified the central paradox: automating a task removes the practice that keeps operators skilled enough to intervene when automation fails. The more reliable the automation, the worse the problem — because operators have fewer opportunities to exercise their skills, and failures are rarer but harder to catch. This remains one of the most-cited papers in human factors research and its core argument is directly applicable: if agents handle all routine development, the domain experts who approve guarded-path changes lose the practice that makes their approval meaningful.
+
+### The out-of-the-loop performance problem
+
+Endsley & Kiris ["The Out-of-the-Loop Performance Problem and Level of Control in Automation" (1995)](https://doi.org/10.1518/001872095779064555) demonstrated that when operators are removed from active control, their situation awareness degrades — they may still perceive low-level data, but lose comprehension of what it means. Critically, **this effect was significantly greater under full automation than under intermediate levels of automation**. When operators retained some active role in the decision-making loop, their situation awareness was preserved and they performed better when they needed to intervene. This finding directly challenges a model where humans are fully removed from implementation: partial involvement isn't just a compromise, it produces measurably better oversight than full removal.
+
+### Automation complacency and bias
+
+Parasuraman & Manzey ["Complacency and Bias in Human Use of Automation" (2010)](https://doi.org/10.1177/0018720810376055) found that automation complacency occurs in both novice and expert users, **cannot be overcome with training or instructions**, and worsens under high automation reliability. Operators of highly reliable systems were 50% less likely to detect failures than operators of less reliable systems. In our context: if agents produce correct results 95% of the time, the remaining 5% becomes harder for human reviewers to catch, not easier.
+
+### AI coding tools and skill formation
+
+Recent research on AI coding tools specifically reinforces these patterns:
+
+- An [Anthropic study (2025)](https://www.anthropic.com/research/AI-assistance-coding-skills) found that developers using AI coding assistance scored **17% lower on comprehension tests** when learning new libraries. Developers who delegated code generation to AI scored below 40% on comprehension, while those who used AI for conceptual inquiry scored 65% or higher. The mode of interaction — whether you do the work or delegate it — directly affects whether you build understanding.
+- A [METR randomized controlled trial (2025)](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) found that experienced open-source developers working on their own repositories were **19% slower with AI tools** — but perceived themselves as 20% faster. The gap between perceived and actual performance is relevant to the rubber-stamping risk: people may believe they are reviewing effectively when they are not.
+- Research on [overreliance in human-AI interaction (2025)](https://arxiv.org/html/2509.08010v1) identifies cognitive offloading, automation bias, and the erosion of critical thinking as risks of LLM-assisted work, and notes that long-term deskilling is a serious concern in environments where AI tools dominate routine tasks.
+
+### Newcomer pathways and communities of practice
+
+Lave & Wenger's *Situated Learning: Legitimate Peripheral Participation* (1991) established that learning in communities of practice happens through a gradient — newcomers enter through small, peripheral tasks and gradually take on more central roles. If automation removes the peripheral tasks (small bug fixes, documentation, simple features), the pathway that produces future experts and maintainers is disrupted. This is not just an open-source concern; it applies to any organization that needs to develop new domain experts over time.
+
+## Is the two-point model enough?
+
+The [vision](../vision.md) defines two points of human participation: strategic intent and guarded paths. Everything else is autonomous. The problems described above — expertise atrophy, loss of creative work, review fatigue, disappearing contributor pathways — are all consequences of that model. But rather than treating them as side-effects to mitigate, it's worth asking whether they indicate a problem with the model itself.
+
+The two-point model assumes that humans can remain effective at their two roles (setting direction and approving guarded-path changes) without doing the work in between. The research summarized above suggests they can't:
+
+- **Guarded-path approval requires understanding.** If domain experts stop implementing changes, their ability to evaluate agent-produced changes degrades. The security model depends on informed human approval, but the autonomy model removes the activity that keeps humans informed. Over time, guarded-path approvals risk becoming rubber stamps — not because people are careless, but because they've lost the context that made their judgment valuable.
+- **Strategic direction requires ground-level knowledge.** Architectural decisions that aren't grounded in recent hands-on experience with the codebase tend to drift from reality. If humans only interact with code through intent documents and approval queues, the quality of their strategic input declines.
+- **The contributor pipeline depends on a gradient.** Open-source contributors enter through small contributions and grow into larger roles. If agent autonomy eliminates the small-contribution layer, the pipeline that produces future domain experts and maintainers dries up. The two-point model assumes a supply of capable humans at both points, but doesn't account for where those humans come from.
+
+This doesn't mean the vision is wrong — it means it may be incomplete. There may need to be a third category of human participation: not strategic intent, not guarded-path approval, but **ongoing hands-on involvement** in parts of the codebase, specifically to maintain the understanding and skills that make the other two roles work.
+
+What this third category looks like, how it interacts with the [autonomy spectrum](autonomy-spectrum.md), and whether it can be designed without simply slowing everything down, are open questions. But the problems documented in the sections above suggest that a model with only two human touchpoints may undermine its own foundations.
 
 ## What might help
 
@@ -83,3 +125,5 @@ These aren't solutions — they're directions worth exploring:
 - What skills should contributors be building to stay effective in a heavily agentic workflow?
 - How do we handle the fact that different people will feel differently about this? Some engineers will welcome agent autonomy; others will experience it as loss. One-size-fits-all approaches won't work.
 - Can agents themselves help with the human factors — for example, by surfacing "this area hasn't had human-authored changes in 6 months" as a signal worth attention?
+- Should human engagement be an input to autonomy decisions? If full autonomy in a repo is degrading the understanding of the people responsible for its guarded paths, is that a reason to pull back autonomy — even if the code quality metrics look fine?
+- What would a "third category" of human participation look like in practice? Is it reserved areas of the codebase, periodic implementation rotations, collaborative agent-human work, or something else?
