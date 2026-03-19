@@ -8,3 +8,4 @@
 - [ ] Review [latent.space/p/reivews-dead](https://www.latent.space/p/reviews-dead) for any insights applicable to the project here
 - [ ] Review posts on harness engineering from [mitchell hashimoto](https://mitchellh.com/writing/my-ai-adoption-journey) and [thoughtworks](https://martinfowler.com/articles/exploring-gen-ai/harness-engineering.html) to look for ideas that should be incorporated into our thinking here.
 - [ ] Review [vibe-kanban](https://www.vibekanban.com/) and explore how it is related to our existing problem set.
+- [ ] Review [OpenAI Alignment Confessions](https://alignment.openai.com/confessions/) for insights relevant to fullsend's problem areas
