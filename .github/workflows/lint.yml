@@ -32,5 +32,8 @@ jobs:
       - name: Run ty check
         run: uvx ty check hack/
 
+      - name: Check agent/skill file sync
+        run: make check-agent-files
+
       - name: Run ADR linting
         run: make lint
