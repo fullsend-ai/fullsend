@@ -11,13 +11,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Scan Tekton tasks for ADR-0046 drift (non-task-runner images)",
     )
-    parser.add_argument(
-        "repo_path", help="Path to the build-definitions repo (or similar)"
-    )
+    parser.add_argument("repo_path", help="Path to the build-definitions repo (or similar)")
     parser.add_argument("--config", required=True, help="Path to scanner config YAML")
-    parser.add_argument(
-        "--json", dest="json_output", action="store_true", help="Output as JSON"
-    )
+    parser.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
     args = parser.parse_args()
 
     config = load_config(args.config)

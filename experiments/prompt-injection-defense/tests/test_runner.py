@@ -1,9 +1,6 @@
 # tests/test_runner.py
-from unittest.mock import patch, MagicMock
-from pathlib import Path
 
-import pytest
-from defenses.interface import DefenseResult, Attack
+from defenses.interface import DefenseResult
 from runner import format_results_table, summarize_cell
 
 

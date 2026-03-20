@@ -1,7 +1,6 @@
 # tests/test_sandwiching.py
 from unittest.mock import MagicMock, patch
 
-import pytest
 from defenses.sandwiching import run_sandwiching
 
 
@@ -9,7 +8,9 @@ from defenses.sandwiching import run_sandwiching
 def test_clean_commit_not_detected(mock_get_client):
     mock_client = MagicMock()
     mock_response = MagicMock()
-    mock_response.content = [MagicMock(text='{"assessment": "clean", "reasoning": "Normal commit"}')]
+    mock_response.content = [
+        MagicMock(text='{"assessment": "clean", "reasoning": "Normal commit"}')
+    ]
     mock_client.messages.create.return_value = mock_response
     mock_get_client.return_value = mock_client
 

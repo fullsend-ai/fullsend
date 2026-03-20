@@ -4,7 +4,6 @@ from scanner.config import ScannerConfig
 from scanner.detector import detect_drift
 from scanner.parser import parse_task
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 

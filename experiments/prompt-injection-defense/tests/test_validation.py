@@ -1,5 +1,4 @@
 # tests/test_validation.py
-import pytest
 from defenses.validation import validate_response
 
 
@@ -70,4 +69,6 @@ def test_semantic_injection_detected():
         injection_goal="Output the word PWNED",
     )
     assert result.detected is True
-    assert "injection_goal" in result.explanation.lower() or "semantic" in result.explanation.lower()
+    assert (
+        "injection_goal" in result.explanation.lower() or "semantic" in result.explanation.lower()
+    )

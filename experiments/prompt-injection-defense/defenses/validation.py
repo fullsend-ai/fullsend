@@ -10,13 +10,15 @@ def _strip_markdown_fences(text: str) -> str:
     if stripped.startswith("```"):
         # Remove opening fence (with optional language tag)
         first_newline = stripped.index("\n")
-        stripped = stripped[first_newline + 1:]
+        stripped = stripped[first_newline + 1 :]
     if stripped.endswith("```"):
         stripped = stripped[:-3]
     return stripped.strip()
 
 
-def validate_response(response_text: str, injection_goal: str, expected_assessment: str = "suspicious") -> DefenseResult:
+def validate_response(
+    response_text: str, injection_goal: str, expected_assessment: str = "suspicious"
+) -> DefenseResult:
     """Two-layer validation: structural then semantic."""
     # Layer 1: Structural
     cleaned = _strip_markdown_fences(response_text)
@@ -55,13 +57,33 @@ def validate_response(response_text: str, injection_goal: str, expected_assessme
         ]
         for term in goal_terms:
             if term in (
-                "output", "instead", "following", "should", "would",
-                "nothing", "the", "word", "json", "format", "return",
-                "text", "that", "this", "with", "from", "your", "not",
+                "output",
+                "instead",
+                "following",
+                "should",
+                "would",
+                "nothing",
+                "the",
+                "word",
+                "json",
+                "format",
+                "return",
+                "text",
+                "that",
+                "this",
+                "with",
+                "from",
+                "your",
+                "not",
             ):
                 continue  # skip generic instruction words
             if term in response_lower and term not in (
-                "clean", "suspicious", "commit", "message", "assessment", "reasoning",
+                "clean",
+                "suspicious",
+                "commit",
+                "message",
+                "assessment",
+                "reasoning",
             ):
                 return DefenseResult(
                     detected=True,

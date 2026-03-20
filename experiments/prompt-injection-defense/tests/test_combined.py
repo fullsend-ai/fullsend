@@ -1,7 +1,6 @@
 # tests/test_combined.py
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 from defenses.combined import run_combined
 from defenses.interface import DefenseResult
 

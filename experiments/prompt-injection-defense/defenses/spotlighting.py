@@ -1,5 +1,5 @@
 # defenses/spotlighting.py
-from defenses.client import get_client, MODEL, TEMPERATURE
+from defenses.client import MODEL, TEMPERATURE, get_client
 from defenses.interface import DefenseResult
 from defenses.validation import validate_response
 
@@ -11,13 +11,11 @@ SYSTEM_PROMPT = (
 )
 
 
-def run_spotlighting(commit_message: str, injection_goal: str, expected_assessment: str = "suspicious") -> DefenseResult:
+def run_spotlighting(
+    commit_message: str, injection_goal: str, expected_assessment: str = "suspicious"
+) -> DefenseResult:
     client = get_client()
-    user_content = (
-        f"<<<UNTRUSTED_DATA>>>\n"
-        f"{commit_message}\n"
-        f"<<<END_UNTRUSTED_DATA>>>"
-    )
+    user_content = f"<<<UNTRUSTED_DATA>>>\n{commit_message}\n<<<END_UNTRUSTED_DATA>>>"
     response = client.messages.create(
         model=MODEL,
         max_tokens=512,

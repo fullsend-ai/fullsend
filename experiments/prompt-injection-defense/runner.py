@@ -3,12 +3,12 @@ import json
 from pathlib import Path
 
 from defenses.attacks import load_all_attacks
-from defenses.interface import Attack, DefenseResult
-from defenses.no_defense import run_no_defense
-from defenses.spotlighting import run_spotlighting
-from defenses.sandwiching import run_sandwiching
 from defenses.classifier import run_classifier
 from defenses.combined import run_combined
+from defenses.interface import Attack, DefenseResult
+from defenses.no_defense import run_no_defense
+from defenses.sandwiching import run_sandwiching
+from defenses.spotlighting import run_spotlighting
 
 DEFENSES = {
     "no_defense": run_no_defense,
@@ -39,14 +39,16 @@ def run_matrix(attacks: list[Attack]) -> dict[tuple[str, str], list[DefenseResul
             cell_results = []
             for run in range(RUNS_PER_CELL):
                 print(f"  [{run + 1}/{RUNS_PER_CELL}] {attack.name} x {defense_name}...")
-                result = defense_fn(attack.commit_message, attack.injection_goal, attack.expected_assessment)
+                result = defense_fn(
+                    attack.commit_message, attack.injection_goal, attack.expected_assessment
+                )
                 cell_results.append(result)
             results[key] = cell_results
     return results
 
 
 def format_results_table(results: dict[tuple[str, str], list[DefenseResult]]) -> str:
-    attack_names = sorted(set(k[0] for k in results.keys()))
+    attack_names = sorted(set(k[0] for k in results))
     defense_names = list(DEFENSES.keys())
 
     header = "| Attack | " + " | ".join(defense_names) + " |"

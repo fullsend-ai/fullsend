@@ -5,9 +5,11 @@ import sys
 
 def _write_task(path, name, steps_yaml):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"apiVersion: tekton.dev/v1\nkind: Task\nmetadata:\n  name: {name}\nspec:\n  steps:\n{steps_yaml}"
+    content = (
+        f"apiVersion: tekton.dev/v1\nkind: Task\nmetadata:\n"
+        f"  name: {name}\nspec:\n  steps:\n{steps_yaml}"
     )
+    path.write_text(content)
 
 
 def _write_config(path, runner_image="quay.io/konflux-ci/task-runner", exempt=None):

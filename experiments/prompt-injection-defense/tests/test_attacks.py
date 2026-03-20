@@ -1,7 +1,6 @@
 # tests/test_attacks.py
 import pytest
-from defenses.attacks import load_attack, load_all_attacks
-from defenses.interface import Attack
+from defenses.attacks import load_all_attacks, load_attack
 
 
 def test_load_attack_from_file(tmp_path):

@@ -2,7 +2,6 @@ import os
 
 import anthropic
 
-
 MODEL = "claude-sonnet-4-6"
 TEMPERATURE = 0
 

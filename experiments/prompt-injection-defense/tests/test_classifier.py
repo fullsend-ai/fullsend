@@ -1,7 +1,6 @@
 # tests/test_classifier.py
 from unittest.mock import MagicMock, patch
 
-import pytest
 from defenses.classifier import run_classifier
 
 

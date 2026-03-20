@@ -1,11 +1,13 @@
 # defenses/combined.py
-from defenses.interface import DefenseResult
-from defenses.spotlighting import run_spotlighting
-from defenses.sandwiching import run_sandwiching
 from defenses.classifier import run_classifier
+from defenses.interface import DefenseResult
+from defenses.sandwiching import run_sandwiching
+from defenses.spotlighting import run_spotlighting
 
 
-def run_combined(commit_message: str, injection_goal: str, expected_assessment: str = "suspicious") -> DefenseResult:
+def run_combined(
+    commit_message: str, injection_goal: str, expected_assessment: str = "suspicious"
+) -> DefenseResult:
     results = {
         "spotlighting": run_spotlighting(commit_message, injection_goal, expected_assessment),
         "sandwiching": run_sandwiching(commit_message, injection_goal, expected_assessment),

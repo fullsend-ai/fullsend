@@ -2,7 +2,6 @@ from pathlib import Path
 
 from scanner.parser import parse_task
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
