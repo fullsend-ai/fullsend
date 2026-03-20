@@ -41,7 +41,7 @@ def get_valid_problem_docs():
 
 def parse_frontmatter(filepath):
     """Extract YAML frontmatter from a markdown file. Returns (dict, error)."""
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         content = f.read()
 
     if not content.startswith("---\n"):
@@ -57,7 +57,7 @@ def parse_frontmatter(filepath):
     try:
         data = yaml.safe_load(fm_text)
     except yaml.YAMLError as e:
-        return None, "invalid YAML: {}".format(e)
+        return None, f"invalid YAML: {e}"
 
     if not isinstance(data, dict):
         return None, "frontmatter is not a mapping"
@@ -67,7 +67,7 @@ def parse_frontmatter(filepath):
 
 def extract_status_from_body(filepath):
     """Extract the first word of the ## Status section from the markdown body."""
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         lines = f.readlines()
 
     in_status = False
@@ -91,12 +91,12 @@ def validate_adr(filepath, valid_problems):
 
     fm, err = parse_frontmatter(filepath)
     if err:
-        return ["{}: {}".format(rel_path, err)]
+        return [f"{rel_path}: {err}"]
 
     # Required fields
     for field in ["title", "status"]:
         if field not in fm:
-            errors.append("{}: missing required field '{}'".format(rel_path, field))
+            errors.append(f"{rel_path}: missing required field '{field}'")
 
     # Status validation
     if "status" in fm:
@@ -114,8 +114,9 @@ def validate_adr(filepath, valid_problems):
             body_norm = body_status.lower().strip()
             if fm_norm != body_norm:
                 errors.append(
-                    "{}: frontmatter status '{}' does not match "
-                    "## Status section '{}'".format(rel_path, fm["status"], body_status)
+                    "{}: frontmatter status '{}' does not match ## Status section '{}'".format(
+                        rel_path, fm["status"], body_status
+                    )
                 )
 
     # relates_to validation
@@ -130,20 +131,15 @@ def validate_adr(filepath, valid_problems):
             for ref in fm["relates_to"]:
                 if ref != "*" and ref not in valid_problems:
                     errors.append(
-                        "{}: relates_to references unknown problem doc '{}' "
-                        "(expected a filename without .md from docs/problems/)".format(
-                            rel_path, ref
-                        )
+                        f"{rel_path}: relates_to references unknown problem doc '{ref}' "
+                        "(expected a filename without .md from docs/problems/)"
                     )
 
     # topics validation
-    if "topics" in fm:
-        if not isinstance(fm["topics"], list):
-            errors.append(
-                "{}: topics must be a YAML list, got {}".format(
-                    rel_path, type(fm["topics"]).__name__
-                )
-            )
+    if "topics" in fm and not isinstance(fm["topics"], list):
+        errors.append(
+            "{}: topics must be a YAML list, got {}".format(rel_path, type(fm["topics"]).__name__)
+        )
 
     return errors
 
@@ -152,7 +148,7 @@ def main():
     valid_problems = get_valid_problem_docs()
 
     print("INFO: Validating ADR frontmatter...")
-    print("INFO: Found {} problem docs for cross-reference validation".format(len(valid_problems)))
+    print(f"INFO: Found {len(valid_problems)} problem docs for cross-reference validation")
     print()
 
     adr_files = []
@@ -173,19 +169,19 @@ def main():
         file_errors = validate_adr(filepath, valid_problems)
         if file_errors:
             all_errors.extend(file_errors)
-            print("  {}: FAIL".format(filename))
+            print(f"  {filename}: FAIL")
         else:
-            print("  {}: OK".format(filename))
+            print(f"  {filename}: OK")
 
     print("=" * 50)
 
     if all_errors:
-        print("ERROR: {} frontmatter validation error(s)".format(len(all_errors)))
+        print(f"ERROR: {len(all_errors)} frontmatter validation error(s)")
         for e in all_errors:
-            print("  ERROR: {}".format(e))
+            print(f"  ERROR: {e}")
         return 1
     else:
-        print("OK: All {} ADR files have valid frontmatter".format(len(adr_files)))
+        print(f"OK: All {len(adr_files)} ADR files have valid frontmatter")
         return 0
 
 
