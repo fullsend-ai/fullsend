@@ -1,0 +1,7 @@
+target-version = "py312"
+line-length = 100
+
+exclude = ["experiments/"]
+
+[lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
