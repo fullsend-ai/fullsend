@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter
+.PHONY: help lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter sync-agent-files check-agent-files
 
 help:
 	@echo "Available targets:"
@@ -10,8 +10,10 @@ help:
 	@echo "  lint-adr-status      - Validate ADR statuses in all ADR files"
 	@echo "  lint-adr-numbers     - Check for duplicate ADR numeric identifiers"
 	@echo "  lint-adr-frontmatter - Validate ADR frontmatter and cross-references"
+	@echo "  sync-agent-files     - Sync canonical agent/skill files to .claude/"
+	@echo "  check-agent-files    - Check that generated agent/skill files are in sync"
 
-lint: check lint-adr-status lint-adr-numbers lint-adr-frontmatter
+lint: check lint-adr-status lint-adr-numbers lint-adr-frontmatter check-agent-files
 
 check:
 	uvx ruff check .
@@ -28,3 +30,9 @@ lint-adr-numbers:
 
 lint-adr-frontmatter:
 	@uv run --script ./hack/lint-adr-frontmatter
+
+sync-agent-files:
+	@uv run --script ./hack/sync-agent-files
+
+check-agent-files:
+	@uv run --script ./hack/sync-agent-files --check

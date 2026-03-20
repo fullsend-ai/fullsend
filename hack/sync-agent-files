@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Sync canonical agent/skill files to Claude Code format.
+
+Canonical source files live in agents/ and skills/ at the repo root, using
+OpenCode frontmatter conventions. This script generates Claude Code versions
+in .claude/agents/ and .claude/skills/ with the following transformations:
+
+- Model names: strip provider prefix and map to tier name
+  (anthropic/claude-sonnet-4-6 → sonnet, anthropic/claude-opus-4-6 → opus,
+   anthropic/claude-haiku-4-5 → haiku)
+- Tool names in allowed-tools: lowercase → PascalCase
+  (read → Read, edit → Edit, bash → Bash, grep → Grep, glob → Glob, write → Write)
+- OpenCode-only fields (temperature, top_p, max_iterations) are stripped
+- A generated-file header is added
+
+Usage:
+    hack/sync-agent-files          # Generate files
+    hack/sync-agent-files --check  # Check if generated files are in sync
+"""
+
+import os
+import sys
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+SOURCE_DIRS = ["agents", "skills"]
+OUTPUT_BASE = os.path.join(REPO_ROOT, ".claude")
+
+MODEL_MAP = {
+    "anthropic/claude-sonnet-4-6": "sonnet",
+    "anthropic/claude-opus-4-6": "opus",
+    "anthropic/claude-haiku-4-5": "haiku",
+}
+
+TOOL_MAP = {
+    "read": "Read",
+    "edit": "Edit",
+    "bash": "Bash",
+    "grep": "Grep",
+    "glob": "Glob",
+    "write": "Write",
+}
+
+OPENCODE_ONLY_FIELDS = {"temperature", "top_p", "max_iterations"}
+
+GENERATED_HEADER = "<!-- GENERATED FROM {source_path} — DO NOT EDIT -->\n"
+
+
+def find_source_files():
+    """Find all .md files in source directories, returning relative paths."""
+    sources = []
+    for source_dir in SOURCE_DIRS:
+        abs_dir = os.path.join(REPO_ROOT, source_dir)
+        if not os.path.isdir(abs_dir):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(abs_dir):
+            for filename in sorted(filenames):
+                if filename.endswith(".md"):
+                    abs_path = os.path.join(dirpath, filename)
+                    rel_path = os.path.relpath(abs_path, REPO_ROOT)
+                    sources.append(rel_path)
+    return sorted(sources)
+
+
+def transform_frontmatter_line(line):
+    """Transform a single frontmatter line. Returns None to strip the line."""
+    stripped = line.strip()
+
+    # Strip OpenCode-only fields
+    for field in OPENCODE_ONLY_FIELDS:
+        if stripped.startswith(f"{field}:"):
+            return None
+
+    # Transform model field
+    if stripped.startswith("model:"):
+        value = stripped.split(":", 1)[1].strip()
+        if value in MODEL_MAP:
+            indent = line[: len(line) - len(line.lstrip())]
+            return f"{indent}model: {MODEL_MAP[value]}\n"
+
+    # Transform allowed-tools list items
+    if stripped.startswith("- "):
+        tool_name = stripped[2:].strip()
+        if tool_name in TOOL_MAP:
+            indent = line[: len(line) - len(line.lstrip())]
+            return f"{indent}- {TOOL_MAP[tool_name]}\n"
+
+    return line
+
+
+def transform_content(content, source_path):
+    """Transform file content from OpenCode to Claude Code format."""
+    header = GENERATED_HEADER.format(source_path=source_path)
+
+    if not content.startswith("---\n"):
+        return header + content
+
+    end = content.find("\n---\n", 4)
+    if end == -1:
+        return header + content
+
+    fm_text = content[4:end]
+    body = content[end + 5:]  # skip past \n---\n
+
+    transformed_lines = []
+    for line in fm_text.split("\n"):
+        result = transform_frontmatter_line(line + "\n")
+        if result is not None:
+            transformed_lines.append(result.rstrip("\n"))
+
+    transformed_fm = "\n".join(transformed_lines)
+    return f"{header}---\n{transformed_fm}\n---\n{body}"
+
+
+def get_output_path(source_rel_path):
+    """Map a source relative path to its output path under .claude/."""
+    return os.path.join(OUTPUT_BASE, source_rel_path)
+
+
+def sync_files():
+    """Generate Claude Code versions of all source files. Returns True if all up to date."""
+    sources = find_source_files()
+    if not sources:
+        print("WARNING: No source files found in agents/ or skills/")
+        return True
+
+    all_up_to_date = True
+
+    for source_rel in sources:
+        source_abs = os.path.join(REPO_ROOT, source_rel)
+        output_abs = get_output_path(source_rel)
+
+        with open(source_abs, encoding="utf-8") as f:
+            content = f.read()
+
+        transformed = transform_content(content, source_rel)
+
+        # Check if output exists and matches
+        if os.path.isfile(output_abs):
+            with open(output_abs, encoding="utf-8") as f:
+                existing = f.read()
+            if existing == transformed:
+                print(f"  {source_rel}: up to date")
+                continue
+
+        all_up_to_date = False
+        os.makedirs(os.path.dirname(output_abs), exist_ok=True)
+        with open(output_abs, "w", encoding="utf-8") as f:
+            f.write(transformed)
+        print(f"  {source_rel}: generated → .claude/{source_rel}")
+
+    return all_up_to_date
+
+
+def check_files():
+    """Check if generated files are in sync. Returns True if all match."""
+    sources = find_source_files()
+    if not sources:
+        print("WARNING: No source files found in agents/ or skills/")
+        return True
+
+    all_ok = True
+
+    for source_rel in sources:
+        source_abs = os.path.join(REPO_ROOT, source_rel)
+        output_abs = get_output_path(source_rel)
+
+        with open(source_abs, encoding="utf-8") as f:
+            content = f.read()
+
+        transformed = transform_content(content, source_rel)
+
+        if not os.path.isfile(output_abs):
+            print(f"  {source_rel}: MISSING (expected .claude/{source_rel})")
+            all_ok = False
+            continue
+
+        with open(output_abs, encoding="utf-8") as f:
+            existing = f.read()
+
+        if existing != transformed:
+            print(f"  {source_rel}: OUT OF SYNC")
+            all_ok = False
+        else:
+            print(f"  {source_rel}: OK")
+
+    return all_ok
+
+
+def main():
+    check_mode = "--check" in sys.argv
+
+    if check_mode:
+        print("Checking agent/skill file sync...")
+        print("=" * 50)
+        ok = check_files()
+        print("=" * 50)
+        if ok:
+            print("OK: All generated files are in sync")
+            return 0
+        else:
+            print("ERROR: Generated files are out of sync. Run: hack/sync-agent-files")
+            return 1
+    else:
+        print("Syncing agent/skill files to .claude/ ...")
+        print("=" * 50)
+        sync_files()
+        print("=" * 50)
+        print("Done.")
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
