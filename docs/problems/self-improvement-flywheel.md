@@ -4,13 +4,13 @@ How does the system learn from its own outputs — and from human corrections to
 
 ## Problem
 
-Fullsend is currently a collection of ideas. The problem documents describe how agents might review code, represent intent, enforce architectural invariants, and respond to production signals. But none of these ideas have been tested against real decisions. They exist as prose, not as working systems producing outputs that can be evaluated.
+This design is currently a collection of ideas. The problem documents describe how agents might review code, represent intent, enforce architectural invariants, and respond to production signals. But none of these ideas have been tested against real decisions. They exist as prose, not as working systems producing outputs that can be evaluated.
 
 The risk of staying in this state too long is that the ideas become increasingly elaborate without ever contacting reality. A feedback loop requires something to feed back on. Right now there is nothing.
 
 The flywheel problem is: **how do we move from ideas to decisions — even bad ones — and then systematically improve those decisions based on what we learn?**
 
-This is distinct from [production feedback](production-feedback.md), which addresses how signals from the platform Konflux operates (PipelineRun failures, latency, error distributions) feed into what agents work on. The flywheel problem is about fullsend's own outputs — the code changes it proposes, the reviews it produces, the intent classifications it makes — and how the quality of those outputs feeds back into fullsend itself.
+This is distinct from [production feedback](production-feedback.md), which addresses how signals from the platform's runtime (pipeline failures, latency, error distributions) feed into what agents work on. The flywheel problem is about the system's own outputs — the code changes it proposes, the reviews it produces, the intent classifications it makes — and how the quality of those outputs feeds back into the system itself.
 
 ## Why this matters now
 
@@ -65,7 +65,7 @@ For each correction, the system needs:
 - **What the human changed** — the specific correction (requested change, override, reclassification)
 - **Why the human changed it** — the rationale, which is often the most valuable and hardest-to-capture part
 
-The "why" is where the real learning lives. "This function needs error handling" is useful. "This function needs error handling because in Konflux, pipeline controllers retry on transient errors and a nil return here causes an infinite retry loop" is much more useful — it encodes domain knowledge that the agent was missing.
+The "why" is where the real learning lives. "This function needs error handling" is useful. "This function needs error handling because the pipeline controllers retry on transient errors and a nil return here causes an infinite retry loop" is much more useful — it encodes domain knowledge that the agent was missing.
 
 ### Structured vs. unstructured feedback
 
@@ -107,6 +107,21 @@ Per [testing agents](testing-agents.md), agents should have test suites (golden 
 
 Repeated corrections in the same category suggest a systematic gap. These can be distilled into reusable patterns — "when reviewing Tekton Task changes, always check for parameter injection" — that are more durable than individual test cases and more specific than general instructions.
 
+### Deterministic tool extraction
+
+The most impactful form of improvement is when a recurring agent judgment gets codified into a deterministic tool — a linter rule, a scanner policy, a test assertion, a CI check. The agent's highest-value role in many cases is not performing a check but *discovering that a check should exist*. The progression looks like this:
+
+1. Agents review PRs using a combination of deterministic tools (linters, scanners) and non-deterministic judgment.
+2. An observer process (which could itself be an agent) analyzes traces of agent reviews over time, looking for recurring patterns — the same kind of feedback given repeatedly across different PRs.
+3. When a pattern is identified, it gets codified: a new linter rule, a new scanner policy, a new automation. What was non-deterministic becomes deterministic.
+4. The review agent's scope shrinks to genuinely novel judgments that haven't yet been codified, while the deterministic tooling layer grows.
+
+This creates a virtuous cycle distinct from instruction refinement. Instructions make the agent better at its current job; tool extraction *eliminates parts of that job entirely* by moving them into faster, cheaper, reproducible tooling. The system becomes more reliable, more auditable, and less dependent on LLM judgment over time.
+
+Crucially, this also reduces coupling to AI. If the agents disappeared tomorrow, the deterministic tools they helped create would remain. The SDLC improves permanently, not just while agents are running. The agents are a catalyst for tooling improvement, not a permanent dependency.
+
+From an [operational observability](operational-observability.md) perspective, "where should we invest improvement effort?" becomes answerable by looking at which agent judgments recur most frequently and are most amenable to codification. "Is the system getting better?" can be partially measured by the rate at which non-deterministic checks get converted to deterministic ones.
+
 ## The self-proposal mechanism
 
 The most interesting part of the flywheel is the system proposing improvements to itself. This is where the feedback loop becomes genuinely self-reinforcing rather than just human-driven.
@@ -126,6 +141,7 @@ The most interesting part of the flywheel is the system proposing improvements t
 - **Instruction refinements:** "Strengthen requirement Z from 'consider' to 'always check' because it was consistently missed"
 - **New test cases:** "Add this scenario to the golden set based on correction C"
 - **Context updates:** "Add this explanation to repo context because agents consistently lack this knowledge"
+- **Deterministic tool proposals:** "I've flagged missing nil checks in controller code 12 times in the last month — propose adding a static analysis rule for this pattern"
 - **Escalation rule changes:** "Reclassify changes to path P as Tier 2 because corrections show they require deeper review than Tier 1 provides"
 - **Its own problem documents:** "Based on accumulated feedback, I've identified a problem area not covered by existing docs: [description]"
 
@@ -177,7 +193,7 @@ Mitigating this requires explicit positive signal. When a human approves an agen
 
 ## Relationship to other problems
 
-**[Production Feedback](production-feedback.md)** — Production feedback is about signals from the system Konflux operates feeding into agent work. The flywheel is about signals from fullsend's own outputs feeding back into fullsend. They're complementary: production feedback tells agents what to work on, the flywheel tells agents how to work better. A fully closed loop has both.
+**[Production Feedback](production-feedback.md)** — Production feedback is about signals from the platform's runtime feeding into agent work. The flywheel is about signals from the system's own outputs feeding back into itself. They're complementary: production feedback tells agents what to work on, the flywheel tells agents how to work better. A fully closed loop has both.
 
 **[Testing the Agents](testing-agents.md)** — The flywheel generates test cases. Every human correction is a candidate golden-set entry. The testing framework verifies that the flywheel's improvements don't regress existing behavior. Testing is the verification layer; the flywheel is the improvement layer.
 
@@ -190,6 +206,8 @@ Mitigating this requires explicit positive signal. When a human approves an agen
 **[Contributor Guidance](contributor-guidance.md)** — The flywheel can identify gaps in contributor guidance. If agents consistently misunderstand a repo's conventions, that's a signal that the contributor guidance is unclear — not just to agents, but potentially to human contributors too.
 
 **[Autonomy Spectrum](autonomy-spectrum.md)** — The flywheel's correction rate is a natural input to autonomy decisions. An agent with a declining correction rate has earned more autonomy; an agent with a rising correction rate should have autonomy reduced.
+
+**[Operational Observability](operational-observability.md)** — Observability provides the raw data the flywheel needs: structured traces of agent decisions, human override records, and cost/latency metrics. Without observability, the flywheel has nothing to analyze. The flywheel also gives observability a purpose beyond monitoring — the "is the system getting better?" question is answerable through flywheel metrics like correction rate decline and the rate of deterministic tool extraction.
 
 ## Open questions
 
