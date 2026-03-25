@@ -48,7 +48,7 @@ with other tooling.
 - Clean, memorable convention. Tooling looks in exactly one place.
 - Org-owned — the adopting org controls configuration, permissions, and review.
 - Decoupled from fullsend's release cycle.
-- Dot-prefix follows an established pattern (`.github`, `.editorconfig`).
+- Dot-prefix follows an established pattern (`.github`, `.gitlab`).
 - CODEOWNERS enforces appropriate approval on configuration changes.
 
 **Cons:**
@@ -175,14 +175,17 @@ The convention is:
    Changes here are governance-level changes (see
    [governance.md](../problems/governance.md) — configuration security).
 4. **Agents cannot modify this repo.** The `.fullsend` repo defines agent
-   behavior; agents must not modify their own configuration. This aligns with
-   the principle that CODEOWNERS files are always human-owned.
+   behavior; agents must not modify their own configuration. Enforcement:
+   exclude bot/service accounts from write access and require human approval
+   via CODEOWNERS on all paths. This aligns with the principle that CODEOWNERS
+   files are always human-owned.
 
 ### Repo structure (initial)
 
 ```
 .fullsend/
   config.yaml              # Top-level org configuration
+  guardrails.yaml          # Org-wide guardrails (separate file for CODEOWNERS)
   agents/                  # Org-specific agent definitions (extends base set)
   skills/                  # Org-specific skills (extends base set)
   workflows/               # Workflow overrides/extensions
@@ -190,16 +193,20 @@ The convention is:
     <repo-name>.yaml
 ```
 
-The `config.yaml` contains pointers and org-wide defaults:
+The `config.yaml` contains pointers and org-wide defaults. This repo holds
+structural configuration only; secrets (API keys, credentials) are managed
+separately via the org's secret management system (Vault, sealed secrets, etc.).
 
 ```yaml
+version: 1                          # Schema version for future evolution
+
 # Where to find org-specific resources
 intent_repo: <org>/features         # or <org>/intent
 architecture_repo: <org>/architecture
 
 # Agent runtime defaults
 runtime:
-  default: claude-code              # or opencode
+  harness: claude-code              # or opencode
   model: claude-sonnet-4-6
 
 # Infrastructure
@@ -230,8 +237,15 @@ fullsend defaults < org .fullsend config < per-repo overrides
 ```
 
 Org config can add agents, skills, and workflows. It can override defaults. It
-cannot weaken org-wide guardrails (that's a governance enforcement, not a
-technical one — CODEOWNERS on the guardrails section of config prevents it).
+cannot weaken org-wide guardrails. Guardrails live in a separate
+`guardrails.yaml` file so that CODEOWNERS can enforce stricter review on that
+file specifically (CODEOWNERS operates on file paths, not YAML sections).
+
+**Limitation:** per-repo overrides in `repos/<repo-name>.yaml` use the same
+layering mechanism as org-over-upstream. Without additional enforcement, a repo
+override could weaken org-level guardrails. The exact mechanism for protecting
+org guardrails from repo-level override is tracked as a follow-up (see issue
+#84).
 
 ## Consequences
 
@@ -252,3 +266,8 @@ technical one — CODEOWNERS on the guardrails section of config prevents it).
 - **Natural bootstrap for adoption.** A fullsend installer's first step is
   creating the `.fullsend` repo and populating initial config. Everything
   else flows from that repo existing.
+- **Guardrail override gap.** The inheritance model does not yet define how
+  an org protects specific settings from being weakened by per-repo overrides.
+  Separating guardrails into their own file solves the org-level CODEOWNERS
+  problem, but the repo-level override boundary needs further design (issue
+  #84).
