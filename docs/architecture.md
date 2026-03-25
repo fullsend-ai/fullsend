@@ -16,6 +16,8 @@ Infrastructure platform choice and configuration are specified in the org's `<or
 
 **Open questions:**
 
+**Open questions:**
+
 - Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? (See [agent-infrastructure.md](problems/agent-infrastructure.md) for the three directions.)
 - Can different agent types (short-lived review vs. long-running implementation) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
@@ -24,7 +26,9 @@ Infrastructure platform choice and configuration are specified in the org's `<or
 
 The isolation boundary around a running agent. Responsible for filesystem access control and network regulation — ensuring an agent can only reach what it's authorized to reach and cannot affect other agents or systems outside its boundary.
 
-The sandbox is a security primitive. Its job is containment: if an agent is compromised or misbehaves, the blast radius is limited to what the sandbox permits.
+Sandbox defaults (network policy, filesystem restrictions) are configured in the org's `<org>/.fullsend` repo and can be overridden per-repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+
+**Open questions:**
 
 Sandbox defaults (network policy, filesystem restrictions) are configured in the org's `<org>/.fullsend` repo and can be overridden per-repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
@@ -37,9 +41,13 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 
 ## Agent Harness
 
-The configuration and context layer that prepares an agent for its task. Responsible for providing skills, system prompts, codebase context, tool definitions, and behavioral instructions to the agent runtime.
+The harness draws its configuration from the org's `<org>/.fullsend` repo — skills, workflow definitions, and agent behavioral instructions are assembled from the layered config (fullsend defaults < org config < per-repo overrides). (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
-The harness is what makes a generic LLM into a specific agent with a specific role. It assembles what the agent needs to know and what it's allowed to do before the agent starts working.
+**Open questions:**
+
+- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)?
+- How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
+- How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).)
 
 The harness draws its configuration from the org's `<org>/.fullsend` repo — skills, workflow definitions, and agent behavioral instructions are assembled from the layered config (fullsend defaults < org config < per-repo overrides). (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
