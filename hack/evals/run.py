@@ -105,6 +105,9 @@ def model_for_agent(agent: str, opencode_model: str) -> str:
         model = opencode_model.split("/", 1)[-1]
         model = model.split("@", 1)[0]
         return model
+    if agent == "opencode":
+        # Strip @version suffix; opencode expects provider/model only
+        return opencode_model.split("@", 1)[0]
     return opencode_model
 
 
@@ -166,7 +169,8 @@ def run_agent(
         # config when available. For now, runs without tool restrictions.
         cmd = ["opencode", "run"]
         if model:
-            cmd.extend(["-m", model])
+            m = model_for_agent("opencode", model)
+            cmd.extend(["-m", m])
         cmd.append(full_prompt)
         return _run_subprocess(cmd)
     raise ValueError(f"unknown agent: {agent}")
