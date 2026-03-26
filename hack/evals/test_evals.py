@@ -11,8 +11,9 @@ import io
 import os
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 from run import (
@@ -241,7 +242,7 @@ class TestSaveGradingYaml(unittest.TestCase):
 
 class TestPrintReport(unittest.TestCase):
     def _make_case_result(
-        self, eval_id: str, agent: str, config: str, pass_values: list[bool | None]
+        self, eval_id: str, agent: str, config: str, pass_values: Sequence[bool | None]
     ) -> CaseResult:
         cr = CaseResult(eval_id=eval_id, agent=agent, configuration=config)
         for i, v in enumerate(pass_values):
@@ -327,10 +328,8 @@ class TestPrintReport(unittest.TestCase):
 # --- run_agent ---
 
 
-def _mock_popen(stdout: str = "output") -> object:
+def _mock_popen(stdout: str = "output") -> MagicMock:
     """Create a mock Popen instance that returns stdout from communicate()."""
-    from unittest.mock import MagicMock
-
     mock_proc = MagicMock()
     mock_proc.communicate.return_value = (stdout, "")
     mock_proc.kill = MagicMock()
@@ -356,10 +355,7 @@ class TestRunAgent(unittest.TestCase):
 
     @patch("run.subprocess.Popen")
     @patch("run.shutil.which", return_value="/usr/bin/claude")
-    def test_claude_invocation(self, _mock_which: object, mock_popen: object) -> None:
-        from unittest.mock import MagicMock
-
-        assert isinstance(mock_popen, MagicMock)
+    def test_claude_invocation(self, _mock_which: MagicMock, mock_popen: MagicMock) -> None:
         mock_popen.return_value = _mock_popen("agent output")
 
         output = run_agent("claude", "test prompt")
@@ -377,11 +373,8 @@ class TestRunAgent(unittest.TestCase):
     @patch("run.subprocess.Popen")
     @patch("run.shutil.which", return_value="/usr/bin/claude")
     def test_claude_with_skill_prepends_content(
-        self, _mock_which: object, mock_popen: object
+        self, _mock_which: MagicMock, mock_popen: MagicMock
     ) -> None:
-        from unittest.mock import MagicMock
-
-        assert isinstance(mock_popen, MagicMock)
         mock_popen.return_value = _mock_popen()
 
         run_agent("claude", "my prompt", skill_content="# Skill instructions")
