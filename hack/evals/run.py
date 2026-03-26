@@ -680,10 +680,19 @@ def main() -> int:
         print("No skills with evals found.")
         return 0
 
-    agents = ["claude", "opencode"]
-    available_agents = [a for a in agents if shutil.which(a if a == "claude" else a)]
+    all_agents = ["claude", "opencode"]
+    eval_agents_env = os.environ.get("EVAL_AGENTS")
+    if eval_agents_env:
+        agents = [a.strip() for a in eval_agents_env.split(",") if a.strip()]
+        unknown = set(agents) - set(all_agents)
+        if unknown:
+            print(f"ERROR: Unknown agents in EVAL_AGENTS: {unknown}", file=sys.stderr)
+            return 1
+    else:
+        agents = all_agents
+    available_agents = [a for a in agents if shutil.which(a)]
     if not available_agents:
-        print("ERROR: Neither claude nor opencode is installed.", file=sys.stderr)
+        print(f"ERROR: None of the requested agents ({agents}) are installed.", file=sys.stderr)
         return 1
 
     env_errors = check_required_env(available_agents)
