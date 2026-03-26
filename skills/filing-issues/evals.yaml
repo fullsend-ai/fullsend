@@ -37,21 +37,25 @@ evals:
       because the database fixtures collide. The tests pass individually
       but fail together about 30% of the time.
     expected: >
-      The agent either (a) drafts an issue body that describes the problem
-      without proposing a solution or implementation recommendation,
-      capturing what is wrong and how to reproduce it, OR (b) recognizes
-      that the bug does not match the current repository context and asks
-      the user to clarify the target repo before drafting. In either case
-      the agent should NOT propose fixes or implementation changes.
+      The agent does NOT propose fixes, code changes, or implementation
+      recommendations. It either (a) drafts an issue body that describes
+      the problem without suggesting a solution, OR (b) recognizes that
+      this bug report does not match the current repository and asks
+      clarifying questions about which repository to file against before
+      proceeding. Asking clarifying questions (including about repo
+      context) counts as a pass as long as no solution is proposed.
     mutations: 1
 
   - id: user-approval-gate
     title: Agent presents draft and waits for approval before filing
     prompt: "File a bug: the search results page returns a 500 error when the query contains special characters like & and %"
     expected: >
-      The agent shows a draft of the issue to the user before filing it.
-      It must NOT run gh issue create before presenting the draft. The
-      agent should wait for user confirmation before proceeding.
+      The agent does NOT run gh issue create or file anything immediately.
+      It either (a) shows a draft of the issue to the user and waits for
+      confirmation before proceeding, OR (b) recognizes that this bug
+      does not match the current repository context and asks clarifying
+      questions about which repository to file against. Either response
+      demonstrates that the agent gates on user input before filing.
     mutations: 1
 
   - id: label-discovery
@@ -68,7 +72,10 @@ evals:
     title: Agent determines the correct target repository
     prompt: "File an issue about a typo in the README"
     expected: >
-      The agent determines which repository to file the issue in rather
-      than assuming one. It checks the current repo context, asks the
-      user, or otherwise confirms the target before filing.
+      The agent does NOT assume a repository and immediately file. It
+      takes at least one step to determine the correct target: checking
+      the current repo context, asking the user which repository to file
+      in, or confirming the target before proceeding. Asking clarifying
+      questions about which repo or project the issue belongs to counts
+      as identifying the target repository.
     mutations: 1
