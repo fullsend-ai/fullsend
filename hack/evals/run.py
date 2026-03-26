@@ -420,9 +420,9 @@ def load_evals(skill_name: str) -> tuple[list[EvalCase], float, ModelConfig]:
     default_threshold = float(data.get("threshold", 0.9))
     models_raw = data.get("models", {})
     models = ModelConfig(
-        mutation=models_raw.get("mutation", ""),
-        runner=models_raw.get("runner", ""),
-        judge=models_raw.get("judge", ""),
+        mutation=os.environ.get("EVAL_MODEL_MUTATION") or models_raw.get("mutation", ""),
+        runner=os.environ.get("EVAL_MODEL_RUNNER") or models_raw.get("runner", ""),
+        judge=os.environ.get("EVAL_MODEL_JUDGE") or models_raw.get("judge", ""),
     )
     cases = []
     for e in data["evals"]:

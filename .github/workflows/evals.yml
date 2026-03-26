@@ -77,6 +77,9 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-credentials.json
           CLAUDE_CODE_USE_VERTEX: "1"
           EVAL_AGENTS: opencode
+          EVAL_MODEL_MUTATION: google-vertex/gemini-2.5-flash@default
+          EVAL_MODEL_RUNNER: google-vertex/gemini-2.5-flash@default
+          EVAL_MODEL_JUDGE: google-vertex/gemini-2.5-flash@default
         run: make evals
 
       - name: Run evals (changed skills only)
@@ -86,6 +89,9 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-credentials.json
           CLAUDE_CODE_USE_VERTEX: "1"
           EVAL_AGENTS: opencode
+          EVAL_MODEL_MUTATION: google-vertex/gemini-2.5-flash@default
+          EVAL_MODEL_RUNNER: google-vertex/gemini-2.5-flash@default
+          EVAL_MODEL_JUDGE: google-vertex/gemini-2.5-flash@default
           CHANGED_SKILLS: ${{ needs.detect-changes.outputs.skills }}
         run: |
           echo "$CHANGED_SKILLS" | jq -r '.[]' | while read -r skill; do

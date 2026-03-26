@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -158,11 +159,26 @@ class TestLoadEvals(unittest.TestCase):
         assert case.mutations == 5
         assert case.threshold == 0.8
 
+    @patch.dict(os.environ, {}, clear=False)
     def test_models_loaded(self) -> None:
+        os.environ.pop("EVAL_MODEL_MUTATION", None)
+        os.environ.pop("EVAL_MODEL_RUNNER", None)
+        os.environ.pop("EVAL_MODEL_JUDGE", None)
         _cases, _threshold, models = load_evals("filing-issues")
         assert models.mutation == "google-vertex-anthropic/claude-haiku-4-5@default"
         assert models.runner == "google-vertex-anthropic/claude-haiku-4-5@default"
         assert models.judge == "google-vertex-anthropic/claude-haiku-4-5@default"
+
+    @patch.dict(os.environ, {
+        "EVAL_MODEL_MUTATION": "google-vertex/gemini-2.5-flash@default",
+        "EVAL_MODEL_RUNNER": "google-vertex/gemini-2.5-pro@default",
+        "EVAL_MODEL_JUDGE": "google-vertex/gemini-2.5-flash@default",
+    })
+    def test_env_vars_override_models(self) -> None:
+        _cases, _threshold, models = load_evals("filing-issues")
+        assert models.mutation == "google-vertex/gemini-2.5-flash@default"
+        assert models.runner == "google-vertex/gemini-2.5-pro@default"
+        assert models.judge == "google-vertex/gemini-2.5-flash@default"
 
     def test_nonexistent_skill_exits(self) -> None:
         with self.assertRaises(SystemExit):
