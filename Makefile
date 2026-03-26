@@ -1,11 +1,10 @@
 .DEFAULT_GOAL := help
-.PHONY: help lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter evals test test-evals
+.PHONY: help lint fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter evals test test-evals
 
 help:
 	@echo "Available targets:"
 	@echo "  help                 - Show this help message"
 	@echo "  lint                 - Run all linting and validation"
-	@echo "  check                - Run ruff and ty checks on Python"
 	@echo "  fmt                  - Format Python code with ruff"
 	@echo "  lint-adr-status      - Validate ADR statuses in all ADR files"
 	@echo "  lint-adr-numbers     - Check for duplicate ADR numeric identifiers"
@@ -14,12 +13,10 @@ help:
 	@echo "  test                 - Run all tests"
 	@echo "  test-evals           - Run eval framework unit tests"
 
-lint: check lint-adr-status lint-adr-numbers lint-adr-frontmatter
+lint: lint-pre-commit lint-adr-status lint-adr-numbers lint-adr-frontmatter
 
-check:
-	uvx ruff format --check .
-	uvx ruff check .
-	uvx --with pyyaml ty check hack/ --extra-search-path hack/evals
+lint-pre-commit:
+	pre-commit run --all-files
 
 fmt:
 	uvx ruff format .
