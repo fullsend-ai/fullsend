@@ -128,7 +128,7 @@ class AgentEmptyOutput(AgentError):
     def __init__(self, stderr: str = "", returncode: int | None = None):
         self.stderr = stderr
         self.returncode = returncode
-        detail = stderr[:200] if stderr else f"exit code {returncode}"
+        detail = stderr[:500] if stderr else f"exit code {returncode}"
         super().__init__(f"agent produced no output ({detail})")
 
 
