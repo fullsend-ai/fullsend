@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter
+.PHONY: help lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter evals test test-evals
 
 help:
 	@echo "Available targets:"
@@ -10,6 +10,9 @@ help:
 	@echo "  lint-adr-status      - Validate ADR statuses in all ADR files"
 	@echo "  lint-adr-numbers     - Check for duplicate ADR numeric identifiers"
 	@echo "  lint-adr-frontmatter - Validate ADR frontmatter and cross-references"
+	@echo "  evals                - Run skill evals (SKILL=name for one skill)"
+	@echo "  test                 - Run all tests"
+	@echo "  test-evals           - Run eval framework unit tests"
 
 lint: check lint-adr-status lint-adr-numbers lint-adr-frontmatter
 
@@ -28,3 +31,15 @@ lint-adr-numbers:
 
 lint-adr-frontmatter:
 	@uv run --script ./hack/lint-adr-frontmatter
+
+evals:
+ifdef SKILL
+	@uv run --script ./hack/evals/run.py $(SKILL)
+else
+	@uv run --script ./hack/evals/run.py
+endif
+
+test: test-evals
+
+test-evals:
+	@cd hack/evals && uv run --script test_evals.py

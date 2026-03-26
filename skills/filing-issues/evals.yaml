@@ -1,0 +1,80 @@
+skill_name: filing-issues
+threshold: 0.9
+
+# Model names use the schema from https://models.dev/model-schema.json#/$defs/Model
+models:
+  mutation: google-vertex-anthropic/claude-haiku-4-5@default
+  runner: google-vertex-anthropic/claude-haiku-4-5@default
+  judge: google-vertex-anthropic/claude-haiku-4-5@default
+
+evals:
+  - id: asks-clarifying-questions
+    title: Vague bug report triggers clarifying questions before filing
+    prompt: "File a GitHub issue: the app is slow sometimes"
+    expected: >
+      The agent asks clarifying questions before attempting to file.
+      It should ask about reproduction steps, environment, severity,
+      which repository to target, and what specifically is slow. It
+      should NOT run gh issue create or file anything without user
+      answers first. The questions should appear in a single message,
+      grouped logically, and number between three and seven.
+    mutations: 5
+
+  - id: searches-for-duplicates
+    title: Agent searches for existing issues before filing
+    prompt: "File a bug: login button doesn't work on mobile"
+    expected: >
+      The agent searches for existing issues using gh issue list with
+      relevant search terms before writing a new issue. It tries at
+      least two different search queries using different key terms
+      (not just the user's exact phrasing). If duplicates are found,
+      it presents them to the user before proceeding. The agent must
+      not skip the duplicate search step.
+    mutations: 5
+
+  - id: no-solution-in-body
+    title: Issue draft does not propose solutions
+    prompt: >
+      File an issue: our CI pipeline fails when running tests in parallel
+      because the database fixtures collide. The tests pass individually
+      but fail together about 30% of the time.
+    expected: >
+      The agent drafts an issue body that describes the problem (CI
+      failures, test parallelism, fixture collisions, 30% flake rate)
+      without proposing a solution. The body should NOT contain
+      suggestions like "we should use transaction isolation" or "fix
+      by adding locks" or any implementation recommendations. The issue
+      captures what is wrong and how to reproduce it, not how to fix it.
+    mutations: 5
+
+  - id: user-approval-gate
+    title: Agent presents draft and waits for approval before filing
+    prompt: "File a bug: the search results page returns a 500 error when the query contains special characters like & and %"
+    expected: >
+      The agent presents a complete draft of the issue (title and body)
+      to the user and explicitly asks for approval or edits before
+      filing. It must NOT run gh issue create before showing the draft.
+      The agent should indicate it is waiting for the user to review,
+      approve, or request changes.
+    mutations: 5
+
+  - id: label-discovery
+    title: Agent fetches available labels from the repository
+    prompt: "File a feature request: add dark mode support to the settings page"
+    expected: >
+      The agent runs gh label list to fetch the repository's available
+      labels. It selects labels that fit the issue (such as enhancement
+      or feature) from the actual repo labels, rather than inventing
+      label names. The chosen labels are presented to the user alongside
+      the draft for review.
+    mutations: 5
+
+  - id: identifies-target-repo
+    title: Agent determines the correct target repository
+    prompt: "File an issue about a typo in the README"
+    expected: >
+      The agent determines which repository to file the issue in. It
+      either uses the current working directory's git remote, asks the
+      user which repo to target, or runs gh repo view to confirm access.
+      The agent does not assume a repository without checking.
+    mutations: 5
