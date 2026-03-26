@@ -72,8 +72,53 @@ Each sub-agent operates under zero trust — they don't rely on other sub-agents
 
 Processes incoming issues, classifies severity and scope, routes to appropriate priority level.
 
-- **Authority:** Label issues, assign priority, link related issues
+- **Authority:** Label issues, assign priority, link related issues, create derivative issues
 - **Considerations:** Must be hardened against prompt injection in issue text
+
+#### Fix scope: narrow fix vs. broad pattern remediation
+
+When the triage agent processes a bug, there's a decision beyond severity and routing: **should the fix target only the reported instance, or should it address the underlying pattern across the codebase?**
+
+This is a consequential choice. A narrow fix is safer and faster but leaves identical bugs latent elsewhere. A broad fix prevents recurrence but has a larger blast radius and may exceed the intent authorization of the original issue.
+
+##### The linter heuristic
+
+A useful decision boundary: **can the pattern be expressed as a static analysis rule?**
+
+- **If yes** (e.g., unchecked nil dereference, missing error return check, deprecated API usage, format string mismatch): the triage agent should recommend broad remediation. The pattern is mechanical, the fix is deterministic, and a linter or codemod can validate completeness. In this case, the triage agent creates a single issue scoped to the pattern, not the instance. The implementation agent applies the fix codebase-wide and ideally adds a linter rule or CI check to prevent recurrence.
+
+- **If no** (e.g., a race condition in a specific interaction, a logic error in business rules, an incorrect algorithm for a particular domain case): the fix requires contextual judgment at each call site. Applying it broadly risks introducing incorrect behavior where the pattern superficially matches but the semantics differ. In this case, the triage agent should fix the reported instance and then **scan for similar occurrences to create derivative issues** — one per location — so each gets individual analysis and review.
+
+The distinction matters because the failure modes are asymmetric. A narrow fix that misses similar bugs is a known-unknown — the bugs exist but can be found later. A broad fix that incorrectly "fixes" code that wasn't broken creates regressions that are harder to trace back to the pattern remediation.
+
+##### Derivative issue creation
+
+When the triage agent identifies a bug that likely recurs but doesn't qualify for broad remediation, it should:
+
+1. Fix the reported instance (normal Tier 1 flow)
+2. Search the codebase for structurally similar patterns
+3. For each candidate location, create a **derivative issue** linked to the original, containing:
+   - The location and the pattern match
+   - Why the triage agent thinks this location may have the same bug
+   - A flag indicating this is a derivative (so reviewers and the priority agent can batch or deprioritize if the pattern turns out to be a false positive)
+
+This keeps each fix scoped and individually reviewable while ensuring the broader problem doesn't get forgotten. The priority agent can then decide whether to batch derivative issues or address them individually based on severity and available capacity.
+
+##### Interaction with the tier model
+
+Broad pattern remediation has a tier escalation risk. A single nil-check fix is Tier 1 (bug fix with a linked issue). But "apply nil-check discipline across the entire codebase and add a linter rule" may be Tier 2 — it's a codebase-wide convention change, not a surgical fix. The triage agent should flag this when recommending broad remediation, and the review agent must independently assess whether the scope warrants tier escalation (see [intent-representation.md](intent-representation.md#defense-independent-tier-classification-by-review-agents)).
+
+Conversely, if the triage agent creates 30 derivative issues for the same pattern, that's a signal that broad remediation would have been cheaper. The quality/drift detection agent (which monitors aggregate trends) should detect this accumulation and recommend consolidation into a single pattern-level issue — potentially escalating to Tier 2 if the scope warrants it.
+
+##### When the boundary is unclear
+
+Some bugs sit between the two categories — the pattern is somewhat mechanical but has enough contextual variation that a blanket fix is risky. In these cases, a hybrid approach is possible:
+
+- The implementation agent fixes the reported instance
+- The triage agent creates derivative issues for candidate locations
+- The derivative issues include a suggested fix but flag it as "needs verification" — the implementation agent working each derivative must confirm the fix is appropriate for that specific context before applying it
+
+This is more expensive than either pure approach but avoids both the blast radius of incorrect broad fixes and the amnesia of purely narrow fixes.
 
 ### Backlog/priority agent
 
@@ -152,3 +197,6 @@ Without a coordinator, what happens when agents disagree? (e.g., correctness age
 - How does the two-phase review model work in practice? Does the implementation agent run all six sub-agents locally, or a subset? Is the pre-PR review a lighter version? (Depends on [agent-infrastructure.md](agent-infrastructure.md) — what compute is available where.)
 - What's the iteration limit before human escalation? Too low and humans get pulled in constantly. Too high and the system wastes resources on unresolvable conflicts.
 - How do we handle agent-generated PR content that is itself an injection vector? An implementation agent's code, commit messages, and PR description are all consumed by review agents. The injection defense agent needs to evaluate this content, but how do we prevent the injection defense agent itself from being influenced by it?
+- How does the triage agent determine whether a bug pattern is mechanical enough for broad remediation vs. context-dependent enough to require per-instance analysis? Can this classification itself be expressed as a heuristic, or does it always require LLM judgment?
+- What's the threshold for derivative issue accumulation before the quality/drift detection agent should recommend consolidation into a pattern-level fix? Is it a count (e.g., 10+ derivatives for the same pattern), a density (e.g., more than N% of files in a package), or a cost measure?
+- When the triage agent creates derivative issues, how should the priority agent handle them — batch all at the same priority as the original, deprioritize as "known technical debt," or evaluate each independently?
