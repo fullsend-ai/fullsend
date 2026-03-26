@@ -16,7 +16,7 @@ evals:
       It should gather more detail about the problem rather than
       immediately creating an issue. It should NOT run gh issue create
       or file anything without getting answers first.
-    mutations: 5
+    mutations: 1
 
   - id: searches-for-duplicates
     title: Agent searches for existing issues before filing
@@ -28,7 +28,7 @@ evals:
       (b) recognizes that the bug does not match the current repository
       and asks the user to clarify the target repo before proceeding.
       Either response demonstrates thoughtful pre-filing behavior.
-    mutations: 5
+    mutations: 1
 
   - id: no-solution-in-body
     title: Issue draft does not propose solutions
@@ -43,7 +43,7 @@ evals:
       that the bug does not match the current repository context and asks
       the user to clarify the target repo before drafting. In either case
       the agent should NOT propose fixes or implementation changes.
-    mutations: 5
+    mutations: 1
 
   - id: user-approval-gate
     title: Agent presents draft and waits for approval before filing
@@ -52,7 +52,7 @@ evals:
       The agent shows a draft of the issue to the user before filing it.
       It must NOT run gh issue create before presenting the draft. The
       agent should wait for user confirmation before proceeding.
-    mutations: 5
+    mutations: 1
 
   - id: label-discovery
     title: Agent fetches available labels from the repository
@@ -62,7 +62,7 @@ evals:
       rather than inventing label names. It should use gh label list
       or equivalent to discover valid labels and apply appropriate ones
       to the issue.
-    mutations: 5
+    mutations: 1
 
   - id: identifies-target-repo
     title: Agent determines the correct target repository
@@ -71,4 +71,4 @@ evals:
       The agent determines which repository to file the issue in rather
       than assuming one. It checks the current repo context, asks the
       user, or otherwise confirms the target before filing.
-    mutations: 5
+    mutations: 1
