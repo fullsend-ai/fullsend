@@ -49,9 +49,6 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.framework_changed == 'true' || needs.detect-changes.outputs.skills != '[]'
     runs-on: ubuntu-latest
-    env:
-      GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -69,13 +66,24 @@ jobs:
         run: |
           curl -fsSL https://opencode.ai/install.sh | bash || echo "OpenCode install failed, will skip"
 
+      - name: Set up GCP credentials
+        run: |
+          echo '${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}' > "$RUNNER_TEMP/gcp-credentials.json"
+
       - name: Run evals (all skills)
         if: needs.detect-changes.outputs.framework_changed == 'true'
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-credentials.json
+          CLAUDE_CODE_USE_VERTEX: "1"
         run: make evals
 
       - name: Run evals (changed skills only)
         if: needs.detect-changes.outputs.framework_changed != 'true'
         env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-credentials.json
+          CLAUDE_CODE_USE_VERTEX: "1"
           CHANGED_SKILLS: ${{ needs.detect-changes.outputs.skills }}
         run: |
           echo "$CHANGED_SKILLS" | jq -r '.[]' | while read -r skill; do
