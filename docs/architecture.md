@@ -78,7 +78,7 @@ This is the thing that actually reasons and acts. Everything else in this docume
 
 ## Agent Identity Provider
 
-The system that gives agents credentials to act on external services. Responsible for issuing, scoping, rotating, and revoking the identities agents use to interact with GitHub, container registries, and other APIs.
+The system that gives agents credentials to act on external services. Responsible for issuing, scoping, rotating, and revoking the identities agents use to interact with the hosting forge, container registries, and other APIs. Credential issuance is deterministic code; `forgekit` handles forge-portable token generation (e.g., GitHub App installation tokens vs. GitLab project access tokens). The sandbox makes scoped tokens available to the layers it controls (harness and runtime). (See [ADR 0006](ADRs/0006-forge-abstraction-layer.md).)
 
 Identity is not the same as trust. An agent's identity lets it authenticate to external services; the trust model is defined by repository permissions and CODEOWNERS, not by which credentials the agent holds. (See [agent-architecture.md](problems/agent-architecture.md) — "trust derives from repository permissions, not agent identity.")
 
@@ -89,15 +89,27 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
 
-## Agent Dispatch and Coordination Layer
+## Forge Abstraction Layer
 
-The mechanism that assigns work to agents and prevents conflicts. Responsible for translating triggers (GitHub events, schedules, manual requests) into agent tasks and ensuring two agents don't work the same problem simultaneously.
+The boundary between fullsend's deterministic code and the hosting forge (GitHub, GitLab, Forgejo). A shared library (`forgekit`) provides a uniform interface to forge operations — issues, pull/merge requests, labels, status checks, and code ownership queries.
 
-The existing design principle is that [the repo is the coordinator](problems/agent-architecture.md#interaction-model-the-repo-as-coordinator) — branch protection, CODEOWNERS, status checks, and GitHub events provide coordination without a central orchestrator. The agent dispatch and coordination layer may be nothing more than the glue that connects GitHub webhooks to agent infrastructure. Or it may need to be more.
+The abstraction applies to two specific code paths: the **agent runtime wrapper** (the script inside the sandbox that configures the harness and launches the agent) and **skill scripts** (deterministic scripts embedded in fullsend-shipped skills). These are the code paths fullsend controls and must be forge-portable. Agents themselves use native forge CLIs (`gh`, `glab`, etc.) — LLMs are naturally effective at adapting to the forge they're working with. (See [ADR 0006](ADRs/0006-forge-abstraction-layer.md).)
 
 **Open questions:**
 
-- Is GitHub's event system sufficient, or do we need additional coordination logic (e.g. to prevent two implementation agents from picking up the same issue)?
+- What is the right implementation language for the library?
+- How does the library authenticate — does it receive credentials from the Agent Identity Provider, or discover them from the environment?
+- How are forge-specific features that have no cross-forge equivalent handled — silently ignored, explicitly errored, or degraded gracefully?
+
+## Agent Dispatch and Coordination Layer
+
+The mechanism that assigns work to agents and prevents conflicts. Responsible for translating triggers (forge events, schedules, manual requests) into agent tasks and ensuring two agents don't work the same problem simultaneously.
+
+The existing design principle is that [the repo is the coordinator](problems/agent-architecture.md#interaction-model-the-repo-as-coordinator) — branch protection, CODEOWNERS, status checks, and forge events provide coordination without a central orchestrator. The agent dispatch and coordination layer may be nothing more than the glue that connects forge webhooks to agent infrastructure. Or it may need to be more.
+
+**Open questions:**
+
+- Is the forge's event system sufficient, or do we need additional coordination logic (e.g. to prevent two implementation agents from picking up the same issue)?
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
