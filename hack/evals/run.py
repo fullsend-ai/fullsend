@@ -430,7 +430,7 @@ def load_evals(skill_name: str) -> tuple[list[EvalCase], float, ModelConfig]:
                 title=e["title"],
                 prompt=e["prompt"],
                 expected=e["expected"],
-                mutations=int(e.get("mutations", 5)),
+                mutations=int(os.environ.get("EVAL_MUTATIONS") or e.get("mutations", 5)),
                 threshold=float(e.get("threshold", default_threshold)),
             )
         )
