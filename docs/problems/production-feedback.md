@@ -107,6 +107,21 @@ Detection requires two complementary stopping conditions. First, iteration count
 
 Prevention: the triage agent should not generate an implementation-ready issue without sufficient corroborating evidence — a correlated deploy event, minimum cross-tenant breadth, signal-to-noise ratio above threshold, and failure log content consistent with a platform origin. Below that threshold, the output is a flagged observation for human triage, not an actionable issue.
 
+## Product discovery signals
+
+The three signal categories above focus on system health — detecting and fixing failures. But production systems also generate **product discovery signals**: data about how users interact with the product that suggests what to build or improve next. This extends the feedback loop from reactive (fix what's broken) to proactive (build what's needed).
+
+Examples of product discovery signals:
+
+- **User feedback clustering**: Support tickets, GitHub issues, and forum posts contain recurring themes. Agents can cluster these by topic, identify the most frequently reported pain points, and create backlog items with supporting evidence from the original reports.
+- **Usage pattern analysis**: Feature adoption rates, drop-off points in workflows, and frequently abandoned actions reveal where users struggle. An agent monitoring these patterns can flag UX improvements with quantitative backing.
+- **A/B test interpretation**: When experiments conclude, agents can identify winning variants, summarize the results, and propose follow-up experiments — reducing the latency between experiment completion and action.
+- **Error-adjacent behavior**: Users who encounter errors and then change their approach (retrying with different parameters, switching to a different feature) reveal workarounds that indicate missing functionality or poor error recovery.
+
+The distinction from health signals is important: health signals have clear correct/incorrect states (error rate should be low, latency should be within SLO). Product discovery signals are **ambiguous** — a feature with low adoption might be poorly designed, poorly documented, or simply not needed. This ambiguity means product discovery agents should produce observations and recommendations for human triage, not actionable issues. The governance question is sharper here than for health signals: should agents that interpret user behavior be able to populate the backlog autonomously, or should they always produce proposals that humans approve?
+
+This creates a potential closed loop: observe user behavior → propose improvements → implement changes → observe behavior again. The risk is that this loop optimizes for measurable metrics (conversion rate, click-through) at the expense of harder-to-measure qualities (simplicity, coherence, long-term usability). Stopping conditions and human judgment gates are critical to prevent metric-chasing drift.
+
 ## Relationship to other problems
 
 This problem does not exist in isolation. The closed-loop model described above intersects with several other open problems in the repo.
@@ -129,3 +144,5 @@ There is also a governance question: if production feedback can autonomously cre
 - What attribution confidence threshold separates an implementation-ready issue from a human-triage observation, and how is that confidence measured in practice?
 - Should signal-driven issue creation be gated behind human approval initially (shadow mode) before graduating to fully autonomous triage?
 - How do we ensure failure signals don't leak user-sensitive content from raw execution logs into agent context?
+- Should product discovery signals (user feedback clustering, usage patterns, A/B test results) feed into the same backlog as health signals, or should they be a separate, human-curated channel?
+- What prevents a product discovery feedback loop from optimizing for easily measurable metrics at the expense of harder-to-measure qualities like simplicity and long-term usability?

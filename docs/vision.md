@@ -33,6 +33,14 @@ This project exists to explore these problems in a way that's applicable to any 
 
 OpenAI's [Harness engineering](https://openai.com/index/harness-engineering/) work demonstrates agents handling engineering tasks end-to-end with sandboxed execution and automated testing as primary guardrails. Our technology stack and constraints are different, but the ambition is similar.
 
+## The development system as a compounding asset
+
+In an agentic development model, the organization maintains two products simultaneously: the software it ships, and the development system that produces it. Skills, CI pipelines, context files, architectural constraints, testing infrastructure, lint rules — these are the tooling of the factory, and they compound.
+
+A team that spends a week improving test infrastructure ships future features faster — not because the tests themselves are the product, but because agents operating against stronger test suites produce correct output at higher rates with less human correction (see [repo-readiness: backpressure](problems/repo-readiness.md#backpressure-as-throughput-investment)). A team that writes a debugging skill lets agents resolve future incidents autonomously. Every investment in the development system multiplies the throughput of all future work done through it.
+
+This has a practical implication for how organizations allocate effort: time spent improving agent infrastructure, writing skills, strengthening CI, and refining codebase context is not overhead — it's product development for the development system itself. Organizations that recognize this and invest accordingly will see compounding returns in agent effectiveness.
+
 ## What this is not
 
 - Not a product spec. This is an exploration.

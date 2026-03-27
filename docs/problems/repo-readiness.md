@@ -15,6 +15,16 @@ Test coverage is necessary but not sufficient. For agents to merge autonomously,
 - **CODEOWNERS** — defines the human-required approval paths
 - **Language properties** — type safety, tooling ecosystem, and deployment simplicity affect how effectively agents can operate (see [agent-compatible-code.md](agent-compatible-code.md))
 
+## Backpressure as throughput investment
+
+The readiness criteria above are typically framed as prerequisites — things that must be true before agents can operate. But there's a more productive framing: these same mechanisms (type checkers, linters, test suites, build systems) function as **backpressure** that keeps agents self-correcting during operation.
+
+When a linter catches a style violation, the agent fixes it without human intervention. When a type checker rejects an invalid assignment, the agent corrects course immediately. When a test fails, the agent knows the implementation is wrong. Without backpressure, humans spend review time pointing out trivial mistakes. With it, agents self-correct and humans focus on architecture and judgment.
+
+This reframes readiness investment: improving CI infrastructure is not just a prerequisite for agent autonomy — it's a continuous investment in agent throughput. Every new lint rule, every type annotation, every test case increases the rate at which agents can produce correct output without human correction. Organizations that treat readiness as a one-time gate miss the compounding returns of ongoing backpressure investment.
+
+The implication for repo graduation: repos with stronger backpressure mechanisms can support higher autonomy tiers not just because they're "more ready," but because their agents produce fewer errors that require human attention per unit of work.
+
 ## Diagnostic tooling
 
 [agentready](https://github.com/ambient-code/agentready) can assess repos against research-backed criteria for AI-assisted development readiness. Recommended as a diagnostic step to generate a baseline readiness assessment across an org, but not a dependency for the agentic system itself.
