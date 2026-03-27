@@ -107,9 +107,6 @@ def model_for_agent(agent: str, opencode_model: str) -> str:
         model = opencode_model.split("/", 1)[-1]
         model = model.split("@", 1)[0]
         return model
-    if agent == "opencode":
-        # Strip @version suffix; opencode expects provider/model only
-        return opencode_model.split("@", 1)[0]
     return opencode_model
 
 
@@ -160,21 +157,22 @@ def run_agent(
     if not shutil.which(binary):
         raise AgentNotAvailable(f"{agent} is not installed")
 
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     if agent == "claude":
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        cmd = ["claude", "-p", "--allowedTools", "Read,Bash(gh label list:*)"]
+        cmd = ["claude", "-p", "--allowedTools", "Read"]
         if model:
             cmd.extend(["--model", model_for_agent("claude", model)])
         return _run_subprocess(cmd, env=env, input_text=full_prompt)
     elif agent == "opencode":
         # TODO: OpenCode lacks --allowedTools equivalent. Add sandboxing
         # config when available. For now, runs without tool restrictions.
-        cmd = ["opencode", "run"]
+        cmd = ["opencode"]
         if model:
             m = model_for_agent("opencode", model)
             cmd.extend(["-m", m])
+        cmd.append("run")
         cmd.append(full_prompt)
-        return _run_subprocess(cmd)
+        return _run_subprocess(cmd, env=env)
     raise ValueError(f"unknown agent: {agent}")
 
 
