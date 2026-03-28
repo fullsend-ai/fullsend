@@ -156,7 +156,7 @@ ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dis
 
 ### 2. Slash-command parser + ACL
 
-Parses `/triage`, `/code`, `/review`, `/flow-trace` and enforces who is allowed to invoke each command.
+Parses `/triage`, `/code`, `/review`, and related commands and enforces who is allowed to invoke each.
 ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
 
 ### 3. Label state machine guard
@@ -216,15 +216,5 @@ ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinato
 
 ### 13. Observability
 
-Traceability layer across issue, triage, implementation, review, checks, and merge; provides evidence used by post-merge flow tracing.
+Traceability layer across issue, triage, implementation, review, checks, and merge for incident response and correlation across automation runs.
 ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observability).
-
-### 14. Post-merge trace agent runtime
-
-After merge, creates/updates a canonical flow-trace comment with links and short summaries for each workflow stage and iteration.
-ADR 0002: [Building block 14](ADRs/0002-initial-fullsend-design.md#14-post-merge-trace-agent-runtime).
-
-### 15. Flow trace formatter
-
-Converts raw events into the phase-based trace narrative, including not-ready/duplicate triage iterations and implementation-review round-trips.
-ADR 0002: [Building block 15](ADRs/0002-initial-fullsend-design.md#15-flow-trace-formatter).

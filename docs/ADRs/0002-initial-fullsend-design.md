@@ -58,7 +58,6 @@ We propose adopting the following **reference workflow** as the mental model for
 - `/code` — hand issue to PR agent (expects readiness or forces with human ack — policy per repo)
 - `/review` — enqueue review swarm for current PR head
 - `/reset-triage` — clear triage outcome labels (including **`not-ready`** and **`not-reproducible`**) and re-open triage (optional)
-- `/flow-trace` — re-generate the **post-merge flow trace** comment (optional; restricted commenters — e.g. maintainers — for recovery or correction after a bad edit)
 
 Commands should be validated (e.g. authorized commenters, org members only) in implementation.
 
@@ -85,7 +84,6 @@ Repos may extend this set; names below are **semantic**, not prescriptive string
 1. **Triage agent** — Duplicate detection, issue intake, reproducibility, test artifact proposal
 2. **PR agent** — Branch, implement, test iteratively, open/update PR, fix checks
 3. **Review agents** — N parallel reviewers + **one coordinator** (randomly designated per review round) to coalesce feedback
-4. **Post-merge trace agent** — After a PR is **merged**, produces a **single audit-style comment** that reconstructs the **end-to-end flow** (issue → triage → implementation → checks → review → merge) so reviewers and auditors can see **what happened at each stage** without replaying the entire thread
 
 Each role is a **building block**: separate prompts, policies, sandboxes, and CI jobs can evolve independently.
 
@@ -183,33 +181,7 @@ It **does not** read the **issue comment thread** for intake decisions—no scan
 - **On every push** to the PR head while the change is **in the review stage** (implementation has handed off to review; automation tracks round state—the **`ready-for-review`** label may already have been **cleared** when the current round **started**): **automatically** enqueue a **new** multi-agent review round (same N, new coordinator selection). **When that round starts**, **`ready-for-merge`** is cleared together with **`ready-for-review`** (see **When a review run starts**), so merge approval is **never** left pointing at a **superseded** head SHA. This keeps review aligned with the latest diff without waiting for humans.
 - **On demand:** **`/review`** in a comment **also** enqueues a review round (re-run or extra pass). **Both** apply: pushes trigger re-review **and** maintainers can force a round via **`/review`** even without a new push. A **`/review`**-triggered round **also** clears **`ready-for-merge`** at **start**, so an extra review pass invalidates the previous unanimous verdict until the new round completes.
 
-### Phase D — Post-merge flow trace
-
-**Entry:** The linked PR has **merged** to the target branch (merge event / `pull_request` closed as merged, or equivalent signal). Implementation may require an issue link on the PR for a well-formed trace.
-
-**Purpose:** Support **human review and audit** of autonomous runs. A long issue/PR thread, retried checks, and multiple agent comments are hard to reconstruct. The trace comment is the **canonical narrative** of the run, grounded in **observable platform facts** (timestamps, actors, labels, check conclusions, SHAs, comment links) rather than a free-form recap alone.
-
-**Post-merge trace agent responsibilities:**
-
-1. **Collect evidence** — From GitHub (and internal dispatch logs if available): issue and PR timelines, **label transitions** (including **`duplicate`**, **`not-reproducible`**, **`requires-manual-review`**, **`not-ready`** ↔ **`ready-for-coding`**, **`ready-for-review` ↔ `ready-for-coding`**, and triage re-runs), **issue `body` / `title` edit** events when available, comment timelines with **stable permalinks**, required check runs and final conclusions, merge commit SHA, base/head SHAs at merge (including **head SHA per review round** when useful), and **correlation identifiers** (e.g. trace IDs from the observability building block) when the implementation emits them. Attribute comments to **agent vs human** when the platform provides that signal (e.g. GitHub App actor).
-2. **Structure by workflow phase** — Emit sections that mirror **Phase A–C** (triage, implementation, review), each listing **what ran**, **outcome**, and **pointers** (e.g. permalink to the final check suite). Include explicit **handoff points** (labels applied/removed, PR opened, first and last **ready-for-review** / **ready-for-merge** transitions).
-3. **Enumerate every triage “not ready” or “not reproducible” iteration** — The trace **must** document **each** period or pass where the issue was **not workable** yet or was **handed off for human intervention** after a failed repro: every application of **`not-ready`**, every application of **`not-reproducible`** (with **permalink** to the triage-output comment that should state **what was tried** and **how it failed**), every **triage re-run** after a **`body` or `title` edit** (including reruns that **cleared** **`not-reproducible`** at triage start), and every transition back toward **`ready-for-coding`** when triage eventually passed. **Do not omit** “failed triage” history because a PR never existed yet—those iterations are often where intent was clarified. If triage instead applied **`duplicate`**, record that pass (label, **link to canonical issue** in the triage comment, **issue closed**) even when **no PR** exists. For **each** triage pass (chronological):
-   - Note **bounding facts**: label changes, triage trigger (if known), and **issue `updated_at`** (or finer-grained **`body`/`title` change** metadata) when the API exposes it.
-   - List **triage agent output comments** for that pass (missing-info checklist, ready summary, test proposal) with the same **short summary + permalink** pattern as review rounds.
-   - If **`not-ready`** appears **without** a matching triage-output explanation comment (implementation bug or misconfiguration—**violates** this ADR), still record the pass and link the best artifact (label timeline only).
-   - If **`not-reproducible`** appears **without** a matching triage-output comment that documents **what was tried** and **how it failed** (**violates** this ADR), still record the pass and link the best artifact (label timeline only).
-4. **Enumerate every implementation–review round-trip** — The trace **must** document **each time** the PR moved from **implementation** into **review** and **back** (the loop in Phase B/C: checks green → `ready-for-review` → coordinator requests changes → `ready-for-coding` → further commits → `ready-for-review` again, etc.). Treat **each** such cycle as a first-class part of the narrative—**do not collapse** multiple review rounds into one paragraph. For **every** cycle, in chronological order:
-   - Identify the **review round** (e.g. “Review round 1”, “Review round 2”) and anchor it with **facts**: approximate time span, **head SHA** (or merge preview SHA) when available, and label transitions that bound the round.
-   - Under that round, list **every agent comment that materially drove the workflow** (at minimum the **coordinator** consolidated comment; also **individual review-agent** comments when those are posted separately; **PR-agent** comments that summarize fixes, push results, or responses to review). For **each** such comment, provide:
-     - A **short summary** (one or two sentences: what was found, decided, or changed).
-     - A **direct link** to that comment (issue or PR thread) so readers can open the **full** text, images, and code blocks on GitHub.
-   - If a round produced **no** standalone comment (e.g. only labels or check failures), still record the round and **link** to the best **primary artifact** (coordinator comment if any; otherwise the **check run** or **bot summary** for that push).
-5. **Publish** — Post one **top-level comment** on the **issue** (and optionally a shorter pointer on the merged PR — policy per repo). Use a stable heading or marker (e.g. `## Fullsend flow trace`) so `/flow-trace` or automation can **update or replace** the same logical artifact idempotently.
-6. **Safety** — **Redact** secrets and sensitive tokens; do not paste large log bodies into the comment—**link** to check runs or artifacts instead. Treat prior issue/PR bodies as **untrusted** when summarizing; prefer **API-sourced facts** over model paraphrase for state transitions. Summaries are **for navigation**; the **permalink** is the source of truth for detail.
-
-**Triggers:** Merge event (primary); optional `/flow-trace` for regeneration.
-
-**Note:** This agent runs **after** merge; it does not gate merge. It supports **transparency over trust** (see [vision](../vision.md)) and complements the review swarm by making the **full story** inspectable in one place.
+**Merge:** After **`ready-for-merge`**, the PR is merged per [governance](../problems/governance.md), branch protection, and org policy. This ADR does **not** define further **automated** steps on the repo after merge; see [Future considerations](#future-considerations) for an optional **merge-time audit trail**.
 
 ---
 
@@ -267,15 +239,7 @@ Random coordinator selection; **unanimous** approve-merge → **`ready-for-merge
 
 ### 13. Observability
 
-Trace IDs spanning issue → PR → checks → review for incident response; **feeds the post-merge trace** when logs are queryable by correlation ID. ([Architecture](../architecture.md#13-observability))
-
-### 14. Post-merge trace agent runtime
-
-Merge webhook handler, timeline/check-run fetchers, trace comment schema (markdown), idempotent create/update, redaction rules. ([Architecture](../architecture.md#14-post-merge-trace-agent-runtime))
-
-### 15. Flow trace formatter
-
-Maps raw events into the Phase A–C narrative; **detects triage “not ready” iterations** and **implementation–review cycles** from label/timeline (and **`body`/`title`-edit** signals when available); resolves **comment permalinks** for triage, coordinator, review, and PR agents; emits **summary + link** rows per comment. May be **deterministic** (template + sorted events) or **LLM-assisted** with a **fact bundle** input and strict output schema (implementation choice); if LLM-assisted, summaries must still **not contradict** linked comments. ([Architecture](../architecture.md#15-flow-trace-formatter))
+Trace IDs spanning issue → PR → checks → review for incident response and correlation across automation runs. ([Architecture](../architecture.md#13-observability))
 
 ---
 
@@ -290,16 +254,15 @@ Maps raw events into the Phase A–C narrative; **detects triage “not ready”
 | **Triage / repro** | Triage agent | Issue-derived commands, dependency install, repro script; **read-only** clone or shallow fetch; network egress policy per threat model |
 | **PR / build-test** | PR agent | Full dev dependencies, test execution, compiler; **push** only to bot-owned branches; PR secrets (tokens) scoped to repo |
 | **Review** | Review agents | Optional dynamic checks; **no** merge rights; optional read-only or isolated run for fuzzing |
-| **Post-merge trace** | Post-merge trace agent | **Read-mostly** access to GitHub APIs and optional internal observability stores; **post comment** (and edit own trace comment) only; **no** merge or branch write; no execution of repo code unless explicitly required for forensics (default: none) |
 | **GitHub Actions / hosted runner** | Checks | Org-controlled workflows; OIDC where possible |
 
-**Data flow:** Agents receive **minimal** tokens (fine-scoped GitHub App). **Secrets** never appear in issue **`body`**, PR **`body`**, or **comments**. **Prompt injection** from those surfaces is assumed — see [security threat model](../problems/security-threat-model.md): triage and review prompts should treat **`body`** text and **comments** as **untrusted**, with tool allowlists and output validation. The post-merge trace agent should **anchor** the trace in **API-derived events** so an attacker cannot rewrite history via issue **`body`** alone; any narrative layer must not contradict those facts.
+**Data flow:** Agents receive **minimal** tokens (fine-scoped GitHub App). **Secrets** never appear in issue **`body`**, PR **`body`**, or **comments**. **Prompt injection** from those surfaces is assumed — see [security threat model](../problems/security-threat-model.md): triage and review prompts should treat **`body`** text and **comments** as **untrusted**, with tool allowlists and output validation.
 
 ---
 
 ## Diagrams
 
-The first figure is the **happy-path lifecycle** with **explicit triggers** (labels, slash commands, merge). The second is a **layered platform view**: what lives in GitHub vs dispatch vs agents vs sandboxes.
+The first figure is the **happy-path lifecycle** with **explicit triggers** (labels, slash commands, merge). The second is a **layered platform view**: what lives in GitHub vs dispatch vs agents vs sandboxes for **Phases A–C** only.
 
 ### End-to-end flow (labels, slash commands, merge)
 
@@ -334,13 +297,6 @@ flowchart TB
     RFM[ready-for-merge]
   end
 
-  subgraph PH4["Phase D — Post-merge"]
-    M["Merged PR (merge event)"]
-    S4["Slash: /flow-trace"]
-    PT[Post-merge trace agent]
-    FC[Flow trace comment]
-  end
-
   LB --> T
   S1 --> T
   T --> TR
@@ -363,13 +319,10 @@ flowchart TB
   RFC2 --> P
   CHG -->|no| RFM
 
-  RFM --> M
-  M -->|merge webhook| PT
-  S4 -.->|optional regen| PT
-  PT --> FC
+  RFM --> DONE["Merge per governance; end of automated pipeline in this ADR"]
 ```
 
-**How to read it:** **`/triage`** and **`/code`** sit in the top **Triggers** strip with **labels**. **`/review`** and **`/flow-trace`** sit **inside** Phases C and D so the **arrows into** the review swarm and post-merge trace agent are short and obvious. **`M --> PT`** is the primary merge path; **`S4 --> PT`** is **regeneration** of the flow-trace comment after merge.
+**How to read it:** **`/triage`** and **`/code`** sit in the top **Triggers** strip with **labels**. **`/review`** sits inside Phase C. **`ready-for-merge`** leads to **human- or policy-governed merge**; this ADR does not show further automation after merge (see [Future considerations](#future-considerations)).
 
 ### Sandbox stack (layered platform)
 
@@ -396,7 +349,6 @@ flowchart TB
     TA[Triage agent]
     PA[PR agent]
     RA[Review + coordinator]
-    PT[Post-merge trace]
   end
 
   subgraph L4["Sandboxes (least privilege)"]
@@ -404,7 +356,6 @@ flowchart TB
     SB1["Triage / repro"]
     SB2["PR build-test"]
     SB3[Review]
-    SB4["Trace · read-mostly"]
   end
 
   IPL --> WH
@@ -413,18 +364,14 @@ flowchart TB
   SM --> TA
   SM --> PA
   SM --> RA
-  SM --> PT
   SP -->|"/review"| RA
-  SP -->|"/flow-trace"| PT
   TA --> SB1
   PA --> SB2
   RA --> SB3
-  PT --> SB4
   PA <--> IPL
-  PT --> IPL
 ```
 
-**How to read it:** **Comments** (including **`/triage`**, **`/code`**, **`/review`**, **`/flow-trace`**) feed **webhook ingest** together with **issues/PRs/labels/checks** and **merge / PR-closed** events. **`/review`** and **`/flow-trace`** also show as **explicit edges** from the **slash parser** to the **review** and **post-merge trace** runtimes (alongside the **label-guard** dispatch). The **PR agent** ↔ **checks** loop is the **bidirectional** edge on the issue/PR surface.
+**How to read it:** **Comments** (including **`/triage`**, **`/code`**, **`/review`**) feed **webhook ingest** together with **issues/PRs/labels/checks** and **merge / PR-closed** events (merge events may still be logged for policy or observability). **`/review`** also shows as an **explicit edge** from the **slash parser** to the **review** runtime (alongside **label-guard** dispatch). The **PR agent** ↔ **checks** loop is the **bidirectional** edge on the issue/PR surface.
 
 ---
 
@@ -435,7 +382,6 @@ flowchart TB
 - **Composable delivery:** Teams can implement dispatch, triage, PR, and review independently.
 - **Human operability:** Labels + slash commands give **observable** state and **recovery** without a single orchestrator brain.
 - **Alignment with Fullsend themes:** Sandboxes and check loops mirror **autonomy is earned** from [vision](../vision.md); coordination stays in repo mechanics rather than a coordinator agent.
-- **Reviewable audit trail:** The **post-merge flow trace** gives a **single place** to reconstruct what each stage did, improving **post-merge review**, incident analysis, and onboarding without reading entire threads.
 
 ### Negative / risks
 
@@ -443,19 +389,47 @@ flowchart TB
 - **Cost and latency:** Multi-agent review × N is expensive; needs quotas and backoff.
 - **False readiness:** Over-trusting reproduction in a sandbox unlike user environments — mitigated by documenting environment assumptions in triage comments.
 - **Governance:** `ready-for-merge` must not bypass **branch protection** or **CODEOWNERS** unless org policy explicitly allows bot merge.
-- **Trace fidelity vs cost:** Large repos or noisy automation may produce huge timelines; the formatter must **summarize with links** and cap inline content to avoid unusable comments and API rate-limit pain. Many **code–review cycles** can make the trace long; prefer **compact summaries** while **retaining every cycle** and **every** agent-comment link.
-- **Narrative drift:** If the trace uses an LLM, it could **misstate** history unless constrained to **verified facts**; deterministic or schema-locked output reduces that risk.
 
 ## Open questions
 
 - Exact **label naming** and **per-repo customization** (config file in repo vs org defaults).
 - **Merge authority:** When may a bot merge after `ready-for-merge`? (Overlaps [governance](../problems/governance.md) and [autonomy spectrum](../problems/autonomy-spectrum.md).)
 - **Interaction with** [intent representation](../problems/intent-representation.md) and [autonomy spectrum](../problems/autonomy-spectrum.md) for repos that should not auto-advance stages.
-- **Flow trace placement:** Issue only, PR only, or both; how to handle **multiple PRs** per issue or **squash** vs **merge** commit naming in the narrative.
-- **Flow trace implementation:** Fully **deterministic** formatter vs **LLM** with structured inputs; minimum **fact** fields required before posting.
 - **Comment graph:** How to reliably associate review sub-comments with a **round** when threading or edits differ by GitHub surface (issue vs PR conversation).
 - **Issue `body`/`title` history:** GitHub may not expose full revision history for **`body`** and **`title`** via API; tracing *what* changed between triage passes may be limited to **`updated_at`** (and webhook payloads) unless the org adds external logging.
 - **Duplicate detection:** Search scope (repo vs org), **confidence threshold**, human override when the bot marks **`duplicate`** incorrectly, and whether to require **linked** duplicate-of metadata (GitHub **linked issues**) in addition to labels.
+
+## Future considerations
+
+This ADR’s **normative** workflow ends when the PR is ready to merge and merge is carried out under **governance** and branch protection. The following is **not** required for that pipeline; it is a plausible **follow-on** for orgs that want a **single, readable audit trail** after merge.
+
+### Merge-time audit trail
+
+**Motivation:** Long issue/PR threads, retried checks, and many agent comments make it hard to reconstruct **what happened at each stage**. A **merge-time audit trail** (for example one **canonical comment** on the issue, updated after merge) can give **post-merge review**, incident analysis, and onboarding a **navigation layer** grounded in **observable platform facts** (timestamps, actors, labels, check conclusions, SHAs, comment links) rather than a free-form recap alone. It supports **transparency over trust** (see [vision](../vision.md)) but **does not gate merge**.
+
+**Possible shape when adopted:**
+
+1. **Trigger** — Merge event / `pull_request` closed as merged (primary); optional slash command (e.g. **`/flow-trace`**) for regeneration or repair (restricted commenters — e.g. maintainers).
+
+2. **Evidence collection** — From GitHub (and internal dispatch logs if available): issue and PR timelines, **label transitions** (including **`duplicate`**, **`not-reproducible`**, **`requires-manual-review`**, **`not-ready`** ↔ **`ready-for-coding`**, **`ready-for-review` ↔ `ready-for-coding`**, and triage re-runs), **issue `body` / `title` edit** events when available, comment timelines with **stable permalinks**, required check runs and final conclusions, merge commit SHA, base/head SHAs at merge (including **head SHA per review round** when useful), and **correlation identifiers** (e.g. trace IDs from the observability building block) when the implementation emits them. Attribute comments to **agent vs human** when the platform provides that signal (e.g. GitHub App actor).
+
+3. **Narrative structure** — Sections that mirror **triage, implementation, and review** (the stages this ADR defines), each listing **what ran**, **outcome**, and **pointers** (e.g. permalink to the final check suite). Explicit **handoff points** (labels applied/removed, PR opened, first and last **ready-for-review** / **ready-for-merge** transitions).
+
+4. **Triage history** — Document **each** period where the issue was **not workable** or **not reproducible**: every **`not-ready`** and **`not-reproducible`** (with **permalink** to triage-output comments that record **why** or **what was tried**), triage re-runs after **`body` or `title` edit**, and transitions toward **`ready-for-coding`**. Include **`duplicate`** outcomes (canonical link, issue closed) when no PR exists. For ADR violations (label without required comment), still record the pass and link the best artifact.
+
+5. **Implementation–review cycles** — Document **each** PR loop between implementation and review (checks green → **`ready-for-review`** → coordinator rework → **`ready-for-coding`** → commits → **`ready-for-review`** again, etc.). Per cycle: review round identity, head SHA when available, label bounds, and **summary + permalink** for every material agent comment (coordinator, reviewers, PR agent). If a round has no standalone comment, link the best primary artifact (check run, bot summary).
+
+6. **Publish** — One **top-level comment** on the **issue** (and optionally a shorter pointer on the merged PR — policy per repo). Stable heading or marker (e.g. `## Fullsend audit trail`) so automation or **`/flow-trace`** can **update or replace** the same logical artifact idempotently.
+
+7. **Safety** — **Redact** secrets; **link** to check runs instead of pasting large logs. Treat issue/PR bodies as **untrusted** when summarizing; **anchor** the trail in **API-derived events** so issue **`body`** edits cannot rewrite history. Summaries are for navigation; **permalinks** are the source of truth.
+
+**Likely building blocks** (if implemented): a **read-mostly** runtime subscribed to merge (and optional slash) events, plus a **formatter** that maps raw events into the narrative — **deterministic** (template + sorted events) or **LLM-assisted** with a strict fact bundle; if LLM-assisted, summaries must **not contradict** linked comments.
+
+**Sandbox (conceptual):** **Read-mostly** GitHub API access and optional internal observability stores; **post or edit** only the audit comment; **no** merge or branch write; no execution of repo code unless explicitly required for forensics (default: none).
+
+**Risks if adopted:** Noisy timelines and **API rate limits** — formatters should **summarize with links** and cap inline content. **Narrative drift** if an LLM misstates history unless output is **schema-locked** to verified facts.
+
+**Open design questions** (defer until adoption): Audit comment on **issue only**, **PR only**, or both; **multiple PRs** per issue; **squash** vs **merge** commit naming in the narrative; minimum **fact** fields before posting; deterministic vs LLM formatter trade-offs.
 
 ## References
 
