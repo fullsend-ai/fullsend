@@ -59,6 +59,20 @@ Design and operate dedicated agent infrastructure: runner pool, sandboxing, tool
 - How does it integrate with the organization's existing CI/CD infrastructure?
 - Can we iterate with a thin custom layer on top of internal or 3rd party compute and only “build our own” where we must?
 
+## Ambient Code Platform (ACP)
+
+[Ambient Code Platform](https://github.com/ambient-code/platform) is a Kubernetes-native stack (API, operator, runner pods) for agentic sessions—aligned in spirit with “ambient,” CR-driven agent workloads on a cluster.
+
+**Fit for fullsend (discussion notes):** For the **reliability, security, and scale** problems we care about most, ACP’s relevance is **limited** on its own. The points below are working notes for comparison against [security-threat-model.md](security-threat-model.md) and the isolation goals in this document—not a final product verdict.
+
+- **Extra control plane** — Agent execution depends on an **additional controller** (operator) on top of baseline cluster operations. That adds components to run, upgrade, and troubleshoot when we already care about operational simplicity and blast radius.
+- **UI- and chat-centric design** — The architecture appears oriented toward **interactive sessions and a web UI**, not first-class **automation from SCM or issue-tracker events** (webhooks, PR lifecycle, ticket transitions). For event-driven, repo-coordinated agents, that center of gravity is a poor fit unless we add substantial glue.
+- **Parallel CR surface vs existing pipeline stacks** — ACP introduces its **own custom resources** and operator workflow. That **complicates integration** with established Kubernetes CI patterns—e.g. **Tekton** `PipelineRun` / `TaskRun`—where we would rather compose agent steps next to builds and tests instead of maintaining a second orchestration vocabulary.
+- **Shared workspace** — **Multiple agents can occupy the same workspace**, which weakens separation between sessions. Untrusted content from one run can more easily influence another (cross-session **prompt injection** and lateral narrative control). That cuts against strong per-agent boundaries called out in the threat model (agent-to-agent trust and isolation).
+- **Plain Pod execution** — Agents run as **ordinary Pods**, which makes **heavier or privileged workflows** awkward without further design—e.g. **building container images** (nested builds, dedicated builders, or image build policies) usually need more than a standard agent Pod out of the box.
+
+ACP may still be useful for **narrow experiments** where those constraints are acceptable; it does not, by itself, deliver the isolation depth, supply-chain posture, or “agent as first-class workload with the right capabilities” that we are trying to reach here.
+
 ## Hybrid and incremental options
 
 - **Thin orchestration layer** — We build a small layer that triggers agents, gathers results, and posts status checks; the actual compute is 3rd party or internal. This keeps coordination logic in our control while deferring platform choice.
