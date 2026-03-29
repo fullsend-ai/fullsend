@@ -19,6 +19,7 @@ Infrastructure platform choice and configuration are specified in the org's `<or
 - Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? (See [agent-infrastructure.md](problems/agent-infrastructure.md) for the three directions.)
 - Can different agent types (short-lived review vs. long-running implementation) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
+- Should model and MCP (or other tool-protocol) traffic from agent runtimes go through a **shared gateway** for authentication, spend limits, allowlists, and telemetry? (See [landscape.md](landscape.md#agent-gateway).)
 
 ## Agent Sandbox
 
@@ -31,7 +32,7 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 **Open questions:**
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
-- How granular is network regulation? Allowlist of endpoints, or coarser controls?
+- How granular is network regulation? Allowlist of endpoints, or coarser controls? (A **protocol gateway** toward approved model and MCP endpoints is one way to narrow egress without handing agents raw internet access; see [landscape.md](landscape.md#agent-gateway).)
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
 - Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?
 
