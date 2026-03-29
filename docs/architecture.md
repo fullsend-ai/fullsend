@@ -6,6 +6,20 @@ This document names the parts of the system without deciding how they work. It e
 
 This is not exhaustive. Not every problem doc maps to a component here, and not every component here has a corresponding problem doc yet.
 
+## Execution Stack
+
+Five components form the vertical execution path from event to agent action:
+
+1. **Agent Dispatch and Coordination Layer** — translates events into agent tasks
+2. **Agent Infrastructure** — provisions and runs agent workloads
+3. **Agent Sandbox** — enforces isolation (network, filesystem)
+4. **Agent Harness** — assembles configuration and context (skills, prompts, tools)
+5. **Agent Runtime** — the LLM in execution
+
+Control flows strictly downward through this stack. No layer may influence, configure, or depend on layers above it. This is the execution stack's primary structural invariant. (See [ADR 0005](ADRs/0005-unidirectional-control-flow.md).)
+
+The remaining components described in this document (Policy Store, Intent Source, Identity Provider, Observability, Agent Registry) are cross-cutting concerns that feed into the stack from the side. They are not part of the vertical control flow, but they follow the same principle: no component within the stack can modify the cross-cutting systems that constrain it.
+
 ## Agent Infrastructure
 
 The compute and orchestration layer that runs agent workloads. Responsible for provisioning, scheduling, scaling, and lifecycle management of agent execution environments.
@@ -75,11 +89,11 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
 
-## Work Coordinator
+## Agent Dispatch and Coordination Layer
 
 The mechanism that assigns work to agents and prevents conflicts. Responsible for translating triggers (GitHub events, schedules, manual requests) into agent tasks and ensuring two agents don't work the same problem simultaneously.
 
-The existing design principle is that [the repo is the coordinator](problems/agent-architecture.md#interaction-model-the-repo-as-coordinator) — branch protection, CODEOWNERS, status checks, and GitHub events provide coordination without a central orchestrator. The work coordinator component may be nothing more than the glue that connects GitHub webhooks to agent infrastructure. Or it may need to be more.
+The existing design principle is that [the repo is the coordinator](problems/agent-architecture.md#interaction-model-the-repo-as-coordinator) — branch protection, CODEOWNERS, status checks, and GitHub events provide coordination without a central orchestrator. The agent dispatch and coordination layer may be nothing more than the glue that connects GitHub webhooks to agent infrastructure. Or it may need to be more.
 
 **Open questions:**
 
