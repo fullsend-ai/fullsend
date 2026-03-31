@@ -26,21 +26,32 @@ validation before this can be accepted.
 [ADR 0007](0007-github-actions-initial-execution-platform.md) establishes
 GitHub Actions as the initial execution platform. Enrolled repos get a thin
 `.github/workflows/` stub that triggers on forge events. The question is how
-secrets — particularly the GitHub App private key used to generate ephemeral
-agent credentials — are kept out of the enrolled repo's reach.
+to isolate the right to act as the agent — keeping it in a namespace where
+the owners of individual enrolled repos cannot execute arbitrary code or
+arbitrary workflows.
+
+This decision is about **execution isolation**, not credential format. Whether
+the agent authenticates via an OIDC JWT, a long-lived secret, or a short-lived
+token, the core requirement is the same: owners of enrolled repos must not be
+able to access agent credentials directly. The choice between OIDC federation
+and stored secrets is a complementary decision that can be layered on top of
+this one. (And if an attacker must compromise the agent runtime itself to
+exfiltrate credentials, that's a sandboxing concern — taken up separately.)
 
 The threat: a contributor to an enrolled repo submits a PR that modifies the
-workflow file to exfiltrate secrets. Even if the workflow file is
-CODEOWNERS-protected (as ADR 0007 requires), the question is whether the
-architecture can provide defense in depth — making secrets structurally
-unavailable to the enrolled repo regardless of workflow file contents.
+workflow file to exfiltrate credentials or run arbitrary code in the agent's
+execution context. Even if the workflow file is CODEOWNERS-protected (as
+ADR 0007 requires), the question is whether the architecture can provide
+defense in depth — making the agent's execution namespace structurally
+inaccessible to enrolled repos regardless of workflow file contents.
 
 GitHub's [reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
 allow one workflow to call another via `workflow_call`. The called workflow
 runs in the context of the calling repo but is defined in a different repo.
-The premise of this ADR is that secrets defined in the `.fullsend` repo and
-referenced in the reusable workflow are not accessible to the calling repo's
-workflow — even if an attacker modifies the calling workflow.
+The premise of this ADR is that reusable workflows provide this execution
+isolation — code and secrets defined in the `.fullsend` repo's workflow are
+not accessible to the calling repo's workflow, even if an attacker modifies
+the calling workflow.
 
 **This premise needs experimental proof.** Specifically:
 
@@ -105,20 +116,26 @@ GitHub org-level secrets, scoped to repos that need them.
   workflow file changes, with no fallback.
 - Each enrolled repo has its own copy of the workflow to maintain.
 
-### Option 3: External secret injection at runtime
+## Credential provisioning (orthogonal)
 
-Secrets are not stored in GitHub at all. An external system (Vault, cloud KMS)
-injects credentials at runtime via OIDC federation or a bootstrap token.
+How credentials are provisioned — OIDC federation, stored GitHub secrets,
+external secret managers — is a separate decision that layers on top of this
+one. OIDC federation determines *how* a credential is issued; the options
+above determine *where the code that receives it runs*. In practice, OIDC
+federation would be used *inside* whichever execution model is chosen, not
+instead of it.
 
-**Pros:**
-- Secrets never touch GitHub's secret storage.
-- Fine-grained access control via the external system.
+Notably, GitHub's OIDC token includes a `job_workflow_ref` claim that
+identifies the reusable workflow. An OIDC trust policy can restrict federation
+to only the `.fullsend` repo's workflow, reinforcing Option 1's isolation.
+This means the two approaches compose well — execution isolation prevents
+enrolled repos from running arbitrary code in the agent namespace, and OIDC
+federation ensures that even within that namespace, credentials are
+short-lived and auditable.
 
-**Cons:**
-- Requires additional infrastructure (Vault, OIDC provider).
-- Adds latency and a dependency on an external service's availability.
-- The OIDC token or bootstrap token must still be available to the workflow
-  somehow — moves the problem rather than solving it.
+OIDC federation does not solve execution isolation on its own: an enrolled
+repo that can run arbitrary code in the workflow can also request the OIDC
+token.
 
 ## Decision
 
@@ -164,6 +181,6 @@ If the reusable workflow approach is validated:
   isolation provides defense in depth.
 
 If the experiment reveals that reusable workflows do not provide sufficient
-isolation, Option 2 or Option 3 should be reconsidered, and CODEOWNERS
-protection of the workflow file (per ADR 0007) becomes the primary defense
-rather than a secondary one.
+isolation, Option 2 should be reconsidered, and CODEOWNERS protection of the
+workflow file (per ADR 0007) becomes the primary defense rather than a
+secondary one.
