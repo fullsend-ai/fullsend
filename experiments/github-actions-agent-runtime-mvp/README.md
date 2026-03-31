@@ -49,6 +49,12 @@ sequenceDiagram
     Note over PR: Merge (human)
 ```
 
+### TL;DR — Pipeline in Action
+
+![Pipeline demo](fullsend-sdlc-demo.gif)
+
+*GIF preview — [view the full-quality video (webm)](fullsend-sdlc-demo.webm) for a clearer look.*
+
 Every agent input passes through Google Cloud Model Armor scan before processing. Prompt injection detected → blocked + human notified.
 
 ### The Four Agents
@@ -314,7 +320,7 @@ Created [Issue #19](https://github.com/nonflux/integration-service/issues/19) (f
 
 Total: ~60 min, zero human intervention. The review/fix loop converged in one iteration.
 
-**[Video demo (58s)](fullsend-sdlc-demo.webm)** — full pipeline from issue creation to approval.
+**[Full demo video (58s, webm)](fullsend-sdlc-demo.webm)** — end-to-end pipeline from issue creation to approval.
 
 #### Review/Fix Loop in PR Timeline
 
