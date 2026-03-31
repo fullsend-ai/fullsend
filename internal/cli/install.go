@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -20,18 +21,25 @@ func newInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install <org>",
 		Short: "Install fullsend to a GitHub organization",
-		Long: `Install fullsend to a GitHub organization by creating a GitHub App,
-a .fullsend configuration repository with safe defaults, and enrollment
-PRs for any repos you want to enable.
+		Long: `Install fullsend to a GitHub organization by creating a .fullsend
+configuration repository with safe defaults, and enrollment PRs for
+any repos you want to enable.
+
+Requires a GitHub personal access token with these scopes:
+  - repo (to create repos, branches, files, and PRs)
+  - admin:org (to list org repos)
+
+Set the token via the GITHUB_TOKEN environment variable.
 
 Nothing gets automatically merged as a result of installation.
 Repos receive PRs that must be reviewed and merged to take effect.
 
 Examples:
   # Install with all defaults (all repos listed, none enabled)
+  export GITHUB_TOKEN=ghp_xxx
   fullsend install my-org
 
-  # Install and enable a specific repo for the e2e demo
+  # Install and enable a specific repo
   fullsend install my-org --repo cool-project
 
   # Install with only review and implementation agents
@@ -65,10 +73,15 @@ Examples:
 				return nil
 			}
 
-			// In a real implementation, this would use a real GitHub client
-			// authenticated via the GitHub App or a personal access token.
-			// For the PoC, we use a fake client that simulates the workflow.
-			client := createDemoClient(org, repos)
+			token := os.Getenv("GITHUB_TOKEN")
+			if token == "" {
+				printer.ErrorBox("Authentication required",
+					"Set the GITHUB_TOKEN environment variable.\n"+
+						"  The token needs 'repo' and 'admin:org' scopes.")
+				return fmt.Errorf("GITHUB_TOKEN not set")
+			}
+
+			client := github.NewLiveClient(token)
 
 			inst := install.New(client, printer)
 			_, err := inst.Run(cmd.Context(), install.Options{
@@ -88,38 +101,4 @@ Examples:
 		"Preview what would happen without making changes")
 
 	return cmd
-}
-
-// createDemoClient produces a fake GitHub client pre-populated with
-// realistic data so the PoC demonstrates the full install flow.
-func createDemoClient(org string, enabledRepos []string) *github.FakeClient {
-	client := github.NewFakeClient()
-
-	// Simulate discovering repos in the org
-	client.Repos = []github.Repository{
-		{Name: "api-gateway", FullName: org + "/api-gateway", DefaultBranch: "main"},
-		{Name: "web-frontend", FullName: org + "/web-frontend", DefaultBranch: "main"},
-		{Name: "auth-service", FullName: org + "/auth-service", DefaultBranch: "main"},
-		{Name: "data-pipeline", FullName: org + "/data-pipeline", DefaultBranch: "main"},
-		{Name: "docs", FullName: org + "/docs", DefaultBranch: "main"},
-		{Name: "infrastructure", FullName: org + "/infrastructure", DefaultBranch: "main"},
-		{Name: "mobile-app", FullName: org + "/mobile-app", DefaultBranch: "main"},
-	}
-
-	// Add any specified repos that aren't in the default list
-	existingNames := make(map[string]bool)
-	for _, r := range client.Repos {
-		existingNames[r.Name] = true
-	}
-	for _, r := range enabledRepos {
-		if !existingNames[r] {
-			client.Repos = append(client.Repos, github.Repository{
-				Name:          r,
-				FullName:      org + "/" + r,
-				DefaultBranch: "main",
-			})
-		}
-	}
-
-	return client
 }

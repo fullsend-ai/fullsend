@@ -26,20 +26,16 @@ func TestInstallCmd_DryRun(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestInstallCmd_WithRepo(t *testing.T) {
+func TestInstallCmd_NoToken(t *testing.T) {
+	// Without a token, install should fail with a clear error
+	t.Setenv("GITHUB_TOKEN", "")
+
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"install", "my-org", "--repo", "cool-project"})
+	cmd.SetArgs([]string{"install", "my-org"})
 
 	err := cmd.Execute()
-	require.NoError(t, err)
-}
-
-func TestInstallCmd_WithAgents(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"install", "my-org", "--agents", "review,implementation"})
-
-	err := cmd.Execute()
-	require.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "GITHUB_TOKEN not set")
 }
 
 func TestInstallCmd_Help(t *testing.T) {
@@ -48,35 +44,5 @@ func TestInstallCmd_Help(t *testing.T) {
 	assert.Equal(t, "install <org>", cmd.Use)
 	assert.Contains(t, cmd.Long, "safe defaults")
 	assert.Contains(t, cmd.Long, "Nothing gets automatically merged")
-}
-
-func TestCreateDemoClient(t *testing.T) {
-	client := createDemoClient("org", []string{"my-repo"})
-
-	assert.NotNil(t, client)
-	// Should have the default repos plus the custom one
-	assert.GreaterOrEqual(t, len(client.Repos), 7)
-
-	// Find my-repo
-	found := false
-	for _, r := range client.Repos {
-		if r.Name == "my-repo" {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "custom repo should be in the demo client")
-}
-
-func TestCreateDemoClient_NoDuplicates(t *testing.T) {
-	// api-gateway is already in the default list
-	client := createDemoClient("org", []string{"api-gateway"})
-
-	count := 0
-	for _, r := range client.Repos {
-		if r.Name == "api-gateway" {
-			count++
-		}
-	}
-	assert.Equal(t, 1, count, "should not duplicate existing repos")
+	assert.Contains(t, cmd.Long, "GITHUB_TOKEN")
 }

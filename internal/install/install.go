@@ -39,20 +39,12 @@ type Options struct {
 
 // Result holds the outcome of an install operation.
 type Result struct {
-	// ConfigRepo is the name of the created .fullsend repository.
-	ConfigRepo string
-
-	// Config is the generated organization config.
-	Config *config.OrgConfig
-
-	// PRs maps repo names to the pull requests created for them.
-	PRs map[string]*gh.PullRequest
-
-	// AppConfig is the GitHub App configuration used.
-	AppConfig *gh.AppConfig
-
-	// OrgRepos is the full list of repos discovered in the org.
-	OrgRepos []string
+	Config          *config.OrgConfig
+	AppConfig       *gh.AppConfig
+	PRs             map[string]*gh.PullRequest
+	DefaultBranches map[string]string
+	ConfigRepo      string
+	OrgRepos        []string
 }
 
 // Installer performs the fullsend installation workflow.
@@ -71,6 +63,10 @@ func New(client gh.Client, printer *ui.Printer) *Installer {
 
 // Run executes the full installation workflow.
 func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
+	if err := validateOrgName(opts.Org); err != nil {
+		return nil, err
+	}
+
 	inst.printer.Banner()
 	inst.printer.Header(fmt.Sprintf("Installing fullsend to %s", opts.Org))
 	inst.printer.Blank()
@@ -81,18 +77,36 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// Step 1: Discover org repos
-	repos, err := inst.discoverRepos(ctx, opts.Org)
+	repos, defaultBranches, err := inst.discoverRepos(ctx, opts.Org)
 	if err != nil {
 		inst.printer.StepFail("Failed to list organization repositories")
 		return nil, fmt.Errorf("listing org repos: %w", err)
 	}
 	result.OrgRepos = repos
+	result.DefaultBranches = defaultBranches
+
+	// Validate --repo values against discovered repos
+	if len(opts.Repos) > 0 {
+		repoSet := make(map[string]bool, len(repos))
+		for _, r := range repos {
+			repoSet[r] = true
+		}
+		for _, r := range opts.Repos {
+			if !repoSet[r] {
+				inst.printer.StepWarn(fmt.Sprintf("Repo %q not found in organization — skipping", r))
+			}
+		}
+	}
 
 	// Step 2: Configure the GitHub App
 	result.AppConfig = inst.configureApp(opts.Org)
 
 	// Step 3: Generate config
 	result.Config = inst.generateConfig(repos, opts)
+
+	if err := result.Config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
 
 	// Step 4: Create .fullsend repo
 	if err := inst.createConfigRepo(ctx, opts.Org, result); err != nil {
@@ -110,38 +124,42 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 	return result, nil
 }
 
-func (inst *Installer) discoverRepos(ctx context.Context, org string) ([]string, error) {
+func (inst *Installer) discoverRepos(ctx context.Context, org string) ([]string, map[string]string, error) {
 	inst.printer.StepStart("Discovering repositories...")
 
 	allRepos, err := inst.client.ListOrgRepos(ctx, org)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var names []string
+	defaultBranches := make(map[string]string)
 	for _, r := range allRepos {
 		// Skip the config repo itself if it already exists
 		if r.Name == ".fullsend" {
 			continue
 		}
 		names = append(names, r.Name)
+		defaultBranches[r.Name] = r.DefaultBranch
 	}
 	sort.Strings(names)
 
 	inst.printer.StepDone(fmt.Sprintf("Found %d repositories", len(names)))
-	return names, nil
+	return names, defaultBranches, nil
 }
 
 func (inst *Installer) configureApp(org string) *gh.AppConfig {
 	appConfig := gh.DefaultAppConfig(org)
 
-	inst.printer.StepDone("GitHub App configured")
-	inst.printer.StepInfo(fmt.Sprintf("name: %s", appConfig.Name))
+	inst.printer.StepWarn("GitHub App creation requires manual setup")
+	inst.printer.StepInfo(fmt.Sprintf("Create a GitHub App named %q at:", appConfig.Name))
+	inst.printer.StepInfo(fmt.Sprintf("  https://github.com/organizations/%s/settings/apps/new", org))
 	inst.printer.StepInfo(fmt.Sprintf("permissions: issues=%s, prs=%s, checks=%s, contents=%s",
 		appConfig.Permissions.Issues,
 		appConfig.Permissions.PullReqs,
 		appConfig.Permissions.Checks,
 		appConfig.Permissions.Contents))
+	inst.printer.StepInfo("Store the App private key as a secret in the .fullsend repo after creation.")
 
 	return appConfig
 }
@@ -160,7 +178,7 @@ func (inst *Installer) createConfigRepo(ctx context.Context, org string, result 
 	inst.printer.StepStart("Creating .fullsend repository...")
 
 	_, err := inst.client.CreateRepo(ctx, org, ".fullsend",
-		"Fullsend agent configuration for "+org, false)
+		"Fullsend agent configuration for "+org, true)
 	if err != nil {
 		inst.printer.StepFail("Failed to create .fullsend repository")
 		return fmt.Errorf("creating .fullsend repo: %w", err)
@@ -211,7 +229,11 @@ func (inst *Installer) createEnrollmentPRs(ctx context.Context, org string, resu
 	inst.printer.Blank()
 
 	for _, repo := range enabledRepos {
-		pr, err := inst.enrollRepo(ctx, org, repo)
+		defaultBranch := "main"
+		if branch, ok := result.DefaultBranches[repo]; ok && branch != "" {
+			defaultBranch = branch
+		}
+		pr, err := inst.enrollRepo(ctx, org, repo, defaultBranch)
 		if err != nil {
 			inst.printer.StepFail(fmt.Sprintf("Failed to create PR for %s: %v", repo, err))
 			// Continue with other repos — don't fail the whole install
@@ -225,7 +247,7 @@ func (inst *Installer) createEnrollmentPRs(ctx context.Context, org string, resu
 	return nil
 }
 
-func (inst *Installer) enrollRepo(ctx context.Context, org, repo string) (*gh.PullRequest, error) {
+func (inst *Installer) enrollRepo(ctx context.Context, org, repo, defaultBranch string) (*gh.PullRequest, error) {
 	branchName := "fullsend/enroll"
 
 	if err := inst.client.CreateBranch(ctx, org, repo, branchName); err != nil {
@@ -244,7 +266,7 @@ func (inst *Installer) enrollRepo(ctx context.Context, org, repo string) (*gh.Pu
 		"Connect to fullsend agent pipeline",
 		generatePRBody(org),
 		branchName,
-		"main")
+		defaultBranch)
 	if err != nil {
 		return nil, fmt.Errorf("creating pull request: %w", err)
 	}
@@ -254,7 +276,6 @@ func (inst *Installer) enrollRepo(ctx context.Context, org, repo string) (*gh.Pu
 
 func (inst *Installer) printSummary(org string, result *Result) {
 	items := []string{
-		fmt.Sprintf("GitHub App: %s", result.AppConfig.Name),
 		fmt.Sprintf("Config repo: %s/.fullsend", org),
 		fmt.Sprintf("Repos discovered: %d", len(result.OrgRepos)),
 	}
@@ -278,6 +299,31 @@ func (inst *Installer) printSummary(org string, result *Result) {
 		inst.printer.StepInfo("Nothing changes until a PR is merged.")
 		inst.printer.Blank()
 	}
+
+	inst.printer.Header("Remaining manual steps")
+	inst.printer.Blank()
+	inst.printer.StepInfo(fmt.Sprintf("1. Create a GitHub App named %q", result.AppConfig.Name))
+	inst.printer.StepInfo(fmt.Sprintf("   https://github.com/organizations/%s/settings/apps/new", org))
+	inst.printer.StepInfo("2. Install the App to the organization")
+	inst.printer.StepInfo(fmt.Sprintf("3. Store the App private key as a secret in %s/.fullsend", org))
+	inst.printer.Blank()
+}
+
+// validateOrgName checks that the organization name is valid for GitHub.
+func validateOrgName(org string) error {
+	if org == "" {
+		return fmt.Errorf("organization name cannot be empty")
+	}
+	for _, c := range org {
+		isValid := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-'
+		if !isValid {
+			return fmt.Errorf("invalid organization name %q: only alphanumeric characters and hyphens allowed", org)
+		}
+	}
+	if org[0] == '-' || org[len(org)-1] == '-' {
+		return fmt.Errorf("invalid organization name %q: cannot start or end with a hyphen", org)
+	}
+	return nil
 }
 
 // generateReusableWorkflow produces the reusable workflow YAML for .fullsend.
@@ -322,11 +368,14 @@ jobs:
           repository: ${{ github.repository_owner }}/.fullsend
 
       - name: Run fullsend entrypoint
+        env:
+          EVENT_TYPE: ${{ inputs.event_type }}
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
         run: |
-          echo "Event: ${{ inputs.event_type }}"
+          echo "Event: $EVENT_TYPE"
           echo "Dispatching to agent..."
-          # fullsend entrypoint --scm github - <<< '${{ inputs.event_payload }}'
-          echo "⚠️  PoC: Agent dispatch not yet implemented (see issue #125)"
+          # fullsend entrypoint --scm github - <<< "$EVENT_PAYLOAD"
+          echo "Agent dispatch not yet wired up (see https://github.com/fullsend-ai/fullsend/issues/125)"
 `
 }
 

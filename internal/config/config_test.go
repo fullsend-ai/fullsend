@@ -16,7 +16,7 @@ func TestNewOrgConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
 	assert.False(t, cfg.Defaults.AutoMerge, "auto_merge should default to false")
 	assert.Equal(t, 2, cfg.Defaults.MaxImplementationRetries)
-	assert.Equal(t, DefaultAgents, cfg.Defaults.Agents)
+	assert.Equal(t, DefaultAgents(), cfg.Defaults.Agents)
 
 	// All repos should be listed but disabled
 	assert.Len(t, cfg.Repos, 3)
@@ -48,7 +48,7 @@ func TestNewOrgConfig_EmptyRepos(t *testing.T) {
 	cfg := NewOrgConfig(nil, nil, nil)
 
 	assert.Empty(t, cfg.Repos)
-	assert.Equal(t, DefaultAgents, cfg.Defaults.Agents)
+	assert.Equal(t, DefaultAgents(), cfg.Defaults.Agents)
 }
 
 func TestOrgConfig_EnabledRepos(t *testing.T) {
@@ -108,7 +108,7 @@ func TestOrgConfig_Validate_Valid(t *testing.T) {
 func TestOrgConfig_Validate_MissingVersion(t *testing.T) {
 	cfg := &OrgConfig{
 		Dispatch: DispatchConfig{Platform: "github-actions"},
-		Defaults: RepoDefaults{Agents: DefaultAgents},
+		Defaults: RepoDefaults{Agents: DefaultAgents()},
 	}
 
 	err := cfg.Validate()
@@ -120,7 +120,7 @@ func TestOrgConfig_Validate_InvalidPlatform(t *testing.T) {
 	cfg := &OrgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "kubernetes"},
-		Defaults: RepoDefaults{Agents: DefaultAgents},
+		Defaults: RepoDefaults{Agents: DefaultAgents()},
 	}
 
 	err := cfg.Validate()
@@ -134,7 +134,7 @@ func TestOrgConfig_Validate_NegativeRetries(t *testing.T) {
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
 			MaxImplementationRetries: -1,
-			Agents:                   DefaultAgents,
+			Agents:                   DefaultAgents(),
 		},
 	}
 
@@ -158,5 +158,5 @@ func TestOrgConfig_Validate_InvalidAgent(t *testing.T) {
 }
 
 func TestDefaultAgents(t *testing.T) {
-	assert.Equal(t, []string{"triage", "implementation", "review"}, DefaultAgents)
+	assert.Equal(t, []string{"triage", "implementation", "review"}, DefaultAgents())
 }

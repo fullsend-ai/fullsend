@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -55,14 +56,16 @@ type RepoConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
-// DefaultAgents is the standard set of agent roles.
-var DefaultAgents = []string{"triage", "implementation", "review"}
+// DefaultAgents returns the standard set of agent roles.
+func DefaultAgents() []string {
+	return []string{"triage", "implementation", "review"}
+}
 
 // NewOrgConfig creates a new OrgConfig with safe defaults.
 // All discovered repos are listed but disabled by default.
 func NewOrgConfig(repos []string, enabledRepos []string, agents []string) *OrgConfig {
 	if len(agents) == 0 {
-		agents = DefaultAgents
+		agents = DefaultAgents()
 	}
 
 	enabledSet := make(map[string]bool, len(enabledRepos))
@@ -133,6 +136,15 @@ func (c *OrgConfig) Validate() error {
 		}
 	}
 
+	for repoName, repo := range c.Repos {
+		for _, a := range repo.Agents {
+			if !validAgents[a] {
+				return fmt.Errorf("repo %q: unknown agent role %q (valid: %s)",
+					repoName, a, strings.Join(keys(validAgents), ", "))
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -152,5 +164,6 @@ func keys(m map[string]bool) []string {
 	for k := range m {
 		result = append(result, k)
 	}
+	sort.Strings(result)
 	return result
 }

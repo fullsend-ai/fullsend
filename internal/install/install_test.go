@@ -259,3 +259,104 @@ func TestGenerateCodeowners(t *testing.T) {
 	assert.Contains(t, co, "@my-org/admin")
 	assert.Contains(t, co, "CODEOWNERS")
 }
+
+func TestValidateOrgName(t *testing.T) {
+	tests := []struct {
+		name    string
+		org     string
+		wantErr string
+	}{
+		{name: "valid", org: "my-org", wantErr: ""},
+		{name: "valid alphanumeric", org: "org123", wantErr: ""},
+		{name: "valid single char", org: "x", wantErr: ""},
+		{name: "empty", org: "", wantErr: "organization name cannot be empty"},
+		{name: "special chars", org: "my_org", wantErr: "only alphanumeric characters and hyphens allowed"},
+		{name: "spaces", org: "my org", wantErr: "only alphanumeric characters and hyphens allowed"},
+		{name: "starts with hyphen", org: "-org", wantErr: "cannot start or end with a hyphen"},
+		{name: "ends with hyphen", org: "org-", wantErr: "cannot start or end with a hyphen"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOrgName(tt.org)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestInstall_DefaultBranch(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "develop"},
+	}
+
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{
+		Org:   "org",
+		Repos: []string{"api"},
+	})
+	require.NoError(t, err)
+
+	// The PR should use "develop" as the base branch, not "main"
+	require.Len(t, client.CreatedPRs, 1)
+	assert.Equal(t, "develop", client.CreatedPRs[0].Base)
+
+	// DefaultBranches should be populated
+	assert.Equal(t, "develop", result.DefaultBranches["api"])
+}
+
+func TestInstall_ConfigRepoIsPrivate(t *testing.T) {
+	client := gh.NewFakeClient()
+	inst, _ := newTestInstaller(client)
+
+	_, err := inst.Run(context.Background(), Options{Org: "org"})
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedRepos, 1)
+	assert.True(t, client.CreatedRepos[0].Private, ".fullsend repo should be private")
+}
+
+func TestInstall_InvalidOrgName(t *testing.T) {
+	client := gh.NewFakeClient()
+	inst, _ := newTestInstaller(client)
+
+	_, err := inst.Run(context.Background(), Options{Org: "bad org!"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "only alphanumeric characters and hyphens allowed")
+}
+
+func TestInstall_RepoNotFoundWarning(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+	}
+
+	inst, output := newTestInstaller(client)
+
+	_, err := inst.Run(context.Background(), Options{
+		Org:   "org",
+		Repos: []string{"nonexistent"},
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, output.String(), "not found in organization")
+}
+
+func TestInstall_ConfigValidation(t *testing.T) {
+	client := gh.NewFakeClient()
+	inst, _ := newTestInstaller(client)
+
+	// Invalid agent role should fail config validation
+	_, err := inst.Run(context.Background(), Options{
+		Org:    "org",
+		Agents: []string{"invalid-agent"},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid configuration")
+}

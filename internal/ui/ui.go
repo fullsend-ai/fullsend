@@ -24,20 +24,20 @@ var (
 	infoColor    = lipgloss.Color("#3B82F6") // blue-500
 
 	// Text styles
-	Bold    = lipgloss.NewStyle().Bold(true)
-	Muted   = lipgloss.NewStyle().Foreground(mutedColor)
-	Success = lipgloss.NewStyle().Foreground(successColor)
-	Warning = lipgloss.NewStyle().Foreground(warningColor)
-	Error   = lipgloss.NewStyle().Foreground(errorColor)
-	Info    = lipgloss.NewStyle().Foreground(infoColor)
-	Brand   = lipgloss.NewStyle().Foreground(brandColor).Bold(true)
+	bold         = lipgloss.NewStyle().Bold(true)
+	muted        = lipgloss.NewStyle().Foreground(mutedColor)
+	successStyle = lipgloss.NewStyle().Foreground(successColor)
+	warningStyle = lipgloss.NewStyle().Foreground(warningColor)
+	errorStyle   = lipgloss.NewStyle().Foreground(errorColor)
+	infoStyle    = lipgloss.NewStyle().Foreground(infoColor)
+	brand        = lipgloss.NewStyle().Foreground(brandColor).Bold(true)
 
 	// Step indicators
-	checkMark = Success.Render("✓")
-	crossMark = Error.Render("✗")
-	arrow     = Brand.Render("→")
-	bullet    = Muted.Render("•")
-	warnMark  = Warning.Render("!")
+	checkMark = successStyle.Render("✓")
+	crossMark = errorStyle.Render("✗")
+	arrow     = brand.Render("→")
+	bullet    = muted.Render("•")
+	warnMark  = warningStyle.Render("!")
 )
 
 // Printer handles styled output to a writer. All CLI output goes through
@@ -63,14 +63,14 @@ func (p *Printer) Banner() {
 		Foreground(brandColor).
 		Render("⚡ fullsend")
 
-	tagline := Muted.Render("autonomous agentic development for GitHub")
+	tagline := muted.Render("autonomous agentic development for GitHub")
 
 	_, _ = fmt.Fprintf(p.w, "\n  %s  %s\n\n", banner, tagline)
 }
 
 // Header prints a section header.
 func (p *Printer) Header(text string) {
-	_, _ = fmt.Fprintf(p.w, "\n  %s %s\n", arrow, Bold.Render(text))
+	_, _ = fmt.Fprintf(p.w, "\n  %s %s\n", arrow, bold.Render(text))
 }
 
 // StepStart prints the beginning of a step (before completion is known).
@@ -95,12 +95,12 @@ func (p *Printer) StepWarn(text string) {
 
 // StepInfo prints an informational detail, indented under a step.
 func (p *Printer) StepInfo(text string) {
-	_, _ = fmt.Fprintf(p.w, "      %s\n", Muted.Render(text))
+	_, _ = fmt.Fprintf(p.w, "      %s\n", muted.Render(text))
 }
 
 // KeyValue prints a key-value pair with styled formatting.
 func (p *Printer) KeyValue(key, value string) {
-	k := Muted.Render(key + ":")
+	k := muted.Render(key + ":")
 	_, _ = fmt.Fprintf(p.w, "    %s %s\n", k, value)
 }
 
@@ -121,7 +121,7 @@ func (p *Printer) Table(rows [][]string) {
 	for _, row := range rows {
 		if len(row) >= 2 {
 			padding := strings.Repeat(" ", maxKey-len(row[0]))
-			k := Muted.Render(row[0] + ":" + padding)
+			k := muted.Render(row[0] + ":" + padding)
 			_, _ = fmt.Fprintf(p.w, "    %s  %s\n", k, row[1])
 		}
 	}
@@ -129,7 +129,7 @@ func (p *Printer) Table(rows [][]string) {
 
 // PRLink prints a styled PR URL.
 func (p *Printer) PRLink(repo, url string) {
-	_, _ = fmt.Fprintf(p.w, "    %s %s\n", Info.Render(repo), Muted.Render(url))
+	_, _ = fmt.Fprintf(p.w, "    %s %s\n", infoStyle.Render(repo), muted.Render(url))
 }
 
 // Summary prints a summary box at the end of a command.
@@ -139,7 +139,7 @@ func (p *Printer) Summary(title string, items []string) {
 		BorderForeground(brandColor).
 		Padding(0, 2)
 
-	header := Bold.Render(title)
+	header := bold.Render(title)
 	lines := make([]string, 0, len(items)+2)
 	lines = append(lines, header, "")
 	for _, item := range items {
@@ -157,7 +157,7 @@ func (p *Printer) ErrorBox(title, detail string) {
 		BorderForeground(errorColor).
 		Padding(0, 2)
 
-	header := Error.Bold(true).Render(title)
+	header := lipgloss.NewStyle().Foreground(errorColor).Bold(true).Render(title)
 	content := header + "\n\n  " + detail
 
 	_, _ = fmt.Fprintf(p.w, "\n%s\n\n", boxStyle.Render(content))
