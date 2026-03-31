@@ -1,0 +1,261 @@
+package install
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"testing"
+
+	gh "github.com/fullsend-ai/fullsend/internal/github"
+	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func newTestInstaller(client *gh.FakeClient) (*Installer, *bytes.Buffer) {
+	var buf bytes.Buffer
+	printer := ui.NewPrinter(&buf)
+	return New(client, printer), &buf
+}
+
+func TestInstall_BasicFlow(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
+	}
+
+	inst, output := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{
+		Org: "org",
+	})
+	require.NoError(t, err)
+
+	// Should discover repos
+	assert.Len(t, result.OrgRepos, 2)
+	assert.Contains(t, result.OrgRepos, "api")
+	assert.Contains(t, result.OrgRepos, "web")
+
+	// Should create .fullsend repo
+	assert.Equal(t, ".fullsend", result.ConfigRepo)
+	assert.Len(t, client.CreatedRepos, 1)
+	assert.Equal(t, ".fullsend", client.CreatedRepos[0].Name)
+
+	// Should create config.yaml, workflow, and CODEOWNERS
+	assert.GreaterOrEqual(t, len(client.CreatedFiles), 3)
+
+	// No repos enabled, so no PRs
+	assert.Empty(t, result.PRs)
+
+	// Check output
+	assert.Contains(t, output.String(), "fullsend")
+	assert.Contains(t, output.String(), "Installation complete")
+}
+
+func TestInstall_WithEnabledRepo(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
+	}
+
+	inst, output := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{
+		Org:   "org",
+		Repos: []string{"api"},
+	})
+	require.NoError(t, err)
+
+	// Should create a PR for enabled repo
+	assert.Len(t, result.PRs, 1)
+	pr, ok := result.PRs["api"]
+	require.True(t, ok)
+	assert.Equal(t, 1, pr.Number)
+	assert.Contains(t, pr.HTMLURL, "api")
+
+	// Should have created a branch and workflow file
+	assert.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "fullsend/enroll", client.CreatedBranches[0].BranchName)
+
+	// Check output mentions the PR
+	assert.Contains(t, output.String(), "PR created for api")
+	assert.Contains(t, output.String(), "Enrollment PRs: 1")
+}
+
+func TestInstall_MultipleEnabledRepos(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
+		{Name: "docs", FullName: "org/docs", DefaultBranch: "main"},
+	}
+
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{
+		Org:   "org",
+		Repos: []string{"api", "docs"},
+	})
+	require.NoError(t, err)
+
+	assert.Len(t, result.PRs, 2)
+	assert.Contains(t, result.PRs, "api")
+	assert.Contains(t, result.PRs, "docs")
+}
+
+func TestInstall_CustomAgents(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+	}
+
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{
+		Org:    "org",
+		Agents: []string{"review", "implementation"},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"review", "implementation"}, result.Config.Defaults.Agents)
+}
+
+func TestInstall_SafeDefaults(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+	}
+
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{Org: "org"})
+	require.NoError(t, err)
+
+	// Verify safe defaults per acceptance criteria
+	assert.False(t, result.Config.Defaults.AutoMerge, "auto_merge must default to false")
+	assert.False(t, result.Config.Repos["api"].Enabled, "repos must default to disabled")
+}
+
+func TestInstall_AppPermissions(t *testing.T) {
+	client := gh.NewFakeClient()
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{Org: "org"})
+	require.NoError(t, err)
+
+	// Verify minimum required permissions per acceptance criteria
+	perms := result.AppConfig.Permissions
+	assert.Equal(t, "write", perms.Issues)
+	assert.Equal(t, "write", perms.PullReqs)
+	assert.Equal(t, "read", perms.Checks)
+	assert.Equal(t, "write", perms.Contents)
+}
+
+func TestInstall_SkipsFullsendRepo(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: ".fullsend", FullName: "org/.fullsend", DefaultBranch: "main"},
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+	}
+
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{Org: "org"})
+	require.NoError(t, err)
+
+	// .fullsend itself should not be in the discovered repos
+	assert.NotContains(t, result.OrgRepos, ".fullsend")
+	assert.Len(t, result.OrgRepos, 1)
+}
+
+func TestInstall_ListOrgReposError(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Errors["ListOrgRepos"] = errors.New("forbidden")
+
+	inst, _ := newTestInstaller(client)
+
+	_, err := inst.Run(context.Background(), Options{Org: "org"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "listing org repos")
+}
+
+func TestInstall_CreateRepoError(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Errors["CreateRepo"] = errors.New("already exists")
+
+	inst, _ := newTestInstaller(client)
+
+	_, err := inst.Run(context.Background(), Options{Org: "org"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "creating .fullsend repo")
+}
+
+func TestInstall_CreateFileError(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Errors["CreateFile"] = errors.New("write failed")
+
+	inst, _ := newTestInstaller(client)
+
+	_, err := inst.Run(context.Background(), Options{Org: "org"})
+	assert.Error(t, err)
+}
+
+func TestInstall_PRCreationErrorContinues(t *testing.T) {
+	client := gh.NewFakeClient()
+	client.Repos = []gh.Repository{
+		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
+		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
+	}
+	// Fail branch creation for any repo — this will affect all PRs
+	// but the install should still complete
+	client.Errors["CreateBranch"] = errors.New("branch exists")
+
+	inst, _ := newTestInstaller(client)
+
+	result, err := inst.Run(context.Background(), Options{
+		Org:   "org",
+		Repos: []string{"api", "web"},
+	})
+	require.NoError(t, err)
+
+	// PRs should be empty since branch creation failed
+	assert.Empty(t, result.PRs)
+}
+
+func TestGenerateReusableWorkflow(t *testing.T) {
+	wf := generateReusableWorkflow()
+
+	assert.Contains(t, wf, "workflow_call")
+	assert.Contains(t, wf, "event_type")
+	assert.Contains(t, wf, "event_payload")
+	assert.Contains(t, wf, "APP_PRIVATE_KEY")
+	assert.Contains(t, wf, "Agent Dispatch")
+}
+
+func TestGenerateStubWorkflow(t *testing.T) {
+	wf := generateStubWorkflow("my-org")
+
+	assert.Contains(t, wf, "my-org/.fullsend")
+	assert.Contains(t, wf, "issues:")
+	assert.Contains(t, wf, "issue_comment:")
+	assert.Contains(t, wf, "pull_request:")
+	assert.Contains(t, wf, "FULLSEND_APP_PRIVATE_KEY")
+}
+
+func TestGeneratePRBody(t *testing.T) {
+	body := generatePRBody("my-org")
+
+	assert.Contains(t, body, "my-org/.fullsend")
+	assert.Contains(t, body, "No code is changed")
+	assert.Contains(t, body, "No automatic merging")
+	assert.Contains(t, body, "branch protection")
+}
+
+func TestGenerateCodeowners(t *testing.T) {
+	co := generateCodeowners("my-org")
+
+	assert.Contains(t, co, "@my-org/admin")
+	assert.Contains(t, co, "CODEOWNERS")
+}
