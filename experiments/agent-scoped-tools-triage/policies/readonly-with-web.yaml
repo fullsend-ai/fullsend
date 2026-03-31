@@ -1,0 +1,77 @@
+version: 1
+
+# Policy for the completeness-assessor.
+# Read-only access to GitHub REST server on host + HTTPS GET to any host
+# (fetch external links).
+#
+# Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
+# at runtime by the agent runner.
+
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  gh_server:
+    name: gh-server-readonly
+    endpoints:
+      # GitHub REST server on the host. GET-only via L7 enforcement.
+      - host: host.docker.internal
+        port: 8081
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: /health
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}
+        allowed_ips:
+          - "{{HOST_IP}}/32"
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"
+  external_web:
+    name: https-allow
+    endpoints:
+      - host: "*.io"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "*.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "*.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "*.dev"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"
+  vertex_ai:
+    name: vertex-ai
+    endpoints:
+      - host: "*.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"

@@ -1,0 +1,89 @@
+version: 1
+
+# Policy for the triage agent (orchestrator).
+# Read+write access to GitHub REST server (comments, labels).
+# Access to agent runner REST server for spawning subagents.
+# No external web, no local filesystem beyond sandbox.
+#
+# Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
+# at runtime by the agent runner.
+
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  vertex_ai:
+    name: vertex-ai
+    endpoints:
+      # Claude CLI authenticates and calls Vertex AI (Google Cloud)
+      - host: "*.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"
+  gh_server:
+    name: gh-server-readwrite
+    endpoints:
+      # GitHub REST server on the host. Full access (GET + POST) for
+      # reading issues and writing comments/labels.
+      # allowed_ips bypasses default SSRF guard for private IPs.
+      - host: host.docker.internal
+        port: 8081
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: /health
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/*
+          - allow:
+              method: GET
+              path: /search/issues
+          - allow:
+              method: POST
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/comments
+          - allow:
+              method: POST
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/labels
+        allowed_ips:
+          - "{{HOST_IP}}/32"
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"
+  agent_runner:
+    name: agent-runner
+    endpoints:
+      # Agent runner REST server on the host handles sandbox lifecycle.
+      # The triage agent delegates via curl instead of creating sandboxes
+      # directly (gateway auth not available from inside a sandbox).
+      - host: host.docker.internal
+        port: 8082
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: POST
+              path: /run-agent
+          - allow:
+              method: GET
+              path: /health
+        allowed_ips:
+          - "{{HOST_IP}}/32"
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"
