@@ -1,6 +1,6 @@
 module github.com/fullsend-ai/fullsend
 
-go 1.26.1
+go 1.25.8
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
