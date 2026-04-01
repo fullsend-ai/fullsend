@@ -30,6 +30,7 @@ type WorkflowRun struct {
 	Conclusion string `json:"conclusion"` // "success", "failure", etc. (empty while running)
 	HTMLURL    string `json:"html_url"`
 	Name       string `json:"name"`
+	CreatedAt  string `json:"created_at"` // ISO 8601 timestamp
 	ID         int    `json:"id"`
 }
 

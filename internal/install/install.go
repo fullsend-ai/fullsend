@@ -58,9 +58,11 @@ type Result struct {
 	Config          *config.OrgConfig
 	Proposals       map[string]*forge.ChangeProposal
 	DefaultBranches map[string]string
+	FilesWrittenAt  time.Time // timestamp before file writes started (for workflow filtering)
 	ConfigRepo      string
 	OrgRepos        []string
 	SecretsStored   int
+	FilesWritten    bool // whether any config files were actually created/updated
 }
 
 // Prompter handles interactive user prompts during installation.
@@ -156,6 +158,7 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	result.FilesWrittenAt = time.Now().UTC()
 	if err := inst.writeConfigFiles(ctx, opts.Org, result, username, !discovered.ConfigRepoExists); err != nil {
 		return nil, err
 	}
@@ -346,6 +349,7 @@ func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result 
 			}
 			return writeErr
 		}
+		result.FilesWritten = true
 	}
 
 	// CODEOWNERS is optional — failure is logged but not fatal
@@ -353,6 +357,8 @@ func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result 
 		"Add CODEOWNERS to protect configuration", []byte(generateCodeowners(codeowner)), false); writeErr != nil {
 		inst.printer.StepWarn(fmt.Sprintf("Could not write CODEOWNERS: %v", writeErr))
 		inst.printer.StepInfo("You can add this file manually later.")
+	} else {
+		result.FilesWritten = true
 	}
 
 	inst.printer.StepDone("Configuration files written to .fullsend")
@@ -492,8 +498,8 @@ func (inst *Installer) writeFileWithRetry(ctx context.Context, org, repo, path, 
 }
 
 // watchOnboarding monitors the repo onboarding workflow after config is pushed.
-// It waits for the workflow to start and complete, then collects any PRs created
-// across the org's repos and reports them to the user.
+// It waits for a NEW workflow run (triggered after our file writes) to start
+// and complete, then collects any PRs created across the org's repos.
 func (inst *Installer) watchOnboarding(ctx context.Context, org string, result *Result) error {
 	enabledRepos := result.Config.EnabledRepos()
 	if len(enabledRepos) == 0 {
@@ -502,49 +508,37 @@ func (inst *Installer) watchOnboarding(ctx context.Context, org string, result *
 		return nil
 	}
 
+	if !result.FilesWritten {
+		inst.printer.StepInfo("No config files were updated — skipping onboarding workflow watch")
+		return nil
+	}
+
 	inst.printer.Header("Watching repo onboarding")
 	inst.printer.Blank()
-	inst.printer.StepInfo("The repo onboarding workflow should start shortly...")
+	inst.printer.StepInfo("Waiting for the repo onboarding workflow to start...")
 	inst.printer.StepInfo(fmt.Sprintf("It will create PRs to add the fullsend workflow to %d enabled repos.", len(enabledRepos)))
 	inst.printer.Blank()
 
-	// Poll for the workflow run to appear and complete
+	// Only accept workflow runs created after our file writes started.
+	// This prevents matching stale runs from previous installs.
+	cutoff := result.FilesWrittenAt
+
 	var run *forge.WorkflowRun
-	maxWait := 120 * time.Second
-	pollInterval := 5 * time.Second
-	deadline := time.Now().Add(maxWait)
+	startDeadline := time.Now().Add(15 * time.Second)
+	pollInterval := 3 * time.Second
 
-	for time.Now().Before(deadline) {
+	// Phase 1: Wait up to 15s for a new run to appear
+	for time.Now().Before(startDeadline) {
 		latest, err := inst.client.GetLatestWorkflowRun(ctx, org, ".fullsend", "repo-onboard.yaml")
-		if err != nil {
-			// Workflow may not exist yet — keep waiting
-			inst.printer.StepInfo("Waiting for onboarding workflow to start...")
-			select {
-			case <-time.After(pollInterval):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
+		if err == nil && latest != nil {
+			runTime, parseErr := time.Parse(time.RFC3339, latest.CreatedAt)
+			if parseErr == nil && runTime.After(cutoff) {
+				run = latest
+				break
 			}
 		}
 
-		if latest == nil {
-			select {
-			case <-time.After(pollInterval):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		run = latest
-
-		if run.Status == "completed" {
-			break
-		}
-
-		inst.printer.StepInfo(fmt.Sprintf("Onboarding workflow is %s... (%s)",
-			run.Status, run.HTMLURL))
-
+		inst.printer.StepInfo("Waiting for onboarding workflow to start...")
 		select {
 		case <-time.After(pollInterval):
 		case <-ctx.Done():
@@ -553,10 +547,36 @@ func (inst *Installer) watchOnboarding(ctx context.Context, org string, result *
 	}
 
 	if run == nil {
-		inst.printer.StepWarn("Onboarding workflow did not start within timeout")
-		inst.printer.StepInfo("Check the Actions tab at:")
-		inst.printer.StepInfo(fmt.Sprintf("  https://github.com/%s/.fullsend/actions", org))
+		inst.printer.StepWarn("Repo onboarding workflow did not start within 15 seconds")
+		inst.printer.StepInfo("This can happen if:")
+		inst.printer.StepInfo("  • No config files were changed (workflow only triggers on config.yaml changes)")
+		inst.printer.StepInfo("  • GitHub Actions is slow to pick up the trigger")
+		inst.printer.StepInfo("  • The workflow is disabled")
+		inst.printer.Blank()
+		inst.printer.StepInfo("You can trigger it manually at:")
+		inst.printer.StepInfo(fmt.Sprintf("  https://github.com/%s/.fullsend/actions/workflows/repo-onboard.yaml", org))
 		return nil
+	}
+
+	inst.printer.StepDone(fmt.Sprintf("Onboarding workflow started: %s", run.HTMLURL))
+
+	// Phase 2: Wait for the run to complete (up to 2 minutes)
+	completionDeadline := time.Now().Add(120 * time.Second)
+
+	for run.Status != "completed" && time.Now().Before(completionDeadline) {
+		inst.printer.StepInfo(fmt.Sprintf("Onboarding workflow is %s...", run.Status))
+
+		select {
+		case <-time.After(pollInterval):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		updated, err := inst.client.GetWorkflowRun(ctx, org, ".fullsend", run.ID)
+		if err != nil {
+			continue
+		}
+		run = updated
 	}
 
 	if run.Status != "completed" {
@@ -572,7 +592,7 @@ func (inst *Installer) watchOnboarding(ctx context.Context, org string, result *
 		inst.printer.StepInfo(fmt.Sprintf("Details: %s", run.HTMLURL))
 	}
 
-	// Collect enrollment PRs from enabled repos
+	// Phase 3: Collect enrollment PRs from enabled repos
 	inst.printer.Blank()
 	inst.printer.Header("Enrollment pull requests")
 	inst.printer.Blank()

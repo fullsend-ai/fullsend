@@ -68,7 +68,8 @@ func TestInstall_WithEnabledRepo(t *testing.T) {
 
 	// Pre-populate a completed onboarding workflow run
 	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
-		ID: 1, Status: "completed", Conclusion: "success",
+		CreatedAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+		ID:        1, Status: "completed", Conclusion: "success",
 		HTMLURL: "https://github.com/org/.fullsend/actions/runs/1",
 	}
 
@@ -100,7 +101,8 @@ func TestInstall_MultipleEnabledRepos(t *testing.T) {
 		{Name: "docs", FullName: "org/docs", DefaultBranch: "main"},
 	}
 	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
-		ID: 1, Status: "completed", Conclusion: "success",
+		CreatedAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+		ID:        1, Status: "completed", Conclusion: "success",
 	}
 
 	inst, _ := newTestInstaller(client)
@@ -320,7 +322,8 @@ func TestInstall_DefaultBranch(t *testing.T) {
 		{Name: "api", FullName: "org/api", DefaultBranch: "develop"},
 	}
 	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
-		ID: 1, Status: "completed", Conclusion: "success",
+		CreatedAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+		ID:        1, Status: "completed", Conclusion: "success",
 	}
 
 	inst, _ := newTestInstaller(client)
@@ -385,7 +388,8 @@ func TestInstall_RepoNotFoundWarning(t *testing.T) {
 		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
 	}
 	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
-		ID: 1, Status: "completed", Conclusion: "success",
+		CreatedAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+		ID:        1, Status: "completed", Conclusion: "success",
 	}
 
 	inst, output := newTestInstaller(client)
