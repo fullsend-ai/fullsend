@@ -208,52 +208,63 @@ func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result 
 		return fmt.Errorf("marshalling config: %w", err)
 	}
 
-	files := []struct {
+	// config.yaml is required — retry with backoff
+	if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", "config.yaml",
+		"Initialize fullsend configuration", configData, newRepo); writeErr != nil {
+		return writeErr
+	}
+
+	// Workflow and CODEOWNERS are best-effort — failures are logged but not fatal.
+	// The Contents API creates a commit per file, so sequential writes can hit
+	// transient 404/409 errors as the branch ref updates between commits.
+	supplementary := []struct {
 		path, message string
 		content       []byte
 	}{
-		{"config.yaml", "Initialize fullsend configuration with safe defaults", configData},
 		{".github/workflows/agent.yaml", "Add reusable agent dispatch workflow", []byte(generateReusableWorkflow())},
 		{"CODEOWNERS", "Add CODEOWNERS to protect configuration", []byte(generateCodeowners(org))},
 	}
 
-	for i, f := range files {
-		// Retry each file with backoff. The Contents API creates a
-		// commit per file, so rapid sequential creates can hit 404/409
-		// as the branch ref updates. On a new repo the first file may
-		// also need to wait for branch initialization.
-		maxAttempts := 3
-		if i == 0 && newRepo {
-			maxAttempts = 5
-		}
-
-		var createErr error
-		for attempt := range maxAttempts {
-			if attempt > 0 {
-				wait := time.Duration(attempt) * 2 * time.Second
-				inst.printer.StepInfo(fmt.Sprintf("Retrying %s in %v...", f.path, wait))
-				select {
-				case <-time.After(wait):
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-
-			createErr = inst.client.CreateOrUpdateFile(ctx, org, ".fullsend", f.path, f.message, f.content)
-			if createErr == nil {
-				break
-			}
-
-		}
-
-		if createErr != nil {
-			inst.printer.StepFail(fmt.Sprintf("Failed to create %s: %v", f.path, createErr))
-			return fmt.Errorf("creating %s: %w", f.path, createErr)
+	for _, f := range supplementary {
+		if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", f.path,
+			f.message, f.content, false); writeErr != nil {
+			inst.printer.StepWarn(fmt.Sprintf("Could not write %s: %v", f.path, writeErr))
+			inst.printer.StepInfo("You can add this file manually later.")
 		}
 	}
 
 	inst.printer.StepDone("Configuration files written to .fullsend")
 	return nil
+}
+
+// writeFileWithRetry writes a single file to a repo with retry/backoff.
+// If firstFile is true, uses more retries to handle new repo initialization.
+func (inst *Installer) writeFileWithRetry(ctx context.Context, org, repo, path, message string, content []byte, firstFile bool) error {
+	maxAttempts := 3
+	if firstFile {
+		maxAttempts = 5
+	}
+
+	var lastErr error
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			wait := time.Duration(attempt) * 2 * time.Second
+			inst.printer.StepInfo(fmt.Sprintf("Retrying %s in %v...", path, wait))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		lastErr = inst.client.CreateOrUpdateFile(ctx, org, repo, path, message, content)
+		if lastErr == nil {
+			return nil
+		}
+	}
+
+	inst.printer.StepFail(fmt.Sprintf("Failed to write %s: %v", path, lastErr))
+	return fmt.Errorf("writing %s: %w", path, lastErr)
 }
 
 func (inst *Installer) createEnrollmentPRs(ctx context.Context, org string, result *Result) error {
