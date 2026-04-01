@@ -104,10 +104,10 @@ func TestBuildManifest_CoderRole(t *testing.T) {
 	assert.Equal(t, "fullsend-my-org-coder", manifest["name"])
 
 	perms := manifest["default_permissions"].(map[string]string)
+	assert.Equal(t, "read", perms["issues"])
 	assert.Equal(t, "write", perms["contents"])
 	assert.Equal(t, "write", perms["pull_requests"])
 	assert.Equal(t, "read", perms["checks"])
-	assert.Empty(t, perms["issues"])
 
 	events := manifest["default_events"].([]string)
 	assert.Contains(t, events, "pull_request")

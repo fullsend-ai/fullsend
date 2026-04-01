@@ -32,11 +32,11 @@ func TestAgentAppConfig_Coder(t *testing.T) {
 	assert.Contains(t, cfg.Description, "coder")
 	assert.Contains(t, cfg.URL, "fullsend")
 
-	// Coder: contents write, PRs write, checks read
+	// Coder: issues read, contents write, PRs write, checks read
+	assert.Equal(t, "read", cfg.Permissions.Issues, "coder needs issues read to know what to implement")
 	assert.Equal(t, "write", cfg.Permissions.Contents)
 	assert.Equal(t, "write", cfg.Permissions.PullRequests)
 	assert.Equal(t, "read", cfg.Permissions.Checks)
-	assert.Empty(t, cfg.Permissions.Issues, "coder should not have issues access")
 
 	assert.Contains(t, cfg.Events, "issues")
 	assert.Contains(t, cfg.Events, "pull_request")

@@ -47,6 +47,7 @@ func AgentAppConfig(org, role string) *AppConfig {
 		base.Name = fmt.Sprintf("fullsend-%s-coder", org)
 		base.Description = fmt.Sprintf("fullsend coder agent for %s — implementation and code changes", org)
 		base.Permissions = AppPermissions{
+			Issues:       "read",
 			Contents:     "write",
 			PullRequests: "write",
 			Checks:       "read",
