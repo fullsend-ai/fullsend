@@ -95,6 +95,36 @@ func TestFakeClient_CreateFileOnBranch(t *testing.T) {
 	assert.Equal(t, "feature", client.CreatedFiles[0].Branch)
 }
 
+func TestFakeClient_GetFileContent(t *testing.T) {
+	client := NewFakeClient()
+	// First create a file
+	err := client.CreateFile(context.Background(), "org", "repo", "config.yaml", "init", []byte("data"))
+	require.NoError(t, err)
+
+	content, err := client.GetFileContent(context.Background(), "org", "repo", "config.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("data"), content)
+}
+
+func TestFakeClient_GetFileContent_NotFound(t *testing.T) {
+	client := NewFakeClient()
+
+	_, err := client.GetFileContent(context.Background(), "org", "repo", "missing.yaml")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "file not found")
+}
+
+func TestFakeClient_DeleteRepo(t *testing.T) {
+	client := NewFakeClient()
+
+	err := client.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+
+	assert.Len(t, client.DeletedRepos, 1)
+	assert.Equal(t, "org", client.DeletedRepos[0].Owner)
+	assert.Equal(t, "repo", client.DeletedRepos[0].Repo)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	client := NewFakeClient()
 	injectedErr := errors.New("injected")
@@ -139,6 +169,21 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			method: "CreateFileOnBranch",
 			fn: func() error {
 				return client.CreateFileOnBranch(context.Background(), "o", "r", "b", "p", "m", nil)
+			},
+		},
+		{
+			name:   "DeleteRepo",
+			method: "DeleteRepo",
+			fn: func() error {
+				return client.DeleteRepo(context.Background(), "o", "r")
+			},
+		},
+		{
+			name:   "GetFileContent",
+			method: "GetFileContent",
+			fn: func() error {
+				_, err := client.GetFileContent(context.Background(), "o", "r", "f")
+				return err
 			},
 		},
 	}

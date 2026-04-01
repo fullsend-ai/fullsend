@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -255,6 +257,43 @@ func TestLiveClient_SetsAPIHeaders(t *testing.T) {
 
 	_, err := client.ListOrgRepos(context.Background(), "org")
 	require.NoError(t, err)
+}
+
+func TestLiveClient_GetFileContent(t *testing.T) {
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/repos/org/repo/contents/config.yaml", r.URL.Path)
+
+		w.Header().Set("Content-Type", "application/json")
+		content := base64.StdEncoding.EncodeToString([]byte("version: 1\n"))
+		_, _ = fmt.Fprintf(w, `{"content":"%s","encoding":"base64"}`, content)
+	})
+
+	data, err := client.GetFileContent(context.Background(), "org", "repo", "config.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "version: 1\n", string(data))
+}
+
+func TestLiveClient_DeleteRepo(t *testing.T) {
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodDelete, r.Method)
+		assert.Equal(t, "/repos/org/repo", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := client.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+}
+
+func TestLiveClient_DeleteRepo_NotFound(t *testing.T) {
+	_, client := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+
+	err := client.DeleteRepo(context.Background(), "org", "repo")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "404")
 }
 
 func TestNewLiveClient(t *testing.T) {

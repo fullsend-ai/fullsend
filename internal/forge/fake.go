@@ -27,6 +27,9 @@ type FakeClient struct {
 	// CreatedBranches tracks calls to CreateBranch.
 	CreatedBranches []createBranchCall
 
+	// DeletedRepos tracks calls to DeleteRepo.
+	DeletedRepos []deleteRepoCall
+
 	mu              sync.Mutex
 	proposalCounter int
 }
@@ -47,6 +50,10 @@ type createProposalCall struct {
 
 type createBranchCall struct {
 	Owner, Repo, BranchName string
+}
+
+type deleteRepoCall struct {
+	Owner, Repo string
 }
 
 // NewFakeClient creates a FakeClient with no pre-configured state.
@@ -138,6 +145,38 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	f.CreatedBranches = append(f.CreatedBranches, createBranchCall{
 		Owner: owner, Repo: repo, BranchName: branchName,
 	})
+	return nil
+}
+
+// GetFileContent implements forge.Client.
+func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["GetFileContent"]; err != nil {
+		return nil, err
+	}
+
+	// Look through created files for a match
+	for _, file := range f.CreatedFiles {
+		if file.Owner == owner && file.Repo == repo && file.Path == path {
+			return file.Content, nil
+		}
+	}
+
+	return nil, fmt.Errorf("file not found: %s/%s/%s", owner, repo, path)
+}
+
+// DeleteRepo implements forge.Client.
+func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["DeleteRepo"]; err != nil {
+		return err
+	}
+
+	f.DeletedRepos = append(f.DeletedRepos, deleteRepoCall{Owner: owner, Repo: repo})
 	return nil
 }
 

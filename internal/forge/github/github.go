@@ -157,6 +157,39 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}, nil
 }
 
+// GetFileContent retrieves the content of a file from a repository.
+func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s",
+		c.baseURL, url.PathEscape(owner), url.PathEscape(repo), path)
+
+	var result struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := c.get(ctx, reqURL, &result); err != nil {
+		return nil, err
+	}
+
+	if result.Encoding != "base64" {
+		return nil, fmt.Errorf("unexpected encoding %q", result.Encoding)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(result.Content)
+	if err != nil {
+		return nil, fmt.Errorf("decoding base64 content: %w", err)
+	}
+
+	return decoded, nil
+}
+
+// DeleteRepo deletes a repository. This is irreversible.
+func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s",
+		c.baseURL, url.PathEscape(owner), url.PathEscape(repo))
+
+	return c.delete(ctx, reqURL)
+}
+
 func (c *LiveClient) getDefaultBranchSHA(ctx context.Context, owner, repo string) (string, error) {
 	repoURL := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, url.PathEscape(owner), url.PathEscape(repo))
 
@@ -243,6 +276,16 @@ func (c *LiveClient) post(ctx context.Context, url string, body any, result any)
 	defer func() { _ = resp.Body.Close() }()
 
 	return c.handleResponse(resp, result)
+}
+
+func (c *LiveClient) delete(ctx context.Context, url string) error {
+	resp, err := c.do(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return c.handleResponse(resp, nil)
 }
 
 func (c *LiveClient) put(ctx context.Context, url string, body any, result any) error {

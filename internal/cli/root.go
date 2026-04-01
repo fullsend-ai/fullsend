@@ -26,6 +26,7 @@ review without manual shepherding.`,
 	cmd.SetVersionTemplate("fullsend version {{.Version}}\n")
 
 	cmd.AddCommand(newInstallCmd())
+	cmd.AddCommand(newUninstallCmd())
 
 	return cmd
 }

@@ -44,4 +44,10 @@ type Client interface {
 
 	// CreateFileOnBranch creates a file on a specific branch.
 	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
+
+	// GetFileContent retrieves the content of a file from a repository.
+	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+
+	// DeleteRepo deletes a repository. This is irreversible.
+	DeleteRepo(ctx context.Context, owner, repo string) error
 }
