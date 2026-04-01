@@ -134,6 +134,20 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 	return c.put(ctx, reqURL, body, &result)
 }
 
+// GetAuthenticatedUser returns the login of the currently authenticated user.
+func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
+	reqURL := fmt.Sprintf("%s/user", c.baseURL)
+
+	var user struct {
+		Login string `json:"login"`
+	}
+	if err := c.get(ctx, reqURL, &user); err != nil {
+		return "", err
+	}
+
+	return user.Login, nil
+}
+
 // CreateBranch creates a new branch from the default branch's HEAD.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// First, get the default branch SHA

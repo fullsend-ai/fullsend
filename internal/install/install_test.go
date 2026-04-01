@@ -247,10 +247,16 @@ func TestGeneratePRBody(t *testing.T) {
 }
 
 func TestGenerateCodeowners(t *testing.T) {
-	co := generateCodeowners("my-org")
+	co := generateCodeowners("octocat")
+
+	assert.Contains(t, co, "@octocat")
+	assert.Contains(t, co, "CODEOWNERS")
+}
+
+func TestGenerateCodeowners_Team(t *testing.T) {
+	co := generateCodeowners("my-org/admin")
 
 	assert.Contains(t, co, "@my-org/admin")
-	assert.Contains(t, co, "CODEOWNERS")
 }
 
 func TestValidateOrgName(t *testing.T) {

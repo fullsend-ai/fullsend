@@ -113,7 +113,14 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	// Step 4: Create .fullsend repo if needed, then write config files
+	// Step 4: Get authenticated user for CODEOWNERS
+	username, userErr := inst.client.GetAuthenticatedUser(ctx)
+	if userErr != nil {
+		inst.printer.StepWarn(fmt.Sprintf("Could not get authenticated user: %v", userErr))
+		username = opts.Org + "/admin" // fallback to org team
+	}
+
+	// Step 5: Create .fullsend repo if needed, then write config files
 	if discovered.ConfigRepoExists {
 		inst.printer.StepDone(".fullsend repository already exists")
 	} else {
@@ -125,7 +132,7 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	if err := inst.writeConfigFiles(ctx, opts.Org, result, !discovered.ConfigRepoExists); err != nil {
+	if err := inst.writeConfigFiles(ctx, opts.Org, result, username, !discovered.ConfigRepoExists); err != nil {
 		return nil, err
 	}
 
@@ -198,7 +205,7 @@ func (inst *Installer) generateConfig(repos []string, opts Options) *config.OrgC
 // writeConfigFiles writes config.yaml, the reusable workflow, and CODEOWNERS
 // into the .fullsend repo. If newRepo is true, the first file creation is
 // retried with backoff to wait for GitHub to finish initializing the branch.
-func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result *Result, newRepo bool) error {
+func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result *Result, codeowner string, newRepo bool) error {
 	inst.printer.StepStart("Writing configuration files...")
 
 	configData, err := result.Config.Marshal()
@@ -233,7 +240,7 @@ func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result 
 
 	// CODEOWNERS is optional — failure is logged but not fatal
 	if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", "CODEOWNERS",
-		"Add CODEOWNERS to protect configuration", []byte(generateCodeowners(org)), false); writeErr != nil {
+		"Add CODEOWNERS to protect configuration", []byte(generateCodeowners(codeowner)), false); writeErr != nil {
 		inst.printer.StepWarn(fmt.Sprintf("Could not write CODEOWNERS: %v", writeErr))
 		inst.printer.StepInfo("You can add this file manually later.")
 	}
@@ -505,13 +512,14 @@ fullsend autonomous development pipeline managed in [%s/.fullsend](https://githu
 }
 
 // generateCodeowners produces CODEOWNERS content for the .fullsend repo.
-func generateCodeowners(org string) string {
+// The owner is the @username or @org/team that owns all files.
+func generateCodeowners(owner string) string {
 	return fmt.Sprintf(`# CODEOWNERS for .fullsend configuration repository
 #
 # All configuration changes require human review.
 # Agents cannot modify their own guardrails.
 #
-# Adjust the team/users below to match your organization.
-* @%s/admin
-`, org)
+# Adjust the owners below to match your organization.
+* @%s
+`, owner)
 }

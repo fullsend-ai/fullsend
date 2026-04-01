@@ -8,30 +8,19 @@ import (
 
 // FakeClient is a test double for the forge Client interface.
 // It records all calls and returns configurable responses.
+//
+//nolint:govet // fieldalignment: test fake, readability over alignment
 type FakeClient struct {
-	// Errors to inject, keyed by method name.
-	Errors map[string]error
-
-	// Repos to return from ListOrgRepos.
-	Repos []Repository
-
-	// CreatedRepos tracks calls to CreateRepo.
-	CreatedRepos []createRepoCall
-
-	// CreatedFiles tracks calls to CreateFile and CreateFileOnBranch.
-	CreatedFiles []createFileCall
-
-	// CreatedProposals tracks calls to CreateChangeProposal.
-	CreatedProposals []createProposalCall
-
-	// CreatedBranches tracks calls to CreateBranch.
-	CreatedBranches []createBranchCall
-
-	// DeletedRepos tracks calls to DeleteRepo.
-	DeletedRepos []deleteRepoCall
-
-	mu              sync.Mutex
-	proposalCounter int
+	Errors            map[string]error     // Errors to inject, keyed by method name.
+	Repos             []Repository         // Repos to return from ListOrgRepos.
+	CreatedRepos      []createRepoCall     // Tracks calls to CreateRepo.
+	CreatedFiles      []createFileCall     // Tracks calls to CreateFile/CreateOrUpdateFile.
+	CreatedProposals  []createProposalCall // Tracks calls to CreateChangeProposal.
+	CreatedBranches   []createBranchCall   // Tracks calls to CreateBranch.
+	DeletedRepos      []deleteRepoCall     // Tracks calls to DeleteRepo.
+	AuthenticatedUser string               // Returned by GetAuthenticatedUser.
+	mu                sync.Mutex
+	proposalCounter   int
 }
 
 type createRepoCall struct {
@@ -202,6 +191,21 @@ func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
 
 	f.DeletedRepos = append(f.DeletedRepos, deleteRepoCall{Owner: owner, Repo: repo})
 	return nil
+}
+
+// GetAuthenticatedUser implements the Client interface.
+func (f *FakeClient) GetAuthenticatedUser(_ context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["GetAuthenticatedUser"]; err != nil {
+		return "", err
+	}
+
+	if f.AuthenticatedUser == "" {
+		return "testuser", nil
+	}
+	return f.AuthenticatedUser, nil
 }
 
 // CreateFileOnBranch implements the Client interface.

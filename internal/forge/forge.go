@@ -53,4 +53,7 @@ type Client interface {
 
 	// DeleteRepo deletes a repository. This is irreversible.
 	DeleteRepo(ctx context.Context, owner, repo string) error
+
+	// GetAuthenticatedUser returns the login of the currently authenticated user.
+	GetAuthenticatedUser(ctx context.Context) (string, error)
 }
