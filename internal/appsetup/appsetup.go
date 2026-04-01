@@ -12,6 +12,7 @@
 package appsetup
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -469,11 +471,7 @@ type StdinPrompter struct{}
 // WaitForEnter prints the prompt and waits for Enter.
 func (StdinPrompter) WaitForEnter(prompt string) error {
 	fmt.Print(prompt)
-	var b [1]byte
-	_, err := fmt.Scanln(&b)
-	// Scanln returns an error for empty input (just Enter), which is fine
-	if err != nil && err.Error() == "unexpected newline" {
-		return nil
-	}
-	return nil
+	reader := bufio.NewReader(os.Stdin)
+	_, err := reader.ReadString('\n')
+	return err
 }
