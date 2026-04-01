@@ -106,7 +106,7 @@ func TestExchangeCode(t *testing.T) {
 			Slug:     "fullsend-my-org",
 			Name:     "fullsend-my-org",
 			ClientID: "Iv1.abc123",
-			PEM:      "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----",
+			PEM:      "test-pem-data-not-a-real-key",
 			HTMLURL:  "https://github.com/apps/fullsend-my-org",
 		})
 	}))
@@ -120,7 +120,7 @@ func TestExchangeCode(t *testing.T) {
 	assert.Equal(t, 12345, creds.ID)
 	assert.Equal(t, "fullsend-my-org", creds.Slug)
 	assert.Equal(t, "Iv1.abc123", creds.ClientID)
-	assert.Contains(t, creds.PEM, "RSA PRIVATE KEY")
+	assert.Equal(t, "test-pem-data-not-a-real-key", creds.PEM)
 }
 
 func TestExchangeCode_APIError(t *testing.T) {

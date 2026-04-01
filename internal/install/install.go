@@ -86,18 +86,18 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// Step 1: Discover org repos
-	repos, defaultBranches, err := inst.discoverRepos(ctx, opts.Org)
+	discovered, err := inst.discoverRepos(ctx, opts.Org)
 	if err != nil {
 		inst.printer.StepFail("Failed to list organization repositories")
 		return nil, fmt.Errorf("listing org repos: %w", err)
 	}
-	result.OrgRepos = repos
-	result.DefaultBranches = defaultBranches
+	result.OrgRepos = discovered.Names
+	result.DefaultBranches = discovered.DefaultBranches
 
 	// Validate --repo values against discovered repos
 	if len(opts.Repos) > 0 {
-		repoSet := make(map[string]bool, len(repos))
-		for _, r := range repos {
+		repoSet := make(map[string]bool, len(discovered.Names))
+		for _, r := range discovered.Names {
 			repoSet[r] = true
 		}
 		for _, r := range opts.Repos {
@@ -111,14 +111,16 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 	result.AppConfig = inst.configureApp(opts)
 
 	// Step 3: Generate config
-	result.Config = inst.generateConfig(repos, opts)
+	result.Config = inst.generateConfig(discovered.Names, opts)
 
 	if err := result.Config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	// Step 4: Create .fullsend repo
-	if err := inst.createConfigRepo(ctx, opts.Org, result); err != nil {
+	// Step 4: Create .fullsend repo (or skip if it already exists)
+	if discovered.ConfigRepoExists {
+		inst.printer.StepDone(".fullsend repository already exists — skipping creation")
+	} else if err := inst.createConfigRepo(ctx, opts.Org, result); err != nil {
 		return nil, err
 	}
 
@@ -133,28 +135,37 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 	return result, nil
 }
 
-func (inst *Installer) discoverRepos(ctx context.Context, org string) ([]string, map[string]string, error) {
+// discoverResult holds the output of repo discovery.
+type discoverResult struct {
+	DefaultBranches  map[string]string
+	Names            []string
+	ConfigRepoExists bool
+}
+
+func (inst *Installer) discoverRepos(ctx context.Context, org string) (*discoverResult, error) {
 	inst.printer.StepStart("Discovering repositories...")
 
 	allRepos, err := inst.client.ListOrgRepos(ctx, org)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	var names []string
-	defaultBranches := make(map[string]string)
+	result := &discoverResult{
+		DefaultBranches: make(map[string]string),
+	}
+
 	for _, r := range allRepos {
-		// Skip the config repo itself if it already exists
 		if r.Name == ".fullsend" {
+			result.ConfigRepoExists = true
 			continue
 		}
-		names = append(names, r.Name)
-		defaultBranches[r.Name] = r.DefaultBranch
+		result.Names = append(result.Names, r.Name)
+		result.DefaultBranches[r.Name] = r.DefaultBranch
 	}
-	sort.Strings(names)
+	sort.Strings(result.Names)
 
-	inst.printer.StepDone(fmt.Sprintf("Found %d repositories", len(names)))
-	return names, defaultBranches, nil
+	inst.printer.StepDone(fmt.Sprintf("Found %d repositories", len(result.Names)))
+	return result, nil
 }
 
 func (inst *Installer) configureApp(opts Options) *forgegithub.AppConfig {
