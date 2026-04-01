@@ -198,8 +198,6 @@ func (inst *Installer) generateConfig(repos []string, opts Options) *config.OrgC
 // writeConfigFiles writes config.yaml, the reusable workflow, and CODEOWNERS
 // into the .fullsend repo. If newRepo is true, the first file creation is
 // retried with backoff to wait for GitHub to finish initializing the branch.
-// If files already exist, creation will fail with a 422 — this is logged
-// and skipped so the command is idempotent.
 func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result *Result, newRepo bool) error {
 	inst.printer.StepStart("Writing configuration files...")
 
@@ -208,29 +206,36 @@ func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result 
 		return fmt.Errorf("marshalling config: %w", err)
 	}
 
-	// config.yaml is required — retry with backoff
-	if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", "config.yaml",
-		"Initialize fullsend configuration", configData, newRepo); writeErr != nil {
-		return writeErr
-	}
-
-	// Workflow and CODEOWNERS are best-effort — failures are logged but not fatal.
-	// The Contents API creates a commit per file, so sequential writes can hit
-	// transient 404/409 errors as the branch ref updates between commits.
-	supplementary := []struct {
+	// Required files — failure is fatal
+	required := []struct {
 		path, message string
 		content       []byte
 	}{
+		{"config.yaml", "Initialize fullsend configuration", configData},
 		{".github/workflows/agent.yaml", "Add reusable agent dispatch workflow", []byte(generateReusableWorkflow())},
-		{"CODEOWNERS", "Add CODEOWNERS to protect configuration", []byte(generateCodeowners(org))},
 	}
 
-	for _, f := range supplementary {
+	for i, f := range required {
+		isFirst := i == 0 && newRepo
 		if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", f.path,
-			f.message, f.content, false); writeErr != nil {
-			inst.printer.StepWarn(fmt.Sprintf("Could not write %s: %v", f.path, writeErr))
-			inst.printer.StepInfo("You can add this file manually later.")
+			f.message, f.content, isFirst); writeErr != nil {
+			// If the workflow file fails with 404, it's likely the workflow scope is missing
+			if f.path == ".github/workflows/agent.yaml" && strings.Contains(writeErr.Error(), "404") {
+				inst.printer.Blank()
+				inst.printer.ErrorBox("Missing 'workflow' token scope",
+					"Writing to .github/workflows/ requires the 'workflow' scope on your\n"+
+						"  GitHub token. The gh CLI does not request this scope by default.\n\n"+
+						"  Fix: run 'gh auth refresh -s workflow' to add the scope, then re-run install.")
+			}
+			return writeErr
 		}
+	}
+
+	// CODEOWNERS is optional — failure is logged but not fatal
+	if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", "CODEOWNERS",
+		"Add CODEOWNERS to protect configuration", []byte(generateCodeowners(org)), false); writeErr != nil {
+		inst.printer.StepWarn(fmt.Sprintf("Could not write CODEOWNERS: %v", writeErr))
+		inst.printer.StepInfo("You can add this file manually later.")
 	}
 
 	inst.printer.StepDone("Configuration files written to .fullsend")
