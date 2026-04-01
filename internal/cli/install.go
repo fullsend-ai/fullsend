@@ -104,6 +104,8 @@ Examples:
 			}
 			printer.StepDone(fmt.Sprintf("Authenticated via %s", source))
 
+			client := forgegithub.NewLiveClient(token)
+
 			var agentCreds []install.AgentCredentials
 
 			// Step 1: Create and install GitHub Apps for each agent role
@@ -112,11 +114,21 @@ Examples:
 				printer.Header(fmt.Sprintf("Setting up %d agent apps", len(activeRoles)))
 				printer.Blank()
 
+				// Provide a secret checker so appsetup can verify PEM keys exist
+				// before offering to reuse an existing app
+				secretCheck := appsetup.WithSecretCheck(func(ctx context.Context, role string) bool {
+					secretName := fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY",
+						strings.ToUpper(role))
+					exists, checkErr := client.RepoSecretExists(ctx, org, ".fullsend", secretName)
+					return checkErr == nil && exists
+				})
+
 				setup := appsetup.New(
 					printer,
 					appsetup.StdinPrompter{},
 					appsetup.DefaultBrowser{},
 					token,
+					secretCheck,
 				)
 
 				for _, role := range activeRoles {
@@ -138,7 +150,6 @@ Examples:
 			}
 
 			// Step 2: Create config repo, store secrets, and enrollment PRs
-			client := forgegithub.NewLiveClient(token)
 
 			inst := install.New(client, printer)
 			_, err := inst.Run(cmd.Context(), install.Options{

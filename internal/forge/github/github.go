@@ -197,6 +197,23 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 	return c.put(ctx, secretURL, body, &result)
 }
 
+// RepoSecretExists checks whether an Actions secret exists on a repository.
+func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/actions/secrets/%s",
+		c.baseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(name))
+
+	var result json.RawMessage
+	if err := c.get(ctx, reqURL, &result); err != nil {
+		// 404 means the secret doesn't exist
+		if apiErr, ok := err.(*apiError); ok && apiErr.StatusCode == 404 {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
+}
+
 // CreateBranch creates a new branch from the default branch's HEAD.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// First, get the default branch SHA

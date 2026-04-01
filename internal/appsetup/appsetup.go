@@ -73,14 +73,19 @@ type BrowserOpener interface {
 	Open(ctx context.Context, url string) error
 }
 
+// SecretExistsFunc checks whether a secret exists for an agent role.
+// Returns true if the secret is stored and the app can be reused.
+type SecretExistsFunc func(ctx context.Context, role string) bool
+
 // Setup orchestrates the GitHub App creation and installation flow.
 type Setup struct {
-	printer *ui.Printer
-	prompt  Prompter
-	browser BrowserOpener
-	token   string
-	baseURL string // GitHub API base URL (for testing)
-	webURL  string // GitHub web base URL (for testing)
+	printer      *ui.Printer
+	prompt       Prompter
+	browser      BrowserOpener
+	secretExists SecretExistsFunc
+	token        string
+	baseURL      string // GitHub API base URL (for testing)
+	webURL       string // GitHub web base URL (for testing)
 }
 
 // Option configures a Setup instance.
@@ -94,6 +99,13 @@ func WithBaseURL(url string) Option {
 // WithWebURL overrides the GitHub web base URL (for testing).
 func WithWebURL(url string) Option {
 	return func(s *Setup) { s.webURL = url }
+}
+
+// WithSecretCheck sets a function to verify that an agent's PEM key
+// secret exists in the .fullsend repo. If the secret doesn't exist,
+// the app can't be reused (the PEM is only available at creation time).
+func WithSecretCheck(fn SecretExistsFunc) Option {
+	return func(s *Setup) { s.secretExists = fn }
 }
 
 // New creates a Setup with the given dependencies.
@@ -147,20 +159,50 @@ func (s *Setup) resolveApp(ctx context.Context, org, role string) (*AppCredentia
 
 	if existing != nil {
 		s.printer.StepDone(fmt.Sprintf("Found existing app %q installed on this organization", existing.Slug))
-		s.printer.Blank()
 
-		reuse, confirmErr := s.prompt.Confirm(fmt.Sprintf("Use existing app %q? [Y/n] ", existing.Slug))
-		if confirmErr != nil {
-			return nil, fmt.Errorf("reading confirmation: %w", confirmErr)
+		// Check if the secret exists — if not, the PEM is lost and the app can't be reused
+		if s.secretExists != nil && !s.secretExists(ctx, role) {
+			s.printer.StepWarn(fmt.Sprintf("The private key for %q is not stored as a repo secret", existing.Slug))
+			s.printer.StepInfo("The PEM key is only available at app creation time and cannot be retrieved later.")
+			s.printer.StepInfo("You need to delete this app and create a new one.")
+			s.printer.Blank()
+
+			if promptErr := s.prompt.WaitForEnter(fmt.Sprintf("Press [Enter] to open the app settings page to delete %s...", existing.Slug)); promptErr != nil {
+				return nil, fmt.Errorf("waiting for user: %w", promptErr)
+			}
+
+			deleteURL := fmt.Sprintf("%s/organizations/%s/settings/apps/%s/advanced",
+				s.webURL, org, existing.Slug)
+			if openErr := s.browser.Open(ctx, deleteURL); openErr != nil {
+				s.printer.StepWarn("Could not open browser automatically")
+				s.printer.StepInfo(fmt.Sprintf("Open this URL manually: %s", deleteURL))
+			} else {
+				s.printer.StepInfo("Opened app settings in your browser.")
+			}
+
+			s.printer.StepInfo("Delete the app, then return here.")
+			s.printer.Blank()
+
+			if promptErr := s.prompt.WaitForEnter("Press [Enter] when the app has been deleted..."); promptErr != nil {
+				return nil, fmt.Errorf("waiting for user: %w", promptErr)
+			}
+			// Fall through to create a new app
+		} else {
+			s.printer.Blank()
+
+			reuse, confirmErr := s.prompt.Confirm(fmt.Sprintf("Use existing app %q? [Y/n] ", existing.Slug))
+			if confirmErr != nil {
+				return nil, fmt.Errorf("reading confirmation: %w", confirmErr)
+			}
+
+			if reuse {
+				s.printer.StepDone(fmt.Sprintf("Using existing app %q", existing.Slug))
+				return existing, nil
+			}
+
+			s.printer.StepInfo("OK, we'll create a new app instead.")
+			s.printer.Blank()
 		}
-
-		if reuse {
-			s.printer.StepDone(fmt.Sprintf("Using existing app %q", existing.Slug))
-			return existing, nil
-		}
-
-		s.printer.StepInfo("OK, we'll create a new app instead.")
-		s.printer.Blank()
 	}
 
 	// No existing app (or user declined) — create one

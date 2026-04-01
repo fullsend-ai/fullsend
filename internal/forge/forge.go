@@ -60,4 +60,7 @@ type Client interface {
 	// CreateRepoSecret creates or updates an Actions secret on a repository.
 	// The value is encrypted automatically using the repo's public key.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
+
+	// RepoSecretExists checks whether an Actions secret exists on a repository.
+	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
 }

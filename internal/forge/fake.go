@@ -213,6 +213,23 @@ func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, _ st
 	return nil
 }
 
+// RepoSecretExists implements the Client interface.
+func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["RepoSecretExists"]; err != nil {
+		return false, err
+	}
+
+	for _, s := range f.CreatedSecrets {
+		if s.Owner == owner && s.Repo == repo && s.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // GetAuthenticatedUser implements the Client interface.
 func (f *FakeClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 	f.mu.Lock()
