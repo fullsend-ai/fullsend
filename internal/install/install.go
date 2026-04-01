@@ -152,15 +152,13 @@ func (inst *Installer) discoverRepos(ctx context.Context, org string) ([]string,
 func (inst *Installer) configureApp(org string) *forgegithub.AppConfig {
 	appConfig := forgegithub.DefaultAppConfig(org)
 
-	inst.printer.StepWarn("GitHub App creation requires manual setup")
-	inst.printer.StepInfo(fmt.Sprintf("Create a GitHub App named %q at:", appConfig.Name))
-	inst.printer.StepInfo(fmt.Sprintf("  https://github.com/organizations/%s/settings/apps/new", org))
+	inst.printer.StepDone("GitHub App configured")
+	inst.printer.StepInfo(fmt.Sprintf("name: %s", appConfig.Name))
 	inst.printer.StepInfo(fmt.Sprintf("permissions: issues=%s, prs=%s, checks=%s, contents=%s",
 		appConfig.Permissions.Issues,
 		appConfig.Permissions.PullReqs,
 		appConfig.Permissions.Checks,
 		appConfig.Permissions.Contents))
-	inst.printer.StepInfo("Store the App private key as a secret in the .fullsend repo after creation.")
 
 	return appConfig
 }
@@ -301,12 +299,10 @@ func (inst *Installer) printSummary(org string, result *Result) {
 		inst.printer.Blank()
 	}
 
-	inst.printer.Header("Remaining manual steps")
+	inst.printer.Header("Next steps")
 	inst.printer.Blank()
-	inst.printer.StepInfo(fmt.Sprintf("1. Create a GitHub App named %q", result.AppConfig.Name))
-	inst.printer.StepInfo(fmt.Sprintf("   https://github.com/organizations/%s/settings/apps/new", org))
-	inst.printer.StepInfo("2. Install the App to the organization")
-	inst.printer.StepInfo(fmt.Sprintf("3. Store the App private key as a secret in %s/.fullsend", org))
+	inst.printer.StepInfo(fmt.Sprintf("Store the GitHub App private key as a secret in %s/.fullsend", org))
+	inst.printer.StepInfo("  Secret name: FULLSEND_APP_PRIVATE_KEY")
 	inst.printer.Blank()
 }
 

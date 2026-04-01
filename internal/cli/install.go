@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	forgegithub "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/install"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -16,17 +17,24 @@ import (
 
 func newInstallCmd() *cobra.Command {
 	var (
-		repos  []string
-		agents []string
-		dryRun bool
+		repos   []string
+		agents  []string
+		dryRun  bool
+		skipApp bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "install <org>",
 		Short: "Install fullsend to a GitHub organization",
-		Long: `Install fullsend to a GitHub organization by creating a .fullsend
-configuration repository with safe defaults, and enrollment PRs for
-any repos you want to enable.
+		Long: `Install fullsend to a GitHub organization by creating a GitHub App,
+a .fullsend configuration repository with safe defaults, and enrollment
+PRs for any repos you want to enable.
+
+The install command walks you through:
+  1. Creating a GitHub App with the right permissions (opens browser)
+  2. Installing the app on your organization (opens browser)
+  3. Creating a .fullsend config repo with safe defaults
+  4. Creating enrollment PRs for any repos you enable
 
 Requires a GitHub token with these scopes:
   - repo (to create repos, branches, files, and PRs)
@@ -41,15 +49,14 @@ Nothing gets automatically merged as a result of installation.
 Repos receive PRs that must be reviewed and merged to take effect.
 
 Examples:
-  # Install using gh CLI credentials (if already logged in)
+  # Full install with interactive app creation
   fullsend install my-org
 
-  # Install with an explicit token
-  export GITHUB_TOKEN=ghp_xxx
+  # Install and enable a specific repo
   fullsend install my-org --repo cool-project
 
-  # Install with only review and implementation agents
-  fullsend install my-org --agents review,implementation --repo cool-project
+  # Skip app creation (if the app already exists)
+  fullsend install my-org --skip-app-setup --repo cool-project
 
   # Dry run to preview what would happen
   fullsend install my-org --repo cool-project --dry-run`,
@@ -90,6 +97,26 @@ Examples:
 			}
 			printer.StepDone(fmt.Sprintf("Authenticated via %s", source))
 
+			// Step 1: GitHub App creation and installation
+			if !skipApp {
+				setup := appsetup.New(
+					printer,
+					appsetup.StdinPrompter{},
+					appsetup.DefaultBrowser{},
+					token,
+				)
+
+				appCreds, err := setup.Run(cmd.Context(), org)
+				if err != nil {
+					return fmt.Errorf("app setup: %w", err)
+				}
+
+				printer.StepInfo(fmt.Sprintf("App PEM key has %d bytes — store it as a repo secret",
+					len(appCreds.PEM)))
+				printer.Blank()
+			}
+
+			// Step 2: Create config repo and enrollment PRs
 			client := forgegithub.NewLiveClient(token)
 
 			inst := install.New(client, printer)
@@ -108,6 +135,8 @@ Examples:
 		"Agent roles to enable (comma-separated: triage,implementation,review)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
 		"Preview what would happen without making changes")
+	cmd.Flags().BoolVar(&skipApp, "skip-app-setup", false,
+		"Skip GitHub App creation (use if the app already exists)")
 
 	return cmd
 }
