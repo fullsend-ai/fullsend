@@ -363,6 +363,10 @@ func (s *Setup) buildManifest(org, redirectURL string) map[string]any {
 		"redirect_url": redirectURL,
 		"description":  appConfig.Description,
 		"public":       false,
+		"hook_attributes": map[string]any{
+			"url":    appConfig.URL,
+			"active": false,
+		},
 		"default_permissions": map[string]string{
 			"issues":        appConfig.Permissions.Issues,
 			"pull_requests": appConfig.Permissions.PullReqs,
