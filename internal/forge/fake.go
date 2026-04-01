@@ -11,15 +11,16 @@ import (
 //
 //nolint:govet // fieldalignment: test fake, readability over alignment
 type FakeClient struct {
-	Errors            map[string]error     // Errors to inject, keyed by method name.
-	Repos             []Repository         // Repos to return from ListOrgRepos.
-	CreatedRepos      []createRepoCall     // Tracks calls to CreateRepo.
-	CreatedFiles      []createFileCall     // Tracks calls to CreateFile/CreateOrUpdateFile.
-	CreatedProposals  []createProposalCall // Tracks calls to CreateChangeProposal.
-	CreatedBranches   []createBranchCall   // Tracks calls to CreateBranch.
-	DeletedRepos      []deleteRepoCall     // Tracks calls to DeleteRepo.
-	CreatedSecrets    []createSecretCall   // Tracks calls to CreateRepoSecret.
-	AuthenticatedUser string               // Returned by GetAuthenticatedUser.
+	Errors            map[string]error        // Errors to inject, keyed by method name.
+	Repos             []Repository            // Repos to return from ListOrgRepos.
+	CreatedRepos      []createRepoCall        // Tracks calls to CreateRepo.
+	CreatedFiles      []createFileCall        // Tracks calls to CreateFile/CreateOrUpdateFile.
+	CreatedProposals  []createProposalCall    // Tracks calls to CreateChangeProposal.
+	CreatedBranches   []createBranchCall      // Tracks calls to CreateBranch.
+	DeletedRepos      []deleteRepoCall        // Tracks calls to DeleteRepo.
+	CreatedSecrets    []createSecretCall      // Tracks calls to CreateRepoSecret.
+	WorkflowRuns      map[string]*WorkflowRun // Keyed by "owner/repo/workflow".
+	AuthenticatedUser string                  // Returned by GetAuthenticatedUser.
 	mu                sync.Mutex
 	proposalCounter   int
 }
@@ -53,7 +54,8 @@ type createSecretCall struct {
 // NewFakeClient creates a FakeClient with no pre-configured state.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		Errors: make(map[string]error),
+		Errors:       make(map[string]error),
+		WorkflowRuns: make(map[string]*WorkflowRun),
 	}
 }
 
@@ -258,4 +260,50 @@ func (f *FakeClient) CreateFileOnBranch(_ context.Context, owner, repo, branch, 
 		Owner: owner, Repo: repo, Branch: branch, Path: path, Message: message, Content: content,
 	})
 	return nil
+}
+
+// GetLatestWorkflowRun implements the Client interface.
+func (f *FakeClient) GetLatestWorkflowRun(_ context.Context, owner, repo, workflowFile string) (*WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["GetLatestWorkflowRun"]; err != nil {
+		return nil, err
+	}
+
+	key := fmt.Sprintf("%s/%s/%s", owner, repo, workflowFile)
+	run, ok := f.WorkflowRuns[key]
+	if !ok {
+		return nil, nil
+	}
+	return run, nil
+}
+
+// GetWorkflowRun implements the Client interface.
+func (f *FakeClient) GetWorkflowRun(_ context.Context, owner, repo string, runID int) (*WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["GetWorkflowRun"]; err != nil {
+		return nil, err
+	}
+
+	for _, run := range f.WorkflowRuns {
+		if run.ID == runID {
+			return run, nil
+		}
+	}
+	return nil, nil
+}
+
+// ListRepoPullRequests implements the Client interface.
+func (f *FakeClient) ListRepoPullRequests(_ context.Context, _, _ string) ([]ChangeProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.Errors["ListRepoPullRequests"]; err != nil {
+		return nil, err
+	}
+
+	return []ChangeProposal{}, nil
 }

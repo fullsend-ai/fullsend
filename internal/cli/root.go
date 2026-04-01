@@ -27,6 +27,7 @@ review without manual shepherding.`,
 
 	cmd.AddCommand(newInstallCmd())
 	cmd.AddCommand(newUninstallCmd())
+	cmd.AddCommand(newRepoCmd())
 
 	return cmd
 }

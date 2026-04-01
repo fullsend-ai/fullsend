@@ -24,6 +24,15 @@ type ChangeProposal struct {
 	Number int    `json:"number"`
 }
 
+// WorkflowRun represents a GitHub Actions workflow run.
+type WorkflowRun struct {
+	Status     string `json:"status"`     // "queued", "in_progress", "completed"
+	Conclusion string `json:"conclusion"` // "success", "failure", etc. (empty while running)
+	HTMLURL    string `json:"html_url"`
+	Name       string `json:"name"`
+	ID         int    `json:"id"`
+}
+
 // Client is the interface for forge operations needed by fullsend.
 // Each supported forge (GitHub, GitLab, Forgejo) implements this interface.
 type Client interface {
@@ -63,4 +72,13 @@ type Client interface {
 
 	// RepoSecretExists checks whether an Actions secret exists on a repository.
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+
+	// GetLatestWorkflowRun returns the most recent run of a workflow file.
+	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
+
+	// GetWorkflowRun returns a specific workflow run by ID.
+	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
+
+	// ListRepoPullRequests lists open pull requests in a repository.
+	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
 }

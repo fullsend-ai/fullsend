@@ -156,9 +156,10 @@ func (inst *Installer) Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	result.SecretsStored = secretsStored
 
-	// Step 7: Create PRs for enabled repos
-	if err := inst.createEnrollmentPRs(ctx, opts.Org, result); err != nil {
-		return nil, err
+	// Step 7: Watch the repo onboarding workflow and report PRs
+	if err := inst.watchOnboarding(ctx, opts.Org, result); err != nil {
+		// Non-fatal — the workflow may not have triggered yet
+		inst.printer.StepWarn(fmt.Sprintf("Could not watch onboarding: %v", err))
 	}
 
 	// Print summary
@@ -294,14 +295,15 @@ func (inst *Installer) writeConfigFiles(ctx context.Context, org string, result 
 	}{
 		{"config.yaml", "Initialize fullsend configuration", configData},
 		{".github/workflows/agent.yaml", "Add reusable agent dispatch workflow", []byte(generateReusableWorkflow())},
+		{".github/workflows/repo-onboard.yaml", "Add repo onboarding workflow", []byte(generateOnboardingWorkflow(org))},
 	}
 
 	for i, f := range required {
 		isFirst := i == 0 && newRepo
 		if writeErr := inst.writeFileWithRetry(ctx, org, ".fullsend", f.path,
 			f.message, f.content, isFirst); writeErr != nil {
-			// If the workflow file fails with 404, it's likely the workflow scope is missing
-			if f.path == ".github/workflows/agent.yaml" && strings.Contains(writeErr.Error(), "404") {
+			// If a workflow file fails with 404, it's likely the workflow scope is missing
+			if strings.HasPrefix(f.path, ".github/workflows/") && strings.Contains(writeErr.Error(), "404") {
 				inst.printer.Blank()
 				inst.printer.ErrorBox("Missing 'workflow' token scope",
 					"Writing to .github/workflows/ requires the 'workflow' scope on your\n"+
@@ -353,62 +355,122 @@ func (inst *Installer) writeFileWithRetry(ctx context.Context, org, repo, path, 
 	return fmt.Errorf("writing %s: %w", path, lastErr)
 }
 
-func (inst *Installer) createEnrollmentPRs(ctx context.Context, org string, result *Result) error {
+// watchOnboarding monitors the repo onboarding workflow after config is pushed.
+// It waits for the workflow to start and complete, then collects any PRs created
+// across the org's repos and reports them to the user.
+func (inst *Installer) watchOnboarding(ctx context.Context, org string, result *Result) error {
 	enabledRepos := result.Config.EnabledRepos()
 	if len(enabledRepos) == 0 {
-		inst.printer.StepInfo("No repos enabled — skip PR creation")
-		inst.printer.StepInfo("Enable repos in .fullsend/config.yaml and re-run")
+		inst.printer.StepInfo("No repos enabled — repo onboarding will run when you enable repos")
+		inst.printer.StepInfo("Edit config.yaml in .fullsend to enable repos, then push to main")
 		return nil
 	}
 
-	sort.Strings(enabledRepos)
-	inst.printer.Header("Creating enrollment PRs")
+	inst.printer.Header("Watching repo onboarding")
+	inst.printer.Blank()
+	inst.printer.StepInfo("The repo onboarding workflow should start shortly...")
+	inst.printer.StepInfo(fmt.Sprintf("It will create PRs to add the fullsend workflow to %d enabled repos.", len(enabledRepos)))
 	inst.printer.Blank()
 
-	for _, repo := range enabledRepos {
-		defaultBranch := "main"
-		if branch, ok := result.DefaultBranches[repo]; ok && branch != "" {
-			defaultBranch = branch
-		}
-		proposal, err := inst.enrollRepo(ctx, org, repo, defaultBranch)
+	// Poll for the workflow run to appear and complete
+	var run *forge.WorkflowRun
+	maxWait := 120 * time.Second
+	pollInterval := 5 * time.Second
+	deadline := time.Now().Add(maxWait)
+
+	for time.Now().Before(deadline) {
+		latest, err := inst.client.GetLatestWorkflowRun(ctx, org, ".fullsend", "repo-onboard.yaml")
 		if err != nil {
-			inst.printer.StepFail(fmt.Sprintf("Failed to create PR for %s: %v", repo, err))
-			// Continue with other repos — don't fail the whole install
+			// Workflow may not exist yet — keep waiting
+			inst.printer.StepInfo("Waiting for onboarding workflow to start...")
+			select {
+			case <-time.After(pollInterval):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		if latest == nil {
+			select {
+			case <-time.After(pollInterval):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		run = latest
+
+		if run.Status == "completed" {
+			break
+		}
+
+		inst.printer.StepInfo(fmt.Sprintf("Onboarding workflow is %s... (%s)",
+			run.Status, run.HTMLURL))
+
+		select {
+		case <-time.After(pollInterval):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if run == nil {
+		inst.printer.StepWarn("Onboarding workflow did not start within timeout")
+		inst.printer.StepInfo("Check the Actions tab at:")
+		inst.printer.StepInfo(fmt.Sprintf("  https://github.com/%s/.fullsend/actions", org))
+		return nil
+	}
+
+	if run.Status != "completed" {
+		inst.printer.StepInfo(fmt.Sprintf("Onboarding workflow is still running: %s", run.HTMLURL))
+		inst.printer.StepInfo("Check back later for the enrollment PRs.")
+		return nil
+	}
+
+	if run.Conclusion == "success" {
+		inst.printer.StepDone("Repo onboarding workflow completed successfully")
+	} else {
+		inst.printer.StepWarn(fmt.Sprintf("Onboarding workflow finished with conclusion: %s", run.Conclusion))
+		inst.printer.StepInfo(fmt.Sprintf("Details: %s", run.HTMLURL))
+	}
+
+	// Collect enrollment PRs from enabled repos
+	inst.printer.Blank()
+	inst.printer.Header("Enrollment pull requests")
+	inst.printer.Blank()
+
+	foundPRs := false
+	sort.Strings(enabledRepos)
+	for _, repo := range enabledRepos {
+		prs, err := inst.client.ListRepoPullRequests(ctx, org, repo)
+		if err != nil {
 			continue
 		}
-		result.Proposals[repo] = proposal
-		inst.printer.StepDone(fmt.Sprintf("PR created for %s", repo))
-		inst.printer.StepInfo(proposal.URL)
+		for _, pr := range prs {
+			if strings.Contains(pr.Title, "fullsend") {
+				inst.printer.PRLink(repo, pr.URL)
+				result.Proposals[repo] = &forge.ChangeProposal{
+					Number: pr.Number,
+					URL:    pr.URL,
+					Title:  pr.Title,
+				}
+				foundPRs = true
+			}
+		}
 	}
+
+	if foundPRs {
+		inst.printer.Blank()
+		inst.printer.StepInfo("Review and merge these PRs to complete onboarding.")
+		inst.printer.StepInfo("Nothing changes until a PR is merged.")
+	} else {
+		inst.printer.StepInfo("No enrollment PRs found — repos may already be onboarded.")
+	}
+	inst.printer.Blank()
 
 	return nil
-}
-
-func (inst *Installer) enrollRepo(ctx context.Context, org, repo, defaultBranch string) (*forge.ChangeProposal, error) {
-	branchName := "fullsend/enroll"
-
-	if err := inst.client.CreateBranch(ctx, org, repo, branchName); err != nil {
-		return nil, fmt.Errorf("creating branch: %w", err)
-	}
-
-	workflowContent := generateStubWorkflow(org)
-	if err := inst.client.CreateFileOnBranch(ctx, org, repo, branchName,
-		".github/workflows/fullsend.yaml",
-		"Add fullsend agent dispatch workflow",
-		[]byte(workflowContent)); err != nil {
-		return nil, fmt.Errorf("creating workflow file: %w", err)
-	}
-
-	proposal, err := inst.client.CreateChangeProposal(ctx, org, repo,
-		"Connect to fullsend agent pipeline",
-		generatePRBody(org),
-		branchName,
-		defaultBranch)
-	if err != nil {
-		return nil, fmt.Errorf("creating pull request: %w", err)
-	}
-
-	return proposal, nil
 }
 
 func (inst *Installer) printSummary(org string, result *Result) {
@@ -457,6 +519,125 @@ func validateOrgName(org string) error {
 		return fmt.Errorf("invalid organization name %q: cannot start or end with a hyphen", org)
 	}
 	return nil
+}
+
+// generateOnboardingWorkflow produces the repo onboarding workflow for .fullsend.
+// This workflow runs on push to main and ensures each enabled repo has the
+// fullsend shim workflow installed. It creates PRs to add or remove the shim.
+func generateOnboardingWorkflow(org string) string {
+	return fmt.Sprintf(`# Repo onboarding workflow for fullsend.
+# Runs when config.yaml changes on main and ensures each enabled repo
+# has the fullsend shim workflow installed. Creates PRs to add it.
+name: Repo Onboarding
+
+on:
+  push:
+    branches: [main]
+    paths: [config.yaml]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout .fullsend config
+        uses: actions/checkout@v4
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.FULLSEND_APP_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: %[1]s
+
+      - name: Onboard repos
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: %[1]s
+        run: |
+          set -euo pipefail
+
+          echo "Reading config.yaml..."
+          ENABLED_REPOS=$(yq -r '.repos | to_entries[] | select(.value.enabled == true) | .key' config.yaml)
+
+          if [ -z "$ENABLED_REPOS" ]; then
+            echo "No repos enabled in config.yaml"
+            exit 0
+          fi
+
+          SHIM_WORKFLOW=$(cat <<'WORKFLOW_EOF'
+          %[2]s
+          WORKFLOW_EOF
+          )
+
+          echo "$ENABLED_REPOS" | while read -r REPO; do
+            echo "--- Checking $REPO ---"
+
+            # Check if the shim workflow already exists
+            if gh api "repos/${ORG}/${REPO}/contents/.github/workflows/fullsend.yaml" --silent 2>/dev/null; then
+              echo "  ✓ Shim workflow already exists in ${REPO}"
+              continue
+            fi
+
+            echo "  → Creating PR to add shim workflow to ${REPO}"
+
+            # Check if a PR already exists
+            EXISTING_PR=$(gh pr list --repo "${ORG}/${REPO}" --head "fullsend/onboard" --json number --jq '.[0].number' 2>/dev/null || true)
+            if [ -n "$EXISTING_PR" ]; then
+              echo "  ✓ PR #${EXISTING_PR} already exists"
+              continue
+            fi
+
+            # Create branch and PR
+            DEFAULT_BRANCH=$(gh api "repos/${ORG}/${REPO}" --jq '.default_branch')
+            SHA=$(gh api "repos/${ORG}/${REPO}/git/ref/heads/${DEFAULT_BRANCH}" --jq '.object.sha')
+
+            gh api "repos/${ORG}/${REPO}/git/refs" \
+              -f ref="refs/heads/fullsend/onboard" \
+              -f sha="${SHA}" 2>/dev/null || true
+
+            echo "$SHIM_WORKFLOW" | gh api "repos/${ORG}/${REPO}/contents/.github/workflows/fullsend.yaml" \
+              --method PUT \
+              -f message="Add fullsend agent dispatch workflow" \
+              -f content="$(echo "$SHIM_WORKFLOW" | base64 -w0)" \
+              -f branch="fullsend/onboard"
+
+            gh pr create \
+              --repo "${ORG}/${REPO}" \
+              --base "${DEFAULT_BRANCH}" \
+              --head "fullsend/onboard" \
+              --title "Connect to fullsend agent pipeline" \
+              --body "$(cat <<PR_EOF
+          ## Connect to fullsend agent pipeline
+
+          This PR adds a GitHub Actions workflow that connects this repository to the
+          fullsend autonomous development pipeline managed in [${ORG}/.fullsend](https://github.com/${ORG}/.fullsend).
+
+          ### What this does
+
+          - Triggers on issue, PR, and comment events
+          - Calls the reusable workflow in .fullsend to dispatch the appropriate agent
+
+          ### What this does NOT do
+
+          - No code is changed in this repository
+          - No automatic merging — auto_merge is disabled by default
+
+          ---
+          *Created by fullsend repo onboarding*
+          PR_EOF
+          )"
+
+            echo "  ✓ PR created for ${REPO}"
+          done
+
+          echo ""
+          echo "Onboarding complete."
+`, org, strings.ReplaceAll(GenerateStubWorkflow(org), "\n", "\n          "))
 }
 
 // generateReusableWorkflow produces the reusable workflow YAML for .fullsend.
@@ -512,8 +693,9 @@ jobs:
 `
 }
 
-// generateStubWorkflow produces the workflow YAML that enrolled repos add.
-func generateStubWorkflow(org string) string {
+// GenerateStubWorkflow produces the workflow YAML that enrolled repos add.
+// Exported for use by the `repo onboard` CLI command.
+func GenerateStubWorkflow(org string) string {
 	return fmt.Sprintf(`# fullsend agent dispatch — connects this repo to the fullsend pipeline.
 #
 # This workflow triggers on GitHub events and calls the reusable workflow
@@ -550,8 +732,9 @@ jobs:
 `, org)
 }
 
-// generatePRBody produces the PR description for enrollment PRs.
-func generatePRBody(org string) string {
+// GeneratePRBody produces the PR description for enrollment PRs.
+// Exported for use by the `repo onboard` CLI command.
+func GeneratePRBody(org string) string {
 	return fmt.Sprintf(`## Connect to fullsend agent pipeline
 
 This PR adds a GitHub Actions workflow that connects this repository to the

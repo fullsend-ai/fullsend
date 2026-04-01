@@ -293,6 +293,64 @@ func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete(ctx, reqURL)
 }
 
+// GetLatestWorkflowRun returns the most recent run of a workflow file.
+func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*forge.WorkflowRun, error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/runs?per_page=1",
+		c.baseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowFile))
+
+	var result struct {
+		WorkflowRuns []forge.WorkflowRun `json:"workflow_runs"`
+	}
+	if err := c.get(ctx, reqURL, &result); err != nil {
+		return nil, err
+	}
+
+	if len(result.WorkflowRuns) == 0 {
+		return nil, nil
+	}
+
+	return &result.WorkflowRuns[0], nil
+}
+
+// GetWorkflowRun returns a specific workflow run by ID.
+func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*forge.WorkflowRun, error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/actions/runs/%d",
+		c.baseURL, url.PathEscape(owner), url.PathEscape(repo), runID)
+
+	var run forge.WorkflowRun
+	if err := c.get(ctx, reqURL, &run); err != nil {
+		return nil, err
+	}
+
+	return &run, nil
+}
+
+// ListRepoPullRequests lists open pull requests in a repository.
+func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open&per_page=100",
+		c.baseURL, url.PathEscape(owner), url.PathEscape(repo))
+
+	var prs []struct {
+		HTMLURL string `json:"html_url"`
+		Title   string `json:"title"`
+		Number  int    `json:"number"`
+	}
+	if err := c.get(ctx, reqURL, &prs); err != nil {
+		return nil, err
+	}
+
+	proposals := make([]forge.ChangeProposal, len(prs))
+	for i, pr := range prs {
+		proposals[i] = forge.ChangeProposal{
+			Number: pr.Number,
+			URL:    pr.HTMLURL,
+			Title:  pr.Title,
+		}
+	}
+
+	return proposals, nil
+}
+
 func (c *LiveClient) getDefaultBranchSHA(ctx context.Context, owner, repo string) (string, error) {
 	repoURL := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, url.PathEscape(owner), url.PathEscape(repo))
 

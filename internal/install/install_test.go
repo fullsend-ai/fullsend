@@ -61,28 +61,30 @@ func TestInstall_WithEnabledRepo(t *testing.T) {
 		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
 	}
 
+	// Pre-populate a completed onboarding workflow run
+	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
+		ID: 1, Status: "completed", Conclusion: "success",
+		HTMLURL: "https://github.com/org/.fullsend/actions/runs/1",
+	}
+
 	inst, output := newTestInstaller(client)
 
-	result, err := inst.Run(context.Background(), Options{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := inst.Run(ctx, Options{
 		Org:   "org",
 		Repos: []string{"api"},
 	})
 	require.NoError(t, err)
 
-	// Should create a PR for enabled repo
-	assert.Len(t, result.Proposals, 1)
-	proposal, ok := result.Proposals["api"]
-	require.True(t, ok)
-	assert.Equal(t, 1, proposal.Number)
-	assert.Contains(t, proposal.URL, "api")
+	// Repo onboarding is now handled by the workflow, not direct PRs.
+	// The install command writes the onboarding workflow and watches it.
+	assert.Contains(t, output.String(), "onboarding workflow completed")
+	assert.Contains(t, output.String(), "Installation complete")
 
-	// Should have created a branch and workflow file
-	assert.Len(t, client.CreatedBranches, 1)
-	assert.Equal(t, "fullsend/enroll", client.CreatedBranches[0].BranchName)
-
-	// Check output mentions the PR
-	assert.Contains(t, output.String(), "PR created for api")
-	assert.Contains(t, output.String(), "Enrollment PRs: 1")
+	// Config should have the repo enabled
+	assert.True(t, result.Config.Repos["api"].Enabled)
 }
 
 func TestInstall_MultipleEnabledRepos(t *testing.T) {
@@ -92,18 +94,24 @@ func TestInstall_MultipleEnabledRepos(t *testing.T) {
 		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
 		{Name: "docs", FullName: "org/docs", DefaultBranch: "main"},
 	}
+	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
+		ID: 1, Status: "completed", Conclusion: "success",
+	}
 
 	inst, _ := newTestInstaller(client)
 
-	result, err := inst.Run(context.Background(), Options{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := inst.Run(ctx, Options{
 		Org:   "org",
 		Repos: []string{"api", "docs"},
 	})
 	require.NoError(t, err)
 
-	assert.Len(t, result.Proposals, 2)
-	assert.Contains(t, result.Proposals, "api")
-	assert.Contains(t, result.Proposals, "docs")
+	// Both repos should be enabled in config
+	assert.True(t, result.Config.Repos["api"].Enabled)
+	assert.True(t, result.Config.Repos["docs"].Enabled)
 }
 
 func TestInstall_CustomAgents(t *testing.T) {
@@ -195,25 +203,27 @@ func TestInstall_CreateFileError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestInstall_PRCreationErrorContinues(t *testing.T) {
+func TestInstall_OnboardingWorkflowTimeout(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{
 		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
-		{Name: "web", FullName: "org/web", DefaultBranch: "main"},
 	}
-	// Fail branch creation for any repo — this will affect all PRs
-	// but the install should still complete
-	client.Errors["CreateBranch"] = errors.New("branch exists")
+	// No workflow run pre-populated — will time out
 
-	inst, _ := newTestInstaller(client)
+	inst, output := newTestInstaller(client)
 
-	result, err := inst.Run(context.Background(), Options{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, err := inst.Run(ctx, Options{
 		Org:   "org",
-		Repos: []string{"api", "web"},
+		Repos: []string{"api"},
 	})
 	require.NoError(t, err)
 
-	// PRs should be empty since branch creation failed
+	// Should warn about timeout but not fail
+	assert.Contains(t, output.String(), "onboarding")
+	assert.Contains(t, output.String(), "Installation complete")
 	assert.Empty(t, result.Proposals)
 }
 
@@ -227,8 +237,19 @@ func TestGenerateReusableWorkflow(t *testing.T) {
 	assert.Contains(t, wf, "Agent Dispatch")
 }
 
+func TestGenerateOnboardingWorkflow(t *testing.T) {
+	wf := generateOnboardingWorkflow("my-org")
+
+	assert.Contains(t, wf, "Repo Onboarding")
+	assert.Contains(t, wf, "config.yaml")
+	assert.Contains(t, wf, "FULLSEND_FULLSEND_APP_PRIVATE_KEY")
+	assert.Contains(t, wf, "my-org")
+	assert.Contains(t, wf, "fullsend/onboard")
+	assert.Contains(t, wf, "workflow_dispatch")
+}
+
 func TestGenerateStubWorkflow(t *testing.T) {
-	wf := generateStubWorkflow("my-org")
+	wf := GenerateStubWorkflow("my-org")
 
 	assert.Contains(t, wf, "my-org/.fullsend")
 	assert.Contains(t, wf, "issues:")
@@ -238,7 +259,7 @@ func TestGenerateStubWorkflow(t *testing.T) {
 }
 
 func TestGeneratePRBody(t *testing.T) {
-	body := generatePRBody("my-org")
+	body := GeneratePRBody("my-org")
 
 	assert.Contains(t, body, "my-org/.fullsend")
 	assert.Contains(t, body, "No code is changed")
@@ -293,18 +314,20 @@ func TestInstall_DefaultBranch(t *testing.T) {
 	client.Repos = []forge.Repository{
 		{Name: "api", FullName: "org/api", DefaultBranch: "develop"},
 	}
+	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
+		ID: 1, Status: "completed", Conclusion: "success",
+	}
 
 	inst, _ := newTestInstaller(client)
 
-	result, err := inst.Run(context.Background(), Options{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := inst.Run(ctx, Options{
 		Org:   "org",
 		Repos: []string{"api"},
 	})
 	require.NoError(t, err)
-
-	// The PR should use "develop" as the base branch, not "main"
-	require.Len(t, client.CreatedProposals, 1)
-	assert.Equal(t, "develop", client.CreatedProposals[0].Base)
 
 	// DefaultBranches should be populated
 	assert.Equal(t, "develop", result.DefaultBranches["api"])
@@ -356,10 +379,16 @@ func TestInstall_RepoNotFoundWarning(t *testing.T) {
 	client.Repos = []forge.Repository{
 		{Name: "api", FullName: "org/api", DefaultBranch: "main"},
 	}
+	client.WorkflowRuns["org/.fullsend/repo-onboard.yaml"] = &forge.WorkflowRun{
+		ID: 1, Status: "completed", Conclusion: "success",
+	}
 
 	inst, output := newTestInstaller(client)
 
-	_, err := inst.Run(context.Background(), Options{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := inst.Run(ctx, Options{
 		Org:   "org",
 		Repos: []string{"nonexistent"},
 	})
