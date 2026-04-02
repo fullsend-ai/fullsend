@@ -169,7 +169,7 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 // first by known slug override, then by expected slug convention.
 //
 // Users can rename GitHub Apps during the manifest creation flow, so the
-// actual slug may differ from the convention (fullsend-{org}-{role}). We
+// actual slug may differ from the convention ({org}-{role}). We
 // store the actual slug in config.yaml and check knownSlugs first to handle
 // renamed apps. The expected slug is only used as a fallback for first-time
 // detection.
@@ -473,11 +473,8 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 }
 
 // ExpectedAppSlug returns the conventional app slug for a given org and role.
-// This matches the naming convention used by ghTypes.AgentAppConfig.
+// The convention is simply <org>-<role> for all roles.
 // Used during uninstall to infer app names when config.yaml is unavailable.
 func ExpectedAppSlug(org, role string) string {
-	if role == "fullsend" {
-		return "fullsend-" + org
-	}
-	return "fullsend-" + org + "-" + role
+	return org + "-" + role
 }

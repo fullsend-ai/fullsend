@@ -55,9 +55,11 @@ func AgentAppConfig(org, role string) AppConfig {
 		},
 	}
 
+	// App naming convention: <org>-<role> for all roles.
+	base.Name = fmt.Sprintf("%s-%s", org, role)
+
 	switch role {
 	case "fullsend":
-		base.Name = fmt.Sprintf("fullsend-%s", org)
 		base.Description = fmt.Sprintf("Fullsend orchestrator for %s", org)
 		base.Permissions = AppPermissions{
 			Contents:       "write",
@@ -70,7 +72,6 @@ func AgentAppConfig(org, role string) AppConfig {
 		base.Events = []string{"issues", "push", "workflow_dispatch"}
 
 	case "triage":
-		base.Name = fmt.Sprintf("fullsend-%s-triage", org)
 		base.Description = fmt.Sprintf("Fullsend triage agent for %s", org)
 		base.Permissions = AppPermissions{
 			Issues: "write",
@@ -78,7 +79,6 @@ func AgentAppConfig(org, role string) AppConfig {
 		base.Events = []string{"issues", "issue_comment"}
 
 	case "coder":
-		base.Name = fmt.Sprintf("fullsend-%s-coder", org)
 		base.Description = fmt.Sprintf("Fullsend coder agent for %s", org)
 		base.Permissions = AppPermissions{
 			Issues:       "read",
@@ -89,7 +89,6 @@ func AgentAppConfig(org, role string) AppConfig {
 		base.Events = []string{"issues", "issue_comment", "pull_request", "check_run", "check_suite"}
 
 	case "review":
-		base.Name = fmt.Sprintf("fullsend-%s-review", org)
 		base.Description = fmt.Sprintf("Fullsend review agent for %s", org)
 		base.Permissions = AppPermissions{
 			PullRequests: "write",
@@ -99,7 +98,6 @@ func AgentAppConfig(org, role string) AppConfig {
 		base.Events = []string{"pull_request", "pull_request_review"}
 
 	default:
-		base.Name = fmt.Sprintf("fullsend-%s-%s", org, role)
 		base.Description = fmt.Sprintf("Fullsend %s agent for %s", role, org)
 		base.Permissions = AppPermissions{
 			Issues: "read",

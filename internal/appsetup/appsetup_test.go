@@ -52,25 +52,25 @@ func TestExpectedAppSlug(t *testing.T) {
 			name:     "fullsend role uses org only",
 			org:      "myorg",
 			role:     "fullsend",
-			expected: "fullsend-myorg",
+			expected: "myorg-fullsend",
 		},
 		{
 			name:     "triage role appends role suffix",
 			org:      "myorg",
 			role:     "triage",
-			expected: "fullsend-myorg-triage",
+			expected: "myorg-triage",
 		},
 		{
 			name:     "coder role appends role suffix",
 			org:      "acme",
 			role:     "coder",
-			expected: "fullsend-acme-coder",
+			expected: "acme-coder",
 		},
 		{
 			name:     "review role appends role suffix",
 			org:      "acme",
 			role:     "review",
-			expected: "fullsend-acme-review",
+			expected: "acme-review",
 		},
 	}
 
@@ -85,7 +85,7 @@ func TestExpectedAppSlug(t *testing.T) {
 func TestSetup_ExistingApp_SecretExists_AutoReuse(t *testing.T) {
 	client := &forge.FakeClient{
 		Installations: []forge.Installation{
-			{ID: 100, AppID: 10, AppSlug: "fullsend-myorg"},
+			{ID: 100, AppID: 10, AppSlug: "myorg-fullsend"},
 		},
 	}
 	prompter := &fakePrompter{}
@@ -102,7 +102,7 @@ func TestSetup_ExistingApp_SecretExists_AutoReuse(t *testing.T) {
 
 	// Should return credentials signaling reuse (empty PEM).
 	assert.Equal(t, 10, creds.AppID)
-	assert.Equal(t, "fullsend-myorg", creds.Slug)
+	assert.Equal(t, "myorg-fullsend", creds.Slug)
 	assert.Empty(t, creds.PEM, "PEM should be empty to signal reuse")
 	// Should NOT have prompted — auto-reuse is silent.
 	assert.False(t, prompter.confirmCalled, "should not prompt for reuse")
@@ -111,7 +111,7 @@ func TestSetup_ExistingApp_SecretExists_AutoReuse(t *testing.T) {
 func TestSetup_ExistingApp_NoSecret(t *testing.T) {
 	client := &forge.FakeClient{
 		Installations: []forge.Installation{
-			{ID: 100, AppID: 10, AppSlug: "fullsend-myorg-triage"},
+			{ID: 100, AppID: 10, AppSlug: "myorg-triage"},
 		},
 	}
 	prompter := &fakePrompter{}
