@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -247,7 +248,8 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		})
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -313,6 +315,15 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
 	printer.Blank()
 
+	// Collect IDs for repos that will be enrolled.
+	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
+
+	// Dispatch token setup.
+	dispatchToken, err := promptDispatchToken(ctx, client, printer, org)
+	if err != nil {
+		return err
+	}
+
 	// Build agent entries for config.
 	agents := make([]config.AgentEntry, len(agentCreds))
 	for i, ac := range agentCreds {
@@ -326,7 +337,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, dispatchToken, enrolledRepoIDs)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -381,6 +392,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
 		layers.NewWorkflowsLayer(org, client, printer, ""),
 		layers.NewSecretsLayer(org, client, nil, printer),
+		layers.NewDispatchTokenLayer(org, client, "", nil, printer),
 		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
 	)
 
@@ -471,7 +483,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, defaultBranches, agentCreds)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, defaultBranches, agentCreds, "", nil)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -492,11 +504,14 @@ func buildLayerStack(
 	enabledRepos []string,
 	defaultBranches map[string]string,
 	agentCreds []layers.AgentCredentials,
+	dispatchToken string,
+	enrolledRepoIDs []int64,
 ) *layers.Stack {
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, hasPrivate),
 		layers.NewWorkflowsLayer(org, client, printer, user),
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
+		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
 		layers.NewEnrollmentLayer(org, client, enabledRepos, defaultBranches, printer),
 	)
 }
@@ -585,6 +600,67 @@ func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[st
 		return nil
 	}
 	return cfg.AgentSlugs()
+}
+
+// collectEnrolledRepoIDs returns the IDs of repos whose names appear in
+// the enabledRepos list.
+func collectEnrolledRepoIDs(allRepos []forge.Repository, enabledRepos []string) []int64 {
+	enabled := make(map[string]bool, len(enabledRepos))
+	for _, name := range enabledRepos {
+		enabled[name] = true
+	}
+	var ids []int64
+	for _, r := range allRepos {
+		if enabled[r.Name] {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+// promptDispatchToken checks whether the dispatch token org secret already
+// exists and, if not, prompts the user to create a fine-grained PAT and
+// paste it. Returns the token string (empty if reusing an existing secret).
+func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.Printer, org string) (string, error) {
+	printer.Header("Dispatch Token Setup")
+	printer.Blank()
+
+	exists, err := client.OrgSecretExists(ctx, org, "FULLSEND_DISPATCH_TOKEN")
+	if err != nil {
+		return "", fmt.Errorf("checking dispatch token: %w", err)
+	}
+
+	if exists {
+		printer.StepDone("Dispatch token already configured")
+		return "", nil
+	}
+
+	printer.StepInfo("A fine-grained PAT is needed to dispatch workflows cross-repo.")
+	printer.StepInfo("Create one at: https://github.com/settings/personal-access-tokens/new")
+	printer.Blank()
+	printer.StepInfo("Settings:")
+	printer.StepInfo("  - Resource owner: " + org)
+	printer.StepInfo("  - Repository access: Only select repositories → .fullsend")
+	printer.StepInfo("  - Permissions: Actions (Read and write)")
+	printer.StepInfo("  - Expiration: as long as desired")
+	printer.Blank()
+	printer.StepInfo("Paste the token here:")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("reading dispatch token: %w", err)
+		}
+		return "", fmt.Errorf("no dispatch token provided")
+	}
+	token := strings.TrimSpace(scanner.Text())
+	if token == "" {
+		return "", fmt.Errorf("dispatch token cannot be empty")
+	}
+
+	printer.StepDone("Dispatch token received")
+	printer.Blank()
+	return token, nil
 }
 
 // Helper functions.
