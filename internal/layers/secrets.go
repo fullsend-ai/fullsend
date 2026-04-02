@@ -42,6 +42,20 @@ func (s *SecretsLayer) Name() string {
 	return "secrets"
 }
 
+// RequiredScopes returns the scopes needed for the given operation.
+func (s *SecretsLayer) RequiredScopes(op Operation) []string {
+	switch op {
+	case OpInstall:
+		return []string{"repo"}
+	case OpUninstall:
+		return nil // no-op
+	case OpAnalyze:
+		return []string{"repo"}
+	default:
+		return nil
+	}
+}
+
 // Install stores agent app private keys as repo secrets and app IDs as
 // repo variables in the .fullsend config repo.
 func (s *SecretsLayer) Install(ctx context.Context) error {

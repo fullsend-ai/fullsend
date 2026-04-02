@@ -86,6 +86,11 @@ type Client interface {
 	// Authentication
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 
+	// GetTokenScopes returns the OAuth scopes granted to the current token.
+	// On GitHub, this is read from the X-OAuth-Scopes response header.
+	// Returns nil (not an error) if the forge doesn't support scope introspection.
+	GetTokenScopes(ctx context.Context) ([]string, error)
+
 	// Secrets and variables
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)

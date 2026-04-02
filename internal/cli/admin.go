@@ -248,6 +248,12 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+
+	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
+		return err
+	}
+	printer.Blank()
+
 	return printAnalysis(ctx, stack, printer)
 }
 
@@ -320,10 +326,15 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+
+	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
+		return err
+	}
+
+	printer.Blank()
 	printer.Header("Installing layers")
 	printer.Blank()
-
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
 
 	if err := stack.InstallAll(ctx); err != nil {
 		return fmt.Errorf("installation failed: %w", err)
@@ -361,6 +372,11 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
 	)
+
+	if err := runPreflight(ctx, stack, layers.OpUninstall, client, printer); err != nil {
+		return err
+	}
+	printer.Blank()
 
 	errs := stack.UninstallAll(ctx)
 	if len(errs) > 0 {
@@ -434,6 +450,12 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, defaultBranches, agentCreds)
+
+	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
+		return err
+	}
+	printer.Blank()
+
 	return printAnalysis(ctx, stack, printer)
 }
 
@@ -455,6 +477,30 @@ func buildLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewEnrollmentLayer(org, client, enabledRepos, defaultBranches, printer),
 	)
+}
+
+// runPreflight checks that the token has all required scopes for the
+// given operation. Returns nil if all scopes are present or if scope
+// introspection is unavailable (fine-grained tokens). Returns an error
+// with remediation instructions if scopes are missing.
+func runPreflight(ctx context.Context, stack *layers.Stack, op layers.Operation, client forge.Client, printer *ui.Printer) error {
+	printer.StepStart("Checking token permissions")
+
+	result, err := stack.Preflight(ctx, op, client)
+	if err != nil {
+		printer.StepFail("Could not verify token permissions")
+		return fmt.Errorf("preflight check: %w", err)
+	}
+
+	if !result.OK() {
+		printer.StepFail("Token is missing required scopes")
+		printer.Blank()
+		printer.ErrorBox("Missing token scopes", result.Error())
+		return fmt.Errorf("token is missing required scopes: %s", strings.Join(result.Missing, ", "))
+	}
+
+	printer.StepDone("Token permissions verified")
+	return nil
 }
 
 // printAnalysis runs AnalyzeAll and prints reports.

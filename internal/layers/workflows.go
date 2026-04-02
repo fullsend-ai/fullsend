@@ -47,6 +47,22 @@ func (l *WorkflowsLayer) Name() string {
 	return "workflows"
 }
 
+// RequiredScopes returns the scopes needed for the given operation.
+func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
+	switch op {
+	case OpInstall:
+		// Writing to .github/workflows/ paths requires the workflow scope.
+		// Without it, GitHub returns 404 (not 403), which is deeply confusing.
+		return []string{"repo", "workflow"}
+	case OpUninstall:
+		return nil // no-op
+	case OpAnalyze:
+		return []string{"repo"}
+	default:
+		return nil
+	}
+}
+
 // Install writes the workflow files and CODEOWNERS to the .fullsend repo.
 // CODEOWNERS failure is treated as a warning, not a fatal error.
 //

@@ -45,6 +45,22 @@ func (l *ConfigRepoLayer) Name() string {
 	return "config-repo"
 }
 
+// RequiredScopes returns the scopes needed for the given operation.
+func (l *ConfigRepoLayer) RequiredScopes(op Operation) []string {
+	switch op {
+	case OpInstall:
+		return []string{"repo"}
+	case OpUninstall:
+		// Deleting the config repo requires the delete_repo scope, which
+		// most tokens don't have by default. Fail early with a clear message.
+		return []string{"repo", "delete_repo"}
+	case OpAnalyze:
+		return []string{"repo"}
+	default:
+		return nil
+	}
+}
+
 // Install creates the .fullsend config repo (if it doesn't exist) and
 // writes config.yaml into it.
 //

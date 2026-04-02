@@ -43,6 +43,22 @@ func (l *EnrollmentLayer) Name() string {
 	return "enrollment"
 }
 
+// RequiredScopes returns the scopes needed for the given operation.
+func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
+	switch op {
+	case OpInstall:
+		// Enrollment writes .github/workflows/fullsend.yaml to target repos
+		// and creates PRs. The workflow scope is needed for the workflow file.
+		return []string{"repo", "workflow"}
+	case OpUninstall:
+		return nil // no-op
+	case OpAnalyze:
+		return []string{"repo"}
+	default:
+		return nil
+	}
+}
+
 // Install creates enrollment PRs for enabled repos that are not yet enrolled.
 // Failures on individual repos are warned and skipped — install does not stop.
 func (l *EnrollmentLayer) Install(ctx context.Context) error {

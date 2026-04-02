@@ -257,3 +257,6 @@ func (c *codeownersErrorClient) GetRepo(context.Context, string, string) (*forge
 func (c *codeownersErrorClient) RepoVariableExists(context.Context, string, string, string) (bool, error) {
 	return false, nil
 }
+func (c *codeownersErrorClient) GetTokenScopes(context.Context) ([]string, error) {
+	return nil, nil
+}

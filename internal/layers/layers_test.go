@@ -17,6 +17,7 @@ type mockLayer struct {
 	uninstallErr error
 	analyzeErr   error
 	report       *LayerReport
+	scopes       map[Operation][]string
 
 	installCalled   bool
 	uninstallCalled bool
@@ -25,6 +26,13 @@ type mockLayer struct {
 }
 
 func (m *mockLayer) Name() string { return m.name }
+
+func (m *mockLayer) RequiredScopes(op Operation) []string {
+	if m.scopes != nil {
+		return m.scopes[op]
+	}
+	return nil
+}
 
 func (m *mockLayer) Install(_ context.Context) error {
 	m.installCalled = true

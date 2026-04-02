@@ -40,11 +40,39 @@ type LayerReport struct {
 	WouldFix     []string // what install would fix (for degraded state)
 }
 
+// Operation identifies which action is being performed on a layer.
+type Operation int
+
+const (
+	OpInstall Operation = iota
+	OpUninstall
+	OpAnalyze
+)
+
+func (o Operation) String() string {
+	switch o {
+	case OpInstall:
+		return "install"
+	case OpUninstall:
+		return "uninstall"
+	case OpAnalyze:
+		return "analyze"
+	default:
+		return fmt.Sprintf("Operation(%d)", int(o))
+	}
+}
+
 // Layer is the interface each installation concern implements.
 // Layers are processed in order for install, reverse order for uninstall.
 type Layer interface {
 	// Name returns a human-readable name for this layer.
 	Name() string
+
+	// RequiredScopes returns the OAuth scopes this layer needs for the
+	// given operation. Scopes are GitHub-flavored strings like "repo",
+	// "delete_repo", "workflow". Used by Preflight to fail early when
+	// the token is missing required scopes.
+	RequiredScopes(op Operation) []string
 
 	// Install creates or configures this layer's concern.
 	Install(ctx context.Context) error
@@ -96,6 +124,22 @@ func (s *Stack) UninstallAll(ctx context.Context) []error {
 		}
 	}
 	return errs
+}
+
+// CollectRequiredScopes returns the deduplicated set of scopes needed
+// by all layers for the given operation.
+func (s *Stack) CollectRequiredScopes(op Operation) []string {
+	seen := make(map[string]bool)
+	var scopes []string
+	for _, l := range s.layers {
+		for _, scope := range l.RequiredScopes(op) {
+			if !seen[scope] {
+				seen[scope] = true
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+	return scopes
 }
 
 // AnalyzeAll runs Analyze on each layer and returns reports.

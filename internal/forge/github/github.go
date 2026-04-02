@@ -560,6 +560,33 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	return user.Login, nil
 }
 
+// GetTokenScopes returns the OAuth scopes granted to the current token
+// by inspecting the X-OAuth-Scopes header from a lightweight API call.
+func (c *LiveClient) GetTokenScopes(ctx context.Context) ([]string, error) {
+	resp, err := c.do(ctx, http.MethodHead, "/user", nil)
+	if err != nil {
+		return nil, fmt.Errorf("checking token scopes: %w", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	header := resp.Header.Get("X-OAuth-Scopes")
+	if header == "" {
+		// Fine-grained tokens and GitHub App tokens don't have this header.
+		// Return nil to indicate scope introspection isn't available.
+		return nil, nil
+	}
+
+	var scopes []string
+	for _, s := range strings.Split(header, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			scopes = append(scopes, s)
+		}
+	}
+	return scopes, nil
+}
+
 // CreateRepoSecret creates or updates an encrypted repository secret.
 func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
 	// Step 1: Get the repo's public key for secret encryption.

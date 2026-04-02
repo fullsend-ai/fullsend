@@ -38,6 +38,7 @@ type FakeClient struct {
 	AuthenticatedUser string
 	Installations     []Installation
 	Secrets           map[string]bool // key: "owner/repo/name"
+	TokenScopes       []string        // scopes returned by GetTokenScopes
 	VariablesExist    map[string]bool // key: "owner/repo/name"
 
 	// Error injection: key is method name, value is error to return.
@@ -260,6 +261,17 @@ func (f *FakeClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 	}
 
 	return f.AuthenticatedUser, nil
+}
+
+func (f *FakeClient) GetTokenScopes(_ context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetTokenScopes"); e != nil {
+		return nil, e
+	}
+
+	return f.TokenScopes, nil
 }
 
 func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, value string) error {

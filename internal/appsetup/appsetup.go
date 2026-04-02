@@ -202,14 +202,17 @@ func (s *Setup) findExistingInstallation(
 	return nil, false, nil
 }
 
-// handleExistingApp decides whether to reuse an existing app or report
-// that its private key is lost.
+// handleExistingApp reuses an existing app if its credentials are still
+// available, or reports that the private key is lost.
 //
 // GitHub App PEM private keys are only available at creation time — the
 // manifest code exchange (POST /app-manifests/{code}/conversions) is the
 // one and only time the PEM is returned. If the secret wasn't stored or
 // was deleted, the key is lost and the app must be deleted and recreated.
-// This is why we check RepoSecretExists before offering reuse.
+// This is why we check RepoSecretExists before reusing.
+//
+// When an existing app is found with valid credentials, it is reused
+// automatically. To get fresh apps, run uninstall first, then install.
 func (s *Setup) handleExistingApp(inst *forge.Installation, role string) (*AppCredentials, error) {
 	s.ui.StepDone(fmt.Sprintf("Found existing app: %s (ID: %d)", inst.AppSlug, inst.AppID))
 
@@ -220,34 +223,26 @@ func (s *Setup) handleExistingApp(inst *forge.Installation, role string) (*AppCr
 		}
 
 		if exists {
-			reuse, err := s.prompter.Confirm(
-				fmt.Sprintf("App %s already exists with stored credentials. Reuse it?", inst.AppSlug),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("prompting for reuse: %w", err)
-			}
-			if reuse {
-				s.ui.StepDone("Reusing existing app")
-				return &AppCredentials{
-					AppID: inst.AppID,
-					Slug:  inst.AppSlug,
-					Name:  inst.AppSlug,
-					// Empty PEM signals reuse of existing credentials.
-				}, nil
-			}
-			// User declined reuse — fall through to manifest flow.
-			return nil, fmt.Errorf("user declined to reuse existing app %s; delete it first to recreate", inst.AppSlug)
+			s.ui.StepDone(fmt.Sprintf("Reusing existing app %s (credentials present)", inst.AppSlug))
+			return &AppCredentials{
+				AppID: inst.AppID,
+				Slug:  inst.AppSlug,
+				Name:  inst.AppSlug,
+				// Empty PEM signals reuse of existing credentials.
+			}, nil
 		}
 
 		// Secret doesn't exist — private key is lost.
 		return nil, fmt.Errorf(
 			"app %s exists but its private key secret is missing; "+
-				"delete the app at https://github.com/apps/%s and re-run install",
+				"run 'fullsend admin uninstall' first, then delete the app at "+
+				"https://github.com/apps/%s and re-run install",
 			inst.AppSlug, inst.AppSlug,
 		)
 	}
 
 	// No secretExists function — can't check, assume reuse.
+	s.ui.StepDone(fmt.Sprintf("Reusing existing app %s", inst.AppSlug))
 	return &AppCredentials{
 		AppID: inst.AppID,
 		Slug:  inst.AppSlug,
