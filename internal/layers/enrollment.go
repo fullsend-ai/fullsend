@@ -75,29 +75,50 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 }
 
 // enrollRepo creates an enrollment PR for a single repo.
+// Idempotent: skips repos that already have the shim workflow on the
+// default branch. Also handles partial state from previous runs (e.g.,
+// branch exists but PR was not created).
 func (l *EnrollmentLayer) enrollRepo(ctx context.Context, repo string) error {
-	// Check if already enrolled
+	// Check if already enrolled (shim workflow on default branch).
 	_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
 	if err == nil {
 		l.ui.StepInfo(fmt.Sprintf("%s already enrolled", repo))
 		return nil
 	}
 
-	l.ui.StepStart(fmt.Sprintf("Enrolling %s", repo))
-
-	// Create branch for the enrollment PR
-	if err := l.client.CreateBranch(ctx, l.org, repo, enrollBranch); err != nil {
-		return fmt.Errorf("creating branch: %w", err)
+	// Check if there's already an open enrollment PR from a previous run.
+	prs, err := l.client.ListRepoPullRequests(ctx, l.org, repo)
+	if err == nil {
+		for _, pr := range prs {
+			if pr.Title == "Connect to fullsend agent pipeline" {
+				l.ui.StepInfo(fmt.Sprintf("%s has pending enrollment PR: %s", repo, pr.URL))
+				return nil
+			}
+		}
 	}
 
-	// Write shim workflow to the branch
+	l.ui.StepStart(fmt.Sprintf("Enrolling %s", repo))
+
+	// Create branch for the enrollment PR.
+	// Idempotent: if the branch exists from a previous partial run, proceed.
+	if err := l.client.CreateBranch(ctx, l.org, repo, enrollBranch); err != nil {
+		if !forge.IsNotFound(err) {
+			// Non-404 errors from CreateBranch could be "reference already exists"
+			// (HTTP 422). Treat any error here as non-fatal and try to continue
+			// with the file write — if the branch truly doesn't exist, that will
+			// fail with a clear error.
+			l.ui.StepInfo(fmt.Sprintf("Branch %s may already exist, continuing", enrollBranch))
+		}
+	}
+
+	// Write shim workflow to the branch.
 	content := l.shimWorkflowContent()
 	if err := l.client.CreateFileOnBranch(ctx, l.org, repo, enrollBranch, shimWorkflowPath,
 		"chore: add fullsend shim workflow", []byte(content)); err != nil {
 		return fmt.Errorf("writing shim workflow: %w", err)
 	}
 
-	// Create enrollment PR
+	// Create enrollment PR.
 	baseBranch := l.defaultBranches[repo]
 	if baseBranch == "" {
 		baseBranch = "main"

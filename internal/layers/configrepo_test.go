@@ -129,7 +129,11 @@ func TestConfigRepoLayer_Install_CreateRepoError(t *testing.T) {
 }
 
 func TestConfigRepoLayer_Uninstall_DeletesRepo(t *testing.T) {
-	client := &forge.FakeClient{}
+	client := &forge.FakeClient{
+		Repos: []forge.Repository{
+			{Name: ".fullsend", FullName: "test-org/.fullsend"},
+		},
+	}
 	layer, _ := newTestLayer(t, client, false)
 
 	err := layer.Uninstall(context.Background())
@@ -139,15 +143,29 @@ func TestConfigRepoLayer_Uninstall_DeletesRepo(t *testing.T) {
 	assert.Equal(t, "test-org/.fullsend", client.DeletedRepos[0])
 }
 
+func TestConfigRepoLayer_Uninstall_AlreadyDeleted(t *testing.T) {
+	// Repo doesn't exist — uninstall should be a no-op, not an error.
+	client := &forge.FakeClient{}
+	layer, _ := newTestLayer(t, client, false)
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err)
+
+	assert.Empty(t, client.DeletedRepos, "should not attempt to delete a missing repo")
+}
+
 func TestConfigRepoLayer_Uninstall_Error(t *testing.T) {
 	client := &forge.FakeClient{
-		Errors: map[string]error{"DeleteRepo": errors.New("not found")},
+		Repos: []forge.Repository{
+			{Name: ".fullsend", FullName: "test-org/.fullsend"},
+		},
+		Errors: map[string]error{"DeleteRepo": errors.New("permission denied")},
 	}
 	layer, _ := newTestLayer(t, client, false)
 
 	err := layer.Uninstall(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.Contains(t, err.Error(), "permission denied")
 }
 
 func TestConfigRepoLayer_Analyze_NotInstalled(t *testing.T) {

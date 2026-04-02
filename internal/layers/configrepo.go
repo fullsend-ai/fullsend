@@ -80,10 +80,18 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 		desc := fmt.Sprintf("fullsend configuration for %s", l.org)
 		_, err := l.client.CreateRepo(ctx, l.org, forge.ConfigRepoName, desc, l.hasPrivate)
 		if err != nil {
-			l.ui.StepFail("Failed to create " + forge.ConfigRepoName + " repository")
-			return fmt.Errorf("creating config repo: %w", err)
+			// Idempotent: if the repo was created between our check and this
+			// call (race), or if we got an "already exists" error, proceed.
+			recheck, recheckErr := l.repoExists(ctx)
+			if recheckErr == nil && recheck {
+				l.ui.StepInfo(forge.ConfigRepoName + " repository already exists")
+			} else {
+				l.ui.StepFail("Failed to create " + forge.ConfigRepoName + " repository")
+				return fmt.Errorf("creating config repo: %w", err)
+			}
+		} else {
+			l.ui.StepDone("Created " + forge.ConfigRepoName + " repository")
 		}
-		l.ui.StepDone("Created " + forge.ConfigRepoName + " repository")
 	} else {
 		l.ui.StepInfo(forge.ConfigRepoName + " repository already exists")
 	}
@@ -106,9 +114,24 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 }
 
 // Uninstall deletes the .fullsend config repo.
+// Idempotent: if the repo is already gone, this is a no-op.
 func (l *ConfigRepoLayer) Uninstall(ctx context.Context) error {
+	exists, err := l.repoExists(ctx)
+	if err != nil {
+		return fmt.Errorf("checking for config repo: %w", err)
+	}
+	if !exists {
+		l.ui.StepInfo(forge.ConfigRepoName + " repository already deleted")
+		return nil
+	}
+
 	l.ui.StepStart("Deleting " + forge.ConfigRepoName + " repository")
 	if err := l.client.DeleteRepo(ctx, l.org, forge.ConfigRepoName); err != nil {
+		if forge.IsNotFound(err) {
+			// Race: deleted between our check and the delete call.
+			l.ui.StepInfo(forge.ConfigRepoName + " repository already deleted")
+			return nil
+		}
 		l.ui.StepFail("Failed to delete " + forge.ConfigRepoName + " repository")
 		return fmt.Errorf("deleting config repo: %w", err)
 	}
