@@ -430,6 +430,12 @@ func (s *Setup) exchangeManifestCode(ctx context.Context, code string) (*AppCred
 //
 // The installation URL must be /apps/{slug}/installations/new without any
 // query parameters. Earlier iterations used target_id=0 which is invalid.
+// installPollInterval is how often we check for the app installation.
+const installPollInterval = 2 * time.Second
+
+// installPollTimeout is how long we wait for the user to install the app.
+const installPollTimeout = 5 * time.Minute
+
 func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	installations, err := s.client.ListOrgInstallations(ctx, org)
 	if err != nil {
@@ -443,33 +449,39 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 		}
 	}
 
-	// App not installed — prompt user to install.
+	// App not installed — open browser and poll until it appears.
 	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new", slug)
 	s.ui.StepWarn(fmt.Sprintf("App %s is not yet installed on %s", slug, org))
-	s.ui.StepInfo(fmt.Sprintf("Please install it at: %s", installURL))
+	s.ui.StepStart("Opening browser for installation...")
 
 	if err := s.browser.Open(ctx, installURL); err != nil {
 		s.ui.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
+		s.ui.StepInfo(fmt.Sprintf("Install manually at: %s", installURL))
 	}
 
-	if err := s.prompter.WaitForEnter("Press Enter after installing the app..."); err != nil {
-		return fmt.Errorf("waiting for user: %w", err)
-	}
+	s.ui.StepInfo("Waiting for installation (will detect automatically)...")
 
-	// Verify installation.
-	installations, err = s.client.ListOrgInstallations(ctx, org)
-	if err != nil {
-		return fmt.Errorf("verifying installation: %w", err)
-	}
+	// Poll until the app appears in installations or we time out.
+	pollCtx, cancel := context.WithTimeout(ctx, installPollTimeout)
+	defer cancel()
 
-	for _, inst := range installations {
-		if inst.AppSlug == slug {
-			s.ui.StepDone(fmt.Sprintf("App %s installed successfully", slug))
-			return nil
+	for {
+		select {
+		case <-pollCtx.Done():
+			return fmt.Errorf("timed out waiting for app %s to be installed on %s", slug, org)
+		case <-time.After(installPollInterval):
+			installations, err := s.client.ListOrgInstallations(pollCtx, org)
+			if err != nil {
+				continue // transient errors — keep polling
+			}
+			for _, inst := range installations {
+				if inst.AppSlug == slug {
+					s.ui.StepDone(fmt.Sprintf("App %s installed successfully", slug))
+					return nil
+				}
+			}
 		}
 	}
-
-	return fmt.Errorf("app %s was not found in org %s after installation attempt", slug, org)
 }
 
 // ExpectedAppSlug returns the conventional app slug for a given org and role.
