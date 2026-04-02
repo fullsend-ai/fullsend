@@ -167,6 +167,12 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 
 // findExistingInstallation looks for an installation matching the role,
 // first by known slug override, then by expected slug convention.
+//
+// Users can rename GitHub Apps during the manifest creation flow, so the
+// actual slug may differ from the convention (fullsend-{org}-{role}). We
+// store the actual slug in config.yaml and check knownSlugs first to handle
+// renamed apps. The expected slug is only used as a fallback for first-time
+// detection.
 func (s *Setup) findExistingInstallation(
 	ctx context.Context, org, role, expectedSlug string,
 ) (*forge.Installation, bool, error) {
@@ -198,6 +204,12 @@ func (s *Setup) findExistingInstallation(
 
 // handleExistingApp decides whether to reuse an existing app or report
 // that its private key is lost.
+//
+// GitHub App PEM private keys are only available at creation time — the
+// manifest code exchange (POST /app-manifests/{code}/conversions) is the
+// one and only time the PEM is returned. If the secret wasn't stored or
+// was deleted, the key is lost and the app must be deleted and recreated.
+// This is why we check RepoSecretExists before offering reuse.
 func (s *Setup) handleExistingApp(inst *forge.Installation, role string) (*AppCredentials, error) {
 	s.ui.StepDone(fmt.Sprintf("Found existing app: %s (ID: %d)", inst.AppSlug, inst.AppID))
 
@@ -418,6 +430,9 @@ func (s *Setup) exchangeManifestCode(ctx context.Context, code string) (*AppCred
 
 // ensureInstalled checks that the app is installed on the org, prompting
 // the user to install it if not.
+//
+// The installation URL must be /apps/{slug}/installations/new without any
+// query parameters. Earlier iterations used target_id=0 which is invalid.
 func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	installations, err := s.client.ListOrgInstallations(ctx, org)
 	if err != nil {

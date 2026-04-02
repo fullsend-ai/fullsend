@@ -26,8 +26,11 @@ type ConfigRepoLayer struct {
 var _ Layer = (*ConfigRepoLayer)(nil)
 
 // NewConfigRepoLayer creates a new ConfigRepoLayer.
-// Set hasPrivate to true if the org has private repo capability —
-// the config repo will be created as private in that case.
+// Set hasPrivate to true if the org has any private repos — the config repo
+// will be created as private to match the org's existing pattern. For orgs
+// with only public repos (e.g., open source orgs), it is created as public
+// to avoid surprises. This matters because the .fullsend repo may contain
+// workflow files referenced by public repos.
 func NewConfigRepoLayer(org string, client forge.Client, cfg *config.OrgConfig, printer *ui.Printer, hasPrivate bool) *ConfigRepoLayer {
 	return &ConfigRepoLayer{
 		org:        org,
@@ -44,6 +47,12 @@ func (l *ConfigRepoLayer) Name() string {
 
 // Install creates the .fullsend config repo (if it doesn't exist) and
 // writes config.yaml into it.
+//
+// Timing note: after CreateRepo with auto_init, the default branch may not
+// be fully materialized yet. The Contents API call to write config.yaml can
+// get transient 404s. The GitHub client's retry-with-backoff in do() handles
+// this, but callers should be aware that the first file write to a newly
+// created repo may take several seconds to succeed.
 func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 	exists, err := l.repoExists(ctx)
 	if err != nil {

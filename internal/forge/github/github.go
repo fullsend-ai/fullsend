@@ -281,6 +281,12 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 }
 
 // CreateRepo creates a new repository under an organization.
+//
+// The repo is created with auto_init: true so that a default branch exists
+// immediately. However, GitHub's auto_init is asynchronous — the API returns
+// 201 before the initial commit is fully materialized. Callers writing files
+// to the new repo via the Contents API should expect transient 404s and
+// retry with backoff. See the retry logic in LiveClient.do().
 func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description string, private bool) (*forge.Repository, error) {
 	payload := map[string]any{
 		"name":        name,
@@ -356,6 +362,10 @@ func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, path, message 
 }
 
 // CreateFileOnBranch creates a file on a specific branch (or default if empty).
+//
+// GitHub quirk: writing to .github/workflows/ paths returns 404 (not 403)
+// when the token lacks the "workflow" scope. If you hit unexplained 404s
+// on workflow file creation, the fix is: gh auth refresh -s workflow
 func (c *LiveClient) CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	payload := map[string]any{
 		"message": message,

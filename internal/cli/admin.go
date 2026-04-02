@@ -29,7 +29,16 @@ func newAdminCmd() *cobra.Command {
 	return cmd
 }
 
-// resolveToken finds a GitHub token from env vars or gh CLI.
+// resolveToken finds a GitHub token by checking, in order:
+//  1. GH_TOKEN env var
+//  2. GITHUB_TOKEN env var
+//  3. gh auth token (subprocess call to the GitHub CLI)
+//
+// This chain allows users who are already authenticated with gh to use
+// fullsend without manually exporting tokens. Note that some operations
+// (like repo deletion) require the delete_repo scope, and workflow file
+// writes require the workflow scope — scopes that gh auth doesn't request
+// by default. Use: gh auth refresh -s delete_repo,workflow
 func resolveToken() (string, error) {
 	if token := os.Getenv("GH_TOKEN"); token != "" {
 		return token, nil
@@ -363,6 +372,12 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	printer.Blank()
 
 	// Suggest manual app deletion.
+	// GitHub App uninstallation via API (DELETE /app/installations/{id}) requires
+	// JWT auth from the app's own private key, not a PAT. Since we authenticate
+	// with a PAT, we must direct the user to the browser instead. The correct
+	// URL for org-scoped apps is /organizations/{org}/settings/apps/{slug}/advanced
+	// (the /advanced suffix is required to see the delete button; /settings/apps/{slug}
+	// alone is for user-scoped apps and will 404 for org-scoped ones).
 	if len(agentSlugs) > 0 {
 		printer.Header("Manual cleanup required")
 		printer.StepInfo("Delete these GitHub Apps manually:")

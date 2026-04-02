@@ -27,6 +27,12 @@ func DefaultAgentRoles() []string {
 }
 
 // AgentAppConfig returns the GitHub App configuration for a given agent role.
+//
+// Important: GitHub validates that event subscriptions are backed by matching
+// permissions. For example, subscribing to "issues" events requires at least
+// issues:read permission. Subscribing to "issue_comment" requires issues:read
+// or issues:write. Mismatches cause the manifest to be rejected. Every Events
+// entry below must have a corresponding permission.
 func AgentAppConfig(org, role string) AppConfig {
 	base := AppConfig{
 		URL: fmt.Sprintf("https://github.com/%s", org),

@@ -65,7 +65,14 @@ type Client interface {
 
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+
+	// CreateOrUpdateFile creates a file or updates it if it already exists.
+	// On GitHub, updating an existing file requires the current file's SHA
+	// (optimistic concurrency control). The GitHub implementation handles
+	// this by fetching the existing SHA before writing. Without it, the
+	// API returns a 422 "sha wasn't supplied" error.
 	CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 
 	// Branch operations

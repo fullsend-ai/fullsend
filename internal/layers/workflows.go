@@ -49,6 +49,12 @@ func (l *WorkflowsLayer) Name() string {
 
 // Install writes the workflow files and CODEOWNERS to the .fullsend repo.
 // CODEOWNERS failure is treated as a warning, not a fatal error.
+//
+// Note: writing multiple files sequentially via the Contents API can cause
+// transient 404s because each file write creates a new commit and the branch
+// ref is updated asynchronously. The GitHub client's retry logic handles
+// this. CODEOWNERS is written last and its failure is non-fatal because
+// some orgs restrict CODEOWNERS writes to specific teams.
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	files := map[string][]byte{
 		agentWorkflowPath:   []byte(agentWorkflowContent),
