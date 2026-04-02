@@ -226,11 +226,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch to fullsend
+        env:
+          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
         run: |
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.FULLSEND_DISPATCH_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository_owner }}/.fullsend/actions/workflows/agent.yaml/dispatches" \
-            -d "{\"ref\":\"main\",\"inputs\":{\"event_type\":\"${{ github.event_name }}\",\"source_repo\":\"${{ github.repository }}\",\"event_payload\":$(echo '${{ toJSON(github.event) }}' | jq -Rs .)}}"
+          gh workflow run agent.yaml \
+            --repo "${{ github.repository_owner }}/.fullsend" \
+            --field event_type="${{ github.event_name }}" \
+            --field source_repo="${{ github.repository }}" \
+            --field event_payload='${{ toJSON(github.event) }}'
 `
 }
