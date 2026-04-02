@@ -335,7 +335,7 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 <h2>App %s created successfully!</h2>
 <p>You can close this tab and return to the terminal.</p>
 </body>
-</html>`, creds.Name)
+</html>`, html.EscapeString(creds.Name))
 		resultCh <- result{creds: creds}
 	})
 

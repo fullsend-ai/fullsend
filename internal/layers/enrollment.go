@@ -66,6 +66,9 @@ func (l *EnrollmentLayer) enrollRepo(ctx context.Context, repo string) error {
 		l.ui.StepInfo(fmt.Sprintf("%s already enrolled", repo))
 		return nil
 	}
+	if !forge.IsNotFound(err) {
+		return fmt.Errorf("checking enrollment status for %s: %w", repo, err)
+	}
 
 	l.ui.StepStart(fmt.Sprintf("Enrolling %s", repo))
 
@@ -120,8 +123,10 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
 		if err == nil {
 			enrolled = append(enrolled, repo)
-		} else {
+		} else if forge.IsNotFound(err) {
 			notEnrolled = append(notEnrolled, repo)
+		} else {
+			return nil, fmt.Errorf("checking enrollment for %s: %w", repo, err)
 		}
 	}
 

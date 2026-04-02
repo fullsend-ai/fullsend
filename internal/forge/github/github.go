@@ -387,7 +387,8 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 		"content": base64.StdEncoding.EncodeToString(content),
 	}
 
-	if existingResp.StatusCode == http.StatusOK {
+	switch existingResp.StatusCode {
+	case http.StatusOK:
 		var existing struct {
 			SHA string `json:"sha"`
 		}
@@ -395,8 +396,13 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 			return fmt.Errorf("decode existing file: %w", err)
 		}
 		payload["sha"] = existing.SHA
-	} else {
+	case http.StatusNotFound:
+		// File doesn't exist yet — create without SHA.
 		existingResp.Body.Close()
+	default:
+		// Unexpected status — surface as an error.
+		defer existingResp.Body.Close()
+		return checkStatus(existingResp, http.StatusOK, http.StatusNotFound)
 	}
 
 	resp, err := c.put(ctx, apiPath, payload)
@@ -421,7 +427,10 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 		return nil, fmt.Errorf("decode file content: %w", err)
 	}
 
-	data, err := base64.StdEncoding.DecodeString(file.Content)
+	// GitHub's Contents API returns base64 content with newlines for line
+	// wrapping. Strip them before decoding.
+	cleaned := strings.ReplaceAll(file.Content, "\n", "")
+	data, err := base64.StdEncoding.DecodeString(cleaned)
 	if err != nil {
 		return nil, fmt.Errorf("decode base64 content: %w", err)
 	}
