@@ -356,7 +356,7 @@ Every engineering team today is drowning in the same work: triaging the same kin
 
 Fullsend exists because that gap is the most important unsolved problem in software engineering. Not the code generation. Not the autocomplete. The hard problems: How does an agent earn the trust to merge its own work? What does the security threat model look like when the developer is a process, not a person? How do you govern a system that governs itself?
 
-This is not a product. It is not a startup pitch deck. It is a living design document — an open, honest, community-driven exploration of what it actually takes to move from human-driven development to fully autonomous agentic engineering. Fullsend doesn't pretend to have the answers. It maps the questions with enough rigor that answers become possible.
+This is not a product. It is not a startup pitch deck. It is a living design document — an open, honest, community-driven exploration of what it would look like to move from human-driven development to fully autonomous agentic engineering. Fullsend doesn't pretend to have the answers. It maps the questions with enough rigor that answers become possible.
 
 ### Content Narrative Arc (Hero's Journey)
 
