@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fullsend &mdash; Fully Autonomous Agentic Software Development</title>
+  <meta name="description" content="A living design document exploring fully autonomous agentic software development. Map the hard problems of security, governance, intent, and review.">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Fullsend &mdash; Fully Autonomous Agentic Development">
+  <meta property="og:description" content="A living design document mapping the hard problems of letting agents ship code to production — securely, responsibly, and autonomously.">
+  <meta property="og:image" content="https://fullsend.sh/brand/assets/social-card.png">
+  <meta property="og:url" content="https://fullsend.sh">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="brand/assets/logo-overlap.png">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/site.css">
+
+  <!-- Theme (load early to prevent flash) -->
+  <script src="js/site.js"></script>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="container">
+      <a href="/" class="site-logo">
+        <img src="brand/assets/logo-overlap.png" alt="Fullsend logo" width="36" height="36">
+        fullsend
+      </a>
+      <nav class="site-nav">
+        <a href="#what" class="nav-link">What</a>
+        <a href="#why" class="nav-link">Why</a>
+        <a href="#explore" class="nav-link">Explore</a>
+        <a href="https://github.com/fullsend-ai/fullsend" class="nav-link">GitHub</a>
+        <button class="theme-toggle" aria-label="Toggle theme">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-banner">
+        <img src="brand/assets/hero-banner.png" alt="A murmuration of origami birds sweeping across a landscape — agents moving as one">
+      </div>
+      <h1>What if you just <span>let it fly?</span></h1>
+      <p class="subtitle">
+        Fullsend is a living design document exploring what it actually takes to let autonomous agents triage, implement, review, and ship code to production &mdash; securely and responsibly.
+      </p>
+      <div class="hero-actions">
+        <a href="https://github.com/fullsend-ai/fullsend" class="btn btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          Read the docs
+        </a>
+        <a href="#what" class="btn btn-outline">Learn more</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- What is this -->
+  <section class="section section--alt" id="what">
+    <div class="container container--narrow">
+      <div class="section-header">
+        <h2>Not another AI coding tool</h2>
+        <p>
+          The industry has spent a decade building co-pilots &mdash; sophisticated autocomplete perched on a developer's shoulder. Fullsend asks the question nobody else is mapping rigorously: <strong>what happens when you remove the shoulder entirely?</strong>
+        </p>
+      </div>
+      <div class="diff-grid">
+        <div class="diff-card">
+          <div class="diff-card-icon" aria-hidden="true">&#x1F5FA;</div>
+          <h3>A problem map, not a product</h3>
+          <p>No demos, no benchmarks, no leaderboards. Fullsend maps the territory between "AI can write code" and "AI can safely ship code" &mdash; a chasm filled with questions about trust, security, governance, and organizational courage.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-card-icon" aria-hidden="true">&#x1F512;</div>
+          <h3>Security-first by design</h3>
+          <p>Code generation is a solved problem. The hard problems are review, intent, and governance. Fullsend's threat model prioritizes prompt injection, insider threats, agent drift, and supply chain attacks &mdash; in that order.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-card-icon" aria-hidden="true">&#x1F310;</div>
+          <h3>Organization-agnostic</h3>
+          <p>Core problem documents apply to any team considering autonomous agents. Organization-specific lessons live in dedicated subdirectories so the general knowledge stays clean and portable.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Why it's different -->
+  <section class="section" id="why">
+    <div class="container container--narrow">
+      <div class="section-header">
+        <h2>How fullsend thinks differently</h2>
+        <p>
+          Most agentic AI projects focus on what agents can <em>do</em>. Fullsend focuses on what must be <em>true</em> before you hand over the keys.
+        </p>
+      </div>
+      <div class="diff-grid">
+        <div class="diff-card">
+          <div class="diff-card-icon" aria-hidden="true">&#x1F4DC;</div>
+          <h3>The repo is the coordinator</h3>
+          <p>No coordinator agent. Branch protection, CODEOWNERS, and status checks are the coordination layer. Trust derives from repository permissions, not agent identity.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-card-icon" aria-hidden="true">&#x1F6E1;</div>
+          <h3>Agents can't edit their own guardrails</h3>
+          <p>CODEOWNERS files are always human-owned. Agents cannot modify the rules that constrain them. No agent trusts another based on who produced the output.</p>
+        </div>
+        <div class="diff-card">
+          <div class="diff-card-icon" aria-hidden="true">&#x1F4D6;</div>
+          <h3>Living documents, not specs</h3>
+          <p>Problem-oriented documents that evolve independently, with ADRs spun off when decisions crystallize. Explore multiple options with trade-offs instead of prescribing single solutions.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Explore the problem space -->
+  <section class="section section--alt" id="explore">
+    <div class="container container--narrow">
+      <div class="section-header">
+        <h2>Explore the problem space</h2>
+        <p>Each problem area has its own document, evolving independently. Dive into the ones that matter to your organization.</p>
+      </div>
+      <div class="problems-grid">
+        <a class="problem-card" href="https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/security-threat-model.md">
+          <img src="brand/assets/doc-security-by-design.png" alt="Security by design illustration">
+          <div>
+            <h3>Security Threat Model</h3>
+            <p>Prompt injection, insider threats, agent drift, supply chain attacks.</p>
+          </div>
+        </a>
+        <a class="problem-card" href="https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/autonomy-spectrum.md">
+          <img src="brand/assets/doc-autonomy-spectrum.png" alt="Autonomy spectrum illustration">
+          <div>
+            <h3>Autonomy Spectrum</h3>
+            <p>When to auto-merge vs. escalate to humans. Binary per-repo autonomy.</p>
+          </div>
+        </a>
+        <a class="problem-card" href="https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/governance.md">
+          <img src="brand/assets/avatar-triage-owl.png" alt="Triage owl avatar">
+          <div>
+            <h3>Governance</h3>
+            <p>Who controls the agents and their configuration?</p>
+          </div>
+        </a>
+        <a class="problem-card" href="https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/intent-representation.md">
+          <img src="brand/assets/avatar-review-heron.png" alt="Review heron avatar">
+          <div>
+            <h3>Intent Representation</h3>
+            <p>How to capture, verify, and enforce what changes are wanted.</p>
+          </div>
+        </a>
+        <a class="problem-card" href="https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/code-review.md">
+          <img src="brand/assets/avatar-code-fox.png" alt="Code fox avatar">
+          <div>
+            <h3>Code Review</h3>
+            <p>How agents review code, including security-focused sub-agents.</p>
+          </div>
+        </a>
+        <a class="problem-card" href="https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/agent-architecture.md">
+          <img src="brand/assets/avatar-sre-chameleon.png" alt="SRE chameleon avatar">
+          <div>
+            <h3>Agent Architecture</h3>
+            <p>What agents exist, what authority do they have, how do they interact?</p>
+          </div>
+        </a>
+      </div>
+
+      <!-- Illustration strip -->
+      <div class="illustrations">
+        <figure class="illustration-card">
+          <img src="brand/assets/doc-full-send-moment.png" alt="The full send moment &mdash; a salmon leaping upstream">
+          <figcaption>The full send moment</figcaption>
+        </figure>
+        <figure class="illustration-card">
+          <img src="brand/assets/doc-autonomy-spectrum.png" alt="The autonomy spectrum &mdash; a figure releasing origami birds from a branch">
+          <figcaption>The autonomy spectrum</figcaption>
+        </figure>
+        <figure class="illustration-card">
+          <img src="brand/assets/doc-security-by-design.png" alt="Security by design &mdash; a tree sheltering birds under layered canopy">
+          <figcaption>Security by design</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="container">
+      <h2>Join the campfire</h2>
+      <p>
+        Fullsend is open source and evolving. Pick a problem area, read the existing document, poke holes, add your perspective. The future of autonomous engineering is being mapped in the open.
+      </p>
+      <div class="hero-actions">
+        <a href="https://github.com/fullsend-ai/fullsend" class="btn btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          Explore on GitHub
+        </a>
+        <a href="https://github.com/fullsend-ai/fullsend/issues" class="btn btn-outline">File an issue</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        <a href="https://github.com/fullsend-ai/fullsend">fullsend</a> &mdash; a living design document for fully autonomous agentic development.
+        <br>
+        <a href="https://github.com/fullsend-ai/fullsend/blob/main/LICENSE">Apache-2.0</a> &middot;
+        Brand assets by <a href="https://github.com/agency-agents">agency-agents</a>
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>
