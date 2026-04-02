@@ -624,8 +624,9 @@ func collectEnrolledRepoIDs(allRepos []forge.Repository, enabledRepos []string) 
 }
 
 // promptDispatchToken checks whether the dispatch token org secret already
-// exists and, if not, prompts the user to create a fine-grained PAT and
-// paste it. Returns the token string (empty if reusing an existing secret).
+// exists and, if not, opens the browser to GitHub's pre-filled fine-grained
+// PAT creation page and prompts the user to paste the result.
+// Returns the token string (empty if reusing an existing secret).
 func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.Printer, org string) (string, error) {
 	printer.Header("Dispatch Token Setup")
 	printer.Blank()
@@ -640,14 +641,39 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 		return "", nil
 	}
 
-	printer.StepInfo("A fine-grained PAT is needed to dispatch workflows cross-repo.")
-	printer.StepInfo("Create one at: https://github.com/settings/personal-access-tokens/new")
+	// Build a pre-filled URL for fine-grained PAT creation.
+	// GitHub supports query parameters to pre-fill name, description,
+	// resource owner, expiration, and permissions. The user only needs to:
+	//   1. Select "Only select repositories" and pick .fullsend
+	//   2. Click "Generate token"
+	//   3. Paste the token
+	patURL := fmt.Sprintf(
+		"https://github.com/settings/personal-access-tokens/new"+
+			"?name=fullsend-dispatch-%s"+
+			"&description=Dispatch+token+for+fullsend+agent+pipeline+in+%s."+
+			"+Scoped+to+.fullsend+repo+with+Actions+write+only."+
+			"&target_name=%s"+
+			"&actions=write",
+		org, org, org,
+	)
+
+	printer.StepStart("Opening browser for dispatch token creation")
+
+	browser := appsetup.DefaultBrowser{}
+	if err := browser.Open(ctx, patURL); err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
+		printer.StepInfo("Open this URL manually:")
+		printer.StepInfo("  " + patURL)
+	} else {
+		printer.StepDone("Opened token creation page")
+	}
+
 	printer.Blank()
-	printer.StepInfo("Settings:")
-	printer.StepInfo("  - Resource owner: " + org)
-	printer.StepInfo("  - Repository access: Only select repositories → .fullsend")
-	printer.StepInfo("  - Permissions: Actions (Read and write)")
-	printer.StepInfo("  - Expiration: as long as desired")
+	printer.StepInfo("In the browser:")
+	printer.StepInfo("  1. Under Repository access, select 'Only select repositories'")
+	printer.StepInfo("  2. Choose the .fullsend repository")
+	printer.StepInfo("  3. Click 'Generate token'")
+	printer.StepInfo("  4. Copy and paste the token below")
 	printer.Blank()
 	printer.StepInfo("Paste the token here:")
 
