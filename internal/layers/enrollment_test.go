@@ -47,8 +47,9 @@ func TestEnrollmentLayer_Install_CreatesEnrollmentPRs(t *testing.T) {
 		assert.Equal(t, "test-org", f.Owner)
 		assert.Equal(t, shimWorkflowPath, f.Path)
 		assert.Equal(t, enrollBranch, f.Branch)
-		// Verify shim workflow content contains the org name
-		assert.Contains(t, string(f.Content), "test-org/.fullsend/.github/workflows/agent.yaml@main")
+		// Verify shim workflow content uses dispatch token and repository_owner
+		assert.Contains(t, string(f.Content), "FULLSEND_DISPATCH_TOKEN")
+		assert.Contains(t, string(f.Content), "github.repository_owner")
 	}
 
 	// Should have created 2 PRs

@@ -192,10 +192,16 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	return report, nil
 }
 
-// shimWorkflowContent returns the shim workflow YAML with the org name substituted.
+// shimWorkflowContent returns the shim workflow YAML.
+// Uses github.repository_owner so the content is org-agnostic.
 func (l *EnrollmentLayer) shimWorkflowContent() string {
-	tmpl := `# fullsend shim workflow
-# Routes events to the reusable agent dispatch workflow in .fullsend.
+	return `# fullsend shim workflow
+# Routes events to the agent dispatch workflow in .fullsend.
+#
+# Security: pull_request_target runs the BASE branch version of this workflow,
+# preventing PRs from modifying it to exfiltrate the dispatch token.
+# This shim never checks out PR code, so it is not vulnerable to "pwn request"
+# attacks (see: Trivy CVE-2026-33634, hackerbot-claw campaign).
 name: fullsend
 
 on:
@@ -203,19 +209,21 @@ on:
     types: [opened, edited, labeled]
   issue_comment:
     types: [created]
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, ready_for_review]
   pull_request_review:
     types: [submitted]
 
 jobs:
   dispatch:
-    uses: {org}/.fullsend/.github/workflows/agent.yaml@main
-    with:
-      event_type: ${{ github.event_name }}
-      event_payload: ${{ toJSON(github.event) }}
-    secrets:
-      APP_PRIVATE_KEY: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to fullsend
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.FULLSEND_DISPATCH_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository_owner }}/.fullsend/actions/workflows/agent.yaml/dispatches" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"event_type\":\"${{ github.event_name }}\",\"source_repo\":\"${{ github.repository }}\",\"event_payload\":$(echo '${{ toJSON(github.event) }}' | jq -Rs .)}}"
 `
-	return strings.ReplaceAll(tmpl, "{org}", l.org)
 }

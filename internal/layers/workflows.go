@@ -148,22 +148,23 @@ func (l *WorkflowsLayer) codeownersContent() string {
 	return fmt.Sprintf("# fullsend configuration is governed by org admins.\n* @%s\n", l.authenticatedUser)
 }
 
-const agentWorkflowContent = `# Reusable agent dispatch workflow
-# Called by per-repo shim workflows to run fullsend agents.
+const agentWorkflowContent = `# Agent dispatch workflow
+# Triggered by shim workflows in enrolled repos via workflow_dispatch.
+# Reads its own repo secrets (App PEMs) — secrets never leave this repo.
 name: Agent Dispatch
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       event_type:
+        required: true
+        type: string
+      source_repo:
         required: true
         type: string
       event_payload:
         required: true
         type: string
-    secrets:
-      APP_PRIVATE_KEY:
-        required: true
 
 jobs:
   dispatch:
@@ -171,9 +172,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run fullsend entrypoint
-        run: echo "fullsend entrypoint - event=${{ inputs.event_type }}"
+        run: echo "fullsend entrypoint - event=${{ inputs.event_type }} repo=${{ inputs.source_repo }}"
         env:
           EVENT_TYPE: ${{ inputs.event_type }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
           EVENT_PAYLOAD: ${{ inputs.event_payload }}
 `
 

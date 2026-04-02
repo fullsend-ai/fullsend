@@ -67,7 +67,7 @@ func TestWorkflowsLayer_Install_AgentWorkflowContent(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, agentContent, "agent.yaml should have been written")
-	assert.Contains(t, agentContent, "workflow_call")
+	assert.Contains(t, agentContent, "workflow_dispatch")
 }
 
 func TestWorkflowsLayer_Install_OnboardWorkflowContent(t *testing.T) {
