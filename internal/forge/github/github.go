@@ -247,6 +247,7 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 		}
 
 		var repos []struct {
+			ID            int64  `json:"id"`
 			Name          string `json:"name"`
 			FullName      string `json:"full_name"`
 			DefaultBranch string `json:"default_branch"`
@@ -263,6 +264,7 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 				continue
 			}
 			result = append(result, forge.Repository{
+				ID:            r.ID,
 				Name:          r.Name,
 				FullName:      r.FullName,
 				DefaultBranch: r.DefaultBranch,
@@ -330,6 +332,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 	}
 
 	var r struct {
+		ID            int64  `json:"id"`
 		Name          string `json:"name"`
 		FullName      string `json:"full_name"`
 		DefaultBranch string `json:"default_branch"`
@@ -342,6 +345,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 	}
 
 	return &forge.Repository{
+		ID:            r.ID,
 		Name:          r.Name,
 		FullName:      r.FullName,
 		DefaultBranch: r.DefaultBranch,
@@ -835,6 +839,99 @@ func (c *LiveClient) ListOrgInstallations(ctx context.Context, org string) ([]fo
 		}
 	}
 	return installs, nil
+}
+
+// CreateOrgSecret creates or updates an encrypted organization-level secret
+// scoped to the given repository IDs.
+func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
+	// Step 1: Get the org's public key for secret encryption.
+	keyResp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/public-key", org))
+	if err != nil {
+		return fmt.Errorf("get org public key: %w", err)
+	}
+
+	var pubKey struct {
+		KeyID string `json:"key_id"`
+		Key   string `json:"key"`
+	}
+	if err := decodeJSON(keyResp, &pubKey); err != nil {
+		return fmt.Errorf("decode org public key: %w", err)
+	}
+
+	// Step 2: Decode the public key and encrypt the secret value.
+	keyBytes, err := base64.StdEncoding.DecodeString(pubKey.Key)
+	if err != nil {
+		return fmt.Errorf("decode org public key base64: %w", err)
+	}
+
+	var recipientKey [32]byte
+	copy(recipientKey[:], keyBytes)
+
+	encrypted, err := box.SealAnonymous(nil, []byte(value), &recipientKey, nil)
+	if err != nil {
+		return fmt.Errorf("encrypt org secret: %w", err)
+	}
+
+	// Step 3: Upload the encrypted secret with selected repo visibility.
+	payload := map[string]any{
+		"encrypted_value":         base64.StdEncoding.EncodeToString(encrypted),
+		"key_id":                  pubKey.KeyID,
+		"visibility":              "selected",
+		"selected_repository_ids": selectedRepoIDs,
+	}
+
+	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), payload)
+	if err != nil {
+		return fmt.Errorf("create org secret %s: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// OrgSecretExists checks if an org-level secret exists.
+func (c *LiveClient) OrgSecretExists(ctx context.Context, org, name string) (bool, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), nil)
+	if err != nil {
+		return false, fmt.Errorf("check org secret %s: %w", name, err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking org secret"}
+}
+
+// DeleteOrgSecret deletes an org-level secret. It is idempotent: a 404
+// (secret already gone) is not treated as an error.
+func (c *LiveClient) DeleteOrgSecret(ctx context.Context, org, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete org secret %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting org secret"}
+}
+
+// SetOrgSecretRepos sets the list of repositories that can access an org secret.
+func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error {
+	payload := map[string]any{
+		"selected_repository_ids": repoIDs,
+	}
+
+	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s/repositories", org, name), payload)
+	if err != nil {
+		return fmt.Errorf("set org secret repos for %s: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // isNotFound checks whether an error is a 404 API error.

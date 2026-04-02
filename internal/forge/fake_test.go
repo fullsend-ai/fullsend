@@ -256,6 +256,55 @@ func TestFakeClient_Installations(t *testing.T) {
 	assert.Equal(t, "fullsend-bot", installs[0].AppSlug)
 }
 
+func TestFakeClient_OrgSecretExists(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("exists", func(t *testing.T) {
+		fc := &FakeClient{
+			OrgSecrets: map[string]bool{"myorg/TOKEN": true},
+		}
+		exists, err := fc.OrgSecretExists(ctx, "myorg", "TOKEN")
+		require.NoError(t, err)
+		assert.True(t, exists)
+	})
+
+	t.Run("not exists", func(t *testing.T) {
+		fc := &FakeClient{
+			OrgSecrets: map[string]bool{},
+		}
+		exists, err := fc.OrgSecretExists(ctx, "myorg", "MISSING")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+
+	t.Run("nil map", func(t *testing.T) {
+		fc := &FakeClient{}
+		exists, err := fc.OrgSecretExists(ctx, "myorg", "TOKEN")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+}
+
+func TestFakeClient_CreateOrgSecret(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	err := fc.CreateOrgSecret(ctx, "myorg", "DISPATCH_TOKEN", "secret-value", []int64{100, 200})
+	require.NoError(t, err)
+
+	// Should be recorded.
+	require.Len(t, fc.CreatedOrgSecrets, 1)
+	assert.Equal(t, "myorg", fc.CreatedOrgSecrets[0].Org)
+	assert.Equal(t, "DISPATCH_TOKEN", fc.CreatedOrgSecrets[0].Name)
+	assert.Equal(t, "secret-value", fc.CreatedOrgSecrets[0].Value)
+	assert.Equal(t, []int64{100, 200}, fc.CreatedOrgSecrets[0].RepoIDs)
+
+	// Should be queryable.
+	exists, err := fc.OrgSecretExists(ctx, "myorg", "DISPATCH_TOKEN")
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
@@ -292,6 +341,17 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListOrgInstallations(ctx, "org")
 			return err
 		}},
+		{"CreateOrgSecret", func(fc *FakeClient) error {
+			return fc.CreateOrgSecret(ctx, "o", "n", "v", nil)
+		}},
+		{"OrgSecretExists", func(fc *FakeClient) error {
+			_, err := fc.OrgSecretExists(ctx, "o", "n")
+			return err
+		}},
+		{"DeleteOrgSecret", func(fc *FakeClient) error { return fc.DeleteOrgSecret(ctx, "o", "n") }},
+		{"SetOrgSecretRepos", func(fc *FakeClient) error {
+			return fc.SetOrgSecretRepos(ctx, "o", "n", nil)
+		}},
 	}
 
 	for _, m := range methods {
@@ -320,6 +380,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 		},
 		Installations: []Installation{{ID: 1, AppSlug: "app"}},
 		Secrets:       map[string]bool{"o/r/secret": true},
+		OrgSecrets:    map[string]bool{"o/secret": true},
 	}
 
 	var wg sync.WaitGroup
@@ -347,6 +408,10 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetLatestWorkflowRun(ctx, "o", "r", "ci.yml")
 			_, _ = fc.GetWorkflowRun(ctx, "o", "r", 1)
 			_, _ = fc.ListOrgInstallations(ctx, "org")
+			_ = fc.CreateOrgSecret(ctx, "o", "n", "v", []int64{1})
+			_, _ = fc.OrgSecretExists(ctx, "o", "secret")
+			_ = fc.DeleteOrgSecret(ctx, "o", "n")
+			_ = fc.SetOrgSecretRepos(ctx, "o", "n", []int64{1, 2})
 		}(i)
 	}
 

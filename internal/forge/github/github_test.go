@@ -580,6 +580,133 @@ func TestWithBaseURL(t *testing.T) {
 	assert.Equal(t, "https://custom.api.com", client.baseURL)
 }
 
+func TestCreateOrgSecret(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			// GET org public key
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/orgs/myorg/actions/secrets/public-key", r.URL.Path)
+
+			pubKey := make([]byte, 32)
+			for i := range pubKey {
+				pubKey[i] = byte(i + 1)
+			}
+
+			json.NewEncoder(w).Encode(map[string]any{
+				"key_id": "org-key-123",
+				"key":    base64.StdEncoding.EncodeToString(pubKey),
+			})
+		case 2:
+			// PUT org secret
+			assert.Equal(t, "PUT", r.Method)
+			assert.Equal(t, "/orgs/myorg/actions/secrets/DISPATCH_TOKEN", r.URL.Path)
+
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			assert.Equal(t, "org-key-123", body["key_id"])
+			assert.NotEmpty(t, body["encrypted_value"])
+			assert.Equal(t, "selected", body["visibility"])
+
+			repoIDs, ok := body["selected_repository_ids"].([]any)
+			require.True(t, ok)
+			assert.Len(t, repoIDs, 2)
+			assert.Equal(t, float64(100), repoIDs[0])
+			assert.Equal(t, float64(200), repoIDs[1])
+
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrgSecret(context.Background(), "myorg", "DISPATCH_TOKEN", "token-value", []int64{100, 200})
+	require.NoError(t, err)
+}
+
+func TestOrgSecretExists(t *testing.T) {
+	t.Run("exists", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/orgs/myorg/actions/secrets/TOKEN", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{"name": "TOKEN"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		exists, err := client.OrgSecretExists(context.Background(), "myorg", "TOKEN")
+		require.NoError(t, err)
+		assert.True(t, exists)
+	})
+
+	t.Run("not exists", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		exists, err := client.OrgSecretExists(context.Background(), "myorg", "MISSING")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+}
+
+func TestDeleteOrgSecret(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/orgs/myorg/actions/secrets/TOKEN", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteOrgSecret(context.Background(), "myorg", "TOKEN")
+		require.NoError(t, err)
+	})
+
+	t.Run("idempotent 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteOrgSecret(context.Background(), "myorg", "ALREADY_GONE")
+		require.NoError(t, err)
+	})
+}
+
+func TestSetOrgSecretRepos(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/orgs/myorg/actions/secrets/TOKEN/repositories", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+
+		repoIDs, ok := body["selected_repository_ids"].([]any)
+		require.True(t, ok)
+		assert.Len(t, repoIDs, 3)
+		assert.Equal(t, float64(10), repoIDs[0])
+		assert.Equal(t, float64(20), repoIDs[1])
+		assert.Equal(t, float64(30), repoIDs[2])
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.SetOrgSecretRepos(context.Background(), "myorg", "TOKEN", []int64{10, 20, 30})
+	require.NoError(t, err)
+}
+
 func TestListOrgRepos_Pagination(t *testing.T) {
 	page := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

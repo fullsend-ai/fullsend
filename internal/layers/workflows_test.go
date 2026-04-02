@@ -260,3 +260,15 @@ func (c *codeownersErrorClient) RepoVariableExists(context.Context, string, stri
 func (c *codeownersErrorClient) GetTokenScopes(context.Context) ([]string, error) {
 	return nil, nil
 }
+func (c *codeownersErrorClient) CreateOrgSecret(context.Context, string, string, string, []int64) error {
+	return nil
+}
+func (c *codeownersErrorClient) OrgSecretExists(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (c *codeownersErrorClient) DeleteOrgSecret(context.Context, string, string) error {
+	return nil
+}
+func (c *codeownersErrorClient) SetOrgSecretRepos(context.Context, string, string, []int64) error {
+	return nil
+}

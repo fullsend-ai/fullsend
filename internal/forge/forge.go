@@ -22,6 +22,7 @@ func IsNotFound(err error) bool {
 
 // Repository represents a repository on a git forge.
 type Repository struct {
+	ID            int64
 	Name          string
 	FullName      string
 	DefaultBranch string
@@ -96,6 +97,12 @@ type Client interface {
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
+
+	// Org-level secrets (for cross-repo dispatch tokens)
+	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	OrgSecretExists(ctx context.Context, org, name string) (bool, error)
+	DeleteOrgSecret(ctx context.Context, org, name string) error
+	SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error
 
 	// CI/Workflow operations
 	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
