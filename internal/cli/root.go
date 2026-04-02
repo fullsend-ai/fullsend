@@ -1,10 +1,25 @@
 package cli
 
-import "fmt"
+import (
+	"github.com/spf13/cobra"
+)
 
-// Execute runs the root command. This is a placeholder that will be
-// replaced with the full Cobra implementation in a later task.
+var version = "dev"
+
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "fullsend",
+		Short:         "Autonomous agentic development for GitHub organizations",
+		Long:          "fullsend automates the setup and management of agentic development pipelines for GitHub organizations.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Version:       version,
+	}
+	cmd.AddCommand(newAdminCmd())
+	return cmd
+}
+
+// Execute runs the root command.
 func Execute() error {
-	fmt.Println("fullsend - autonomous agentic development")
-	return nil
+	return newRootCmd().Execute()
 }
