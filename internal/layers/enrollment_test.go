@@ -84,7 +84,7 @@ func TestEnrollmentLayer_Install_SkipsAlreadyEnrolled(t *testing.T) {
 func TestEnrollmentLayer_Install_ContinuesOnError(t *testing.T) {
 	// Use a custom client that fails CreateBranch only for repo-a
 	client := &perRepoBranchErrorClient{
-		FakeClient: forge.FakeClient{},
+		FakeClient: &forge.FakeClient{},
 		failRepo:   "repo-a",
 	}
 	repos := []string{"repo-a", "repo-b"}
@@ -198,7 +198,7 @@ func TestEnrollmentLayer_Analyze_Partial(t *testing.T) {
 
 // perRepoBranchErrorClient wraps FakeClient but fails CreateBranch for a specific repo.
 type perRepoBranchErrorClient struct {
-	forge.FakeClient
+	*forge.FakeClient
 	failRepo string
 }
 

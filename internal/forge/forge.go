@@ -3,7 +3,22 @@
 // the Client interface, keeping the rest of the codebase forge-agnostic.
 package forge
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ConfigRepoName is the conventional name for the org-level fullsend
+// configuration repository. See ADR-0003.
+const ConfigRepoName = ".fullsend"
+
+// ErrNotFound indicates a requested resource was not found on the forge.
+var ErrNotFound = errors.New("not found")
+
+// IsNotFound reports whether err indicates a resource was not found.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
 
 // Repository represents a repository on a git forge.
 type Repository struct {
@@ -44,6 +59,7 @@ type Installation struct {
 type Client interface {
 	// Repository operations
 	ListOrgRepos(ctx context.Context, org string) ([]Repository, error)
+	GetRepo(ctx context.Context, owner, repo string) (*Repository, error)
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
 	DeleteRepo(ctx context.Context, owner, repo string) error
 
@@ -67,6 +83,7 @@ type Client interface {
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
+	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
 
 	// CI/Workflow operations
 	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)

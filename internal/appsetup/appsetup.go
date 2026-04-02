@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"os/exec"
@@ -293,17 +294,17 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 <h2>Creating GitHub App: %s</h2>
 <p>Redirecting to GitHub...</p>
 <form id="manifest-form" method="post" action="%s">
-  <input type="hidden" name="manifest" value='%s'>
+  <input type="hidden" name="manifest" value="%s">
   <input type="hidden" name="redirect_url" value="%s">
 </form>
 <script>document.getElementById('manifest-form').submit();</script>
 </body>
 </html>`,
-			appCfg.Name,
-			appCfg.Name,
-			githubFormAction,
-			string(manifest),
-			callbackURL,
+			html.EscapeString(appCfg.Name),
+			html.EscapeString(appCfg.Name),
+			html.EscapeString(githubFormAction),
+			html.EscapeString(string(manifest)),
+			html.EscapeString(callbackURL),
 		)
 		fmt.Fprint(w, page)
 	})
@@ -318,7 +319,7 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 			return
 		}
 
-		creds, err := s.exchangeManifestCode(code)
+		creds, err := s.exchangeManifestCode(ctx, code)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "Error: %v", err)
@@ -378,16 +379,17 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 
 // exchangeManifestCode posts the conversion code to GitHub and returns
 // the resulting app credentials.
-func (s *Setup) exchangeManifestCode(code string) (*AppCredentials, error) {
+func (s *Setup) exchangeManifestCode(ctx context.Context, code string) (*AppCredentials, error) {
 	url := fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code)
 
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating conversion request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging manifest code: %w", err)
 	}

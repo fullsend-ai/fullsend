@@ -3,7 +3,6 @@ package layers
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -61,7 +60,7 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 		content := files[path]
 		l.ui.StepStart("Writing " + path)
 
-		err := l.client.CreateOrUpdateFile(ctx, l.org, configRepoName, path, "chore: update "+path, content)
+		err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, path, "chore: update "+path, content)
 		if err != nil {
 			if path == codeownersPath {
 				l.ui.StepWarn("Could not write " + path + ": " + err.Error())
@@ -88,9 +87,9 @@ func (l *WorkflowsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 
 	var present, missing []string
 	for _, path := range managedFiles {
-		_, err := l.client.GetFileContent(ctx, l.org, configRepoName, path)
+		_, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, path)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
+			if forge.IsNotFound(err) {
 				missing = append(missing, path)
 				continue
 			}

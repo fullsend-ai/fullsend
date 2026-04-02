@@ -137,6 +137,10 @@ func TestSecretsLayer_Analyze_AllPresent(t *testing.T) {
 			"test-org/.fullsend/FULLSEND_FULLSEND_APP_PRIVATE_KEY": true,
 			"test-org/.fullsend/FULLSEND_TRIAGE_APP_PRIVATE_KEY":   true,
 		},
+		VariablesExist: map[string]bool{
+			"test-org/.fullsend/FULLSEND_FULLSEND_APP_ID": true,
+			"test-org/.fullsend/FULLSEND_TRIAGE_APP_ID":   true,
+		},
 	}
 	agents := twoAgents()
 	layer, _ := newSecretsLayer(t, client, agents)
@@ -153,7 +157,8 @@ func TestSecretsLayer_Analyze_AllPresent(t *testing.T) {
 
 func TestSecretsLayer_Analyze_NonePresent(t *testing.T) {
 	client := &forge.FakeClient{
-		Secrets: map[string]bool{}, // no secrets
+		Secrets:        map[string]bool{},
+		VariablesExist: map[string]bool{},
 	}
 	agents := twoAgents()
 	layer, _ := newSecretsLayer(t, client, agents)
@@ -172,6 +177,10 @@ func TestSecretsLayer_Analyze_Partial(t *testing.T) {
 		Secrets: map[string]bool{
 			"test-org/.fullsend/FULLSEND_FULLSEND_APP_PRIVATE_KEY": true,
 			// triage secret missing
+		},
+		VariablesExist: map[string]bool{
+			"test-org/.fullsend/FULLSEND_FULLSEND_APP_ID": true,
+			// triage variable missing
 		},
 	}
 	agents := twoAgents()

@@ -53,7 +53,7 @@ func (s *SecretsLayer) Install(ctx context.Context) error {
 
 		sName := secretName(agent.Role)
 		s.ui.StepStart(fmt.Sprintf("storing private key for %s", agent.Role))
-		if err := s.client.CreateRepoSecret(ctx, s.org, ".fullsend", sName, agent.PEM); err != nil {
+		if err := s.client.CreateRepoSecret(ctx, s.org, forge.ConfigRepoName, sName, agent.PEM); err != nil {
 			s.ui.StepFail(fmt.Sprintf("failed to store secret %s", sName))
 			return fmt.Errorf("creating secret %s: %w", sName, err)
 		}
@@ -61,7 +61,7 @@ func (s *SecretsLayer) Install(ctx context.Context) error {
 
 		vName := variableName(agent.Role)
 		s.ui.StepStart(fmt.Sprintf("storing app ID for %s", agent.Role))
-		if err := s.client.CreateOrUpdateRepoVariable(ctx, s.org, ".fullsend", vName, fmt.Sprintf("%d", agent.AppID)); err != nil {
+		if err := s.client.CreateOrUpdateRepoVariable(ctx, s.org, forge.ConfigRepoName, vName, fmt.Sprintf("%d", agent.AppID)); err != nil {
 			s.ui.StepFail(fmt.Sprintf("failed to store variable %s", vName))
 			return fmt.Errorf("creating variable %s: %w", vName, err)
 		}
@@ -75,7 +75,7 @@ func (s *SecretsLayer) Uninstall(_ context.Context) error {
 	return nil
 }
 
-// Analyze checks whether all expected agent secrets exist in the .fullsend repo.
+// Analyze checks whether all expected agent secrets and variables exist in the .fullsend repo.
 func (s *SecretsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: s.Name()}
 
@@ -84,7 +84,7 @@ func (s *SecretsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 
 	for _, agent := range s.agents {
 		sName := secretName(agent.Role)
-		exists, err := s.client.RepoSecretExists(ctx, s.org, ".fullsend", sName)
+		exists, err := s.client.RepoSecretExists(ctx, s.org, forge.ConfigRepoName, sName)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", sName, err)
 		}
@@ -93,26 +93,37 @@ func (s *SecretsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		} else {
 			missing = append(missing, sName)
 		}
+
+		vName := variableName(agent.Role)
+		varExists, err := s.client.RepoVariableExists(ctx, s.org, forge.ConfigRepoName, vName)
+		if err != nil {
+			return nil, fmt.Errorf("checking variable %s: %w", vName, err)
+		}
+		if varExists {
+			present = append(present, vName)
+		} else {
+			missing = append(missing, vName)
+		}
 	}
 
 	switch {
 	case len(missing) == 0:
 		report.Status = StatusInstalled
 		for _, name := range present {
-			report.Details = append(report.Details, fmt.Sprintf("secret %s exists", name))
+			report.Details = append(report.Details, fmt.Sprintf("%s exists", name))
 		}
 	case len(present) == 0:
 		report.Status = StatusNotInstalled
 		for _, name := range missing {
-			report.WouldInstall = append(report.WouldInstall, fmt.Sprintf("create secret %s", name))
+			report.WouldInstall = append(report.WouldInstall, fmt.Sprintf("create %s", name))
 		}
 	default:
 		report.Status = StatusDegraded
 		for _, name := range present {
-			report.Details = append(report.Details, fmt.Sprintf("secret %s exists", name))
+			report.Details = append(report.Details, fmt.Sprintf("%s exists", name))
 		}
 		for _, name := range missing {
-			report.WouldFix = append(report.WouldFix, fmt.Sprintf("create missing secret %s", name))
+			report.WouldFix = append(report.WouldFix, fmt.Sprintf("create missing %s", name))
 		}
 	}
 

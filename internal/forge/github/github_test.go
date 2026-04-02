@@ -543,19 +543,6 @@ func TestAPIError_ErrorString(t *testing.T) {
 	assert.Contains(t, err.Error(), "Not Found")
 }
 
-func TestCompileTimeInterfaceCheck(t *testing.T) {
-	// This is checked at compile time by the var _ line, but let's
-	// verify it explicitly too.
-	var client interface{} = New("token")
-	_, ok := client.(interface {
-		ListOrgRepos(context.Context, string) ([]interface{}, error)
-	})
-	// The forge.Client interface uses forge.Repository, not interface{},
-	// so this should NOT match - just verify the client is constructable.
-	_ = ok
-	assert.NotNil(t, client)
-}
-
 func TestCreateFileOnBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "PUT", r.Method)

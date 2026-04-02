@@ -155,7 +155,7 @@ func newUninstallCmd() *cobra.Command {
 			printer.Blank()
 
 			if !yolo {
-				printer.StepWarn(fmt.Sprintf("This will permanently delete the .fullsend repo and all stored secrets for %s.", org))
+				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
 				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
 				var confirmation string
 				if _, err := fmt.Scanln(&confirmation); err != nil {
@@ -258,7 +258,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 	// Add secret existence checker.
 	setup = setup.WithSecretExists(func(role string) (bool, error) {
 		secretName := fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", strings.ToUpper(role))
-		return client.RepoSecretExists(ctx, org, ".fullsend", secretName)
+		return client.RepoSecretExists(ctx, org, forge.ConfigRepoName, secretName)
 	})
 
 	var creds []layers.AgentCredentials
@@ -334,7 +334,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
 	// Try to load existing config for agent info.
 	var agentSlugs []string
-	cfgData, err := client.GetFileContent(ctx, org, ".fullsend", "config.yaml")
+	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
 		if cfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
 			for _, agent := range cfg.Agents {
@@ -372,6 +372,14 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		printer.Blank()
 	}
 
+	if len(errs) > 0 {
+		printer.Summary("Uninstall completed with errors", []string{
+			fmt.Sprintf("Organization: %s", org),
+			fmt.Sprintf("%d errors occurred during uninstall", len(errs)),
+		})
+		return fmt.Errorf("uninstall completed with %d errors", len(errs))
+	}
+
 	printer.Summary("Uninstall complete", []string{
 		fmt.Sprintf("Organization: %s", org),
 		"Config repo deleted",
@@ -395,7 +403,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	printer.Blank()
 
 	// Build a config for analysis using defaults.
-	defaultRoles := gh.DefaultAgentRoles()
+	defaultRoles := config.DefaultAgentRoles()
 	var agentCreds []layers.AgentCredentials
 	for _, role := range defaultRoles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
@@ -485,7 +493,7 @@ func printAnalysis(ctx context.Context, stack *layers.Stack, printer *ui.Printer
 
 // loadKnownSlugs tries to read agent slugs from an existing config.
 func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[string]string {
-	data, err := client.GetFileContent(ctx, org, ".fullsend", "config.yaml")
+	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err != nil {
 		return nil
 	}

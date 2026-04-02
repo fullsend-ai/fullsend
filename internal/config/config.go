@@ -48,6 +48,13 @@ func ValidRoles() []string {
 	return []string{"fullsend", "triage", "coder", "review"}
 }
 
+// DefaultAgentRoles returns the standard set of agent roles used
+// when no custom roles are specified. This is the same as ValidRoles
+// but exists as a separate function for semantic clarity.
+func DefaultAgentRoles() []string {
+	return ValidRoles()
+}
+
 // NewOrgConfig creates a new OrgConfig with sensible defaults.
 func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry) *OrgConfig {
 	repos := make(map[string]RepoConfig, len(allRepos))

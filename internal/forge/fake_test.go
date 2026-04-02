@@ -95,7 +95,7 @@ func TestFakeClient_GetFileContent(t *testing.T) {
 
 		_, err := fc.GetFileContent(ctx, "owner", "repo", "missing.txt")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "file not found")
+		assert.True(t, IsNotFound(err), "expected IsNotFound to be true")
 	})
 }
 

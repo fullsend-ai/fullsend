@@ -38,6 +38,7 @@ type FakeClient struct {
 	AuthenticatedUser string
 	Installations     []Installation
 	Secrets           map[string]bool // key: "owner/repo/name"
+	VariablesExist    map[string]bool // key: "owner/repo/name"
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
@@ -97,6 +98,28 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 	}
 	f.CreatedRepos = append(f.CreatedRepos, r)
 	return &r, nil
+}
+
+func (f *FakeClient) GetRepo(_ context.Context, owner, repo string) (*Repository, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRepo"); e != nil {
+		return nil, e
+	}
+
+	for i := range f.Repos {
+		if f.Repos[i].FullName == owner+"/"+repo || f.Repos[i].Name == repo {
+			return &f.Repos[i], nil
+		}
+	}
+	// Also check created repos.
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == owner+"/"+repo || f.CreatedRepos[i].Name == repo {
+			return &f.CreatedRepos[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
 }
 
 func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
@@ -163,7 +186,7 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 	key := owner + "/" + repo + "/" + path
 	data, ok := f.FileContents[key]
 	if !ok {
-		return nil, fmt.Errorf("file not found: %s", key)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
 	return data, nil
 }
@@ -285,6 +308,20 @@ func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, 
 		Value: value,
 	})
 	return nil
+}
+
+func (f *FakeClient) RepoVariableExists(_ context.Context, owner, repo, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("RepoVariableExists"); e != nil {
+		return false, e
+	}
+
+	if f.VariablesExist == nil {
+		return false, nil
+	}
+	return f.VariablesExist[owner+"/"+repo+"/"+name], nil
 }
 
 func (f *FakeClient) GetLatestWorkflowRun(_ context.Context, owner, repo, workflowFile string) (*WorkflowRun, error) {

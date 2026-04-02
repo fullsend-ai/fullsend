@@ -251,3 +251,9 @@ func (c *codeownersErrorClient) GetWorkflowRun(context.Context, string, string, 
 func (c *codeownersErrorClient) ListOrgInstallations(context.Context, string) ([]forge.Installation, error) {
 	return nil, nil
 }
+func (c *codeownersErrorClient) GetRepo(context.Context, string, string) (*forge.Repository, error) {
+	return nil, nil
+}
+func (c *codeownersErrorClient) RepoVariableExists(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}

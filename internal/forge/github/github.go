@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,37 +54,100 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("github api: %d %s", e.StatusCode, e.Message)
 }
 
-// do performs an HTTP request against the GitHub API.
+// Unwrap returns forge.ErrNotFound for 404 errors, enabling errors.Is checks.
+func (e *APIError) Unwrap() error {
+	if e.StatusCode == http.StatusNotFound {
+		return forge.ErrNotFound
+	}
+	return nil
+}
+
+const maxRetries = 3
+
+// do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	url := c.baseURL + path
 
-	var reqBody io.Reader
+	var bodyData []byte
 	if body != nil {
-		data, err := json.Marshal(body)
+		var err error
+		bodyData, err = json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request body: %w", err)
 		}
-		reqBody = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	for attempt := range maxRetries {
+		var reqBody io.Reader
+		if bodyData != nil {
+			reqBody = bytes.NewReader(bodyData)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("http %s %s: %w", method, path, err)
+		}
+
+		if !isRetryable(resp) {
+			return resp, nil
+		}
+
+		// Drain and close the body before retrying.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if attempt == maxRetries-1 {
+			return nil, &APIError{StatusCode: resp.StatusCode, Message: "rate limited after retries"}
+		}
+
+		delay := retryDelay(resp, attempt)
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	// Unreachable, but the compiler needs it.
+	return nil, fmt.Errorf("exhausted retries for %s %s", method, path)
+}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http %s %s: %w", method, path, err)
+// isRetryable returns true for responses that should trigger a retry.
+// GitHub uses 429 for primary rate limits and 403 with Retry-After for
+// secondary rate limits. A plain 403 (e.g., permission denied) is not retried.
+func isRetryable(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
 	}
+	// GitHub secondary rate limit: 403 + Retry-After header.
+	if resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	return false
+}
 
-	return resp, nil
+// retryDelay calculates how long to wait before retrying.
+// It uses the Retry-After header if present, otherwise exponential backoff.
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	// Exponential backoff: 1s, 2s, 4s
+	return time.Duration(math.Pow(2, float64(attempt))) * time.Second
 }
 
 // checkStatus verifies the response has an acceptable status code and returns
@@ -246,6 +312,39 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 	}, nil
 }
 
+// GetRepo retrieves a single repository by owner and name.
+// Returns forge.ErrNotFound (wrapped) if the repo does not exist.
+func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s", owner, repo), nil)
+	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, fmt.Errorf("get repo %s/%s: %w", owner, repo, err)
+	}
+
+	var r struct {
+		Name          string `json:"name"`
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+		Private       bool   `json:"private"`
+		Archived      bool   `json:"archived"`
+		Fork          bool   `json:"fork"`
+	}
+	if err := decodeJSON(resp, &r); err != nil {
+		return nil, fmt.Errorf("decode repo: %w", err)
+	}
+
+	return &forge.Repository{
+		Name:          r.Name,
+		FullName:      r.FullName,
+		DefaultBranch: r.DefaultBranch,
+		Private:       r.Private,
+		Archived:      r.Archived,
+		Fork:          r.Fork,
+	}, nil
+}
+
 // DeleteRepo deletes a repository.
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
@@ -400,30 +499,38 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}, nil
 }
 
-// ListRepoPullRequests lists open pull requests for a repository.
+// ListRepoPullRequests lists open pull requests for a repository with pagination.
 func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls?state=open&per_page=100", owner, repo))
-	if err != nil {
-		return nil, fmt.Errorf("list pull requests: %w", err)
-	}
+	var result []forge.ChangeProposal
 
-	var prs []struct {
-		HTMLURL string `json:"html_url"`
-		Title   string `json:"title"`
-		Number  int    `json:"number"`
-	}
-	if err := decodeJSON(resp, &prs); err != nil {
-		return nil, fmt.Errorf("decode pull requests: %w", err)
-	}
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls?state=open&per_page=100&page=%d", owner, repo, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull requests page %d: %w", page, err)
+		}
 
-	result := make([]forge.ChangeProposal, len(prs))
-	for i, pr := range prs {
-		result[i] = forge.ChangeProposal{
-			URL:    pr.HTMLURL,
-			Title:  pr.Title,
-			Number: pr.Number,
+		var prs []struct {
+			HTMLURL string `json:"html_url"`
+			Title   string `json:"title"`
+			Number  int    `json:"number"`
+		}
+		if err := decodeJSON(resp, &prs); err != nil {
+			return nil, fmt.Errorf("decode pull requests page %d: %w", page, err)
+		}
+
+		for _, pr := range prs {
+			result = append(result, forge.ChangeProposal{
+				URL:    pr.HTMLURL,
+				Title:  pr.Title,
+				Number: pr.Number,
+			})
+		}
+
+		if len(prs) < 100 {
+			break
 		}
 	}
+
 	return result, nil
 }
 
@@ -533,6 +640,23 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 	return nil
 }
 
+// RepoVariableExists checks if a variable exists in a repository.
+func (c *LiveClient) RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), nil)
+	if err != nil {
+		return false, fmt.Errorf("check variable %s: %w", name, err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking variable"}
+}
+
 // GetLatestWorkflowRun returns the most recent workflow run for a workflow file.
 func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*forge.WorkflowRun, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=1", owner, repo, workflowFile))
@@ -629,18 +753,9 @@ func (c *LiveClient) ListOrgInstallations(ctx context.Context, org string) ([]fo
 
 // isNotFound checks whether an error is a 404 API error.
 func isNotFound(err error) bool {
-	if err == nil {
-		return false
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusNotFound
 	}
-	for e := err; e != nil; {
-		if ae, ok := e.(*APIError); ok {
-			return ae.StatusCode == http.StatusNotFound
-		}
-		if u, ok := e.(interface{ Unwrap() error }); ok {
-			e = u.Unwrap()
-		} else {
-			break
-		}
-	}
-	return false
+	return errors.Is(err, forge.ErrNotFound)
 }

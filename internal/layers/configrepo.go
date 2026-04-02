@@ -3,14 +3,12 @@ package layers
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const configRepoName = ".fullsend"
 const configFilePath = "config.yaml"
 
 // ConfigRepoLayer manages the .fullsend configuration repository.
@@ -53,16 +51,16 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 	}
 
 	if !exists {
-		l.ui.StepStart("Creating " + configRepoName + " repository")
+		l.ui.StepStart("Creating " + forge.ConfigRepoName + " repository")
 		desc := fmt.Sprintf("fullsend configuration for %s", l.org)
-		_, err := l.client.CreateRepo(ctx, l.org, configRepoName, desc, l.hasPrivate)
+		_, err := l.client.CreateRepo(ctx, l.org, forge.ConfigRepoName, desc, l.hasPrivate)
 		if err != nil {
-			l.ui.StepFail("Failed to create " + configRepoName + " repository")
+			l.ui.StepFail("Failed to create " + forge.ConfigRepoName + " repository")
 			return fmt.Errorf("creating config repo: %w", err)
 		}
-		l.ui.StepDone("Created " + configRepoName + " repository")
+		l.ui.StepDone("Created " + forge.ConfigRepoName + " repository")
 	} else {
-		l.ui.StepInfo(configRepoName + " repository already exists")
+		l.ui.StepInfo(forge.ConfigRepoName + " repository already exists")
 	}
 
 	l.ui.StepStart("Writing " + configFilePath)
@@ -72,7 +70,7 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 
-	err = l.client.CreateOrUpdateFile(ctx, l.org, configRepoName, configFilePath, "chore: update fullsend configuration", data)
+	err = l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, configFilePath, "chore: update fullsend configuration", data)
 	if err != nil {
 		l.ui.StepFail("Failed to write " + configFilePath)
 		return fmt.Errorf("writing config file: %w", err)
@@ -84,12 +82,12 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 
 // Uninstall deletes the .fullsend config repo.
 func (l *ConfigRepoLayer) Uninstall(ctx context.Context) error {
-	l.ui.StepStart("Deleting " + configRepoName + " repository")
-	if err := l.client.DeleteRepo(ctx, l.org, configRepoName); err != nil {
-		l.ui.StepFail("Failed to delete " + configRepoName + " repository")
+	l.ui.StepStart("Deleting " + forge.ConfigRepoName + " repository")
+	if err := l.client.DeleteRepo(ctx, l.org, forge.ConfigRepoName); err != nil {
+		l.ui.StepFail("Failed to delete " + forge.ConfigRepoName + " repository")
 		return fmt.Errorf("deleting config repo: %w", err)
 	}
-	l.ui.StepDone("Deleted " + configRepoName + " repository")
+	l.ui.StepDone("Deleted " + forge.ConfigRepoName + " repository")
 	return nil
 }
 
@@ -107,17 +105,17 @@ func (l *ConfigRepoLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	if !exists {
 		report.Status = StatusNotInstalled
 		report.WouldInstall = []string{
-			"create " + configRepoName + " repository",
+			"create " + forge.ConfigRepoName + " repository",
 			"write " + configFilePath,
 		}
 		return report, nil
 	}
 
 	// Repo exists — check for config.yaml
-	content, err := l.client.GetFileContent(ctx, l.org, configRepoName, configFilePath)
+	content, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, configFilePath)
 	if err != nil {
 		// File missing or unreadable
-		if strings.Contains(err.Error(), "not found") {
+		if forge.IsNotFound(err) {
 			report.Status = StatusDegraded
 			report.Details = []string{"repo exists but " + configFilePath + " is missing"}
 			report.WouldFix = []string{"write " + configFilePath}
@@ -149,14 +147,12 @@ func (l *ConfigRepoLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 
 // repoExists checks whether the .fullsend repo exists in the org.
 func (l *ConfigRepoLayer) repoExists(ctx context.Context) (bool, error) {
-	repos, err := l.client.ListOrgRepos(ctx, l.org)
-	if err != nil {
-		return false, err
+	_, err := l.client.GetRepo(ctx, l.org, forge.ConfigRepoName)
+	if err == nil {
+		return true, nil
 	}
-	for _, r := range repos {
-		if r.Name == configRepoName {
-			return true, nil
-		}
+	if forge.IsNotFound(err) {
+		return false, nil
 	}
-	return false, nil
+	return false, err
 }
