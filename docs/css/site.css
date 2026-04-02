@@ -454,10 +454,23 @@ a:hover { color: var(--fs-text-link-hover); }
 .nav-stars {
   display: inline-flex;
   align-items: center;
-  gap: var(--fs-space-1);
+  gap: var(--fs-space-2);
+  padding: var(--fs-space-1) var(--fs-space-3);
+  border: 1px solid var(--fs-border-default);
+  border-radius: 9999px;
+  font-size: var(--fs-text-sm);
+  font-weight: 500;
+  color: var(--fs-text-secondary);
+  text-decoration: none;
+  transition: border-color var(--fs-transition-fast), color var(--fs-transition-fast);
 }
 
-.nav-stars svg {
+.nav-stars:hover {
+  border-color: var(--fs-accent-primary);
+  color: var(--fs-text-primary);
+}
+
+.nav-stars-icon {
   color: var(--fs-color-spot-gold);
 }
 
