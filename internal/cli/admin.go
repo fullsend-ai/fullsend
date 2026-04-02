@@ -721,7 +721,12 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 		}
 		return "", fmt.Errorf("no dispatch token provided")
 	}
+	// Aggressively strip whitespace — pasting from browser can include
+	// trailing newlines, carriage returns, or spaces that would corrupt
+	// the token when stored as a secret.
 	token := strings.TrimSpace(scanner.Text())
+	token = strings.ReplaceAll(token, "\r", "")
+	token = strings.ReplaceAll(token, "\n", "")
 	if token == "" {
 		return "", fmt.Errorf("dispatch token cannot be empty")
 	}

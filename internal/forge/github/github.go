@@ -682,6 +682,7 @@ func (c *LiveClient) GetTokenScopes(ctx context.Context) ([]string, error) {
 
 // CreateRepoSecret creates or updates an encrypted repository secret.
 func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
+	value = strings.TrimSpace(value)
 	// Step 1: Get the repo's public key for secret encryption.
 	keyResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/secrets/public-key", owner, repo))
 	if err != nil {
@@ -883,7 +884,10 @@ func (c *LiveClient) ListOrgInstallations(ctx context.Context, org string) ([]fo
 
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
+// The value is trimmed of whitespace before encryption to prevent corruption
+// from stray newlines or carriage returns in pasted input.
 func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
+	value = strings.TrimSpace(value)
 	// Step 1: Get the org's public key for secret encryption.
 	keyResp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/public-key", org))
 	if err != nil {
