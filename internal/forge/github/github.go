@@ -363,8 +363,13 @@ func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, path, message 
 
 // CreateFileOnBranch creates a file on a specific branch (or default if empty).
 //
+// Retries on 404 to handle GitHub's async repo initialization: after
+// CreateRepo with auto_init, the default branch may not be materialized
+// yet and the Contents API returns 404. Also retries on 409 (conflict)
+// which can occur when the branch ref is being updated by a concurrent write.
+//
 // GitHub quirk: writing to .github/workflows/ paths returns 404 (not 403)
-// when the token lacks the "workflow" scope. If you hit unexplained 404s
+// when the token lacks the "workflow" scope. If you hit persistent 404s
 // on workflow file creation, the fix is: gh auth refresh -s workflow
 func (c *LiveClient) CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	payload := map[string]any{
@@ -375,46 +380,90 @@ func (c *LiveClient) CreateFileOnBranch(ctx context.Context, owner, repo, branch
 		payload["branch"] = branch
 	}
 
-	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path), payload)
-	if err != nil {
-		return fmt.Errorf("create file %s: %w", path, err)
-	}
-	resp.Body.Close()
-	return nil
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
+	return c.putFileWithRetry(ctx, apiPath, payload, path)
 }
 
 // CreateOrUpdateFile creates a file or updates it if it already exists.
+// Retries on 404/409 to handle async repo initialization and branch ref races.
 func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
-	// Try to get existing file for its SHA.
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
-	existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
-	if err != nil {
-		return fmt.Errorf("check existing file: %w", err)
-	}
 
-	payload := map[string]any{
-		"message": message,
-		"content": base64.StdEncoding.EncodeToString(content),
-	}
-
-	if existingResp.StatusCode == http.StatusOK {
-		var existing struct {
-			SHA string `json:"sha"`
+	return c.retryOnTransient(ctx, path, func() error {
+		// Try to get existing file for its SHA.
+		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
+		if err != nil {
+			return fmt.Errorf("check existing file: %w", err)
 		}
-		if err := decodeJSON(existingResp, &existing); err != nil {
-			return fmt.Errorf("decode existing file: %w", err)
-		}
-		payload["sha"] = existing.SHA
-	} else {
-		existingResp.Body.Close()
-	}
 
-	resp, err := c.put(ctx, apiPath, payload)
-	if err != nil {
-		return fmt.Errorf("create or update file %s: %w", path, err)
+		payload := map[string]any{
+			"message": message,
+			"content": base64.StdEncoding.EncodeToString(content),
+		}
+
+		if existingResp.StatusCode == http.StatusOK {
+			var existing struct {
+				SHA string `json:"sha"`
+			}
+			if err := decodeJSON(existingResp, &existing); err != nil {
+				return fmt.Errorf("decode existing file: %w", err)
+			}
+			payload["sha"] = existing.SHA
+		} else {
+			existingResp.Body.Close()
+		}
+
+		resp, err := c.put(ctx, apiPath, payload)
+		if err != nil {
+			return fmt.Errorf("create or update file %s: %w", path, err)
+		}
+		resp.Body.Close()
+		return nil
+	})
+}
+
+// putFileWithRetry wraps a single PUT to the Contents API with retry on
+// transient errors (404 from async repo init, 409 from branch ref races).
+func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, payload map[string]any, path string) error {
+	return c.retryOnTransient(ctx, path, func() error {
+		resp, err := c.put(ctx, apiPath, payload)
+		if err != nil {
+			return fmt.Errorf("create file %s: %w", path, err)
+		}
+		resp.Body.Close()
+		return nil
+	})
+}
+
+// retryOnTransient retries an operation that may fail with 404 or 409 due to
+// GitHub's async repo initialization or branch ref update races. It uses
+// linear backoff (2s between attempts) and up to 5 attempts (~10s total).
+func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func() error) error {
+	const attempts = 5
+	const delay = 2 * time.Second
+
+	var lastErr error
+	for i := range attempts {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+
+		// Only retry on 404 (repo not ready) or 409 (branch ref conflict).
+		var apiErr *APIError
+		if !errors.As(lastErr, &apiErr) || (apiErr.StatusCode != 404 && apiErr.StatusCode != 409) {
+			return lastErr
+		}
+
+		if i < attempts-1 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
-	resp.Body.Close()
-	return nil
+	return fmt.Errorf("%s: %w (after %d attempts)", label, lastErr, attempts)
 }
 
 // GetFileContent retrieves the content of a file from a repository.
