@@ -356,7 +356,7 @@ Every engineering team today is drowning in the same work: triaging the same kin
 
 Fullsend exists because that gap is the most important unsolved problem in software engineering. Not the code generation. Not the autocomplete. The hard problems: How does an agent earn the trust to merge its own work? What does the security threat model look like when the developer is a process, not a person? How do you govern a system that governs itself?
 
-This is not a product. It is not a startup pitch deck. It is a living design document — an open, honest, community-driven exploration of what it actually takes to move from human-driven development to fully autonomous agentic engineering. Fullsend doesn't pretend to have the answers. It maps the questions with enough rigor that answers become possible.
+This is not a product. It is not a startup pitch deck. It is a project — an open, honest, community-driven exploration of what it would look like to move from human-driven development to fully autonomous agentic engineering. Fullsend doesn't pretend to have the answers. It maps the questions with enough rigor that answers become possible.
 
 ### Content Narrative Arc (Hero's Journey)
 
@@ -394,7 +394,7 @@ The flat origami approach shows nature as an interconnected system of elegant, e
 | **The Canopy Layers** — forest strata from floor to crown | The autonomy spectrum, graduated trust levels | Diagrams showing the progression from human to agent control | Cross-section of a forest in flat color bands: dark roots, green understory, golden canopy, open sky. Each layer is a flat field with one or two essential organisms. |
 | **The Spider's Web** — radial geometry catching light | Security by design, layered protection, intrinsic structure | Security documentation, governance frameworks | A geometric web rendered as concentric polygons in fine lines against a dark field, with a single dewdrop (the protected asset) at center in goldenrod. |
 | **The Salmon Run** — fish leaping upstream against current | Human-to-agent handoff, earned trust through effort | Transition docs, onboarding, role definitions | A single flat salmon in teal-and-orange split, mid-leap over a stylized waterfall rendered as three flat planes of blue. |
-| **The Lichen on Stone** — symbiosis, slow patient growth | The living document itself, evolving exploration | Meta-documentation, contribution guides | A flat stone shape in warm gray with organic lichen patches in green and goldenrod, showing how growth follows the contours of what's already there. |
+| **The Lichen on Stone** — symbiosis, slow patient growth | The living project itself, evolving exploration | Meta-documentation, contribution guides | A flat stone shape in warm gray with organic lichen patches in green and goldenrod, showing how growth follows the contours of what's already there. |
 | **The Owl at Dusk** — vigilant, watchful, unhurried | The new engineering role: oversight not execution | Monitoring docs, SRE agent content, governance | A single owl — enormous flat disc eyes, triangular faceted face like folded paper, rendered in four flat colors maximum. |
 | **The Sealed Cocoon** — transformation enclosed in protection | Verification, audit, tamper-evidence | Security content, trust models, provenance | A chrysalis shape in translucent violet against a leaf in flat green. The butterfly inside is implied, not shown — trust the process. |
 

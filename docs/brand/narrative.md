@@ -1,6 +1,6 @@
 # Fullsend: Brand Narrative & Visual Storytelling Framework
 
-> A visual storytelling framework for the open-source living design document on fully autonomous agentic software engineering.
+> A visual storytelling framework for the open-source project on fully autonomous agentic software engineering.
 
 ---
 
@@ -10,9 +10,9 @@
 
 Software teams are drowning. Not in hard problems — in routine ones. Every day, thousands of engineers manually bump dependencies, fix linting errors, update boilerplate, and shepherd trivial pull requests through review cycles that were designed for humans debating architecture, not machines applying deterministic fixes. The industry has spent a decade building AI coding assistants that sit beside the developer, waiting to be told what to do. Co-pilots. Autocomplete engines. Sophisticated parrots perched on the shoulder of someone who still has to fly the plane. But the plane is on autopilot for 90% of the flight. The question nobody was willing to ask out loud was: *what if we just let it fly?*
 
-Fullsend exists because someone finally said it. Not as a product pitch or a startup deck, but as an honest, rigorous, open-source examination of what it actually takes to let autonomous agents ship code with zero human intervention — and what guardrails must exist to make that responsible rather than reckless. This is not "yet another AI coding tool" discussion. There are no demos, no benchmarks, no leaderboard positions. Fullsend is a *design document for a future that is already arriving*, written by practitioners who understand that the gap between "AI can write code" and "AI can safely ship code" is a chasm filled with questions about trust, security, governance, and organizational courage. The name says everything: full send. No half-measures, no hedging, no "human-in-the-loop for comfort." Total commitment to understanding what fully autonomous engineering actually requires.
+Fullsend exists because someone finally said it. Not as a product pitch or a startup deck, but as an honest, rigorous, open-source examination of what it would look like to let autonomous agents ship code with zero human intervention — and what guardrails must exist to make that responsible rather than reckless. This is not "yet another AI coding tool" discussion. There are no demos, no benchmarks, no leaderboard positions. Fullsend is a *project for a future that is already arriving*, written by practitioners who understand that the gap between "AI can write code" and "AI can safely ship code" is a chasm filled with questions about trust, security, governance, and organizational courage. The name says everything: full send. No half-measures, no hedging, no "human-in-the-loop for comfort." Total commitment to understanding what fully autonomous engineering actually requires.
 
-What makes Fullsend different is its posture. It does not evangelize. It does not sell. It maps the territory — the autonomy spectrum from "agent suggests a fix" to "agent deploys to production," the security architecture that must exist before you hand over the keys, the governance models that let organizations sleep at night. It is a campfire around which the people building this future can sit, argue, and build consensus. And it is alive — a living document that evolves as the technology, the trust models, and the organizational courage catch up to the vision.
+What makes Fullsend different is its posture. It does not evangelize. It does not sell. It maps the territory — the autonomy spectrum from "agent suggests a fix" to "agent deploys to production," the security architecture that must exist before you hand over the keys, the governance models that let organizations sleep at night. It is a campfire around which the people building this future can sit, argue, and build consensus. And it is alive — a project that evolves as the technology, the trust models, and the organizational courage catch up to the vision.
 
 ---
 
@@ -60,7 +60,7 @@ What makes Fullsend different is its posture. It does not evangelize. It does no
 
 ### Metaphor 5: The Living Blueprint — A Document That Breathes
 
-**What it represents:** Fullsend itself — a living design document, not a static spec. Blueprints traditionally are fixed. This one has roots growing from it, branches extending, new rooms appearing. It is architectural but organic.
+**What it represents:** Fullsend itself — a living project, not a static spec. Blueprints traditionally are fixed. This one has roots growing from it, branches extending, new rooms appearing. It is architectural but organic.
 
 **Where to use it:** The meta-narrative about the project itself. README headers. Contribution guides. Any context where the "living" nature of the document needs emphasis.
 
@@ -108,7 +108,7 @@ The leader and their team begin implementing. They start at the conservative end
 
 ### The New World (Contribution & Evangelism)
 
-The leader now sees software engineering differently. The question is no longer "should we let agents ship code?" but "what is the highest-value work that only humans can do, and how do we free them to do it?" They present at conferences — not about Fullsend the document, but about the future Fullsend describes. They bring other engineering leaders to the campfire. The living document grows. The future arrives not as a disruption, but as an evolution — deliberate, principled, and unstoppable.
+The leader now sees software engineering differently. The question is no longer "should we let agents ship code?" but "what is the highest-value work that only humans can do, and how do we free them to do it?" They present at conferences — not about Fullsend the document, but about the future Fullsend describes. They bring other engineering leaders to the campfire. The project grows. The future arrives not as a disruption, but as an evolution — deliberate, principled, and unstoppable.
 
 ---
 
@@ -161,7 +161,7 @@ A decision tree or flowchart showing how an organization decides what level of a
 - Accent warm: Amber (#f59e0b) — trust, autonomy, the dawn
 - Accent cool: Teal (#0d9488) — security, safety, guardrails
 - Signal: Crimson (#dc2626) — intervention points, critical warnings
-- Growth: Sage (#6b8f71) — contribution, evolution, the living document
+- Growth: Sage (#6b8f71) — contribution, evolution, the living project
 
 **Typography direction:**
 - Headlines: A bold, geometric sans-serif (Inter, Space Grotesk, or similar) — confident, modern, no-nonsense
@@ -193,6 +193,6 @@ If Fullsend ever gets a dedicated website beyond the GitHub README:
 
 ## Summary: The Fullsend Visual Identity in One Sentence
 
-**Fullsend looks like what it is: a bold, rigorous, living document that treats fully autonomous software engineering not as a fantasy or a threat, but as an engineering problem that deserves the same precision, honesty, and courage as the code it describes.**
+**Fullsend looks like what it is: a bold, rigorous, living project that treats fully autonomous software engineering not as a fantasy or a threat, but as an engineering problem that deserves the same precision, honesty, and courage as the code it describes.**
 
 The visual language balances *precision* (technical diagrams, clean typography, engineering aesthetics) with *audacity* (the dawn gradient, the launch trajectory, the name itself). It takes itself seriously without taking itself too seriously. It is a campfire, not a cathedral — but the fire burns bright enough to see the future by.

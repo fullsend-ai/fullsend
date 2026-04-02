@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Fullsend is a living design document exploring fully autonomous agentic development for GitHub-hosted organizations. It contains no application code — only prose documents organized by problem domain. See [README.md](README.md) for the full document index.
+Fullsend is a project exploring fully autonomous agentic development for GitHub-hosted organizations. It contains no application code — only prose documents organized by problem domain. See [README.md](README.md) for the full document index.
 
 ## How to work in this repo
 

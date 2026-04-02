@@ -1,10 +1,10 @@
 # Fullsend
 
-A living design document exploring fully autonomous agentic software development for GitHub-hosted organizations.
+A project exploring fully autonomous agentic software development for GitHub-hosted organizations.
 
 ## What is this?
 
-This repo is a living design document exploring how to get from the current state of human-driven software development to a fully-agentic workflow with zero human intervention for routine changes. The goal is agents that can triage issues, implement solutions, review code, and merge to production autonomously — while being secure by design.
+This repo explores how to get from the current state of human-driven software development to a fully-agentic workflow with zero human intervention for routine changes. The goal is agents that can triage issues, implement solutions, review code, and merge to production autonomously — while being secure by design.
 
 This is not a product spec. It's an evolving exploration of a hard problem space, applicable to any organization considering autonomous agents for their software development lifecycle. The problem documents are organization-agnostic; organization-specific considerations live in `docs/problems/applied/`.
 
