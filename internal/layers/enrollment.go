@@ -112,10 +112,16 @@ func (l *EnrollmentLayer) enrollRepo(ctx context.Context, repo string) error {
 	}
 
 	// Write shim workflow to the branch.
+	// If the file already exists on the branch (from a previous partial run),
+	// CreateFileOnBranch returns 422 "sha wasn't supplied". In that case the
+	// file is already there, so we proceed to PR creation.
 	content := l.shimWorkflowContent()
 	if err := l.client.CreateFileOnBranch(ctx, l.org, repo, enrollBranch, shimWorkflowPath,
 		"chore: add fullsend shim workflow", []byte(content)); err != nil {
-		return fmt.Errorf("writing shim workflow: %w", err)
+		if !strings.Contains(err.Error(), "sha") {
+			return fmt.Errorf("writing shim workflow: %w", err)
+		}
+		l.ui.StepInfo(fmt.Sprintf("Shim workflow already exists on branch %s", enrollBranch))
 	}
 
 	// Create enrollment PR.
