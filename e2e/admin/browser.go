@@ -65,8 +65,9 @@ func (b *PlaywrightBrowserOpener) Open(_ context.Context, url string) error {
 }
 
 // handleLocalFormSubmission fetches the local form via HTTP, extracts the
-// manifest + redirect_url, then submits from GitHub's origin so that
-// session cookies (SameSite=Lax) are included in the POST.
+// manifest (which already contains redirect_url), then submits from
+// GitHub's origin so that session cookies (SameSite=Lax) are included
+// in the POST.
 func (b *PlaywrightBrowserOpener) handleLocalFormSubmission(localURL string) error {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Get(localURL)
@@ -80,43 +81,36 @@ func (b *PlaywrightBrowserOpener) handleLocalFormSubmission(localURL string) err
 	}
 	content := string(body)
 
-	// Extract values from the hidden inputs using proper HTML parsing.
+	// Extract manifest and form action from the hidden inputs.
+	// The v6 manifest flow puts redirect_url inside the manifest JSON,
+	// not as a separate form field.
 	manifest, err := extractInputValue(content, "manifest")
 	if err != nil {
 		return fmt.Errorf("extracting manifest from form: %w", err)
-	}
-	redirectURL, err := extractInputValue(content, "redirect_url")
-	if err != nil {
-		return fmt.Errorf("extracting redirect_url from form: %w", err)
 	}
 	actionURL, err := extractFormAction(content)
 	if err != nil {
 		return fmt.Errorf("extracting form action: %w", err)
 	}
 
-	b.logf("[browser] Extracted manifest (%d bytes), redirect_url=%s, action=%s",
-		len(manifest), redirectURL, actionURL)
-
-	// Include redirect_url in the manifest JSON so GitHub accepts it
-	// even if the form field encoding is lossy. The GitHub manifest flow
-	// spec allows redirect_url inside the manifest JSON.
+	// Ensure hook_attributes exists in the manifest (GitHub requires it).
 	var manifestMap map[string]any
 	if jsonErr := json.Unmarshal([]byte(manifest), &manifestMap); jsonErr != nil {
 		return fmt.Errorf("parsing manifest JSON: %w", jsonErr)
 	}
-	manifestMap["redirect_url"] = redirectURL
-	// GitHub requires hook_attributes.url in the manifest.
-	manifestMap["hook_attributes"] = map[string]any{
-		"url":    "https://example.com/webhook",
-		"active": false,
+	if _, ok := manifestMap["hook_attributes"]; !ok {
+		manifestMap["hook_attributes"] = map[string]any{
+			"url":    "https://example.com/webhook",
+			"active": false,
+		}
+		patched, jsonErr := json.Marshal(manifestMap)
+		if jsonErr != nil {
+			return fmt.Errorf("re-marshaling manifest: %w", jsonErr)
+		}
+		manifest = string(patched)
 	}
-	manifestWithRedirect, jsonErr := json.Marshal(manifestMap)
-	if jsonErr != nil {
-		return fmt.Errorf("re-marshaling manifest: %w", jsonErr)
-	}
-	manifest = string(manifestWithRedirect)
 
-	b.logf("[browser] Manifest with redirect_url: %s", manifest)
+	b.logf("[browser] Extracted manifest (%d bytes), action=%s", len(manifest), actionURL)
 
 	// Navigate to a neutral GitHub page first so we're on the same
 	// origin and session cookies will be sent with the POST.
@@ -129,19 +123,16 @@ func (b *PlaywrightBrowserOpener) handleLocalFormSubmission(localURL string) err
 
 	// Submit the form via JS, passing values as arguments to avoid
 	// any quoting/escaping issues with string interpolation.
-	_, err = b.page.Evaluate(`([action, manifest, redirect]) => {
+	_, err = b.page.Evaluate(`([action, manifest]) => {
 		const form = document.createElement('form');
 		form.method = 'post';
 		form.action = action;
 		const m = document.createElement('input');
 		m.type = 'hidden'; m.name = 'manifest'; m.value = manifest;
 		form.appendChild(m);
-		const r = document.createElement('input');
-		r.type = 'hidden'; r.name = 'redirect_url'; r.value = redirect;
-		form.appendChild(r);
 		document.body.appendChild(form);
 		form.submit();
-	}`, []string{actionURL, manifest, redirectURL})
+	}`, []string{actionURL, manifest})
 	if err != nil {
 		saveDebugScreenshot(b.page, b.screenshotDir, "browser-js-submit-failed", b.logf)
 		return fmt.Errorf("submitting manifest form via JS: %w", err)
@@ -202,15 +193,49 @@ func (b *PlaywrightBrowserOpener) handleCreateAppPage() error {
 }
 
 // handleInstallAppPage clicks "Install" on the GitHub App installation page.
+// Retries navigation if the page 404s (GitHub needs time to provision the app).
 func (b *PlaywrightBrowserOpener) handleInstallAppPage() error {
-	b.logf("[browser] handleInstallAppPage at URL: %s", b.page.URL())
+	pageURL := b.page.URL()
+	b.logf("[browser] handleInstallAppPage at URL: %s", pageURL)
 
-	btn := b.page.Locator("button[type='submit']:has-text('Install')")
-	if err := btn.Click(playwright.LocatorClickOptions{
-		Timeout: playwright.Float(5000),
-	}); err != nil {
-		saveDebugScreenshot(b.page, b.screenshotDir, "browser-install-btn-failed", b.logf)
-		return fmt.Errorf("clicking 'Install': %w", err)
+	// Retry loop: the app page may 404 briefly after creation.
+	for attempt := range 5 {
+		// Check if we got a 404 and need to retry.
+		is404, _ := b.page.Locator("img[alt='404'], h1:has-text('404')").Count()
+		if is404 > 0 {
+			b.logf("[browser] Got 404, retrying in %ds (attempt %d/5)", (attempt+1)*2, attempt+1)
+			time.Sleep(time.Duration((attempt+1)*2) * time.Second)
+			if _, err := b.page.Goto(pageURL, playwright.PageGotoOptions{
+				WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+				Timeout:   playwright.Float(10000),
+			}); err != nil {
+				b.logf("[browser] Warning: retry navigation failed: %v", err)
+				continue
+			}
+			continue
+		}
+
+		btn := b.page.Locator("button[type='submit']:has-text('Install')")
+		if err := btn.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(5000),
+		}); err != nil {
+			if attempt < 4 {
+				b.logf("[browser] Install button not found, retrying (attempt %d/5): %v", attempt+1, err)
+				time.Sleep(time.Duration((attempt+1)*2) * time.Second)
+				if _, navErr := b.page.Goto(pageURL, playwright.PageGotoOptions{
+					WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+					Timeout:   playwright.Float(10000),
+				}); navErr != nil {
+					b.logf("[browser] Warning: retry navigation failed: %v", navErr)
+				}
+				continue
+			}
+			saveDebugScreenshot(b.page, b.screenshotDir, "browser-install-btn-failed", b.logf)
+			return fmt.Errorf("clicking 'Install': %w", err)
+		}
+
+		// Successfully clicked Install.
+		break
 	}
 
 	// Wait for URL to change away from the installations/new page.
@@ -240,9 +265,16 @@ func deleteAppViaPlaywright(page playwright.Page, slug string, logf func(string,
 		return fmt.Errorf("navigating to app settings for %s: %w", slug, err)
 	}
 
+	// Check if we got a 404 (app doesn't exist) — not an error.
+	is404, _ := page.Locator("img[alt='404'], h1:has-text('404')").Count()
+	if is404 > 0 {
+		logf("[cleanup] App %s does not exist (404), skipping", slug)
+		return nil
+	}
+
 	deleteBtn := page.Locator("button:has-text('Delete GitHub App')")
 	if err := deleteBtn.Click(playwright.LocatorClickOptions{
-		Timeout: playwright.Float(5000),
+		Timeout: playwright.Float(3000),
 	}); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "app-delete-"+slug, logf)
 		logf("[cleanup] Delete button not found at %s, current URL: %s", url, page.URL())
@@ -250,33 +282,32 @@ func deleteAppViaPlaywright(page playwright.Page, slug string, logf func(string,
 	}
 
 	// GitHub requires typing the app name to confirm deletion.
-	// Wait for the confirmation input to appear in the modal.
-	confirmInput := page.Locator("input[aria-label='Type the name of the GitHub App to confirm'], .Box-body input[type='text'], [role='dialog'] input[type='text'], .facebox-content input[type='text']")
-	if err := confirmInput.First().WaitFor(playwright.LocatorWaitForOptions{
+	// After clicking "Delete GitHub App", a modal appears with a text input.
+	// Wait a moment for the modal animation.
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "app-confirm-dialog-"+slug, logf)
+
+	confirmInput := page.Locator("input[type='text']")
+	if err := confirmInput.Last().WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "app-confirm-wait-"+slug, logf)
-		return fmt.Errorf("waiting for confirmation dialog for %s: %w", slug, err)
+		return fmt.Errorf("waiting for confirmation input for %s: %w", slug, err)
 	}
 
-	if err := confirmInput.First().Fill(slug, playwright.LocatorFillOptions{
+	if err := confirmInput.Last().Fill(slug, playwright.LocatorFillOptions{
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		// Last resort: try any visible text input on the page.
-		anyInput := page.Locator("input[type='text']:visible")
-		if fillErr := anyInput.First().Fill(slug, playwright.LocatorFillOptions{
-			Timeout: playwright.Float(2000),
-		}); fillErr != nil {
-			saveDebugScreenshot(page, screenshotDir, "app-confirm-input-"+slug, logf)
-			return fmt.Errorf("filling app name for deletion of %s: primary=%w, fallback=%v", slug, err, fillErr)
-		}
+		saveDebugScreenshot(page, screenshotDir, "app-confirm-input-"+slug, logf)
+		return fmt.Errorf("filling app name for deletion of %s: %w", slug, err)
 	}
+	logf("[cleanup] Typed app name %q into confirmation input", slug)
 
-	// Click the confirmation button.
-	confirmBtn := page.Locator("button:has-text('I understand the consequences')")
+	// Click the confirmation button — try multiple possible text variants.
+	confirmBtn := page.Locator("button:has-text('I understand'), button:has-text('Delete this'), button[type='submit'].btn-danger")
 	if err := confirmBtn.First().Click(playwright.LocatorClickOptions{
-		Timeout: playwright.Float(3000),
+		Timeout: playwright.Float(5000),
 	}); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "app-confirm-btn-"+slug, logf)
 		return fmt.Errorf("confirming deletion of %s: %w", slug, err)

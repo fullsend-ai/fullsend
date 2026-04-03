@@ -40,14 +40,27 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 3. Delete any fullsend-halfsend* GitHub Apps via Playwright.
+	// 3. Delete any stale fullsend GitHub Apps via Playwright.
+	// First, try deleting by expected slug for each role (catches apps that
+	// were created but never installed, which don't appear in ListOrgInstallations).
+	for _, role := range defaultRoles {
+		slug := testOrg + "-" + role // v6 convention: halfsend-fullsend, etc.
+		t.Logf("[cleanup] Attempting to delete app %s (if it exists)", slug)
+		if delErr := deleteAppViaPlaywright(page, slug, t.Logf, screenshotDir); delErr != nil {
+			t.Logf("[cleanup] App %s not found or could not delete: %v", slug, delErr)
+		}
+	}
+
+	// Also clean up apps found via installations (catches old naming conventions).
 	installations, err := client.ListOrgInstallations(ctx, testOrg)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list installations: %v", err)
 	} else {
 		for _, inst := range installations {
-			if strings.HasPrefix(inst.AppSlug, "fullsend-"+testOrg) {
-				t.Logf("[cleanup] Deleting stale app: %s", inst.AppSlug)
+			isStale := strings.HasPrefix(inst.AppSlug, "fullsend-"+testOrg) || // old: fullsend-halfsend-*
+				strings.HasPrefix(inst.AppSlug, testOrg+"-") // v6: halfsend-*
+			if isStale {
+				t.Logf("[cleanup] Deleting stale installed app: %s", inst.AppSlug)
 				if delErr := deleteAppViaPlaywright(page, inst.AppSlug, t.Logf, screenshotDir); delErr != nil {
 					t.Logf("[cleanup] Warning: could not delete app %s: %v", inst.AppSlug, delErr)
 				}
@@ -55,7 +68,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 3. Ensure test-repo exists (needed for enrollment testing).
+	// 4. Ensure test-repo exists (needed for enrollment testing).
 	_, err = client.GetRepo(ctx, testOrg, testRepo)
 	if forge.IsNotFound(err) {
 		t.Logf("[cleanup] Creating missing %s repo", testRepo)
@@ -64,10 +77,10 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 4. Delete stale enrollment branch from test-repo.
+	// 5. Delete stale enrollment branch from test-repo.
 	deleteEnrollmentBranch(ctx, token, testOrg, testRepo, t)
 
-	// 5. Close any open enrollment PRs in test-repo (informational only).
+	// 6. Close any open enrollment PRs in test-repo (informational only).
 	prs, err := client.ListRepoPullRequests(ctx, testOrg, testRepo)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list PRs: %v", err)

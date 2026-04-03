@@ -43,7 +43,8 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	}
 
 	cfg := loadEnvConfig(t)
-	screenshotDir := t.TempDir()
+	screenshotDir := "/workspaces/fullsend/.playwright"
+	_ = os.MkdirAll(screenshotDir, 0o755)
 
 	// --- Playwright setup ---
 	pw, err := playwright.Run()

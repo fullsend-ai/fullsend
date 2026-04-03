@@ -4,6 +4,8 @@ package admin
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/playwright-community/playwright-go"
 )
@@ -103,15 +105,11 @@ func createPAT(page playwright.Page, note string, logf func(string, ...any)) (st
 // Prerequisites: the .fullsend repo must already exist (the config-repo
 // and workflows layers must be installed first, just like the real CLI).
 func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf func(string, ...any)) (string, error) {
-	// Navigate to the fine-grained PAT creation page with pre-filled params.
-	// These match the URL the CLI builds in promptDispatchToken.
-	patURL := fmt.Sprintf(
-		"https://github.com/settings/personal-access-tokens/new"+
-			"?name=fullsend-dispatch-%s-e2e"+
-			"&description=E2E+test+dispatch+token+for+%s"+
-			"&target_name=%s",
-		org, org, org,
-	)
+	// Navigate to the fine-grained PAT creation page.
+	// Don't use target_name query param — GitHub's UI doesn't fully activate
+	// the downstream widgets (repo picker, permissions) when pre-filled.
+	// Instead, we'll select the owner manually.
+	patURL := "https://github.com/settings/personal-access-tokens/new"
 
 	logf("[dispatch-pat] Navigating to fine-grained PAT creation page")
 	if _, err := page.Goto(patURL, playwright.PageGotoOptions{
@@ -123,47 +121,158 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	}
 	logf("[dispatch-pat] Page URL: %s", page.URL())
 
-	// Select "Only select repositories" radio button.
-	selectReposRadio := page.Locator("input[type='radio'][value='select']")
-	if err := selectReposRadio.WaitFor(playwright.LocatorWaitForOptions{
+	// Wait for the form to render. The "Token name" label is a reliable signal.
+	tokenNameLabel := page.Locator("text=Token name")
+	if err := tokenNameLabel.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(10000),
+		Timeout: playwright.Float(15000),
 	}); err != nil {
-		// The radio might be in a shadow DOM or custom element — try clicking the label.
-		label := page.Locator("label:has-text('Only select repositories')")
-		if labelErr := label.Click(playwright.LocatorClickOptions{
-			Timeout: playwright.Float(5000),
-		}); labelErr != nil {
-			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-select-repos-radio", logf)
-			return "", fmt.Errorf("selecting 'Only select repositories': radio=%w, label=%v", err, labelErr)
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-form-not-loaded", logf)
+		return "", fmt.Errorf("fine-grained PAT form did not load: %w", err)
+	}
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-form-loaded", logf)
+
+	// Fill in the token name using Playwright's label-based locator.
+	tokenName := fmt.Sprintf("fullsend-dispatch-%s-e2e", org)
+	nameInput := page.GetByLabel("Token name")
+	if err := nameInput.Fill(tokenName); err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-name-fill-failed", logf)
+		return "", fmt.Errorf("filling token name: %w", err)
+	}
+	logf("[dispatch-pat] Filled token name: %s", tokenName)
+
+	// Select the resource owner (org). The owner picker is a dropdown button
+	// showing the current owner (e.g., "botsend ▼"). We need to click it
+	// and select the org. Even if pre-filled, GitHub's UI may not activate
+	// repo picker and permissions until the owner is manually interacted with.
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-before-owner", logf)
+
+	// The resource owner is a custom dropdown button showing the current
+	// owner (e.g., "botsend ▼"). Click it to open the owner picker.
+	// Use JavaScript to find and click the owner button since it's a
+	// custom React component.
+	_, err := page.Evaluate(`() => {
+		// Find all buttons/clickable elements near "Resource owner" text
+		const labels = document.querySelectorAll('*');
+		for (const el of labels) {
+			if (el.textContent.trim() === 'Resource owner') {
+				// The dropdown is the next interactive element after the label
+				let sibling = el.nextElementSibling;
+				while (sibling) {
+					const btn = sibling.querySelector('button, summary, [role="button"]');
+					if (btn) { btn.click(); return true; }
+					if (sibling.tagName === 'BUTTON' || sibling.tagName === 'SUMMARY') {
+						sibling.click(); return true;
+					}
+					sibling = sibling.nextElementSibling;
+				}
+			}
 		}
-	} else {
-		if err := selectReposRadio.Click(); err != nil {
-			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-select-repos-click", logf)
-			return "", fmt.Errorf("clicking 'Only select repositories': %w", err)
+		return false;
+	}`)
+	if err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-owner-btn-click", logf)
+		return "", fmt.Errorf("clicking resource owner dropdown via JS: %w", err)
+	}
+	logf("[dispatch-pat] Clicked resource owner dropdown")
+	time.Sleep(500 * time.Millisecond)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-owner-dropdown-open", logf)
+
+	// Select the org from the dropdown.
+	orgOption := page.Locator(fmt.Sprintf("[role='menuitemradio']:has-text('%s'), [role='option']:has-text('%s'), li:has-text('%s'), label:has-text('%s')", org, org, org, org))
+	if err := orgOption.First().Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-owner-option", logf)
+		return "", fmt.Errorf("selecting org %s from owner dropdown: %w", org, err)
+	}
+	logf("[dispatch-pat] Selected resource owner: %s", org)
+
+	// Wait for the page to update after owner selection — this may trigger
+	// a re-render that adds the "Only select repositories" option and
+	// repository permissions.
+	time.Sleep(3 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-after-owner", logf)
+
+	// Select "Only select repositories" radio button.
+	selectReposLabel := page.Locator("label:has-text('Only select repositories')")
+	if err := selectReposLabel.Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		// Try the radio input directly.
+		selectReposRadio := page.Locator("input[type='radio'][value='select']")
+		if radioErr := selectReposRadio.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(5000),
+		}); radioErr != nil {
+			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-select-repos", logf)
+			return "", fmt.Errorf("selecting 'Only select repositories': label=%w, radio=%v", err, radioErr)
 		}
 	}
 	logf("[dispatch-pat] Selected 'Only select repositories'")
 
+	// Wait for the repo picker to appear.
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-after-select-repos", logf)
+
 	// Search for and select the .fullsend repo in the repo picker.
-	// The repo picker is typically a combo-box / search input that appears
-	// after selecting "Only select repositories".
-	repoSearch := page.Locator("input[placeholder*='Search for a repository'], input[aria-label*='Select repositories'], input[placeholder*='repo']")
-	if err := repoSearch.First().WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(5000),
-	}); err != nil {
-		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-repo-search-wait", logf)
-		return "", fmt.Errorf("waiting for repository search input: %w", err)
+	repoSearch := page.Locator("input[type='text']")
+	// The repo search is typically the last visible text input after the name input.
+	// Let's find all visible text inputs and use the one that's for repo search.
+	searchCount, _ := repoSearch.Count()
+	logf("[dispatch-pat] Found %d text inputs on page", searchCount)
+
+	// Try known selectors for the repo picker.
+	repoPickerSelectors := []string{
+		"input[placeholder*='Search for a repository']",
+		"input[placeholder*='search']",
+		"input[aria-label*='repository']",
+		"input[aria-label*='repo']",
 	}
-	if err := repoSearch.First().Fill(".fullsend"); err != nil {
+	var foundRepoInput playwright.Locator
+	for _, sel := range repoPickerSelectors {
+		loc := page.Locator(sel)
+		cnt, _ := loc.Count()
+		if cnt > 0 {
+			logf("[dispatch-pat] Found repo picker with selector: %s (count=%d)", sel, cnt)
+			foundRepoInput = loc.First()
+			break
+		}
+	}
+
+	if foundRepoInput == nil {
+		// Last resort: try clicking a "Select repositories" button/dropdown.
+		selectRepoBtn := page.Locator("button:has-text('Select repositories'), summary:has-text('Select repositories')")
+		if err := selectRepoBtn.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(3000),
+		}); err != nil {
+			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-repo-picker-not-found", logf)
+			return "", fmt.Errorf("could not find repo picker: %w", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+		// After clicking, look for a search input inside the dropdown.
+		for _, sel := range repoPickerSelectors {
+			loc := page.Locator(sel)
+			cnt, _ := loc.Count()
+			if cnt > 0 {
+				foundRepoInput = loc.First()
+				break
+			}
+		}
+		if foundRepoInput == nil {
+			// Try any text input that appeared.
+			foundRepoInput = page.Locator("input[type='text']").Last()
+		}
+	}
+
+	if err := foundRepoInput.Fill(".fullsend"); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-repo-search-fill", logf)
 		return "", fmt.Errorf("typing .fullsend into repo search: %w", err)
 	}
 	logf("[dispatch-pat] Typed '.fullsend' into repo search")
 
 	// Wait for the dropdown option and click it.
-	repoOption := page.Locator("li:has-text('.fullsend'), [role='option']:has-text('.fullsend'), label:has-text('.fullsend')")
+	time.Sleep(1 * time.Second)
+	repoOption := page.Locator("[role='option']:has-text('.fullsend'), li:has-text('.fullsend'), label:has-text('.fullsend'), span:has-text('.fullsend')")
 	if err := repoOption.First().WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
@@ -177,40 +286,61 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	}
 	logf("[dispatch-pat] Selected .fullsend repository")
 
-	// Expand the "Repository permissions" section if collapsed.
-	repoPermsSection := page.Locator("summary:has-text('Repository permissions'), button:has-text('Repository permissions')")
-	if err := repoPermsSection.First().Click(playwright.LocatorClickOptions{
-		Timeout: playwright.Float(3000),
-	}); err != nil {
-		logf("[dispatch-pat] Note: could not expand Repository permissions (may already be open): %v", err)
-	}
+	// Close the repo picker popover. Press Escape multiple times to ensure
+	// any open dropdown/popover is dismissed, then scroll the permissions
+	// section into view.
+	page.Keyboard().Press("Escape")
+	time.Sleep(500 * time.Millisecond)
+	page.Keyboard().Press("Escape")
+	time.Sleep(500 * time.Millisecond)
 
-	// Set Actions permission to "Read and write".
-	// GitHub's fine-grained PAT page uses select dropdowns for each permission.
-	actionsSelect := page.Locator("select[id*='actions'], select[name*='actions']")
-	if err := actionsSelect.First().WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
+	// Scroll down to make the permissions section and "Add permissions" visible.
+	page.Locator("text=Permissions").Last().ScrollIntoViewIfNeeded()
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-after-close-picker", logf)
+
+	// The permissions UI uses "+ Add permissions" button to open a dialog
+	// where you can toggle individual permissions. Click it.
+	addPermsBtn := page.Locator("button:has-text('Add permissions')")
+	if err := addPermsBtn.Click(playwright.LocatorClickOptions{
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		// If the query param pre-filled it, it might not be a visible select.
-		// Try to find by label text instead.
-		actionsLabel := page.Locator("text=Actions")
-		nearbySelect := actionsLabel.Locator("xpath=ancestor::*[contains(@class,'permission')]//select")
-		if _, selectErr := nearbySelect.First().SelectOption(playwright.SelectOptionValues{
-			Values: playwright.StringSlice("write"),
-		}); selectErr != nil {
-			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-perm", logf)
-			return "", fmt.Errorf("setting Actions permission: select=%w, nearby=%v", err, selectErr)
-		}
-	} else {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-add-perms-btn", logf)
+		return "", fmt.Errorf("clicking 'Add permissions': %w", err)
+	}
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-perms-dialog", logf)
+
+	// Find the Actions permission and set it to "Read and write".
+	// The dialog shows a list of permissions with dropdowns.
+	actionsRow := page.Locator("text=Actions").First()
+	actionsSelect := actionsRow.Locator("xpath=ancestor::*[position()<=3]//select")
+	actionsSelectCount, _ := actionsSelect.Count()
+	if actionsSelectCount > 0 {
 		if _, err := actionsSelect.First().SelectOption(playwright.SelectOptionValues{
 			Values: playwright.StringSlice("write"),
 		}); err != nil {
-			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-select", logf)
-			return "", fmt.Errorf("selecting Actions write permission: %w", err)
+			// Try by label text.
+			if _, err := actionsSelect.First().SelectOption(playwright.SelectOptionValues{
+				Labels: playwright.StringSlice("Read and write"),
+			}); err != nil {
+				saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-select", logf)
+				return "", fmt.Errorf("selecting Actions write permission: %w", err)
+			}
+		}
+	} else {
+		// Maybe it's a toggle or checkbox — try clicking it.
+		actionsToggle := page.Locator("[aria-label*='Actions'], label:has-text('Actions')").First()
+		if err := actionsToggle.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(3000),
+		}); err != nil {
+			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-perm", logf)
+			return "", fmt.Errorf("setting Actions permission: %w", err)
 		}
 	}
 	logf("[dispatch-pat] Set Actions permission to Read and write")
+
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-before-generate", logf)
 
 	// Click "Generate token".
 	generateBtn := page.Locator("button:has-text('Generate token')")
@@ -228,10 +358,11 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	}); err != nil {
 		return "", fmt.Errorf("waiting for token result page: %w", err)
 	}
+	time.Sleep(2 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-page", logf)
 
 	// Fine-grained PATs display the token in a different element than classic PATs.
-	// Try multiple selectors.
-	tokenLocator := page.Locator("#new-oauth-token, [data-testid='new-token'], input[readonly][value^='github_pat_'], code:has-text('github_pat_')")
+	tokenLocator := page.Locator("#new-oauth-token, [data-testid='new-token'], input[readonly][value^='github_pat_'], code:has-text('github_pat_'), div:has-text('github_pat_')")
 	if err := tokenLocator.First().WaitFor(playwright.LocatorWaitForOptions{
 		Timeout: playwright.Float(10000),
 	}); err != nil {
@@ -239,7 +370,7 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 		return "", fmt.Errorf("waiting for generated token element: %w", err)
 	}
 
-	// Try extracting the token value — could be text content, input value, or attribute.
+	// Try extracting the token value.
 	token, err := tokenLocator.First().TextContent()
 	if err != nil || token == "" {
 		token, err = tokenLocator.First().InputValue()
@@ -248,6 +379,7 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 			return "", fmt.Errorf("extracting dispatch PAT value: %w", err)
 		}
 	}
+	token = strings.TrimSpace(token)
 
 	if token == "" {
 		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-empty-token", logf)
