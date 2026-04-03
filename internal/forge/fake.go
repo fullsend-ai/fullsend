@@ -36,17 +36,6 @@ type VariableRecord struct {
 	Owner, Repo, Name, Value string
 }
 
-// NewFakeClient returns a FakeClient with all maps initialized.
-func NewFakeClient() *FakeClient {
-	return &FakeClient{
-		FileContents:   make(map[string][]byte),
-		WorkflowRuns:   make(map[string]*WorkflowRun),
-		Secrets:        make(map[string]bool),
-		VariablesExist: make(map[string]bool),
-		Errors:         make(map[string]error),
-	}
-}
-
 // FakeClient is a thread-safe test double for forge.Client.
 // Pre-populate its fields to control return values, and inspect
 // recorder slices after the test to verify which calls were made.
