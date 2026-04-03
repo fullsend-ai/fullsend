@@ -1,0 +1,40 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+    paths: ['**/*.go', 'go.mod', 'go.sum']
+  pull_request:
+    paths: ['**/*.go', 'go.mod', 'go.sum']
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-halfsend
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Playwright browsers
+        run: go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium
+
+      - name: Restore browser auth state
+        run: |
+          mkdir -p /tmp/pw-state
+          echo "$E2E_BROWSER_STATE" | base64 -d | tar xzf - -C /tmp/pw-state
+        env:
+          E2E_BROWSER_STATE: ${{ secrets.E2E_BROWSER_STATE }}
+
+      - name: Run e2e tests
+        run: go test -tags e2e -v -timeout 15m ./e2e/admin/
+        env:
+          E2E_GITHUB_TOKEN: ${{ secrets.E2E_GITHUB_TOKEN }}
+          E2E_BROWSER_STATE_DIR: /tmp/pw-state
