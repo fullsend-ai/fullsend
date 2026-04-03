@@ -311,46 +311,93 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	time.Sleep(1 * time.Second)
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-perms-dialog", logf)
 
-	// Find the Actions permission and set it to "Read and write".
-	// The dialog shows a list of permissions with dropdowns.
-	actionsRow := page.Locator("text=Actions").First()
-	actionsSelect := actionsRow.Locator("xpath=ancestor::*[position()<=3]//select")
-	actionsSelectCount, _ := actionsSelect.Count()
-	if actionsSelectCount > 0 {
-		if _, err := actionsSelect.First().SelectOption(playwright.SelectOptionValues{
-			Values: playwright.StringSlice("write"),
-		}); err != nil {
-			// Try by label text.
-			if _, err := actionsSelect.First().SelectOption(playwright.SelectOptionValues{
-				Labels: playwright.StringSlice("Read and write"),
-			}); err != nil {
-				saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-select", logf)
-				return "", fmt.Errorf("selecting Actions write permission: %w", err)
+	// The permissions popover shows checkboxes. Click the Actions checkbox
+	// using JavaScript since the checkbox UI may be a custom component.
+	_, err = page.Evaluate(`() => {
+		const items = document.querySelectorAll('*');
+		for (const el of items) {
+			if (el.textContent.trim() === 'Actions' && el.closest('[role="option"], label, li')) {
+				el.closest('[role="option"], label, li').click();
+				return true;
 			}
 		}
-	} else {
-		// Maybe it's a toggle or checkbox — try clicking it.
-		actionsToggle := page.Locator("[aria-label*='Actions'], label:has-text('Actions')").First()
-		if err := actionsToggle.Click(playwright.LocatorClickOptions{
-			Timeout: playwright.Float(3000),
-		}); err != nil {
-			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-perm", logf)
-			return "", fmt.Errorf("setting Actions permission: %w", err)
+		// Fallback: find checkbox near "Actions" text
+		for (const el of items) {
+			if (el.textContent.trim() === 'Actions') {
+				const parent = el.parentElement;
+				const checkbox = parent.querySelector('input[type="checkbox"]');
+				if (checkbox) { checkbox.click(); return true; }
+				// Try clicking the parent itself
+				parent.click();
+				return true;
+			}
 		}
+		return false;
+	}`)
+	if err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-actions-checkbox", logf)
+		return "", fmt.Errorf("clicking Actions checkbox via JS: %w", err)
 	}
-	logf("[dispatch-pat] Set Actions permission to Read and write")
+	logf("[dispatch-pat] Checked Actions permission")
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-after-actions-check", logf)
 
+	// Close the permissions popover by pressing Escape.
+	page.Keyboard().Press("Escape")
+	time.Sleep(500 * time.Millisecond)
+
+	// The Actions permission is now added but defaults to "Read-only".
+	// Find the Actions row's level dropdown and change it to "Read and write".
+	// The dropdown appears as a <select> or button near "Actions" text.
+	_, err = page.Evaluate(`() => {
+		// Find all select elements on the page — the Actions permission
+		// level dropdown should be among them.
+		const selects = document.querySelectorAll('select');
+		for (const sel of selects) {
+			// Check if this select is near an "Actions" label
+			const row = sel.closest('li, tr, div');
+			if (row && row.textContent.includes('Actions')) {
+				// Set to "Read and write"
+				for (const opt of sel.options) {
+					if (opt.text.includes('Read and write') || opt.value === 'write') {
+						sel.value = opt.value;
+						sel.dispatchEvent(new Event('change', { bubbles: true }));
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}`)
+	if err != nil {
+		logf("[dispatch-pat] Warning: could not set Actions to Read and write via JS: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-before-generate", logf)
 
-	// Click "Generate token".
+	// Click "Generate token" — this opens a confirmation dialog.
 	generateBtn := page.Locator("button:has-text('Generate token')")
-	if err := generateBtn.Click(playwright.LocatorClickOptions{
+	if err := generateBtn.First().Click(playwright.LocatorClickOptions{
 		Timeout: playwright.Float(5000),
 	}); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-generate-click", logf)
 		return "", fmt.Errorf("clicking 'Generate token': %w", err)
 	}
-	logf("[dispatch-pat] Clicked 'Generate token'")
+	logf("[dispatch-pat] Clicked first 'Generate token'")
+	time.Sleep(1 * time.Second)
+
+	// A confirmation dialog appears. Click the last "Generate token" button
+	// which is the one inside the dialog (the main page also has one behind it).
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-confirm-dialog", logf)
+	dialogGenerate := page.Locator("button:has-text('Generate token')").Last()
+	if err := dialogGenerate.Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-confirm-generate-failed", logf)
+		return "", fmt.Errorf("clicking confirmation 'Generate token': %w", err)
+	}
+	logf("[dispatch-pat] Clicked confirmation 'Generate token'")
 
 	// Wait for page to show the generated token.
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
@@ -361,23 +408,34 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	time.Sleep(2 * time.Second)
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-page", logf)
 
-	// Fine-grained PATs display the token in a different element than classic PATs.
-	tokenLocator := page.Locator("#new-oauth-token, [data-testid='new-token'], input[readonly][value^='github_pat_'], code:has-text('github_pat_'), div:has-text('github_pat_')")
-	if err := tokenLocator.First().WaitFor(playwright.LocatorWaitForOptions{
-		Timeout: playwright.Float(10000),
-	}); err != nil {
-		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-extract", logf)
-		return "", fmt.Errorf("waiting for generated token element: %w", err)
+	// The token is displayed in an input element on the tokens list page.
+	// Use JavaScript to extract it since the element may be complex.
+	time.Sleep(3 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-visible", logf)
+
+	tokenResult, err := page.Evaluate(`() => {
+		// Look for any input whose value starts with github_pat_
+		const inputs = document.querySelectorAll('input');
+		for (const input of inputs) {
+			if (input.value && input.value.startsWith('github_pat_')) {
+				return input.value;
+			}
+		}
+		// Also check for visible text content containing the token
+		const allText = document.body.innerText;
+		const match = allText.match(/github_pat_[A-Za-z0-9_]+/);
+		if (match) return match[0];
+		return null;
+	}`)
+	if err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-extract-failed", logf)
+		return "", fmt.Errorf("extracting dispatch PAT via JS: %w", err)
 	}
 
-	// Try extracting the token value.
-	token, err := tokenLocator.First().TextContent()
-	if err != nil || token == "" {
-		token, err = tokenLocator.First().InputValue()
-		if err != nil || token == "" {
-			saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-value", logf)
-			return "", fmt.Errorf("extracting dispatch PAT value: %w", err)
-		}
+	token, ok := tokenResult.(string)
+	if !ok || token == "" {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-empty", logf)
+		return "", fmt.Errorf("dispatch PAT value is empty or not a string: %v", tokenResult)
 	}
 	token = strings.TrimSpace(token)
 
