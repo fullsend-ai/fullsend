@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 .ruff_cache/
 _site/
+bin/
