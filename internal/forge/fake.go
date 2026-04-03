@@ -9,6 +9,17 @@ import (
 // Compile-time check that FakeClient implements Client.
 var _ Client = (*FakeClient)(nil)
 
+// NewFakeClient returns a FakeClient with all maps initialised.
+func NewFakeClient() *FakeClient {
+	return &FakeClient{
+		FileContents:   make(map[string][]byte),
+		WorkflowRuns:   make(map[string]*WorkflowRun),
+		Secrets:        make(map[string]bool),
+		VariablesExist: make(map[string]bool),
+		Errors:         make(map[string]error),
+	}
+}
+
 // FileRecord records a file creation/update call.
 type FileRecord struct {
 	Owner, Repo, Path, Branch, Message string
@@ -101,9 +112,23 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 		return nil, e
 	}
 
+	fullName := org + "/" + name
+	// Check for duplicates in pre-populated repos.
+	for _, r := range f.Repos {
+		if r.FullName == fullName || r.Name == name {
+			return nil, fmt.Errorf("repository already exists: %s", fullName)
+		}
+	}
+	// Check for duplicates in previously created repos.
+	for _, r := range f.CreatedRepos {
+		if r.FullName == fullName || r.Name == name {
+			return nil, fmt.Errorf("repository already exists: %s", fullName)
+		}
+	}
+
 	r := Repository{
 		Name:          name,
-		FullName:      org + "/" + name,
+		FullName:      fullName,
 		DefaultBranch: "main",
 		Private:       private,
 	}
