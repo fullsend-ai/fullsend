@@ -9,6 +9,17 @@ import (
 // Compile-time check that FakeClient implements Client.
 var _ Client = (*FakeClient)(nil)
 
+// NewFakeClient returns a FakeClient with all maps initialised.
+func NewFakeClient() *FakeClient {
+	return &FakeClient{
+		FileContents:   make(map[string][]byte),
+		WorkflowRuns:   make(map[string]*WorkflowRun),
+		Secrets:        make(map[string]bool),
+		VariablesExist: make(map[string]bool),
+		Errors:         make(map[string]error),
+	}
+}
+
 // FileRecord records a file creation/update call.
 type FileRecord struct {
 	Owner, Repo, Path, Branch, Message string
@@ -90,9 +101,23 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 		return nil, e
 	}
 
+	fullName := org + "/" + name
+	// Check for duplicates in pre-populated repos.
+	for _, r := range f.Repos {
+		if r.FullName == fullName || r.Name == name {
+			return nil, fmt.Errorf("repository already exists: %s", fullName)
+		}
+	}
+	// Check for duplicates in previously created repos.
+	for _, r := range f.CreatedRepos {
+		if r.FullName == fullName || r.Name == name {
+			return nil, fmt.Errorf("repository already exists: %s", fullName)
+		}
+	}
+
 	r := Repository{
 		Name:          name,
-		FullName:      org + "/" + name,
+		FullName:      fullName,
 		DefaultBranch: "main",
 		Private:       private,
 	}
@@ -131,6 +156,34 @@ func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
 	}
 
 	f.DeletedRepos = append(f.DeletedRepos, owner+"/"+repo)
+
+	// Remove from Repos.
+	fullName := owner + "/" + repo
+	filtered := f.Repos[:0]
+	for _, r := range f.Repos {
+		if r.FullName != fullName && r.Name != repo {
+			filtered = append(filtered, r)
+		}
+	}
+	f.Repos = filtered
+
+	// Remove from CreatedRepos.
+	filteredCreated := f.CreatedRepos[:0]
+	for _, r := range f.CreatedRepos {
+		if r.FullName != fullName && r.Name != repo {
+			filteredCreated = append(filteredCreated, r)
+		}
+	}
+	f.CreatedRepos = filteredCreated
+
+	// Remove associated file contents.
+	prefix := fullName + "/"
+	for k := range f.FileContents {
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+			delete(f.FileContents, k)
+		}
+	}
+
 	return nil
 }
 
@@ -149,6 +202,11 @@ func (f *FakeClient) CreateFile(_ context.Context, owner, repo, path, message st
 		Message: message,
 		Content: content,
 	})
+
+	if f.FileContents == nil {
+		f.FileContents = make(map[string][]byte)
+	}
+	f.FileContents[owner+"/"+repo+"/"+path] = content
 	return nil
 }
 

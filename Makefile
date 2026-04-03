@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter mindmap \
-       go-build go-test go-lint go-fmt go-vet go-tidy
+       go-build go-test go-lint go-fmt go-vet go-tidy e2e-test e2e-playwright
 
 help:
 	@echo "Available targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  go-fmt               - Format Go code"
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
+	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_USERNAME and E2E_GITHUB_PASSWORD or E2E_GITHUB_PASSWORD_FILE)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -28,7 +29,7 @@ help:
 BOOTSTRAP_TOOL_DIR := $(HOME)/.local/share/uv-tools
 BOOTSTRAP_BIN_DIR  := $(HOME)/.local/bin
 
-bootstrap:
+bootstrap: e2e-playwright
 	@mkdir -p "$(BOOTSTRAP_BIN_DIR)"
 	@echo "==> Installing Python 3.12 (via uv)..."
 	uv python install 3.12
@@ -91,3 +92,12 @@ go-vet:
 
 go-tidy:
 	go mod tidy
+
+e2e-test: e2e-playwright
+	go test -tags e2e -v -count=1 -timeout 4m ./e2e/admin/
+
+e2e-playwright:
+	@if [ -z "$$(ls -d $(HOME)/.cache/ms-playwright/chromium-* 2>/dev/null)" ]; then \
+		echo "==> Installing Playwright Chromium..."; \
+		go run github.com/playwright-community/playwright-go/cmd/playwright install chromium; \
+	fi
