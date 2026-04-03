@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap lint check fmt lint-adr-status lint-adr-numbers lint-adr-frontmatter mindmap \
-       go-build go-test go-lint go-fmt go-vet go-tidy
+       go-build go-test go-lint go-fmt go-vet go-tidy e2e-test
 
 help:
 	@echo "Available targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  go-fmt               - Format Go code"
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
+	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_TOKEN)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -91,3 +92,6 @@ go-vet:
 
 go-tidy:
 	go mod tidy
+
+e2e-test:
+	go test -tags e2e -v -timeout 15m ./e2e/admin/

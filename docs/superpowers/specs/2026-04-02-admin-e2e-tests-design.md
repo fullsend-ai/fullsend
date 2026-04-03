@@ -1,0 +1,403 @@
+# Admin E2E Tests Design
+
+End-to-end tests for the `fullsend admin install` and `fullsend admin uninstall`
+CLI commands, exercising real GitHub APIs and browser-based GitHub App creation.
+
+## Context
+
+The admin CLI manages a 4-layer installation stack (config-repo, workflows,
+secrets, enrollment) and creates GitHub Apps via the manifest flow. All existing
+tests use `forge.FakeClient` or `httptest.Server` mocks. This spec defines e2e
+tests that hit a real GitHub organization to verify the full install/uninstall
+lifecycle.
+
+## Decisions
+
+- **Full layer stack coverage.** The e2e test exercises all 4 layers, not a
+  subset. Install creates every resource; uninstall tears them down.
+- **Real GitHub App creation via Playwright.** The manifest flow opens a browser
+  to create GitHub Apps. We automate this with `playwright-go` rather than
+  skipping it. If `playwright-go` proves too immature, the fallback is a Go test
+  orchestrator shelling out to a Node.js Playwright script.
+- **Interface injection architecture.** The existing `appsetup.BrowserOpener`
+  and `appsetup.Prompter` interfaces are the seams. The e2e test injects
+  Playwright-backed implementations rather than subprocess-orchestrating the CLI.
+- **Dedicated test org: `halfsend`.** A manually-created GitHub org with a bot
+  user (`botsend`) that has admin access. The org name is hardcoded in tests.
+- **Automated login via Playwright.** The test logs in programmatically at
+  startup using username/password credentials. No stored browser state needed.
+- **Dual cleanup strategy.** Teardown-first (delete stale resources before each
+  run) combined with `t.Cleanup()` deferred cleanup (catch mid-test failures).
+- **App deletion via Playwright UI.** Cleanup deletes GitHub Apps by navigating
+  to their settings pages and clicking delete, rather than using JWT-based API
+  auth.
+- **Distributed lock via GitHub repo.** An `e2e-lock` repo in the test org
+  prevents concurrent test runs from colliding. The lock holder writes its UUID
+  to the repo; other runners poll until it's released.
+
+## File Structure
+
+```
+e2e/
+  admin/
+    admin_test.go        # TestAdminInstallUninstall
+    browser.go           # PlaywrightBrowserOpener (appsetup.BrowserOpener)
+    login.go             # githubLogin() — automated GitHub login via Playwright
+    pat.go               # createPAT/deletePAT — auto-generate classic PAT via Playwright
+    prompter.go          # AutoPrompter (appsetup.Prompter)
+    cleanup.go           # Teardown-first + deferred cleanup helpers
+    lock.go              # Distributed lock via GitHub repo
+    testutil.go          # Shared test helpers (env var loading, client setup)
+```
+
+All files use `//go:build e2e` so they never compile during `go test ./...`.
+
+## Configuration
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `E2E_GITHUB_USERNAME` | Yes | GitHub username for the `botsend` user |
+| `E2E_GITHUB_PASSWORD` | Yes | GitHub password for the `botsend` user |
+| `E2E_LOCK_TIMEOUT` | No | How long to wait for the distributed lock (default: 30m) |
+
+The test org (`halfsend`) and bot user (`botsend`) are constants in the test
+code, not configurable. The bot user must NOT have 2FA enabled.
+
+A GitHub PAT with `repo`, `admin:org`, and `delete_repo` scopes is created
+automatically via Playwright at test startup and deleted in cleanup.
+
+## Function Access
+
+The `runAppSetup()`, `runInstall()`, `runUninstall()`, and `runAnalyze()`
+functions are unexported in the `cli` package. The e2e test does NOT call them
+directly. Instead, the test reproduces the wiring logic from `admin.go`:
+
+1. Creates a `github.LiveClient` with the token.
+2. Creates a `ui.Printer`.
+3. Constructs `appsetup.Setup` with injected Playwright implementations.
+4. Calls `setup.Run()` for each role (same as `runAppSetup` does).
+5. Discovers repos, builds config, builds the layer stack, calls
+   `stack.InstallAll()` / `stack.UninstallAll()` / `stack.AnalyzeAll()`.
+
+This duplicates some wiring but keeps the test decoupled from the CLI package
+internals. The wiring is simple (constructing structs and calling public APIs)
+and unlikely to drift.
+
+## Test Org Prerequisites
+
+The `halfsend` org must contain at least one repository (besides `.fullsend`)
+for enrollment testing. A repo named `test-repo` should exist with a `main`
+branch and at least one commit. This repo is created manually once and left
+in place across test runs.
+
+The test enables `test-repo` for enrollment via `--repo test-repo` equivalent
+(passing `[]string{"test-repo"}` to the config builder).
+
+## Distributed Lock
+
+Multiple developers or CI runs may attempt e2e tests concurrently. Since only
+one `.fullsend` repo can exist in the org at a time, a distributed lock
+prevents collisions. The lock is a GitHub repo named `e2e-lock` in the
+`halfsend` org.
+
+### Lock repo schema
+
+The `e2e-lock` repo contains a single file `README.md` with contents:
+
+```
+<uuid>
+```
+
+Where `<uuid>` is a v4 UUID generated by the test run that holds the lock.
+
+### Acquisition flow
+
+```
+func acquireLock(ctx, client, org, runID):
+    repo, err := client.GetRepo(ctx, org, "e2e-lock")
+
+    if err == ErrNotFound:
+        // No lock exists — try to create it
+        client.CreateRepo(ctx, org, "e2e-lock", "E2E test lock", false)
+        client.CreateFile(ctx, org, "e2e-lock", "README.md", "acquire lock", []byte(runID))
+        // Verify we actually got the lock (another runner may have raced us)
+        content := client.GetFileContent(ctx, org, "e2e-lock", "README.md")
+        if string(content) == runID:
+            return  // Lock acquired
+        else:
+            // Lost the race — fall through to polling
+
+    // Lock exists. Poll until it's released or timeout.
+    deadline := time.Now().Add(lockTimeout)  // lockTimeout = 30m (2-3x normal run)
+
+    for time.Now().Before(deadline):
+        content := client.GetFileContent(ctx, org, "e2e-lock", "README.md")
+        if string(content) == runID:
+            return  // Lock is ours (shouldn't happen, but safety check)
+
+        // Check repo creation time via GitHub API to detect fresh locks
+        createdAt := getRepoCreatedAt(ctx, org, "e2e-lock")  // direct API call
+        age := time.Since(createdAt)
+
+        if age < 2m:
+            // Another run just grabbed the lock — reset our deadline
+            log("Lock recently acquired by another run (age: %s), resetting timer", age)
+            deadline = time.Now().Add(lockTimeout)
+
+        log("Lock held by %s (age: %s), waiting...", string(content)[:8], age)
+        sleep(1m)
+
+    return error("timed out waiting for e2e lock after %s", lockTimeout)
+```
+
+### Release flow
+
+Lock release happens in `t.Cleanup()`, registered immediately after
+acquisition:
+
+```
+func releaseLock(ctx, client, org, runID):
+    // Only release if we still hold it (safety check)
+    content := client.GetFileContent(ctx, org, "e2e-lock", "README.md")
+    if string(content) == runID:
+        client.DeleteRepo(ctx, org, "e2e-lock")
+```
+
+### Stale lock recovery
+
+If a test run crashes without releasing the lock, the next run detects
+staleness by checking the repo creation time. If the lock repo is older than
+`lockTimeout`, the waiting run deletes it and creates a new one:
+
+```
+if age > lockTimeout:
+    log("Lock appears stale (age: %s), force-acquiring", age)
+    client.DeleteRepo(ctx, org, "e2e-lock")
+    // Retry acquisition from the top
+```
+
+### Implementation notes
+
+- The `getRepoCreatedAt()` function calls the GitHub REST API directly
+  (`GET /repos/{org}/e2e-lock`) and parses the `created_at` field. This is
+  intentionally NOT added to the `forge.Client` interface since it's an
+  e2e-test-only concern.
+- The lock timeout should be configurable via `E2E_LOCK_TIMEOUT` env var,
+  defaulting to 30 minutes.
+- The UUID is logged at test start so developers can identify which run holds
+  the lock.
+- The race condition on `CreateRepo` + `CreateFile` is handled by the
+  verification read: if another runner created the repo between our check and
+  our create, the create will fail (409 Conflict), and we fall through to
+  polling. If both runners manage to create (extremely unlikely window), the
+  verification read determines who actually holds the lock.
+
+## Test Flow
+
+`TestAdminInstallUninstall` is a single test function that exercises the full
+lifecycle:
+
+### Phase 0: Acquire lock
+
+1. Generate a UUID for this test run.
+2. Call `acquireLock()` — blocks until the lock is acquired or timeout.
+3. Register `t.Cleanup()` to call `releaseLock()`.
+
+### Phase 1: Teardown-first cleanup
+
+Scan the `halfsend` org and delete stale resources from previous runs:
+
+1. Delete the `.fullsend` repo if it exists.
+2. List org installations. For any with slug matching `fullsend-halfsend*`,
+   use Playwright to navigate to the app settings page and delete the app.
+3. Close any open PRs in test repos that were created by previous runs.
+
+### Phase 2: Install
+
+1. Create a `github.LiveClient` using `E2E_GITHUB_TOKEN`.
+2. Launch a Playwright Chromium browser and log in programmatically using
+   `E2E_GITHUB_USERNAME` and `E2E_GITHUB_PASSWORD`.
+3. Construct `appsetup.Setup` with:
+   - `PlaywrightBrowserOpener` as the `BrowserOpener`
+   - `AutoPrompter` as the `Prompter`
+   - The live GitHub client
+4. Call `appsetup.Setup.Run()` for all 4 default roles (fullsend, triage,
+   coder, review).
+   - For each role, `PlaywrightBrowserOpener.Open()` navigates to the local
+     manifest form URL, follows the redirect to GitHub, and clicks "Create
+     GitHub App" on GitHub's confirmation page.
+   - After creation, if the app isn't auto-installed, Playwright navigates to
+     the installation URL and clicks "Install".
+5. Register `t.Cleanup()` to delete each created app (via Playwright settings
+   page automation).
+6. Build the layer stack and call `stack.InstallAll()` with the returned
+   credentials.
+   - Register `t.Cleanup()` to delete the `.fullsend` repo.
+
+### Phase 3: Verify install
+
+Assert via the GitHub API (using the live client):
+
+1. `.fullsend` repo exists in `halfsend`.
+2. `config.yaml` exists and parses as a valid `config.OrgConfig`.
+3. Workflow files exist: `.github/workflows/agent.yaml`,
+   `.github/workflows/repo-onboard.yaml`, `CODEOWNERS`.
+4. Secrets exist for each role: `FULLSEND_<ROLE>_APP_PRIVATE_KEY`.
+5. Variables exist for each role: `FULLSEND_<ROLE>_APP_ID`.
+6. Enrollment PRs were created for any enabled repos.
+
+### Phase 4: Analyze
+
+Build a fresh layer stack and call `stack.AnalyzeAll()`. Assert all layers
+report `StatusInstalled`.
+
+### Phase 5: Uninstall
+
+Build a minimal layer stack (same as `runUninstall` does) and call
+`stack.UninstallAll()`. No confirmation prompt needed since we're calling
+the stack directly, not the CLI.
+
+### Phase 6: Verify uninstall
+
+1. Assert `.fullsend` repo no longer exists (API returns 404).
+2. Assert enrollment PRs are still open (uninstall doesn't close them by
+   design -- this may change).
+
+### Phase 7: Cleanup
+
+`t.Cleanup()` handlers run in LIFO order:
+1. Delete GitHub Apps via Playwright UI automation.
+2. Delete `.fullsend` repo if it still exists (safety net).
+3. Close any enrollment PRs.
+
+## PlaywrightBrowserOpener
+
+Implements `appsetup.BrowserOpener`. Wraps a `playwright-go` browser with
+persistent context.
+
+```go
+type PlaywrightBrowserOpener struct {
+    page playwright.Page
+}
+
+func (b *PlaywrightBrowserOpener) Open(ctx context.Context, url string) error {
+    // Navigate to the URL (either local manifest form or GitHub install page)
+    b.page.Goto(url)
+
+    // Detect which page we're on and act accordingly:
+    // 1. Local manifest form → auto-submits, redirects to GitHub
+    // 2. GitHub "Register new GitHub App" → click "Create GitHub App" button
+    // 3. GitHub app install page → click "Install" button
+    //
+    // Wait for navigation to complete and handle each case.
+}
+```
+
+Key implementation details:
+
+- The manifest form auto-submits via JavaScript, so Playwright just needs to
+  wait for the GitHub confirmation page to load.
+- On GitHub's "Register new GitHub App" page, click the submit/create button.
+- On the app installation page, select "All repositories" and click "Install".
+- After the GitHub App is created, GitHub redirects back to the local callback
+  URL. Playwright follows this redirect, which delivers the code to the local
+  HTTP server. The `appsetup` code handles the code exchange.
+- Each `Open()` call blocks until the browser interaction completes and the
+  page navigates to a terminal state (success page or callback).
+
+## AutoPrompter
+
+Implements `appsetup.Prompter` for non-interactive use:
+
+```go
+type AutoPrompter struct{}
+
+func (AutoPrompter) WaitForEnter(prompt string) error {
+    return nil // No human needed; Playwright handled the browser interaction
+}
+
+func (AutoPrompter) Confirm(prompt string) (bool, error) {
+    return true, nil // Always accept (reuse existing apps, etc.)
+}
+```
+
+## App Deletion via Playwright
+
+GitHub Apps can be deleted through their settings page at
+`https://github.com/settings/apps/<slug>`. The Playwright-based cleanup:
+
+1. Navigate to `https://github.com/settings/apps/<slug>/advanced`.
+2. Scroll to the "Danger zone" section.
+3. Click "Delete GitHub App".
+4. Confirm the deletion in the modal dialog.
+
+This is called both during teardown-first cleanup and via `t.Cleanup()`.
+
+## CI Integration
+
+`.github/workflows/e2e.yml`:
+
+```yaml
+name: E2E Tests
+on:
+  push:
+    branches: [main]
+    paths: ['**/*.go', 'go.mod', 'go.sum']
+  pull_request:
+    paths: ['**/*.go', 'go.mod', 'go.sum']
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-halfsend
+  cancel-in-progress: false  # Let running tests finish; don't corrupt state
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install Playwright browsers
+        run: go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium
+      - name: Run e2e tests
+        run: go test -tags e2e -v -timeout 15m ./e2e/admin/
+        env:
+          E2E_GITHUB_USERNAME: ${{ secrets.E2E_GITHUB_USERNAME }}
+          E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
+```
+
+Key details:
+- The `concurrency` group is a CI-level safety net. The real coordination
+  happens via the distributed lock (see above), which also works for local
+  developer runs.
+- `cancel-in-progress: false` lets running tests complete their cleanup rather
+  than being killed mid-mutation.
+- The test logs into GitHub programmatically at startup using username/password.
+  No stored browser state is needed. The bot user must not have 2FA enabled.
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| `playwright-go` immaturity | Fallback: shell out to Node.js Playwright script from Go test |
+| GitHub UI changes break selectors | Use data-testid or role-based selectors where possible; accept some fragility |
+| GitHub login page changes | Login selectors (`#login_field`, `#password`) are stable; test fails clearly if they change |
+| Rate limiting on GitHub API | Single test run with cleanup; concurrency group prevents parallel runs |
+| Test leaves orphaned resources | Dual cleanup (teardown-first + t.Cleanup) catches most cases; manual cleanup documented |
+| Flaky network/API responses | Retry logic for API calls; generous timeouts; test marked as flaky-tolerant in CI |
+| Concurrent test runs collide | Distributed lock via `e2e-lock` repo; stale lock recovery after timeout |
+| Lock holder crashes without releasing | Stale lock detection via repo creation time; auto-recovery after `lockTimeout` |
+
+## Out of Scope
+
+- Testing the `fullsend admin analyze` command as a standalone flow (it's
+  exercised as a verification step within the install test).
+- Testing with multiple repos enabled (start with 0-1 enabled repos to keep
+  the test fast).
+- Testing the dry-run flag.
+- Testing error recovery (e.g., partial install failure).
+- Automating GitHub App installation approval (the manifest flow auto-installs
+  for org-owned apps created by org admins).
