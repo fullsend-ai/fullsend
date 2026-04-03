@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/playwright-community/playwright-go"
@@ -56,8 +57,20 @@ func TestAdminInstallUninstall(t *testing.T) {
 	err = githubLogin(page, cfg.username, cfg.password)
 	require.NoError(t, err, "logging into GitHub")
 
+	// Generate a PAT for API access.
+	patNote := fmt.Sprintf("fullsend-e2e-%d", time.Now().Unix())
+	t.Logf("Creating PAT: %s", patNote)
+	token, err := createPAT(page, patNote)
+	require.NoError(t, err, "creating PAT")
+	t.Cleanup(func() {
+		t.Log("Deleting PAT...")
+		if delErr := deletePAT(page, patNote); delErr != nil {
+			t.Logf("warning: could not delete PAT: %v", delErr)
+		}
+	})
+
 	// --- GitHub client ---
-	client := newLiveClient(cfg.token)
+	client := newLiveClient(token)
 	printer := ui.New(os.Stdout)
 
 	// ======================
@@ -66,7 +79,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 	runID := uuid.New().String()
 	t.Logf("E2E run ID: %s", runID)
 
-	err = acquireLock(ctx, client, cfg.token, testOrg, runID, cfg.lockTimeout)
+	err = acquireLock(ctx, client, token, testOrg, runID, cfg.lockTimeout)
 	require.NoError(t, err, "acquiring e2e lock")
 	t.Cleanup(func() {
 		releaseLock(context.Background(), client, testOrg, runID, t)

@@ -43,6 +43,7 @@ e2e/
     admin_test.go        # TestAdminInstallUninstall
     browser.go           # PlaywrightBrowserOpener (appsetup.BrowserOpener)
     login.go             # githubLogin() — automated GitHub login via Playwright
+    pat.go               # createPAT/deletePAT — auto-generate classic PAT via Playwright
     prompter.go          # AutoPrompter (appsetup.Prompter)
     cleanup.go           # Teardown-first + deferred cleanup helpers
     lock.go              # Distributed lock via GitHub repo
@@ -55,13 +56,15 @@ All files use `//go:build e2e` so they never compile during `go test ./...`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `E2E_GITHUB_TOKEN` | Yes | PAT for the `botsend` user with org admin, repo, delete_repo scopes |
 | `E2E_GITHUB_USERNAME` | Yes | GitHub username for the `botsend` user |
 | `E2E_GITHUB_PASSWORD` | Yes | GitHub password for the `botsend` user |
 | `E2E_LOCK_TIMEOUT` | No | How long to wait for the distributed lock (default: 30m) |
 
 The test org (`halfsend`) and bot user (`botsend`) are constants in the test
 code, not configurable. The bot user must NOT have 2FA enabled.
+
+A GitHub PAT with `repo`, `admin:org`, and `delete_repo` scopes is created
+automatically via Playwright at test startup and deleted in cleanup.
 
 ## Function Access
 
@@ -362,7 +365,6 @@ jobs:
       - name: Run e2e tests
         run: go test -tags e2e -v -timeout 15m ./e2e/admin/
         env:
-          E2E_GITHUB_TOKEN: ${{ secrets.E2E_GITHUB_TOKEN }}
           E2E_GITHUB_USERNAME: ${{ secrets.E2E_GITHUB_USERNAME }}
           E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
 ```

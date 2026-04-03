@@ -41,22 +41,16 @@ var defaultRoles = []string{"fullsend", "triage", "coder", "review"}
 
 // envConfig holds required environment configuration.
 type envConfig struct {
-	token       string
 	username    string
 	password    string
 	lockTimeout time.Duration
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
-// E2E_GITHUB_TOKEN is not set (allows running `go test -tags e2e` without
+// credentials are not set (allows running `go test -tags e2e` without
 // credentials to check compilation).
 func loadEnvConfig(t *testing.T) envConfig {
 	t.Helper()
-
-	token := os.Getenv("E2E_GITHUB_TOKEN")
-	if token == "" {
-		t.Skip("E2E_GITHUB_TOKEN not set, skipping e2e test")
-	}
 
 	username := os.Getenv("E2E_GITHUB_USERNAME")
 	if username == "" {
@@ -78,7 +72,6 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	return envConfig{
-		token:       token,
 		username:    username,
 		password:    password,
 		lockTimeout: lockTimeout,
