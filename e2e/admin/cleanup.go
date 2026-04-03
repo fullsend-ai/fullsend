@@ -68,7 +68,13 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 4. Ensure test-repo exists (needed for enrollment testing).
+	// 4. Delete any stale dispatch PATs from previous runs.
+	t.Log("[cleanup] Cleaning up stale dispatch PATs...")
+	if delErr := deleteDispatchPAT(page, testOrg, screenshotDir, t.Logf); delErr != nil {
+		t.Logf("[cleanup] Warning: could not delete stale dispatch PAT: %v", delErr)
+	}
+
+	// 5. Ensure test-repo exists (needed for enrollment testing).
 	_, err = client.GetRepo(ctx, testOrg, testRepo)
 	if forge.IsNotFound(err) {
 		t.Logf("[cleanup] Creating missing %s repo", testRepo)

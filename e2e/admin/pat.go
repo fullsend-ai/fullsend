@@ -133,7 +133,8 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-form-loaded", logf)
 
 	// Fill in the token name using Playwright's label-based locator.
-	tokenName := fmt.Sprintf("fullsend-dispatch-%s-e2e", org)
+	// Use a timestamp to avoid name collisions with tokens from previous runs.
+	tokenName := fmt.Sprintf("fullsend-dispatch-%s-e2e-%d", org, time.Now().Unix())
 	nameInput := page.GetByLabel("Token name")
 	if err := nameInput.Fill(tokenName); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-name-fill-failed", logf)
@@ -451,7 +452,8 @@ func createDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 // deleteDispatchPAT deletes a fine-grained GitHub PAT by navigating to the
 // fine-grained tokens page and clicking delete for the matching token.
 func deleteDispatchPAT(page playwright.Page, org, screenshotDir string, logf func(string, ...any)) error {
-	tokenName := fmt.Sprintf("fullsend-dispatch-%s-e2e", org)
+	// Match any token with the dispatch prefix (name includes timestamp).
+	tokenPrefix := fmt.Sprintf("fullsend-dispatch-%s-e2e", org)
 
 	if _, err := page.Goto("https://github.com/settings/personal-access-tokens", playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
@@ -460,13 +462,13 @@ func deleteDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 		return fmt.Errorf("navigating to fine-grained tokens page: %w", err)
 	}
 
-	// Find the row containing our token name.
-	tokenRow := page.Locator(fmt.Sprintf("a:has-text('%s')", tokenName)).Locator("xpath=ancestor::li | ancestor::div[contains(@class, 'list-group-item')]")
+	// Find any row containing our token prefix.
+	tokenRow := page.Locator(fmt.Sprintf("a:has-text('%s')", tokenPrefix)).Locator("xpath=ancestor::li | ancestor::div[contains(@class, 'list-group-item')]")
 	if err := tokenRow.First().WaitFor(playwright.LocatorWaitForOptions{
 		Timeout: playwright.Float(5000),
 		State:   playwright.WaitForSelectorStateVisible,
 	}); err != nil {
-		logf("[dispatch-pat] Token %q not found on page, may already be deleted", tokenName)
+		logf("[dispatch-pat] Token with prefix %q not found on page, may already be deleted", tokenPrefix)
 		return nil
 	}
 
@@ -474,7 +476,7 @@ func deleteDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 	deleteBtn := tokenRow.First().Locator("button:has-text('Delete'), button:has-text('Revoke')")
 	if err := deleteBtn.First().Click(); err != nil {
 		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-delete-click", logf)
-		return fmt.Errorf("clicking delete for dispatch PAT %q: %w", tokenName, err)
+		return fmt.Errorf("clicking delete for dispatch PAT %q: %w", tokenPrefix, err)
 	}
 
 	// Wait for and click the confirmation button.
@@ -498,7 +500,7 @@ func deleteDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 		return fmt.Errorf("waiting for dispatch PAT deletion to complete: %w", err)
 	}
 
-	logf("[dispatch-pat] Deleted fine-grained PAT: %s", tokenName)
+	logf("[dispatch-pat] Deleted fine-grained PAT with prefix: %s", tokenPrefix)
 	return nil
 }
 
