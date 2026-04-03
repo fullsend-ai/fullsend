@@ -29,6 +29,7 @@ type e2eEnv struct {
 	page          playwright.Page
 	client        *gh.LiveClient
 	token         string
+	dispatchToken string
 	printer       *ui.Printer
 	runID         string
 	screenshotDir string
@@ -89,6 +90,12 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	client := newLiveClient(token)
 	printer := ui.New(os.Stdout)
 
+	// Dispatch token — read from env var (required for non-interactive e2e).
+	dispatchToken := os.Getenv("E2E_DISPATCH_TOKEN")
+	if dispatchToken == "" {
+		t.Skip("E2E_DISPATCH_TOKEN not set, skipping e2e test (needed for dispatch token layer)")
+	}
+
 	// Acquire lock.
 	runID := uuid.New().String()
 	t.Logf("E2E run ID: %s", runID)
@@ -107,6 +114,7 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 		page:          page,
 		client:        client,
 		token:         token,
+		dispatchToken: dispatchToken,
 		printer:       printer,
 		runID:         runID,
 		screenshotDir: screenshotDir,
@@ -121,7 +129,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 	// Phase 1: First install (creates resources)
 	// =========================================
 	t.Log("=== Phase 1: First Install ===")
-	agentCreds, orgCfg, enabledRepos, defaultBranches := runFullInstall(t, env)
+	agentCreds, orgCfg, enabledRepos, defaultBranches, enrolledRepoIDs := runFullInstall(t, env)
 	verifyInstalled(t, env, orgCfg, enabledRepos, defaultBranches, agentCreds)
 
 	// =========================================
@@ -134,7 +142,8 @@ func TestAdminInstallUninstall(t *testing.T) {
 	require.NoError(t, err)
 	hasPrivate := hasPrivateRepos(allRepos)
 
-	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+	// Second install should reuse existing dispatch token (empty string).
+	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs)
 	err = stack.InstallAll(ctx)
 	require.NoError(t, err, "second InstallAll should succeed")
 	verifyInstalled(t, env, orgCfg, enabledRepos, defaultBranches, agentCreds)
@@ -160,7 +169,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 
 // runFullInstall executes the full install flow (app setup + layer stack install)
 // and returns the agent credentials and org config for verification.
-func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *config.OrgConfig, []string, map[string]string) {
+func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *config.OrgConfig, []string, map[string]string, []int64) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -207,14 +216,22 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 	user, err := env.client.GetAuthenticatedUser(ctx)
 	require.NoError(t, err, "getting authenticated user")
 
+	// Collect repo IDs for enrolled repos (needed by DispatchTokenLayer).
+	var enrolledRepoIDs []int64
+	for _, repoName := range enabledRepos {
+		repo, repoErr := env.client.GetRepo(ctx, testOrg, repoName)
+		require.NoError(t, repoErr, "getting repo %s for ID", repoName)
+		enrolledRepoIDs = append(enrolledRepoIDs, repo.ID)
+	}
+
 	// Build layer stack and install.
-	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, env.dispatchToken, enrolledRepoIDs)
 	registerRepoCleanup(t, env.client, testOrg, forge.ConfigRepoName)
 
 	err = stack.InstallAll(ctx)
 	require.NoError(t, err, "installing layers")
 
-	return agentCreds, orgCfg, enabledRepos, defaultBranches
+	return agentCreds, orgCfg, enabledRepos, defaultBranches, enrolledRepoIDs
 }
 
 func runUninstall(t *testing.T, env *e2eEnv) {
@@ -224,6 +241,7 @@ func runUninstall(t *testing.T, env *e2eEnv) {
 		layers.NewConfigRepoLayer(testOrg, env.client, emptyCfg, env.printer, false),
 		layers.NewWorkflowsLayer(testOrg, env.client, env.printer, ""),
 		layers.NewSecretsLayer(testOrg, env.client, nil, env.printer),
+		layers.NewDispatchTokenLayer(testOrg, env.client, "", nil, env.printer),
 		layers.NewEnrollmentLayer(testOrg, env.client, nil, nil, env.printer),
 	)
 	errs := stack.UninstallAll(context.Background())
@@ -239,6 +257,7 @@ func runUninstallAllowNotFound(t *testing.T, env *e2eEnv) {
 		layers.NewConfigRepoLayer(testOrg, env.client, emptyCfg, env.printer, false),
 		layers.NewWorkflowsLayer(testOrg, env.client, env.printer, ""),
 		layers.NewSecretsLayer(testOrg, env.client, nil, env.printer),
+		layers.NewDispatchTokenLayer(testOrg, env.client, "", nil, env.printer),
 		layers.NewEnrollmentLayer(testOrg, env.client, nil, nil, env.printer),
 	)
 	errs := stack.UninstallAll(context.Background())
@@ -292,6 +311,11 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 		assert.True(t, exists, "variable %s should exist", varName)
 	}
 
+	// Dispatch token org secret exists.
+	dispatchExists, err := env.client.OrgSecretExists(ctx, testOrg, "FULLSEND_DISPATCH_TOKEN")
+	assert.NoError(t, err, "checking dispatch token org secret")
+	assert.True(t, dispatchExists, "FULLSEND_DISPATCH_TOKEN org secret should exist")
+
 	// Enrollment PR exists for test-repo.
 	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
 	require.NoError(t, err, "listing PRs for %s", testRepo)
@@ -312,7 +336,7 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 	require.NoError(t, err)
 	hasPrivate := hasPrivateRepos(allRepos)
 
-	analyzeStack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds)
+	analyzeStack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", nil)
 	reports, err := analyzeStack.AnalyzeAll(ctx)
 	require.NoError(t, err, "analyzing layers")
 	for _, report := range reports {
@@ -339,18 +363,24 @@ func verifyNotInstalled(t *testing.T, env *e2eEnv) {
 	_, err := env.client.GetRepo(ctx, testOrg, forge.ConfigRepoName)
 	assert.True(t, forge.IsNotFound(err), ".fullsend repo should be deleted")
 
+	// Dispatch token org secret should be deleted.
+	dispatchExists, err := env.client.OrgSecretExists(ctx, testOrg, "FULLSEND_DISPATCH_TOKEN")
+	assert.NoError(t, err, "checking dispatch token after uninstall")
+	assert.False(t, dispatchExists, "FULLSEND_DISPATCH_TOKEN org secret should be deleted")
+
 	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil)
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer(testOrg, env.client, emptyCfg, env.printer, false),
 		layers.NewWorkflowsLayer(testOrg, env.client, env.printer, ""),
 		layers.NewSecretsLayer(testOrg, env.client, nil, env.printer),
+		layers.NewDispatchTokenLayer(testOrg, env.client, "", nil, env.printer),
 		layers.NewEnrollmentLayer(testOrg, env.client, nil, nil, env.printer),
 	)
 	reports, err := stack.AnalyzeAll(ctx)
 	require.NoError(t, err, "analyzing layers after uninstall")
 	for _, report := range reports {
 		switch report.Name {
-		case "config-repo", "workflows":
+		case "config-repo", "workflows", "dispatch-token":
 			assert.Equal(t, layers.StatusNotInstalled, report.Status,
 				"layer %s should be not-installed, got %s",
 				report.Name, report.Status)
@@ -373,11 +403,14 @@ func buildTestLayerStack(
 	enabledRepos []string,
 	defaultBranches map[string]string,
 	agentCreds []layers.AgentCredentials,
+	dispatchToken string,
+	enrolledRepoIDs []int64,
 ) *layers.Stack {
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, hasPrivate),
 		layers.NewWorkflowsLayer(org, client, printer, user),
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
+		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
 		layers.NewEnrollmentLayer(org, client, enabledRepos, defaultBranches, printer),
 	)
 }

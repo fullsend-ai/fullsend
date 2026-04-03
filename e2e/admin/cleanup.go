@@ -29,7 +29,18 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 2. Delete any fullsend-halfsend* GitHub Apps via Playwright.
+	// 2. Delete stale FULLSEND_DISPATCH_TOKEN org secret if it exists.
+	dispatchExists, dispatchErr := client.OrgSecretExists(ctx, testOrg, "FULLSEND_DISPATCH_TOKEN")
+	if dispatchErr != nil {
+		t.Logf("[cleanup] Warning: could not check dispatch token org secret: %v", dispatchErr)
+	} else if dispatchExists {
+		t.Log("[cleanup] Deleting stale FULLSEND_DISPATCH_TOKEN org secret")
+		if delErr := client.DeleteOrgSecret(ctx, testOrg, "FULLSEND_DISPATCH_TOKEN"); delErr != nil {
+			t.Logf("[cleanup] Warning: could not delete dispatch token org secret: %v", delErr)
+		}
+	}
+
+	// 3. Delete any fullsend-halfsend* GitHub Apps via Playwright.
 	installations, err := client.ListOrgInstallations(ctx, testOrg)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list installations: %v", err)
