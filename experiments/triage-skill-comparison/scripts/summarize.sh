@@ -69,7 +69,7 @@ fi
   # Separator
   printf "|---|"
   for _ in "${SCENARIOS[@]}"; do
-    printf "---|"
+    printf '%s' "---|"
   done
   printf "---|\n"
 
