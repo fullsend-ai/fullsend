@@ -69,9 +69,9 @@ fi
   # Separator
   printf "|---|"
   for _ in "${SCENARIOS[@]}"; do
-    printf "---|"
+    printf '%s' "---|"
   done
-  printf "---|\n"
+  printf '%s\n' "---|"
 
   # Rows
   for strategy in "${STRATEGIES[@]}"; do
