@@ -21,13 +21,11 @@ What is the issue that we're seeing that motivates this decision or change?
 
 ## Options
 
-_Required for Undecided ADRs. Describe the options under consideration without
-choosing one yet. Each option should have a brief description and known
-trade-offs._
-
-### Option 1: ...
-
-### Option 2: ...
+_Optional. Include only when there are genuine alternatives worth documenting.
+For Undecided ADRs, describe the options under consideration without choosing
+one yet. For Proposed or Accepted ADRs, include only if the rejected
+alternatives add useful context. If the decision is obvious, skip this
+section._
 
 ## Decision
 

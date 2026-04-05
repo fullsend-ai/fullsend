@@ -17,7 +17,7 @@ are point-in-time records (immutable once accepted).
 ## When to Use
 
 - A specific decision has emerged from discussion in a problem doc
-- You need to frame an upcoming decision with options (Undecided status)
+- You need to frame an upcoming decision (Undecided status)
 - An ADR has been accepted and living documents need updating
 
 Do NOT use for open-ended exploration -- that belongs in problem docs.
@@ -42,7 +42,7 @@ decide..." or "We also require...", stop. That is a second ADR.
 | Section | Target | Anti-pattern |
 |---------|--------|-------------|
 | Context | 1-3 paragraphs | Restating entire problem docs |
-| Options | 1 paragraph each | Multi-page analysis per option |
+| Options (if any) | 1 paragraph each | Multi-page analysis per option |
 | Decision | Direct statement + brief rationale | Burying the decision in prose |
 | Consequences | 3-5 one-sentence bullets | Essay-length explanations |
 
@@ -75,9 +75,10 @@ Follow these steps in order:
    apply to all problem areas. The `status` in frontmatter must match the
    `## Status` heading in the body (the linter enforces this).
 4. **Choose the right status.** Use **Proposed** for a draft awaiting
-   discussion. Use **Undecided** when the problem is identified and options are
-   described but no choice has been made -- Undecided ADRs must include an
-   Options section. Use **Accepted** when the decision is made.
+   discussion. Use **Undecided** when the problem is identified but no choice
+   has been made. Use **Accepted** when the decision is made. Include an
+   Options section only when there are genuine alternatives worth documenting;
+   if the decision is obvious, just decide it.
 5. **Write the ADR.** Follow the conciseness rules above.
 6. **Run linters.** Execute `make lint` and fix any errors before committing.
 7. **If status is Accepted, update living documents** (see below).
