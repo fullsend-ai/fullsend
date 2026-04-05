@@ -14,6 +14,7 @@ The decisions that shape how the agentic system behaves across the org:
 - **Autonomy levels** — which repos are agent-autonomous, which are in shadow mode, which require full human review. What are the graduation criteria, and who evaluates them?
 - **Agent permissions** — what authority each agent role has (merge, approve, comment, label). What are the boundaries, and who draws them?
 - **Org-wide guardrails** — minimum standards that apply to all repos regardless of individual repo policy. Examples: all repos must have CODEOWNERS, all security-sensitive paths require human approval, all agent config changes require human approval.
+- **Model and tool egress policy** — which model providers and tool protocols (e.g. MCP servers) agent runtimes may use, how spend and quotas are enforced, and who may approve changes to those allowlists. Central **protocol gateways** are one enforcement point; they should fall under the same change-control rigor as other agent infrastructure (see [landscape.md](../landscape.md#agent-gateway)).
 
 ### 2. Configuration security
 
