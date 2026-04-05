@@ -188,6 +188,28 @@ Without a coordinator, what happens when agents disagree? (e.g., correctness age
 - **Persistent disagreement escalates to humans** — if an implementation agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with the approving and blocking agents' readings — while making clear the human can reject both framings or the PR itself — so the human resolves the disagreement quickly rather than re-reviewing the entire PR.
 - **Humans can always override** — a human with approval rights can approve despite agent objections. The system assists; humans retain ultimate authority.
 
+## Relationship to multi-agent frameworks
+
+The multi-agent framework space is expanding rapidly, with new entries appearing regularly (LangGraph, CrewAI, MetaGPT, Swarms.ai, OpenAI Agents SDK, Agency Swarm, among others). Nearly all of them assume a central coordinator agent that orchestrates the others. At this point, this does not match how the architectural ideas in fullsend are developing.
+
+### Where fullsend diverges
+
+**No framework uses the repository's permission model as the coordination layer.** Frameworks like [MetaGPT](https://github.com/FoundationAgents/MetaGPT), [MAGIS](https://arxiv.org/abs/2403.17927), and [CrewAI](https://www.crewai.com/) all build their own orchestration runtime with a manager/coordinator agent. Recent research ([AAMAS 2025](https://www.ifaamas.org/Proceedings/aamas2025/pdfs/p2896.pdf)) identifies this star topology as a performance bottleneck and a privacy risk — the coordinator becomes a single point of failure. Fullsend sidesteps this by using branch protection, CODEOWNERS, and status checks as coordination primitives that already exist and are already hardened.
+
+**No framework treats inter-agent communication as zero-trust.** In MAGIS, the QA agent's verdict is trusted by the system. In MetaGPT, agents trust the SOP pipeline. In fullsend, a reviewer's authority to block comes from CODEOWNERS, but the *content* of their feedback is still treated as untrusted input. This distinction between "authorized to block" and "safe to process" does not appear in the multi-agent literature.
+
+**No framework separates blocking authority from trust.** This is a consequence of the zero-trust principle, but worth calling out: existing frameworks conflate "this agent has a role" with "this agent's output is reliable." Fullsend treats these as orthogonal.
+
+### Ideas to consider borrowing
+
+**Structured intermediate artifacts (MetaGPT).** MetaGPT requires agents to produce structured outputs (requirements docs, interface specs, flowcharts) between phases rather than passing unstructured chat. This may reduce hallucination and makes handoffs verifiable but complicates our zero trust model and hybrid contributor aspiration.
+
+**Iterative developer-QA loops (MAGIS).** MAGIS pairs each Developer agent with a QA Engineer agent in a tight loop: code → review → feedback → revise → re-review. Even this simple loop produced an 8x improvement over raw GPT-4 on SWE-bench. This validates our two-phase review model (pre-PR self-review + PR-level review). The MAGIS finding that removing the QA agent cut performance by more than half suggests the pre-PR review phase is not optional.
+
+**Swarm architecture taxonomy (Swarms.ai).** [Swarms.ai](https://docs.swarms.world/en/latest/swarms/concept/swarm_architectures/) provides a vocabulary for describing multi-agent topologies: sequential, parallel, DAG, mesh, mixture-of-agents, hierarchical. Fullsend's model could be described as an **event-driven DAG** — agents are triggered by GitHub events, with dependency edges defined by branch protection rules (e.g., merge depends on all required status checks passing). Using established terminology makes the architecture easier to discuss with people familiar with the multi-agent space.
+
+**FSM framing (AAMAS 2025).** Researchers demonstrated that all multi-agent architectures — linear, decentralized debate, and orchestrated — are specialized finite state machines. Fullsend's model maps naturally to an FSM where states are PR lifecycle stages, transitions are triggered by GitHub events, and transition guards are branch protection rules. This framing could be useful for formal reasoning about deadlock and liveness properties.
+
 ## Open questions
 
 - Should agents be stateless (fresh context per task) or stateful (accumulated knowledge of the codebase)? Stateless is safer (no poisoned state persists) but less efficient.

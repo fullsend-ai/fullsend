@@ -153,6 +153,12 @@ Structure the workflow as a pipeline where deterministic steps (context prefetch
 
 These are complementary, not competing. A system could use stacked PRs (Graphite's insight) reviewed by specialized sub-agents (CodeRabbit's insight) with deep codebase context where needed (Greptile's insight), all orchestrated through a deterministic pipeline with agentic steps (Stripe's insight).
 
+### 4. Multi-agent swarm frameworks (MetaGPT, MAGIS, Swarms.ai, CrewAI)
+
+A growing category of frameworks tackles the broader problem of multi-agent software development, not just review. [MetaGPT](https://github.com/FoundationAgents/MetaGPT) assigns software-company roles (product manager, architect, engineer) and enforces SOPs as structured handoffs between agents. [MAGIS](https://arxiv.org/abs/2403.17927) (NeurIPS 2024) uses four agents (Manager, Repository Custodian, Developer, QA Engineer) for GitHub issue resolution, achieving 8x improvement over raw GPT-4. [Swarms.ai](https://docs.swarms.world/en/latest/swarms/concept/swarm_architectures/) provides a toolkit of swarm topologies (sequential, parallel, DAG, mesh, hierarchical). [CrewAI](https://www.crewai.com/) offers role-based agent teams with a focus on developer experience.
+
+All of these assume a central coordinator and cooperative inter-agent trust — the agents on a team trust each other's outputs. See [agent-architecture.md](problems/agent-architecture.md#relationship-to-multi-agent-frameworks) for how fullsend's approach diverges and what ideas are worth borrowing from this space.
+
 ## What nobody is doing
 
 None of these tools address:
