@@ -1,7 +1,7 @@
 # Enrollment v1 (admin install) — normative specification
 
-**Version:** v1  
-**ADR:** [0013](../../../../ADRs/0013-admin-install-repo-enrollment-v1.md)  
+**Version:** v1
+**ADR:** [0013](../../../../ADRs/0013-admin-install-repo-enrollment-v1.md)
 **Scope:** How the admin install enrolls a GitHub-hosted repository into the fullsend agent pipeline by opening a pull request that adds a *shim* workflow. This spec is the contract for tooling (for example the enrollment layer and `forge.Client`); hosting details follow GitHub’s REST API unless stated otherwise.
 
 ## 1. Definitions
