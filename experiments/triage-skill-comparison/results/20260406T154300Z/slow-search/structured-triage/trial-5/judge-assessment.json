@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted ~5,000 tasks, slow description search vs fast title search, v2.2→v2.3 regression, ~2 weeks ago timeline, and 10-15 second timing. Missed CPU spike during search and long descriptions in some tasks, but these are secondary details the reporter didn't volunteer and the agent didn't ask about."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause — correctly identifies a dropped/changed full-text index on descriptions, suggests sequential scan vs indexed search, and notes the title index is intact. This maps almost exactly to the actual FTS5-to-LIKE regression. The environment details and problem characterization are all accurate."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent questions to reach a high-quality summary. First question efficiently combined reproduction steps, task count, and search type. Second question gathered environment and version info. No wasted turns, and the reporter voluntarily provided the version upgrade timing in response to the environment question."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "First question was well-structured and multi-part, efficiently drawing out the critical title-vs-description distinction. Second question appropriately targeted environment and version info. Questions were well-framed and professional. Could have earned a 5 by probing for CPU/memory behavior or asking about description sizes, but overall strong diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides clear reproduction steps, a precise root cause hypothesis pointing to the exact code path to investigate (description search query, FTS index, v2.2→v2.3 migration), specific debugging steps (EXPLAIN/ANALYZE), and a proposed regression test. A developer could immediately start comparing the search implementations between versions."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Excellent diagnostic efficiency — only 2 turns to reach a comprehensive, actionable summary",
+    "Root cause hypothesis is nearly perfect, correctly identifying the index/query regression pattern",
+    "Summary is exceptionally well-structured with clear reproduction steps, recommended fix, and proposed test case",
+    "Correctly identified this as a migration-related regression and flagged fresh-install vs upgrade as an information gap"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches, which would have further confirmed full-table-scan hypothesis",
+    "Did not ask about task description sizes/content, missing the long-descriptions factor that compounds the issue"
+  ],
+  "most_insightful_question": "What kind of search are you running when it's slow (e.g., a keyword search, filtering by date/tag, etc.), roughly how many tasks are in your workspace, and does it happen on every search or only with certain queries?",
+  "missed_opportunities": [
+    "Could have asked about system resource usage during slow searches (CPU/memory) to confirm full-scan hypothesis",
+    "Could have asked about the size/length of task descriptions to identify the long-description compounding factor",
+    "Could have asked whether the reporter had tried any workarounds like clearing cache or reindexing"
+  ]
+}

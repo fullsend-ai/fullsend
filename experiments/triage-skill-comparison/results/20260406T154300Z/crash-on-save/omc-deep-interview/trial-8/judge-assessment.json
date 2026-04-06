@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 1,
+      "rationale": "The triage summary contains none of the expected information. The reporter actually provided most of the key details (encoding error, CSV import, special characters, ~200 tasks, removal of imported tasks fixes it), but the agent failed to capture any of it due to a parse error in the summary generation."
+    },
+    "accuracy": {
+      "score": 1,
+      "rationale": "The summary says 'unknown' for root cause, environment, and impact. It contains zero accurate information despite the reporter having provided rich, actionable details in their response."
+    },
+    "efficiency": {
+      "score": 3,
+      "rationale": "The agent asked one well-structured question and got a very informative response — that part was efficient. However, it then failed to ask any follow-up (e.g., OS version, app version, whether auto-save also crashes, task list size threshold) and immediately produced a broken summary. Only 1 exchange before failure."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The initial question was well-structured, covering crash behavior, error messages, and context of what was being saved. It successfully elicited most of the key information in a single turn. The failure was not in question quality but in processing the answer."
+    },
+    "actionability": {
+      "score": 1,
+      "rationale": "The summary explicitly says 'Manual triage required' with all information gaps listed as 'All'. A developer would have to re-read the entire conversation from scratch — the summary adds negative value."
+    }
+  },
+  "weighted_total": 1.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "The initial question was well-crafted and multi-pronged, successfully drawing out most key details in a single reporter response",
+    "The tone was empathetic and professional"
+  ],
+  "notable_weaknesses": [
+    "Complete failure to produce a usable triage summary despite having rich information from the reporter",
+    "No follow-up questions to capture environment details (OS version, app version) or to probe the size threshold",
+    "The parse error resulted in total information loss — all of the reporter's valuable details were discarded",
+    "Did not ask whether auto-save also triggers the crash (a key diagnostic distinction)"
+  ],
+  "most_insightful_question": "The combined question about crash behavior (freeze vs close vs error), error message text, and what was being saved was effective — it drew out the encoding error, CSV import connection, and special character detail in one turn.",
+  "missed_opportunities": [
+    "Should have asked for OS version and TaskFlow version",
+    "Should have asked whether auto-save also triggers the crash or only manual save",
+    "Should have asked about the size threshold — does it crash with 50 imported tasks or only at higher counts",
+    "Should have asked the reporter to try reproducing with a smaller subset of imported tasks to isolate the trigger"
+  ]
+}

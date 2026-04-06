@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All six expected extracts were captured: manual save trigger (implicit in reproduction steps), CSV import with special characters, large task list (~200 tasks), started after CSV import, encoding error message, and exact environment (macOS 14.2, TaskFlow v2.3.1). The triage also discovered additional useful details: the specific character types (em-dashes, curly quotes from Google Docs), the approximate size threshold (~40-50 works, ~200 doesn't), and that removing imported tasks resolves the issue."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary is highly accurate about the symptoms and triggering conditions. The root cause hypothesis about multi-byte character handling in serialization is close to the actual cause (save serializer choking on non-ASCII when payload exceeds 64KB). The hypothesis about buffer size calculations assuming single-byte characters is a reasonable approximation of the actual 64KB payload threshold issue. The one gap is that the triage didn't distinguish manual save vs auto-save — the summary says 'crashes on save' without noting auto-save works fine, though the reporter didn't explicitly volunteer this distinction either."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 question rounds were needed to go from a vague 'app crashes when I save' to a comprehensive, actionable triage. The first question efficiently gathered crash behavior, context, and environment in one round. The second question precisely targeted the CSV/encoding hypothesis. No wasted questions, no redundancy."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was well-structured, covering three orthogonal dimensions (crash behavior, context, environment) without overwhelming the reporter. The second question demonstrated genuine diagnostic reasoning — connecting the CSV import mention and encoding error to form a hypothesis about non-ASCII characters, then asking a targeted confirmation question plus a control experiment (new list with manual tasks). This led the reporter to volunteer the crucial size-dependency information unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable. It includes clear reproduction steps, a specific and plausible root cause hypothesis pointing to exact code areas to investigate (serialization buffer calculations, CSV import sanitization), a concrete recommended fix with three specific checks, a proposed test case with boundary testing, and honest confidence levels. A developer could immediately start investigating the serialization code path."
+    }
+  },
+  "weighted_total": 4.80,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted comprehensive information in just 2 rounds from a very vague initial report",
+    "Second question demonstrated real diagnostic reasoning by connecting CSV import + encoding error into a testable hypothesis",
+    "The control experiment suggestion ('create a brand-new task list with manually-typed tasks') elicited the critical size-dependency finding",
+    "Summary includes specific Unicode code points (U+2014, U+201C/U+201D) and concrete investigation steps",
+    "Honest confidence levels and well-identified information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not distinguish manual save vs auto-save — the summary implies all saves crash, but per ground truth only manual save triggers the bug",
+    "Root cause hypothesis focuses on buffer size calculations rather than the actual 64KB payload threshold, though this is a reasonable approximation"
+  ],
+  "most_insightful_question": "Did the CSV file you imported contain any non-ASCII characters — things like accented letters (é, ñ, ü), emoji, or other special symbols in task names or descriptions? Also, if you create a brand-new task list with just a couple of manually-typed tasks (no imported ones), does saving work fine?",
+  "missed_opportunities": [
+    "Could have asked whether auto-save (if the app has it) also triggers the crash, which would distinguish save-trigger-specific vs serialization-path issues",
+    "Could have asked for crash logs from macOS Console.app or DiagnosticReports (though this was noted as an information gap in the summary)"
+  ]
+}

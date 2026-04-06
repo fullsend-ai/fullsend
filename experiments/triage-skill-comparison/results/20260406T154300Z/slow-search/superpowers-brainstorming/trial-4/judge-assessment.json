@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 2,
+      "rationale": "The triage captured the task count (~5,000), the version upgrade (v2.2 to v2.3), the timing (~2 weeks ago), and the 10-15 second latency. However, it missed several critical pieces: the distinction between description search (slow) vs. title search (fast), CPU spikes during search, and the presence of very long descriptions. The title-vs-description distinction is the single most important diagnostic clue pointing to the FTS5-to-LIKE regression, and it was never explored."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The information captured is factually correct and the root cause hypothesis is in the right neighborhood — it mentions possible removal of a search index and switch to full table scans, which is close to the actual cause. However, without discovering the title-vs-description split, the hypothesis remains generic rather than pinpointing the FTS5 index issue. The summary correctly identifies it as a v2.3 regression."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one question and then immediately resolved the issue. While the single question was decent, the agent resolved far too early — it should have asked at least 1-2 more targeted follow-up questions to distinguish between search types, check for CPU/resource symptoms, and probe the nature of the task data. Closing after one exchange left major diagnostic gaps unfilled."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The initial question was well-structured with numbered options and covered two useful dimensions (timing and scale). However, the agent never asked any follow-up questions that would differentiate search types (title vs. description), probe system resource behavior, or explore the nature of task content. The multiple-choice format was professional but the diagnostic depth was shallow."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary gives a developer a reasonable starting point — diff search code between versions, check for missing indexes. But without knowing that title search is fast and description search is slow, a developer would lack the key clue needed to quickly identify the FTS5-to-LIKE change. The reproduction steps are generic and don't specify which type of search to test. A developer would need to do additional investigation."
+    }
+  },
+  "weighted_total": 2.55,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Well-structured initial question with clear multiple-choice options that efficiently extracted version and timing info",
+    "Root cause hypothesis correctly identifies the general category of problem (index removal, full table scan)",
+    "Summary is well-organized with clear sections for problem, reproduction, fix, and gaps",
+    "Correctly identified this as a high-severity regression"
+  ],
+  "notable_weaknesses": [
+    "Resolved after only one exchange, leaving critical diagnostic information on the table",
+    "Never discovered the title-vs-description search distinction, which is the key differentiating symptom",
+    "Never asked about system resource behavior (CPU spikes) which would confirm the full-scan hypothesis",
+    "Never probed the nature of task data (long descriptions) which is relevant to the performance impact",
+    "Information gaps section acknowledges query pattern differences but the agent didn't bother asking about them before closing"
+  ],
+  "most_insightful_question": "The initial question combining timing/trigger with scale was reasonable but not particularly insightful — it asked standard triage questions rather than probing search-specific diagnostics.",
+  "missed_opportunities": [
+    "Ask whether all searches are equally slow or if some search types (title, description, tags) differ in performance",
+    "Ask about system resource usage during slow searches (CPU, memory, disk I/O)",
+    "Ask about the nature of task content — are descriptions short or long?",
+    "Ask whether the reporter has tried any workarounds or noticed any patterns in which searches are slow vs. fast",
+    "Ask about the database backend (SQLite vs. PostgreSQL) — noted as a gap but never asked"
+  ]
+}

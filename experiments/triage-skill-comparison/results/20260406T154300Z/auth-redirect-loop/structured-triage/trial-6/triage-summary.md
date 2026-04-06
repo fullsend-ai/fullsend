@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Infinite redirect loop after SSO migration from Okta to Microsoft Entra ID affects ~30% of users
+
+## Problem
+After migrating the SSO provider from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop when logging into TaskFlow. Users authenticate successfully with Microsoft but are immediately redirected back to Microsoft upon returning to TaskFlow. The remaining ~70% of users can log in without issues. The problem is not browser-specific and affected users can authenticate with other Entra ID apps normally.
+
+## Root Cause Hypothesis
+Most likely cause is stale or incompatible session/cookie data from the previous Okta SSO configuration. Users who had active or cached Okta sessions may have residual authentication cookies or tokens that conflict with the new Entra ID flow, causing TaskFlow to reject the incoming assertion and restart the auth process. Alternatively, there may be a difference in the SAML/OIDC claims or user attributes between the two providers — affected users may have a claim value (e.g., email format, group membership, or user identifier) that doesn't match what TaskFlow expects, causing the session to fail silently and restart the login flow.
+
+## Reproduction Steps
+  1. Set up TaskFlow v2.3.1 (self-hosted) with Microsoft Entra ID as the SSO provider
+  2. Attempt to log in as a user who previously authenticated via the old Okta SSO provider
+  3. Complete authentication on the Microsoft login page
+  4. Observe that upon redirect back to TaskFlow, the user is immediately redirected to Microsoft again in a loop
+
+## Environment
+TaskFlow v2.3.1, self-hosted, standard deployment (no reverse proxy), Microsoft Entra ID SSO, all browsers affected (Chrome, Edge, Firefox)
+
+## Severity: high
+
+## Impact
+Approximately 30% of the team is completely unable to log into TaskFlow. This is a total blocker for those users with no known workaround mentioned.
+
+## Recommended Fix
+1. Compare the user attributes/claims between affected and unaffected users in Entra ID (e.g., UPN format, email, group memberships). 2. Check whether clearing browser cookies and TaskFlow session data for affected users resolves the loop (tests the stale-session hypothesis). 3. Inspect TaskFlow's authentication logs during a failed login attempt to see where the session validation fails. 4. Verify that the OIDC/SAML claim mappings in TaskFlow's SSO configuration match what Entra ID is sending — particularly the user identifier field, which may differ from what Okta used.
+
+## Proposed Test Case
+Provision two test users in Entra ID: one that mirrors the attributes of an affected user and one that mirrors an unaffected user. Attempt SSO login with both and verify that both complete authentication without a redirect loop. After applying the fix, confirm that previously affected production users can log in successfully.
+
+## Information Gaps
+- No server-side logs or browser network traces from a failed login attempt
+- Unknown what distinguishes the affected 30% from the unaffected 70% (account age, role, claim values, prior Okta session state)
+- Unknown whether clearing cookies/sessions resolves the issue for affected users

@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured ~5,000 tasks, description vs title search distinction, v2.2→v2.3 regression, ~2 weeks ago timing, and 10-15 second latency. Missed CPU spike during search and long descriptions in some tasks, but got the most critical items."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "Root cause hypothesis is essentially correct — identified the likely switch from indexed full-text search to unoptimized LIKE scanning, and correctly noted the FTS index was likely dropped or not migrated. This matches the actual cause (FTS5 index replaced with naive LIKE query). The version-correlation and title-vs-description distinction are spot on."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Resolved in a single well-crafted multi-part question that extracted nearly all key information in one turn. No redundant or wasted questions. The agent asked exactly what was needed and the reporter volunteered the critical details."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The single question was exceptionally well-structured: asked about task count (sizing the problem), search type (isolating the symptom), and onset pattern (identifying the trigger). The 'did the slowdown start suddenly, e.g. after an update' prompt directly elicited the version upgrade correlation. Showed genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, actionable path: diff the migration between v2.2 and v2.3, check for dropped FTS index, run EXPLAIN ANALYZE, restore the index. A developer could start investigating immediately. Reproduction steps are concrete. The recommended fix is specific and correct."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extracted nearly all critical information in a single turn with one well-crafted compound question",
+    "Root cause hypothesis is remarkably close to the actual cause — correctly identified the FTS-to-LIKE regression pattern",
+    "Recommended fix is specific and actionable: diff migration, check FTS index, run EXPLAIN ANALYZE",
+    "Correctly identified title search as a partial workaround without being told"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches, which would have further confirmed full-table-scan hypothesis",
+    "Did not uncover that some tasks have very long descriptions (2000+ words from pasted meeting notes), which is an important factor in the performance impact",
+    "Could have asked about OS/hardware to complete environment picture, though correctly noted it's likely not the root cause"
+  ],
+  "most_insightful_question": "Did the slowdown start suddenly (e.g., after an update or after importing a batch of tasks), or was it more gradual? — This directly prompted the reporter to recall the v2.2→v2.3 upgrade timing, which is the key diagnostic clue.",
+  "missed_opportunities": [
+    "Asking about CPU/memory behavior during slow searches would have confirmed the full-scan hypothesis",
+    "Asking about task description length/content could have revealed the long-description factor",
+    "Asking whether the reporter had tried any workarounds or observed any patterns in which searches are slowest"
+  ]
+}

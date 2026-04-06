@@ -1,0 +1,42 @@
+# Conversation: crash-on-save x omc-deep-interview
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how losing work would be really frustrating. To help us track this down, could you describe exactly what happens when the crash occurs? For example: does the app freeze and then close, does it immediately disappear, do you see any error message or dialog before it goes away, or does it hang indefinitely? Any details about what you see on screen right at the moment of the crash would be very helpful.
+
+---
+
+### reporter
+
+When I click Save, I see a quick flash of some kind of error dialog — it goes by really fast but I think it says something about 'encoding' — and then the app just closes completely. No freeze or hang, it's pretty much instant. The whole window just disappears.
+
+---
+
+### triage-agent
+
+That's really helpful detail about the encoding error — that narrows things down quite a bit. Could you tell me whether this happens every time you save, or only with certain documents? Specifically, does the crash still occur if you create a brand-new task with just a few plain English words and try to save that? I'm wondering if the content you're saving might include special characters, emoji, or text copied from another source (like a web page or email) that could be triggering the encoding error.
+
+---
+
+### reporter
+
+Good thinking — yeah, it doesn't happen with every document. I actually imported a bunch of tasks from a CSV file recently, and the crashing started after that. If I create a small new list from scratch it saves fine. The CSV had task names with things like em-dashes and curly quotes in them (it was exported from another tool). When I removed those imported tasks, the saving worked again. So it's definitely something about that imported data. The weird thing is my list has about 200 tasks total and smaller lists with some of the same imported data seem to save OK — it's only when the list gets big enough that it crashes.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"(forced - parse error)","problem":"Agent could not produce JSON","root_cause_hypothesis":"unknown","reproduction_steps":[],"environment":"unknown","severity":"medium","impact":"unknown","recommended_fix":"Manual triage required","proposed_test_case":"N/A","information_gaps":["All"]}
+
+---
+

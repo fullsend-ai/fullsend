@@ -1,0 +1,33 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "We have a clear reproduction path, a strong root cause hypothesis confirmed by the reporter's testing, and enough detail for a developer to investigate. The reporter confirmed: (1) CSV-imported data contains non-ASCII characters (em-dashes, curly quotes from Google Docs), (2) manually-created tasks save fine, (3) the crash correlates with both the presence of these characters AND list size. This points to an encoding handling bug in the save/serialization path that manifests under larger payloads — likely a buffer or encoding conversion issue that only triggers when the accumulated non-ASCII data exceeds some threshold.",
+  "triage_summary": {
+    "title": "Desktop app crashes on save when task list contains many CSV-imported tasks with non-ASCII characters (em-dashes, curly quotes)",
+    "problem": "The desktop app (macOS) crashes immediately on save — a brief error dialog mentioning 'encoding' flashes before the app closes entirely. The crash occurs when saving a task list containing ~200 tasks imported from a CSV file that includes non-ASCII characters (em-dashes, curly quotes originating from Google Docs). Saving works fine with manually-created tasks or when the imported task count is reduced to ~40-50.",
+    "root_cause_hypothesis": "The save/serialization path has a character encoding bug when processing non-ASCII characters (likely UTF-8 vs. Latin-1 or similar mismatch). The CSV importer probably ingests the data without normalizing encoding, and the save routine either uses a fixed-size buffer or a codec that fails when the volume of non-ASCII characters exceeds a threshold. The 'encoding' error in the dialog supports this. The size dependency (works at 40-50 tasks, fails at 200) suggests either a buffer overflow in the encoding conversion or an accumulating error that only becomes fatal past a certain data size.",
+    "reproduction_steps": [
+      "Install TaskFlow v2.3.1 desktop app on macOS 14.2",
+      "Create a CSV file with ~200 tasks where task names include non-ASCII characters (em-dashes '—', curly quotes '"'  '\"', etc. — export from Google Docs to get these)",
+      "Import the CSV file into a new task list",
+      "Attempt to save the task list",
+      "Observe: brief 'encoding' error dialog flashes, then app closes/crashes"
+    ],
+    "environment": "TaskFlow v2.3.1, desktop app, macOS 14.2 (Sonoma)",
+    "severity": "high",
+    "impact": "Any user who imports CSV data containing non-ASCII characters (very common with data from Google Docs, Word, etc.) risks data loss when saving. The app crashes without saving, so all unsaved edits are lost. This blocks workflows that rely on CSV import for bulk task creation.",
+    "recommended_fix": "Investigate the save/serialization code path for encoding handling. Likely areas: (1) Check what encoding the CSV importer assigns to imported strings — ensure it normalizes to UTF-8. (2) Check the save routine for fixed-size buffers or incorrect codec usage (e.g., attempting to encode UTF-8 data as ASCII or Latin-1). (3) Add a try/catch around the save serialization to surface the encoding error gracefully instead of crashing. (4) Consider normalizing all non-ASCII characters (curly quotes → straight quotes, em-dashes → hyphens) during CSV import as an optional user setting.",
+    "proposed_test_case": "Create an integration test that imports a CSV containing 200+ tasks with various non-ASCII characters (em-dashes, curly quotes, accented characters, emoji) and verifies that the resulting task list saves and reloads successfully with all characters preserved.",
+    "information_gaps": [
+      "Exact text of the encoding error dialog (it flashes too quickly for the reporter to read fully)",
+      "Whether the crash log in macOS Console.app contains a stack trace pointing to the specific failing function",
+      "Whether this also affects Windows/Linux desktop or is macOS-specific"
+    ]
+  },
+  "confidence": {
+    "root_cause": "medium",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

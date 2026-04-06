@@ -1,0 +1,32 @@
+# Conversation: slow-search x omo-prometheus
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — slow search is definitely frustrating.
+
+A few things that would help me narrow this down: When did you first notice the slowdown? Did it coincide with anything specific — a TaskFlow update, a large import of tasks, or a change to your setup? Also, roughly how many tasks are we talking about (hundreds, thousands, tens of thousands)? And is this happening with all search queries, or only certain types (e.g., searching by title vs. searching within task descriptions)?
+
+---
+
+### reporter
+
+I first noticed it about 2 weeks ago, and now that you mention it, I think that's right around when I upgraded to v2.3. I have about 5,000 tasks — I've been using TaskFlow for about 2 years now. Good question about the type of search — I just tested it and searching by title is actually still fast! It's when I search across task descriptions that it gets really slow. Some of my tasks have pretty long descriptions (I paste meeting notes into them sometimes), not sure if that matters.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description search regression in v2.3: 10-15s response time with ~5,000 tasks","problem":"After upgrading to TaskFlow v2.3, searching across task descriptions takes 10-15 seconds. Title search remains fast. The user has approximately 5,000 tasks accumulated over 2 years, some containing long descriptions (pasted meeting notes).","root_cause_hypothesis":"The v2.3 release likely introduced a regression in how description search is executed — most probably a missing or broken full-text index on the task descriptions column/field. Title search remaining fast suggests title indexing is intact, while description search may have fallen back to a sequential scan or unindexed LIKE/regex query. The presence of long description text (meeting notes) would amplify the cost of any unindexed scan.","reproduction_steps":["Have a TaskFlow instance running v2.3 with a substantial number of tasks (~5,000)","Ensure some tasks have lengthy descriptions (e.g., pasted meeting notes)","Perform a search using a term that would match task descriptions (not just titles)","Observe that results take 10-15 seconds to return","Compare with a title-only search, which should return quickly"],"environment":"TaskFlow v2.3, ~5,000 tasks, work laptop (specific OS/specs unknown but not likely relevant given this is a regression)","severity":"medium","impact":"Users with large task databases experience severely degraded description search performance after upgrading to v2.3. Title search still works as a partial workaround, but users who rely on searching within descriptions (especially those who store detailed notes in tasks) are significantly impacted.","recommended_fix":"1. Diff the search implementation between v2.2 and v2.3 — look for changes to query construction, indexing, or ORM usage for description search. 2. Check whether a full-text index on the descriptions field was dropped or altered in the v2.3 migration. 3. Profile the description search query against a dataset of ~5,000 tasks to confirm the bottleneck. 4. Restore or add proper indexing for description search and verify performance returns to pre-v2.3 levels.","proposed_test_case":"Performance test: seed a database with 5,000 tasks (some with descriptions >1,000 characters), execute a description search, and assert results return in under 2 seconds. Run this test against both v2.2 (baseline) and v2.3 (regression) to confirm the fix restores expected performance.","information_gaps":["Exact OS and hardware specs of the reporter's laptop (unlikely to be relevant since this is a version regression)","Whether the database backend is SQLite, PostgreSQL, or another store (would inform indexing strategy)","Whether the v2.3 release notes mention any search-related changes"]}
+
+---
+

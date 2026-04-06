@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were extracted: ~5,000 tasks, slow on description search vs fast on title search, regression after v2.2 to v2.3 upgrade, started ~2 weeks ago, 10-15 seconds for description searches, CPU spikes during search (captured as fan spin-up), and long descriptions in some tasks. The triage also captured additional useful context like the 2-year usage history and consistently slow behavior."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The triage correctly identified: a dropped/changed full-text index, a switch from indexed search to brute-force scanning (LIKE query), and that title search uses a different (still-indexed) path. The hypothesis about 'unoptimized sequential scan over all 5,000 description fields' is essentially describing the full table scan that the LIKE query performs. The recommended fix correctly suggests checking for dropped FTS index and LIKE/regex scan changes."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions were asked before reaching a well-formed conclusion. The first question efficiently combined two key diagnostic axes (timing/trigger and dataset size). The second question probed search behavior differences, which unlocked the critical title-vs-description distinction. No wasted turns, no redundant questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions were excellently crafted. The first question smartly offered multiple hypotheses (update, import, gradual) which helped the reporter recall the v2.3 upgrade. The second question about whether all searches are slow vs. specific patterns directly led to the critical discovery that description search is slow while title search is fast — information the reporter hadn't volunteered and likely wouldn't have without this prompt. The sub-question about first-vs-subsequent search also ruled out caching issues."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides everything a developer needs: clear reproduction steps, a specific and accurate root cause hypothesis pointing to the exact code path to investigate (description search in v2.3 vs v2.2), specific things to look for (FTS index changes, LIKE/regex scan introduction), and even a concrete proposed test case with specific parameters. A developer could immediately diff the v2.2 and v2.3 search implementations and know exactly what to look for."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extracted all expected information in only 2 turns — exceptional efficiency",
+    "Root cause hypothesis nearly perfectly matches the actual cause (FTS index dropped, LIKE query substituted)",
+    "First question skillfully combined timing and scale inquiries, and offered multiple trigger hypotheses that helped the reporter recall the upgrade",
+    "Second question directly elicited the critical title-vs-description distinction that the reporter hadn't volunteered",
+    "Summary is comprehensive with reproduction steps, fix guidance, and a concrete regression test proposal",
+    "Correctly identified title search as a workaround"
+  ],
+  "notable_weaknesses": [
+    "Did not identify the specific database engine (SQLite FTS5), though this was acknowledged as an information gap",
+    "Could have asked about OS/hardware to fully document the environment, though correctly noted it's likely not the bottleneck"
+  ],
+  "most_insightful_question": "Is every search slow, or does it depend on what you're searching for? For example, is searching by a single word just as slow as searching with filters or longer phrases?",
+  "missed_opportunities": [
+    "Could have asked whether the reporter had tried clearing cache or reindexing, which would have confirmed the index-related hypothesis",
+    "Could have asked about the database backend (SQLite vs PostgreSQL) to narrow the investigation path"
+  ]
+}

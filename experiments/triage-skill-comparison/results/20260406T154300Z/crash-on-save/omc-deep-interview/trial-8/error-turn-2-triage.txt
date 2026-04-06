@@ -1,0 +1,37 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "After scoring clarity dimensions: symptom=0.9 (crash behavior well-described, encoding dialog noted), cause=0.85 (strong correlation with CSV-imported special characters, removing them fixes it), reproduction=0.8 (clear path: import CSV with special chars, edit task list, save), impact=0.75 (data loss with known workaround). Overall ambiguity=0.16, well below 0.20 threshold. All dimensions >=0.7. Sufficient to resolve.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains special characters (em-dashes, curly quotes) from CSV import",
+    "problem": "The application terminates immediately when the user saves edits to a task list that contains tasks imported from a CSV file. The imported tasks contain special Unicode characters (em-dashes, curly quotes). A dialog briefly flashes with the word 'encoding' before the app closes. Removing the imported tasks restores normal save behavior.",
+    "root_cause_hypothesis": "The save/serialization routine is failing on non-ASCII characters (likely Windows-1252 or UTF-8 encoding issues with characters like em-dashes U+2014 and curly quotes U+201C/U+201D). The encoding error is unhandled and causes the application to crash instead of gracefully reporting the problem. The CSV import likely preserves these characters but the save path uses a codec or encoding that cannot handle them.",
+    "reproduction_steps": [
+      "Create or obtain a CSV file containing task names with em-dashes (—) and curly quotes ("" '')",
+      "Import the CSV file into TaskFlow",
+      "Verify the tasks appear in the task list (expect ~200 tasks to match reporter's scenario)",
+      "Edit any task in the list",
+      "Click Save",
+      "Observe: app crashes with a brief flash of an encoding-related error dialog"
+    ],
+    "environment": "Not specified beyond the app itself. Likely relevant: OS locale settings, file system encoding, and whether the CSV was exported from a tool that uses Windows-1252 encoding (e.g., Excel on Windows).",
+    "severity": "high",
+    "impact": "Any user who imports tasks from CSV files containing non-ASCII characters will experience crashes on save, resulting in data loss. Workaround exists (remove imported tasks) but defeats the purpose of the import feature.",
+    "recommended_fix": "1. Ensure the save/serialization path uses UTF-8 encoding consistently. 2. Add proper error handling around the save operation so encoding failures are caught and reported gracefully rather than crashing the app. 3. Audit the CSV import path to ensure it correctly detects and normalizes character encoding on ingest. 4. Consider sanitizing or transcoding special characters at import time if the save format cannot support them.",
+    "proposed_test_case": "Import a CSV file containing task names with em-dashes, curly quotes, and other common non-ASCII characters (e.g., accented letters, bullet points). Save the task list. Verify the save completes without error and the special characters are preserved when the task list is reloaded.",
+    "information_gaps": [
+      "Exact OS and app version not provided",
+      "Exact error message in the flashing dialog (only 'encoding' was caught)",
+      "Whether the issue is specific to certain character types or any non-ASCII character",
+      "Whether the CSV was encoded in Windows-1252, UTF-8-BOM, or another encoding"
+    ],
+    "clarity_scores": {
+      "symptom": 0.9,
+      "cause": 0.85,
+      "reproduction": 0.8,
+      "impact": 0.75,
+      "overall_ambiguity": 0.16
+    }
+  }
+}
+```

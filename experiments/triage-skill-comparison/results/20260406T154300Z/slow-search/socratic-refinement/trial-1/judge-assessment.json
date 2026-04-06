@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most key information: ~5,000 tasks, description search slow vs title search fast, v2.3 regression, ~2 weeks ago, 10-15 second delays. Missed CPU spikes during search and the detail about long descriptions (some with 2000+ word meeting notes), which could be relevant to diagnosis."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause — correctly identified a switch from FTS to LIKE/sequential scan as the most likely explanation, and correctly noted that title search retains proper indexing. The hypothesis even mentions SQLite FTS as a possibility. All stated facts are consistent with the ground truth."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions asked, both essential and well-targeted. The first established timeline, version correlation, and dataset size in one turn. The second narrowed the symptom to description-specific search. No wasted turns, no redundant questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated strong diagnostic reasoning. The first question efficiently bundled timeline, version changes, and scale into one natural prompt. The second question was genuinely insightful — asking about which searches are slow led directly to the critical title-vs-description distinction that the reporter hadn't volunteered. This is the kind of differential diagnosis that separates good triage from generic questioning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, actionable path: diff search code between v2.2 and v2.3, check query plans, restore FTS indexing. The reproduction steps are concrete and testable. A developer could immediately start investigating the migration and search implementation changes. The proposed regression test is a nice addition."
+    }
+  },
+  "weighted_total": 4.80,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted the critical diagnostic information in just 2 turns",
+    "Root cause hypothesis almost exactly matches the actual cause (FTS to LIKE regression)",
+    "The second question skillfully drew out the title-vs-description distinction that the reporter hadn't initially mentioned",
+    "Summary is comprehensive with clear reproduction steps and actionable fix recommendations"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches, which would further confirm the full-scan hypothesis",
+    "Did not uncover the long descriptions detail (2000+ word meeting notes), which affects the severity of the scan",
+    "Environment details are incomplete — OS was not asked about despite being mentioned in ground truth"
+  ],
+  "most_insightful_question": "Is it every search that takes 10-15 seconds, or does it depend on what you're searching for? For example, do simple one-word searches feel different from longer or more specific queries? And are you using any filters (like status, date range, tags) when searching, or is it plain text search that's slow?",
+  "missed_opportunities": [
+    "Could have asked about system resource usage during slow searches (would have revealed CPU spike confirming full table scan)",
+    "Could have asked about the nature/size of task descriptions to understand data shape",
+    "Could have asked about the specific OS and hardware to complete the environment picture"
+  ]
+}

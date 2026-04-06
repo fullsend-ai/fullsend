@@ -1,0 +1,46 @@
+# Conversation: slow-search x socratic-refinement
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — slow search is definitely frustrating, especially when it used to work well.
+
+Can you tell me more about when you first noticed the slowdown? Was it a gradual thing that got worse over time, or did it seem to happen suddenly (for example, after an update, after importing a batch of tasks, or after changing something in your setup)?
+
+---
+
+### reporter
+
+Now that you mention it, I think it started about 2 weeks ago when I upgraded from v2.2 to v2.3. It wasn't gradual — it was pretty much immediate after the update. I didn't import anything new or change my setup, just did the upgrade.
+
+---
+
+### triage-agent
+
+That's really helpful — a sudden slowdown right after the v2.3 upgrade strongly suggests something changed in how search works under the hood.
+
+To help narrow this down further: are *all* searches slow, or have you noticed it depends on what you're searching for? For example, is searching for a single word just as slow as a more complex search? And roughly how many tasks do you have in TaskFlow — are we talking hundreds, thousands, or more?
+
+---
+
+### reporter
+
+Good question — I just tested it and searching by task title is still fast, like it used to be. It's specifically when I search across task descriptions that it gets really slow. And I have about 5,000 tasks built up over the last couple years, so there's a decent amount of data. A lot of my tasks have pretty long descriptions too since I paste in meeting notes and stuff.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search across task descriptions regressed to ~10-15s after v2.3 upgrade (title search unaffected)","problem":"After upgrading from v2.2 to v2.3, searching across task descriptions takes 10-15 seconds. Searching by task title remains fast. The user has approximately 5,000 tasks, many with long descriptions containing pasted meeting notes.","root_cause_hypothesis":"The v2.3 release likely introduced a regression in description search — most probably a dropped or missing full-text index on the task descriptions column, a change from indexed search to a sequential scan, or a query/ORM change that bypasses the existing index. The fact that title search is unaffected suggests the title index is intact while the description search path changed.","reproduction_steps":["Set up a TaskFlow instance with v2.3","Populate with ~5,000 tasks, many with long multi-paragraph descriptions","Perform a search that targets task descriptions (not just titles)","Observe search takes 10-15 seconds","Downgrade to v2.2 with the same dataset and confirm description search is fast"],"environment":"TaskFlow v2.3, upgraded from v2.2. Running on a work laptop (OS and hardware details not specified). ~5,000 tasks with lengthy descriptions.","severity":"high","impact":"Any user with a non-trivial number of tasks who searches by description content experiences unusable search latency. Users with large datasets and long descriptions are most affected. Title-only search users are unaffected.","recommended_fix":"Diff the search implementation between v2.2 and v2.3, focusing on how description search is executed. Check for: (1) missing or dropped full-text index on the descriptions column, (2) query changes that bypass the index (e.g., switching to LIKE/ILIKE from a full-text search function), (3) ORM or migration changes that removed the index. Add or restore the appropriate index and verify the query plan uses it.","proposed_test_case":"Create a performance test that populates a database with 5,000+ tasks with multi-paragraph descriptions, runs a description search, and asserts the query completes within an acceptable threshold (e.g., under 2 seconds). Run this test as part of the search module's regression suite.","information_gaps":["Exact database backend in use (SQLite, PostgreSQL, etc.) — may affect index strategy","Whether the v2.3 changelog or migration scripts mention any search-related changes","Laptop hardware specs and OS (unlikely to be root cause given the version correlation, but could be a compounding factor)"]}
+
+---
+

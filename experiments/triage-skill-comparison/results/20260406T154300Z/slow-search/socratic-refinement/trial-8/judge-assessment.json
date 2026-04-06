@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured the task count (~5,000), the version regression (v2.2 to v2.3), the timeline (~2 weeks ago), and the 10-15 second search times. However, it missed several important details: the distinction between description search (slow) vs. title search (fast), CPU spikes during search, and the presence of long descriptions in some tasks. The title vs. description distinction is the most critical miss, as it directly points to the root cause."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is impressively close — it specifically mentions 'switching from indexed lookup to LIKE/full-scan' and 'dropped or altered indexes' as possibilities, which aligns well with the actual cause (FTS5 index replaced by naive LIKE query). However, without knowing about the title vs. description search difference, the hypothesis remains broader than it could have been. No factual errors were introduced."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one question before resolving, which sounds efficient but is actually a problem — it resolved too early. The single question was good (combining timeline and scale), but the agent should have asked at least one more round of questions to probe the title vs. description distinction, CPU behavior, or task content characteristics. Closing after one exchange left significant gaps that were even acknowledged in the information_gaps section."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The one question asked was well-crafted — it combined two important inquiries (timeline/suddenness and task count) into a natural, non-interrogative prompt. It successfully drew out the version upgrade correlation and exact task count. However, only one question was asked, limiting the overall diagnostic depth."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is well-structured with clear reproduction steps, a plausible root cause hypothesis, and a specific recommended fix that would lead a developer in the right direction (diff search code between versions, check for index changes). The proposed test case is practical. A developer could start investigating effectively, though they'd need to discover the title vs. description distinction on their own."
+    }
+  },
+  "weighted_total": 3.35,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Excellent root cause hypothesis that closely matches the actual cause without needing to know all the details",
+    "Well-structured summary with actionable reproduction steps and recommended fix",
+    "The single question asked was efficient and well-framed, combining two inquiries naturally",
+    "Good severity assessment and impact analysis"
+  ],
+  "notable_weaknesses": [
+    "Resolved far too early — after only one exchange, missing critical diagnostic information",
+    "Failed to discover the title vs. description search distinction, which is the key diagnostic clue",
+    "Did not probe for CPU/resource behavior during slow searches",
+    "Acknowledged information gaps about query patterns but chose to close rather than ask about them"
+  ],
+  "most_insightful_question": "The combined timeline/scale question effectively distinguished between gradual degradation and a sudden regression, which correctly identified the version upgrade as the trigger.",
+  "missed_opportunities": [
+    "Whether all search types are equally slow (title vs. description vs. other fields) — this was even noted as an information gap but not pursued",
+    "What CPU/memory behavior looks like during a slow search",
+    "Whether the reporter has tasks with unusually long content",
+    "Whether the reporter has tried any workarounds or noticed any patterns in which searches are slow"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most key information: ~5,000 tasks, description vs title search distinction, v2.2→v2.3 regression, 2-week timeline, 10-15s latency, long descriptions. Missing CPU spike observation, but that wasn't volunteered by the reporter and would have required a follow-up question. Got 6 of 7 expected items."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause — correctly identified a dropped/broken FTS index or switch from indexed to naive search on descriptions. The distinction between title and description search paths is accurately captured. The hypothesis about 'a switch from indexed search to naive full-text scan' essentially describes what actually happened (FTS5 index → LIKE query)."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only one round of questions was needed. Three well-targeted questions in a single turn extracted nearly all the critical information. The agent resolved after just one exchange, which is optimal. No redundant or wasted questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The three questions were expertly chosen: timing/trigger (identified the version upgrade correlation), scale (quantified the dataset), and search type differentiation (revealed the title vs description distinction). The third question in particular was insightful — it prompted the reporter to realize the title/description distinction they hadn't initially noticed, which turned out to be the most diagnostic piece of information."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, actionable path: diff search code between v2.2 and v2.3, check for dropped FTS index, profile with ~5,000 tasks, and includes a concrete test case with specific parameters (5,000 tasks, 10% with 2000+ char descriptions, <1s assertion). A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Exceptional efficiency — resolved in a single exchange with three precisely targeted questions",
+    "The question about whether all searches or only certain queries are slow was the key diagnostic question that unlocked the title vs description distinction",
+    "Root cause hypothesis almost exactly matches the actual cause without any access to the codebase",
+    "Proposed test case is specific and practical, with realistic parameters drawn from the reporter's actual usage",
+    "Recommended fix steps are well-ordered and actionable"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/memory behavior during slow searches (would have confirmed the full table scan hypothesis)",
+    "Environment details are incomplete — didn't capture OS or hardware specs, though the summary correctly notes this is unlikely to be root cause",
+    "Could have asked whether the reporter tried any workarounds or if clearing cache/reindexing was attempted"
+  ],
+  "most_insightful_question": "Is it all searches that are slow, or only certain queries? For example, is searching by title slow but filtering by status fast, or is everything equally affected?",
+  "missed_opportunities": [
+    "Asking about CPU/memory usage during slow searches to confirm computational bottleneck vs I/O",
+    "Asking whether the reporter has tried reindexing or clearing cache",
+    "Asking about the specific search backend (SQLite, PostgreSQL, etc.) — though this was noted as an information gap"
+  ]
+}

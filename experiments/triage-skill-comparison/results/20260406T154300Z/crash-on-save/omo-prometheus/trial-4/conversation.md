@@ -1,0 +1,56 @@
+# Conversation: crash-on-save x omo-prometheus
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how losing work would be frustrating, and I want to help get this resolved.
+
+To start narrowing this down, I need a few specifics:
+
+1. **What are you saving?** A new task, an edit to an existing task, project settings, or something else?
+2. **What exactly happens when it crashes?** Does the app close entirely, do you see an error message or dialog, or does it freeze/hang? If there's an error message, please share the exact text.
+3. **Is this new behavior?** Was saving working for you before, and if so, do you know roughly when it stopped working (e.g., after an update, after changing something)?
+
+Any of these details will help me figure out what's going on.
+
+---
+
+### reporter
+
+I'm editing an existing task list — it's got about 200 tasks in it. When I click Save in the toolbar, I see a quick flash of some dialog box that mentions something about 'encoding' and then the whole app just closes. No freeze, it just shuts down instantly.
+
+It actually was working fine until recently. I imported a bunch of tasks from a CSV file and that's when the problems started. Before that import, saving worked no problem.
+
+---
+
+### triage-agent
+
+Thanks, that's really helpful — the timing with the CSV import and the 'encoding' mention in the error dialog are strong clues.
+
+Here's what I think is happening: the CSV file likely contained characters in an encoding that TaskFlow's save logic doesn't handle correctly (for example, special characters, accented letters, or non-ASCII symbols). When the app tries to serialize those characters on save, it hits an encoding error and crashes.
+
+To confirm this theory: **could you try creating a brand-new task list with just a couple of simple tasks (plain English text, no special characters) and saving that?** If that works fine, it confirms the issue is with the imported data specifically. Also, do you recall where the CSV came from — was it exported from another tool (Excel, Google Sheets, etc.), and did any of the task names or descriptions contain non-English characters, emojis, or unusual symbols?
+
+---
+
+### reporter
+
+Yeah, saving a small list works fine — I actually tested that already because I was trying to figure out what was going on. Even my big list saved fine before the import. The CSV came from Excel, and now that you mention it, the task names do have things like em-dashes and curly quotes in them (fancy punctuation I guess). I don't think there's anything non-English, but definitely some of those special characters that Word and Excel like to auto-format.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save when task list contains smart punctuation from Excel CSV import","problem":"TaskFlow crashes immediately (app closes, no freeze) when saving a task list that contains tasks imported from an Excel-exported CSV file. A dialog briefly flashes mentioning 'encoding' before the app shuts down. The crash only occurs after importing CSV data containing smart/typographic punctuation (em-dashes, curly quotes, etc.). Saving works fine for plain-text tasks and for the same list before the import.","root_cause_hypothesis":"TaskFlow's save/serialization logic assumes a specific encoding (likely UTF-8 or ASCII) but the Excel-exported CSV contains Windows-1252 (cp1252) encoded characters — specifically smart quotes (U+2018/U+2019/U+201C/U+201D) and em-dashes (U+2014) that Excel auto-formats. When the save routine attempts to encode these characters, it hits an unhandled encoding error and crashes instead of gracefully handling or transcoding them.","reproduction_steps":["Open TaskFlow and create or open any task list","Prepare a CSV file exported from Excel containing task names with smart punctuation (curly quotes, em-dashes — characters Excel auto-formats)","Import the CSV into the task list","Click Save in the toolbar","Observe: a dialog flashes briefly mentioning 'encoding', then the app closes"],"environment":"TaskFlow desktop app; CSV source is Microsoft Excel export; task list contains ~200 tasks; specific version not confirmed but was working before the import","severity":"high","impact":"Any user who imports CSV data from Excel (or similar tools that produce smart punctuation) will be unable to save their task list, resulting in data loss. This is a data-loss scenario on a common workflow (Excel CSV import).","recommended_fix":"Investigate the save serialization path for encoding handling. The fix should: (1) ensure the CSV import normalizes or correctly preserves character encoding on ingest, transcoding cp1252 characters to UTF-8; (2) ensure the save routine handles non-ASCII characters gracefully rather than crashing — either by supporting UTF-8 throughout or by replacing/escaping unsupported characters with a user warning; (3) wrap the save encoding step in proper error handling so an encoding failure shows a user-friendly error instead of crashing the app.","proposed_test_case":"Import a CSV containing task names with Windows-1252 smart punctuation (curly quotes: ‘ ’ “ ”, em-dash: —, ellipsis: …) into a task list and verify that saving completes successfully without crash, and that the characters are preserved or cleanly normalized in the saved output.","information_gaps":["Exact TaskFlow version and platform (Windows/Mac/Linux)","Full text of the encoding error dialog (it flashes too quickly to read)","Whether the crash also occurs when exporting/saving to different formats, or only the default save"]}
+
+---
+

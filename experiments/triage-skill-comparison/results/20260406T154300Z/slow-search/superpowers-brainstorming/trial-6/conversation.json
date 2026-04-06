@@ -1,0 +1,18 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this! To help narrow down the cause, can you recall roughly when the search started feeling slow?\n\n1. **After a recent TaskFlow update** — it was fast one day and slow the next\n2. **Gradually over time** — it's gotten progressively slower as you added more tasks\n3. **After a change to your laptop or environment** — e.g., OS update, lower disk space, switched networks\n4. **Something else**\n\nAlso, roughly how many tasks are we talking — hundreds, thousands, tens of thousands?"
+    },
+    {
+      "author": "reporter",
+      "body": "It was definitely after the update. I upgraded from v2.2 to v2.3 about two weeks ago and that's when I started noticing it. Before that, searches were nearly instant. I have around 5,000 tasks — I've been using TaskFlow for about 2 years now."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Search performance regression in v2.3: queries take 10-15s (previously near-instant)\",\"problem\":\"After upgrading from TaskFlow v2.2 to v2.3, search queries that previously returned near-instantly now take 10-15 seconds. The reporter has approximately 5,000 tasks accumulated over 2 years of use.\",\"root_cause_hypothesis\":\"A change to the search implementation in v2.3 introduced a performance regression — likely a missing or dropped index, a switch from indexed/cached search to full-table scan, removal of query result caching, or a new search feature (e.g., full-text search) that doesn't scale well at 5k+ tasks.\",\"reproduction_steps\":[\"Set up a TaskFlow instance with ~5,000 tasks (or use a seed/import script to generate them)\",\"Run search queries on v2.2 and note response times\",\"Upgrade to v2.3 and run the same search queries\",\"Observe significantly degraded response times (10-15 seconds vs. near-instant)\"],\"environment\":\"TaskFlow v2.3 (upgraded from v2.2), work laptop (OS and specs unspecified), ~5,000 tasks\",\"severity\":\"high\",\"impact\":\"Search is a core workflow feature. A 10-15 second delay on every search makes TaskFlow feel broken for power users with large task databases. Likely affects all v2.3 users with non-trivial task counts.\",\"recommended_fix\":\"Diff the search-related code and database migrations between v2.2 and v2.3. Specifically investigate: (1) any changed or dropped database indexes on searchable fields, (2) changes to the query builder or ORM calls for search, (3) removal or invalidation of search result caching, (4) any new search features (full-text, fuzzy matching) that may execute expensive operations. Profile the search query at ~5k tasks to confirm where time is spent.\",\"proposed_test_case\":\"Performance test: seed a database with 5,000 tasks with varied titles/descriptions, execute a representative search query, and assert the response completes in under 1 second. Run this test as part of CI to prevent future regressions.\",\"information_gaps\":[\"Whether the slowness affects all search queries equally or only certain search terms/filters\",\"Exact laptop specs and OS (unlikely to be relevant given the version-correlated regression)\",\"Whether the v2.3 upgrade included a database migration that may have altered indexes\"]}"
+    }
+  ]
+}

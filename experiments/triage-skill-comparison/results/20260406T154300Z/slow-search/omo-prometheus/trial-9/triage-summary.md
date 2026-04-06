@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Description search regression in v2.3: 10-15s latency on full-text description queries with large task corpus
+
+## Problem
+After upgrading from TaskFlow v2.2 to v2.3, searching across task descriptions takes 10-15 seconds. Title-based search remains fast. The user has ~5,000 tasks accumulated over 2 years, some containing lengthy descriptions (pasted meeting notes). The slowdown appeared immediately after the upgrade, not gradually.
+
+## Root Cause Hypothesis
+The v2.3 release likely changed the description search implementation — most probably a dropped or broken full-text index on the task descriptions column, a switch from indexed search to naive full-text scan, or a change in the search query construction (e.g., moving from a database-level LIKE/FTS query to an application-level string search). The fact that title search is unaffected while description search is slow points specifically to the description field's search path, not a general performance regression.
+
+## Reproduction Steps
+  1. Have a TaskFlow instance running v2.3 with a substantial number of tasks (~5,000) where some tasks contain long descriptions (several paragraphs or more)
+  2. Perform a search that targets task descriptions (not just titles)
+  3. Observe that results take 10-15 seconds to return
+  4. Compare: perform a title-only search and confirm it returns quickly
+  5. Optionally: downgrade to v2.2 on the same dataset and confirm description search is fast
+
+## Environment
+TaskFlow v2.3 (upgraded from v2.2), work laptop (OS unspecified), ~5,000 tasks with some containing long-form descriptions (pasted meeting notes)
+
+## Severity: high
+
+## Impact
+Any user with a non-trivial number of tasks who searches across descriptions will experience 10-15 second delays. This effectively makes description search unusable for power users. Title search is unaffected, so there is a partial workaround.
+
+## Recommended Fix
+1. Diff the search-related code between v2.2 and v2.3 — look for changes to how description search queries are constructed or executed. 2. Check whether a full-text index on the descriptions column/field was dropped, altered, or is no longer being used by the query planner. 3. Profile the description search query on a dataset with ~5,000 tasks to confirm the bottleneck. 4. If a migration in v2.3 dropped or failed to create the index, add a corrective migration. 5. Consider adding query EXPLAIN/ANALYZE logging to catch this class of regression in CI.
+
+## Proposed Test Case
+Create a test fixture with 5,000 tasks, 10% of which have descriptions longer than 2,000 characters. Run a description search query and assert it completes in under 1 second. Run this test against both the v2.2 and v2.3 search code paths to confirm the regression and validate the fix.
+
+## Information Gaps
+- Exact OS and hardware specs of the work laptop (unlikely to be root cause given the regression timing)
+- Whether other v2.3 users with large task counts have reported similar issues
+- The specific search backend in use (SQLite FTS, PostgreSQL full-text, Elasticsearch, etc.) — the fix approach may vary

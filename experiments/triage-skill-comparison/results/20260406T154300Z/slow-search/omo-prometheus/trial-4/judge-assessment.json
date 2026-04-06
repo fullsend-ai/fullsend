@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured most expected information: ~5,000 tasks, slow on description search vs fast on title search, regression after v2.2 to v2.3 upgrade, ~2 weeks ago, 10-15 seconds for description searches, and long descriptions. Missed CPU spike during search, but that wasn't volunteered by the reporter either. Got 6 of 7 expected extracts."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The agent correctly identified a missing/broken full-text index on descriptions with fallback to sequential scan or LIKE query, which is essentially what happened (FTS5 index replaced by naive LIKE query). The hypothesis about long descriptions amplifying the cost is also correct. Title indexing remaining intact was correctly identified."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Resolved in just one follow-up question that was a multi-part but well-structured inquiry. The single turn extracted nearly all the critical information: timing, version correlation, task count, and search type differentiation. No wasted questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The question was excellent — it bundled multiple diagnostic angles into one natural prompt: timing, correlation with changes, scale, and search type differentiation. The search type question (title vs description) was particularly insightful and directly elicited the key diagnostic differentiator that the reporter hadn't considered. This is genuine diagnostic reasoning, not generic troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it tells a developer exactly where to look (diff search implementation between v2.2 and v2.3, check FTS index in migration), how to reproduce (5,000 tasks with long descriptions, description search), and even proposes a concrete test case with a performance threshold. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted nearly all critical information in a single well-crafted multi-part question",
+    "Root cause hypothesis almost exactly matches the actual cause (FTS index regression to LIKE query)",
+    "The question about title vs description search was a key diagnostic insight that unlocked the core issue",
+    "Summary includes concrete, actionable reproduction steps and fix recommendations",
+    "Correctly identified the workaround (title-only search) without being told"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during search, which could have further confirmed the full-table-scan hypothesis",
+    "Did not probe for the specific database backend (SQLite), which is relevant to the fix approach",
+    "Environment details were noted as unknown rather than asked about in a follow-up"
+  ],
+  "most_insightful_question": "Is this happening with all search queries, or only certain types (e.g., searching by title vs. searching within task descriptions)?",
+  "missed_opportunities": [
+    "Could have asked about CPU/memory behavior during slow searches to confirm full-scan hypothesis",
+    "Could have asked what database backend TaskFlow uses (SQLite vs PostgreSQL) to inform the fix strategy",
+    "Could have asked whether the reporter tried clearing cache or reindexing"
+  ]
+}

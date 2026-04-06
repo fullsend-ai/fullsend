@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Task description search degraded to 10-15s after v2.3 upgrade (~5,000 tasks)
+
+## Problem
+Full-text search against task descriptions takes 10-15 seconds to return results, whereas searching task titles remains fast. The reporter has approximately 5,000 tasks. The slowness began around the time of upgrading from TaskFlow v2.2 to v2.3.
+
+## Root Cause Hypothesis
+The v2.3 release likely introduced a regression in how description searches are executed — possibly a missing or dropped database index on the task descriptions column, a change from indexed full-text search to unindexed LIKE/ILIKE queries, or a search implementation change that now scans descriptions without leveraging a full-text index. The fact that title searches remain fast suggests title indexing is intact while description indexing is not.
+
+## Reproduction Steps
+  1. Have an account with a large number of tasks (~5,000)
+  2. Navigate to the main Tasks page
+  3. Type a keyword that appears in task descriptions (e.g., "budget" or "quarterly review") into the search bar
+  4. Press Enter
+  5. Observe that results take 10-15 seconds to appear
+  6. Repeat with a keyword that appears only in task titles and observe that results return quickly
+
+## Environment
+Ubuntu 22.04, ThinkPad T14, Firefox, TaskFlow v2.3 (upgraded from v2.2 approximately two weeks ago)
+
+## Severity: high
+
+## Impact
+Users with large task histories experience unusable search performance when searching by description content — a core workflow. Likely affects all users with non-trivial task counts on v2.3.
+
+## Recommended Fix
+1. Diff the v2.2→v2.3 changes to search and database migration code. 2. Check whether a full-text index on the task descriptions column exists in v2.3 (it may have been dropped or not created by a migration). 3. Run EXPLAIN/ANALYZE on the description search query against a dataset of ~5,000 tasks to confirm whether it's doing a sequential scan. 4. Restore or add the appropriate full-text index on task descriptions.
+
+## Proposed Test Case
+Performance test: execute a description keyword search against a dataset of 5,000+ tasks and assert results return within an acceptable threshold (e.g., under 1 second). Include a regression test that verifies the full-text index on the descriptions column exists after running all migrations.
+
+## Information Gaps
+- No error messages or logs from the reporter (may not be visible in the UI)
+- Exact v2.3 patch version not confirmed
+- Server-side vs. client-side timing not isolated (could profile with browser dev tools or server logs)

@@ -1,0 +1,34 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter has provided highly specific, actionable information: a clear trigger (CSV import with special characters), a reproduction condition (200+ tasks, toolbar Save button), a differentiator (auto-save works, manual save doesn't), a size threshold (~50 tasks), and an error clue ('encoding' in the crash dialog). This is sufficient for a developer to investigate without further reporter contact. The two key variables — special characters and list size — point strongly to an encoding bug in the batch/manual save path that differs from the auto-save path, likely a buffer or serialization issue that only manifests when processing many entries with non-ASCII characters at once.",
+  "triage_summary": {
+    "title": "Crash on manual save with large task lists containing non-ASCII characters imported from CSV",
+    "problem": "TaskFlow crashes (window closes entirely) when the user clicks the toolbar Save button on a task list containing ~200 tasks that were imported from a CSV file with special characters (em-dashes, curly quotes). Auto-save does not trigger the crash. Lists under ~50 tasks save successfully even with the special characters present.",
+    "root_cause_hypothesis": "The manual Save code path likely uses a different serialization or encoding strategy than auto-save — probably a batch write that processes all tasks at once rather than incrementally. Non-ASCII characters (em-dashes U+2014, curly quotes U+201C/U+201D) from the CSV import are not being properly handled during this batch encoding step. The size dependency suggests either a fixed-size buffer that overflows when many entries contain multi-byte characters, or an encoding error that accumulates and only exceeds a threshold at scale. The brief 'encoding' error dialog supports this — the app likely catches a encoding/serialization exception, shows a dialog, then fatally crashes before the user can read it.",
+    "reproduction_steps": [
+      "Create or obtain a CSV file containing task names with special characters (em-dashes —, curly quotes "", etc.)",
+      "Import the CSV into TaskFlow, ensuring the resulting task list has 200+ tasks",
+      "Click the 'Save' button in the toolbar",
+      "Observe: app window closes with a brief flash of an error dialog mentioning 'encoding'",
+      "Control test: repeat with fewer than 50 tasks — save succeeds"
+    ],
+    "environment": "macOS 14.2, TaskFlow v2.3.1",
+    "severity": "high",
+    "impact": "Any user who imports tasks from CSV files containing non-ASCII characters (common in business data — em-dashes, smart quotes from Word/Excel exports) and has a moderately large task list will experience data-loss-risk crashes on save. Auto-save provides a partial workaround but users relying on manual save will lose work. This likely affects a significant portion of users who use the CSV import feature.",
+    "recommended_fix": "1. Compare the manual Save and auto-save code paths — identify where encoding/serialization diverges. 2. Check for hardcoded encoding assumptions (e.g., ASCII or Latin-1 instead of UTF-8) in the manual save path. 3. Look for fixed-size buffers in the serialization logic that don't account for multi-byte character expansion. 4. Add proper UTF-8 encoding throughout the save pipeline. 5. Ensure the crash dialog is non-fatal or at minimum stays visible long enough to be read. 6. Consider adding encoding validation/normalization at CSV import time as a defense-in-depth measure.",
+    "proposed_test_case": "Create a task list with 200+ tasks where at least 10% contain non-ASCII characters (em-dashes, curly quotes, accented characters, emoji). Verify that manual toolbar Save completes without error. Additionally, test at boundary sizes (50, 100, 200, 500 tasks) to confirm no size-dependent failures. Verify saved file can be re-opened with all special characters intact.",
+    "information_gaps": [
+      "Exact error message in the crash dialog (goes by too fast to read — check crash logs or Console.app)",
+      "Whether this affects other platforms (Windows/Linux) or is macOS-specific",
+      "Whether the issue is specific to v2.3.1 or also present in earlier versions",
+      "Exact size threshold where the crash begins (reporter identified ~50 as safe, ~200 as failing)"
+    ]
+  },
+  "confidence": {
+    "root_cause": "medium",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

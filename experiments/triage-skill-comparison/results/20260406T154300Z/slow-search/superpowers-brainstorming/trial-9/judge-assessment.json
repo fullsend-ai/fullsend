@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Extracted ~5,000 tasks and the title-vs-description distinction, but missed several key items: the v2.2→v2.3 upgrade regression, the ~2-week timeline, CPU spikes during search, and long descriptions. The agent noted the regression possibility only as an information gap rather than pursuing it."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The root cause hypothesis (missing/inadequate index on descriptions, falling back to LIKE scan) is directionally correct and close to the actual cause (v2.3 dropped FTS5 for naive LIKE). However, it misses that this is a version-specific regression, not a longstanding design flaw. The generic database suggestions (PostgreSQL GIN, MySQL FULLTEXT) miss that TaskFlow uses SQLite FTS5."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one question and then immediately resolved. While the single question efficiently extracted the title-vs-description distinction, the agent should have asked follow-up questions about the regression timeline, version changes, system resource behavior, and description sizes before closing. Resolving after one exchange left too many gaps."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The multiple-choice format was well-designed and effectively drew out the critical title-vs-description distinction that the reporter wouldn't have volunteered unprompted. The task count question was also well-placed. However, the agent failed to ask any follow-up questions about the regression aspect despite the reporter explicitly saying it 'used to be fast'."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer could start investigating indexing issues, but the summary misses the version regression context which would dramatically narrow the investigation. The recommended fix is generic (mentions PostgreSQL/MySQL rather than SQLite) and doesn't point to the migration as the likely culprit. A developer would need to independently discover the v2.3 connection."
+    }
+  },
+  "weighted_total": 2.95,
+  "turn_count": 1,
+  "notable_strengths": [
+    "The multiple-choice question format efficiently surfaced the title-vs-description distinction",
+    "Root cause hypothesis is directionally correct about missing indexing and LIKE fallback",
+    "Good reproduction steps that capture the key behavioral difference"
+  ],
+  "notable_weaknesses": [
+    "Resolved far too early after only one exchange, leaving major information gaps",
+    "Failed to follow up on the reporter's own clue that search 'used to be fast' — a clear regression signal",
+    "Did not ask about software version, recent upgrades, or timeline of when the problem started",
+    "Generic database recommendations (PostgreSQL/MySQL) rather than investigating the actual stack"
+  ],
+  "most_insightful_question": "The multiple-choice question distinguishing search patterns (all slow vs. certain terms vs. first-search vs. intermittent) effectively categorized the problem and prompted the reporter to reveal the title-vs-description distinction.",
+  "missed_opportunities": [
+    "When did this start? / Did anything change around that time? (would have revealed the v2.2→v2.3 upgrade)",
+    "What version of TaskFlow are you running? Have you upgraded recently?",
+    "Do you notice any system resource changes (CPU/memory) during slow searches?",
+    "How large are your task descriptions typically? Any unusually long ones?",
+    "Have you tried any workarounds like clearing cache or reindexing?"
+  ]
+}

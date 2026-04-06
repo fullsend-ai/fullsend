@@ -1,0 +1,34 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter confirmed that saving works fine without the imported data, that the CSV came from Excel, and that the task names contain typographic characters like em-dashes and curly quotes (Windows-1252 'smart' punctuation). Combined with the encoding error flash on crash, this is a clear encoding handling bug in the save path. We have reproduction steps, a confirmed hypothesis, and enough detail for a developer to investigate. No further questions needed.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains Windows-1252 typographic characters imported from Excel CSV",
+    "problem": "When saving a task list that contains tasks imported from an Excel-exported CSV file, the app crashes immediately (closes without recovery). A brief error dialog referencing 'encoding' flashes before the crash. The issue is isolated to lists containing imported data with typographic characters (em-dashes, curly/smart quotes) that Excel auto-formats. Saving works fine for lists without these characters, and the same list saved successfully before the CSV import.",
+    "root_cause_hypothesis": "The CSV import path reads the Excel-exported file (likely Windows-1252 or Latin-1 encoded) and stores the raw bytes or incorrectly-tagged strings internally. The save/serialization path then attempts to encode the data as UTF-8 (or another strict encoding), encounters characters like em-dashes (0x97 in CP-1252) and curly quotes (0x93/0x94) that are invalid in the target encoding context, throws an unhandled encoding exception, and the app crashes. The import succeeded because it was just reading bytes; the crash happens on write because the serializer is stricter about encoding validity.",
+    "reproduction_steps": [
+      "Open TaskFlow and create or open a task list",
+      "Prepare a CSV file exported from Excel containing task names with typographic characters (em-dashes '—', curly quotes '""', etc.)",
+      "Import the CSV into the task list",
+      "Click Save in the toolbar",
+      "Observe: a dialog briefly flashes mentioning 'encoding', then the app closes immediately"
+    ],
+    "environment": "TaskFlow desktop app (version not specified), CSV exported from Microsoft Excel containing Windows-1252 typographic characters. Task list size ~200 tasks (though size likely not the factor).",
+    "severity": "high",
+    "impact": "Any user who imports CSV data from Excel (or similar tools that auto-format punctuation) will be unable to save their work and will lose edits made after the import. Data loss occurs on every save attempt. No workaround exists other than manually cleaning special characters from the CSV before import.",
+    "recommended_fix": "1. **Save path (immediate fix):** Add proper encoding handling in the serialization/save logic. Ensure the save path can handle the full range of characters that the import path accepts — either normalize to UTF-8 on save, or transcode gracefully. Wrap the encoding step with error handling so a single bad character doesn't crash the app. 2. **Import path (defense in depth):** Detect the source encoding of CSV files on import (e.g., using BOM detection or charset sniffing) and transcode to UTF-8 at import time so data is stored in a canonical encoding. 3. **Error handling:** The unhandled exception that kills the app should be caught — at minimum show a proper error dialog and prevent data loss, even if the save can't complete.",
+    "proposed_test_case": "Create a CSV file with task names containing Windows-1252 typographic characters (em-dash U+2014, left/right double quotes U+201C/U+201D, en-dash U+2013, ellipsis U+2026). Import the CSV into a task list. Verify saving succeeds without error. Re-open the file and verify the characters are preserved correctly. Additionally, test with a CSV explicitly encoded as Windows-1252 (not UTF-8) to verify the import path handles encoding detection.",
+    "information_gaps": [
+      "Exact TaskFlow version and platform (Windows/Mac/Linux)",
+      "Full text of the encoding error dialog (it flashes too fast to read)",
+      "Whether the data format is JSON, XML, SQLite, or another format (affects where the encoding bug lives)",
+      "Whether existing saved data from before the crash is recoverable or corrupted"
+    ]
+  },
+  "confidence": {
+    "root_cause": "high",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

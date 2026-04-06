@@ -1,0 +1,34 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "We now have a clear reproduction path (import CSV with special characters, then save), confirmed isolation (removing imported tasks fixes it, new lists save fine), and a strong root cause hypothesis (encoding mismatch on CSV import causing serialization crash). The reporter has confirmed all key details from Phase 2 and validated the hypothesis in Phase 3. A developer has everything they need to investigate and fix without contacting the reporter again.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains CSV-imported data with non-ASCII characters (em-dashes, curly quotes)",
+    "problem": "The app crashes (closes entirely) when the user clicks Save in the toolbar on a task list that contains tasks imported from a CSV file. A dialog briefly flashes mentioning 'encoding' before the app closes. The crash only affects lists containing CSV-imported data; saving works correctly for manually-created tasks and for the same list after removing the imported tasks.",
+    "root_cause_hypothesis": "The CSV file was exported from a Mac application and likely uses MacRoman (or Windows-1252) encoding. Characters such as em-dashes (—) and curly/smart quotes (" ") are valid in those encodings but occupy different byte sequences than UTF-8. The CSV import routine likely ingested the raw bytes without transcoding to UTF-8. When the save routine attempts to serialize the task list (presumably as UTF-8 JSON or XML), it encounters invalid byte sequences and crashes with an encoding error rather than handling the failure gracefully.",
+    "reproduction_steps": [
+      "Prepare a CSV file containing task names with non-ASCII characters such as em-dashes (—) and curly quotes (" "), ideally exported from a Mac application so it uses MacRoman encoding",
+      "Open TaskFlow and create or open a task list",
+      "Import the CSV file into the task list (≈200 tasks to match reporter's scenario, though fewer may suffice)",
+      "Click Save in the toolbar",
+      "Observe: app closes immediately; a dialog mentioning 'encoding' may flash briefly before the crash"
+    ],
+    "environment": "Reporter imported a CSV exported from a Mac application. Exact OS, app version, and Mac app source not specified but not critical for reproducing — the encoding mismatch is the key factor.",
+    "severity": "high",
+    "impact": "Any user who imports a CSV containing non-ASCII characters (common in data from Mac apps, Excel, or internationalized content) will be unable to save their task list, resulting in data loss for any edits made after the import. The crash is deterministic and has no workaround other than manually removing all imported tasks.",
+    "recommended_fix": "1. **CSV import:** Detect the source encoding of the CSV file (using BOM detection or a library like chardet/ICU) and transcode to UTF-8 on import. At minimum, support UTF-8, MacRoman, Windows-1252, and Latin-1. 2. **Save serialization:** Add error handling around the serialization path so that encoding errors surface as a user-visible error message rather than crashing the app. 3. **Data migration:** Provide a repair path for users who already have corrupted data — scan existing task lists for invalid byte sequences and offer to re-encode them.",
+    "proposed_test_case": "Create CSV files in MacRoman, Windows-1252, and UTF-8 encodings, each containing tasks with em-dashes, curly quotes, accented characters, and emoji. Import each into a task list and verify: (a) save completes without crashing, (b) the special characters round-trip correctly and display properly after reopening the list.",
+    "information_gaps": [
+      "Exact app version and OS version not confirmed",
+      "Exact encoding of the CSV not verified (assumed MacRoman based on Mac origin, could be Windows-1252)",
+      "The full text of the 'encoding' error dialog is unread — capturing this from logs or crash reports would confirm the exact failure point",
+      "Unknown whether the app uses JSON, XML, SQLite, or another format for persistence (affects where the fix is applied)"
+    ]
+  },
+  "confidence": {
+    "root_cause": "high",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

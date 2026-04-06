@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Login redirect loop for users with plus-addressed or aliased emails after Okta-to-Entra SSO migration
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop: they authenticate successfully with Entra, are redirected back to TaskFlow, but TaskFlow immediately redirects them back to Entra. Affected users correlate strongly with having '+' characters in their email addresses (plus addressing) or having had their email changed/aliased during the Entra ID setup.
+
+## Root Cause Hypothesis
+The most likely root cause is that TaskFlow's OAuth callback handler is not correctly parsing the email claim from the Entra ID token for users with special characters in their email. Specifically: (1) The '+' character is encoded as '%2B' or interpreted as a space in URL query parameters during the redirect. When TaskFlow extracts the user's email from the callback or token, it either URL-decodes '+' to a space or otherwise mangles the address, causing the user lookup to fail. (2) For aliased users, the email claim in the Entra token (e.g. the UPN or preferred_username) doesn't match the email stored in TaskFlow's user table from the Okta era. In both cases, TaskFlow fails to establish a session because it can't match the authenticated identity to a local user record, so it treats the user as unauthenticated and restarts the OAuth flow, creating the loop.
+
+## Reproduction Steps
+  1. Set up a user in Entra ID with a plus-addressed email (e.g. testuser+tag@company.com) and assign them to the TaskFlow app registration
+  2. Attempt to log into TaskFlow with that user
+  3. Observe: Entra authentication succeeds, redirect back to TaskFlow occurs, but TaskFlow immediately redirects back to Entra, creating an infinite loop
+  4. Compare with a user whose email has no '+' or special characters — login succeeds
+
+## Environment
+TaskFlow instance recently migrated from Okta to Microsoft Entra ID SSO. Affects Chrome, Edge, and Firefox equally. Entra ID app registration and redirect URIs have been verified as correct. Affected users can authenticate to other Entra-backed apps without issue.
+
+## Severity: high
+
+## Impact
+~30% of the team cannot log into TaskFlow at all (no reliable workaround — incognito works intermittently). This blocks their daily workflow. The affected population will grow if more users adopt plus addressing or have email changes.
+
+## Recommended Fix
+1. **Inspect the OAuth callback handler** — check how the email/UPN claim from the Entra ID token is extracted and used for user lookup. Look for URL-decoding issues where '+' might be converted to a space. 2. **Check the user-matching query** — verify whether it compares the token's email claim against the stored user email using exact string match. If so, ensure the comparison accounts for URL encoding and uses the raw claim value from the parsed JWT, not from URL query parameters. 3. **Audit the user identity mapping** — for users whose emails changed during migration, ensure TaskFlow's user records were updated to match the Entra ID email/UPN. Consider matching on a more stable identifier (like the Entra `oid` or `sub` claim) rather than email. 4. **Add logging** — log the exact email claim received from Entra and the lookup result in TaskFlow's auth flow to confirm the mismatch.
+
+## Proposed Test Case
+Create integration tests for the OAuth callback handler that authenticate users with: (a) a standard email, (b) a plus-addressed email (user+tag@domain.com), (c) an email containing other special URL characters. Verify that in all cases the correct user record is matched and a session is established without redirect. Additionally, test that a user whose email in the identity provider differs from their stored TaskFlow email (simulating an alias change) is handled gracefully — either matched via a secondary identifier or given a clear error rather than a redirect loop.
+
+## Information Gaps
+- Which specific claim TaskFlow uses for user matching (email, UPN, sub, oid) — inspecting the code will confirm
+- Whether TaskFlow's auth logs show the received email claim value for affected users (would immediately confirm the encoding hypothesis)
+- Whether the intermittent incognito success is due to the browser not sending a stale cookie that triggers a different code path

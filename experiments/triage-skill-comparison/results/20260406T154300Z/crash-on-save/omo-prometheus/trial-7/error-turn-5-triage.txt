@@ -1,0 +1,33 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter has provided detailed, specific information covering all sufficiency criteria: clear reproduction path (CSV import with special characters + large list + manual save), a strong root cause signal (the word 'encoding' in the crash dialog, combined with the fact that removing special-character tasks fixes it), environment details, and the key differentiator that auto-save works but manual save doesn't. The size-dependent behavior (fails at ~200 tasks, works under 50) suggests the manual save path likely processes tasks in a batch with a different encoding pipeline than auto-save's incremental approach. A developer has everything needed to investigate without contacting the reporter again.",
+  "triage_summary": {
+    "title": "Crash on manual save with large task lists containing non-ASCII characters imported from CSV",
+    "problem": "TaskFlow crashes (window closes entirely) when the user clicks the toolbar Save button on a task list containing approximately 200 tasks that were imported from a CSV file. The CSV data contains non-ASCII characters such as em-dashes and curly quotes. A brief error dialog flashes before the crash with the word 'encoding' visible. Auto-save does not trigger the crash. Removing the imported tasks or reducing the list to under 50 tasks also avoids the crash.",
+    "root_cause_hypothesis": "The manual save code path likely uses a different text encoding or serialization strategy than auto-save. When processing a large batch of tasks containing non-ASCII characters (em-dashes, curly quotes — likely Windows-1252 or similar encoding artifacts from CSV import), the save operation hits an encoding error that is unhandled, causing an unrecoverable crash. The size dependency suggests either: (a) a buffer or memory issue in the batch encoding conversion that only manifests at scale, or (b) the save operation may process tasks in chunks and the encoding failure only surfaces when a particular chunk boundary or accumulated buffer state is reached. The CSV import likely preserves raw byte sequences rather than normalizing to UTF-8, and auto-save may serialize tasks individually (handling encoding per-task) while manual save serializes the entire list at once.",
+    "reproduction_steps": [
+      "Create or obtain a CSV file containing task names with non-ASCII characters (em-dashes '—', curly quotes '"' '"', etc.)",
+      "Import the CSV into TaskFlow to create at least 200 tasks",
+      "Click the 'Save' button in the toolbar",
+      "Observe: app window closes with a brief flash of an encoding-related error dialog"
+    ],
+    "environment": "macOS 14.2, TaskFlow v2.3.1",
+    "severity": "high",
+    "impact": "Any user who imports task data from CSV files containing non-ASCII characters and accumulates a large task list will lose unsaved work when attempting to manually save. This is a data-loss scenario. Auto-save provides a partial workaround but users cannot rely on manual save, which undermines trust in the application. CSV import is likely a common onboarding workflow.",
+    "recommended_fix": "1. Investigate the manual save serialization path and compare its encoding handling to the auto-save path. 2. Check how CSV import handles character encoding — it likely needs to normalize imported text to UTF-8 at import time. 3. Add proper error handling around the encoding step in the save path so failures surface as a recoverable error dialog rather than a crash. 4. Consider normalizing all non-ASCII punctuation (curly quotes → straight quotes, em-dashes → hyphens, or properly encoding them as UTF-8) during CSV import.",
+    "proposed_test_case": "Create a task list with 200+ tasks where at least some task names contain em-dashes, curly quotes, and other non-ASCII punctuation characters (sourced via CSV import). Verify that clicking the Save button completes successfully without crashing, and that the saved data round-trips correctly with the special characters preserved.",
+    "information_gaps": [
+      "Exact error message in the crash dialog (it flashed too quickly to read fully)",
+      "Whether the issue is specific to CSV-imported data or would also occur with manually typed non-ASCII characters at scale",
+      "Whether the threshold is exactly 50 tasks or somewhere between 50 and 200",
+      "Crash logs from macOS Console.app or TaskFlow's log directory that might contain the full stack trace"
+    ],
+    "confidence": {
+      "root_cause": "medium",
+      "reproduction": "high",
+      "severity_assessment": "high"
+    }
+  }
+}
+```

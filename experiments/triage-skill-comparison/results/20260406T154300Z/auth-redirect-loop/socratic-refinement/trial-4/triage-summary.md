@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Login redirect loop for users with plus-addressed or aliased emails after Okta-to-Entra SSO migration
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. They authenticate successfully with Entra ID but are immediately redirected back to the login flow. The affected users predominantly use plus-addressed emails (e.g., jane+taskflow@company.com) or had their email addresses changed/aliased during the migration.
+
+## Root Cause Hypothesis
+TaskFlow's authentication callback matches the email claim returned by Entra ID against locally stored user identifiers. Entra ID likely returns the canonical email address (stripping the plus suffix) or a different alias than what Okta returned and TaskFlow stored. When the email claim doesn't match any stored user record, TaskFlow cannot establish a session and falls back to the login flow, creating the loop. Stale session cookies from the Okta integration may also interfere with the new auth flow, explaining why clearing cookies occasionally helps.
+
+## Reproduction Steps
+  1. Have a user account in TaskFlow whose stored email uses plus-addressing (e.g., user+taskflow@company.com) or was aliased during migration
+  2. Configure TaskFlow SSO to use Microsoft Entra ID
+  3. Attempt to log in with that user's credentials
+  4. Observe successful Entra ID authentication followed by redirect back to TaskFlow login, repeating in a loop
+
+## Environment
+TaskFlow with SSO, recently migrated from Okta to Microsoft Entra ID. Affects Chrome, Edge, and Firefox equally. Not role or group dependent.
+
+## Severity: high
+
+## Impact
+Approximately 30% of the team cannot reliably log into TaskFlow. No consistent workaround exists — clearing cookies and incognito mode work only intermittently.
+
+## Recommended Fix
+1. Inspect the email claim Entra ID returns in the SAML assertion or OIDC token (likely the `email` or `preferred_username` claim) and compare it against what TaskFlow stores for affected users. 2. Normalize email comparison in the auth callback: strip plus-address suffixes and perform case-insensitive matching, or match on a stable identifier (like the `sub` or `oid` claim) rather than email. 3. Add a user identity migration step that maps old Okta identifiers to new Entra ID identifiers. 4. Invalidate or ignore pre-migration session cookies by rotating the session signing key or bumping a session version.
+
+## Proposed Test Case
+Create test users with plus-addressed emails and aliased emails. Simulate an SSO callback with an email claim that differs from the stored identifier (canonical vs plus-addressed). Verify that the auth callback correctly resolves the user, establishes a session, and does not redirect back to login.
+
+## Information Gaps
+- Exact email claim name and value Entra ID returns for affected users versus what TaskFlow has stored
+- Whether TaskFlow uses email as the sole user identifier or also stores a subject/object ID
+- Whether the Okta integration used a different claim format that plus-addresses were preserved in

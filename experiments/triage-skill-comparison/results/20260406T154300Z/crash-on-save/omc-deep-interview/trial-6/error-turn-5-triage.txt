@@ -1,0 +1,37 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "All four clarity dimensions are >= 0.7 individually, meeting the second sufficiency criterion. Round 3 Contrarian consideration: the size-dependent behavior is interesting — could the encoding path differ for large vs small payloads (e.g., chunked serialization, different buffer allocation)? However, this doesn't block triage; a developer can investigate. The reporter has given us a clear reproduction path: import CSV with non-ASCII characters (em-dashes, curly quotes), build up to ~200 tasks, and save. The encoding error flash confirms the root cause area. Remaining unknowns (exact size threshold, specific codec) won't change the triage outcome.",
+  "triage_summary": {
+    "title": "App crashes on save with encoding error when saving large lists containing imported non-ASCII characters (em-dashes, curly quotes)",
+    "problem": "When saving a task list that contains data imported from CSV with non-ASCII characters (em-dashes, curly quotes), the app displays a brief encoding-related error dialog and then immediately terminates. The crash only occurs when the list is sufficiently large (~200 tasks); smaller lists with the same special characters save successfully.",
+    "root_cause_hypothesis": "The save/serialization path likely has an encoding conversion issue (e.g., assuming ASCII or using a fixed-size buffer) that fails when the payload containing non-ASCII characters exceeds a size threshold. Possible causes: (1) a serialization codepath that switches from a single-pass to a chunked/buffered approach at a certain size, and the chunked path mishandles multi-byte characters by splitting them at byte boundaries; (2) a fixed-size buffer for encoding conversion that overflows because multi-byte characters (UTF-8 em-dashes are 3 bytes, curly quotes are 3 bytes) make the encoded output larger than expected; (3) an unhandled exception in the encoding/save routine that crashes the app instead of being caught.",
+    "reproduction_steps": [
+      "Prepare a CSV file containing task names with non-ASCII characters such as em-dashes (—), curly/smart quotes (" " ' '), or similar multi-byte UTF-8 characters",
+      "Import the CSV into TaskFlow",
+      "Add additional tasks until the total list size is approximately 200 tasks",
+      "Click Save",
+      "Observe: a brief error dialog mentioning 'encoding' flashes, then the app window closes entirely"
+    ],
+    "environment": "Not specified — appears to be a desktop app. No OS, version, or locale information provided, though the issue is likely platform-independent since it stems from data content rather than OS-level encoding.",
+    "severity": "high",
+    "impact": "Users who import data from external tools (CSV export) with non-ASCII characters will experience data loss when their task lists grow large enough. The crash is deterministic and repeatable, making the affected workflow completely blocked. Workaround exists: remove imported tasks with special characters, or keep lists small.",
+    "recommended_fix": "1. Examine the save/serialization codepath for encoding assumptions — look for ASCII-only handling, fixed-size buffers, or byte-level string splitting that would break multi-byte UTF-8 characters. 2. Check whether a different serialization strategy kicks in at a certain payload size (the size-dependent behavior is a strong clue). 3. Ensure the encoding error is caught and surfaced gracefully rather than crashing the app. 4. Consider normalizing imported text (e.g., converting curly quotes to straight quotes, em-dashes to hyphens) at import time, or at minimum validating encoding on import.",
+    "proposed_test_case": "Create a task list with 200+ tasks where at least 20% of task names contain multi-byte UTF-8 characters (em-dashes, curly quotes, accented characters, emoji). Verify that save completes successfully without errors. Additionally, test at boundary sizes (e.g., 50, 100, 150, 200, 250 tasks) to identify the exact threshold where the encoding path changes.",
+    "information_gaps": [
+      "Exact list size threshold where the crash begins (reporter said ~200 triggers it, smaller lists don't)",
+      "App version and operating system",
+      "Whether the crash also occurs on export or only on save",
+      "Exact error message text (reporter could only glimpse it briefly)",
+      "File format used by the save operation (JSON, SQLite, custom binary, etc.)"
+    ],
+    "clarity_scores": {
+      "symptom": 0.85,
+      "cause": 0.75,
+      "reproduction": 0.7,
+      "impact": 0.75,
+      "overall_ambiguity": 0.22
+    }
+  }
+}
+```

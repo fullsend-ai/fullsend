@@ -1,0 +1,43 @@
+# Conversation: auth-redirect-loop x omo-prometheus
+
+## Issue
+
+**Login redirect loop after SSO change**
+
+We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.
+
+We've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report. The fact that only ~30% of users are affected is a strong clue — understanding what makes those users different is key.
+
+Can you tell me: is there any pattern you've noticed among the affected users? Specifically:
+- Were they previously logged into TaskFlow with the old Okta SSO (i.e., had active sessions) when the switch happened, while the unaffected users were not?
+- Do the affected users have any difference in their account setup — for example, a different email domain, UPN format (user@domain vs domain\user), or group membership compared to those who can log in fine?
+- Does clearing browser cookies and cache for the TaskFlow domain resolve the issue for affected users?
+
+---
+
+### reporter
+
+Good questions. Let me think about this...
+
+I don't think it's related to whether they had active sessions during the switch — we had everyone log out before we cut over. 
+
+As for a pattern, I did notice something: a lot of the affected users are ones who use plus-addressed emails, like jane+taskflow@company.com. We have a few people who do that. There are also some users who had their email addresses changed or aliased when we set up Entra — like people who had an old email that got mapped to a new primary. The users who log in fine seem to be the ones whose emails are straightforward and haven't changed.
+
+As for clearing cookies — sometimes it helps, weirdly. If they clear all their cookies and try again right away, it occasionally works. A couple people have had luck using incognito/private browsing windows too. But it's not a reliable fix, it's pretty hit or miss.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Login redirect loop caused by email claim mismatch after Okta-to-Entra ID SSO migration","problem":"After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users are stuck in an infinite redirect loop during login. Authentication at the Entra ID side succeeds, but TaskFlow's callback fails to resolve the user, sending them back to the login flow. Affected users disproportionately have plus-addressed emails (e.g., jane+taskflow@company.com) or had their email addresses changed/aliased during the Entra ID setup.","root_cause_hypothesis":"TaskFlow's SSO callback matches the authenticated user by comparing the email claim from the identity provider against the email stored in its user database. Entra ID is returning a different canonical email than what TaskFlow has stored — specifically, Entra ID likely returns the primary/canonical email (jane@company.com) while TaskFlow has the plus-addressed variant (jane+taskflow@company.com) or an old pre-migration alias. When the lookup fails, TaskFlow treats the user as unauthenticated and redirects back to the login endpoint, creating the loop. The inconsistent success with cookie-clearing or incognito may be due to a race condition or fallback matching path that occasionally succeeds (e.g., a session token from a prior successful login being reused before the email-based lookup runs).","reproduction_steps":["Create or identify a TaskFlow user whose stored email is a plus-addressed format (e.g., user+taskflow@company.com) or an old alias that differs from their Entra ID primary email","Ensure Entra ID SSO is configured as the auth provider","Attempt to log in as that user","Observe: Entra ID authentication succeeds, redirect back to TaskFlow occurs, but TaskFlow immediately redirects back to Entra ID in a loop"],"environment":"TaskFlow with SSO, recently migrated from Okta to Microsoft Entra ID. Entra ID app registration and redirect URIs verified correct. Affected users can authenticate to other Entra ID apps without issue.","severity":"high","impact":"~30% of the team cannot reliably log into TaskFlow. No consistent workaround exists. This blocks affected users from using the application entirely.","recommended_fix":"1. Inspect TaskFlow's SSO callback handler — find where it matches the identity provider's email claim against the local user store. 2. Log the exact email claim value Entra ID returns for affected users (check both the `email` and `preferred_username` / `upn` claims in the OIDC token) and compare it against what TaskFlow has stored. 3. Fix the user-matching logic to handle plus-addressing (normalize by stripping the +tag portion) and to check against all known aliases/UPNs, not just the primary stored email. 4. Consider matching on a stable, provider-agnostic identifier (such as the OIDC `sub` claim or an internal user ID mapped during the migration) rather than relying on email string matching. 5. As an immediate mitigation, update affected users' stored emails in TaskFlow to match what Entra ID returns, or provide an admin tool to re-link accounts.","proposed_test_case":"Test that a user whose TaskFlow-stored email is 'user+tag@domain.com' can successfully authenticate when the identity provider returns 'user@domain.com' as the email claim. Also test that a user whose email was aliased/changed during migration (old email stored in TaskFlow, new primary in Entra ID) can authenticate. Both should result in successful login, not a redirect loop.","information_gaps":["Exact OIDC claims Entra ID is returning for affected vs. unaffected users (email, preferred_username, upn, sub)","Whether TaskFlow's auth callback logs reveal the specific point of failure (no matching user found, session creation failure, etc.)","Whether TaskFlow stores an external identity provider subject ID (sub claim) that could be used as a more stable matching key","Whether the Okta-to-Entra migration included mapping Okta subject IDs to Entra IDs in TaskFlow's database"]}
+
+---
+

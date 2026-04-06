@@ -1,0 +1,44 @@
+# Conversation: auth-redirect-loop x superpowers-brainstorming
+
+## Issue
+
+**Login redirect loop after SSO change**
+
+We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.
+
+We've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the clear write-up. The 30%/70% split is a strong diagnostic signal — do you see any pattern in which users are affected? For example:
+
+1. **They had active TaskFlow sessions** before the SSO switch (i.e., were logged in / had remembered sessions), while unaffected users did not
+2. **They belong to different groups or roles** in Entra ID (e.g., different security groups, admin vs. regular users)
+3. **They use a different browser or device** than the unaffected users
+4. **They were migrated differently** in Entra ID (e.g., synced from on-prem AD vs. cloud-only accounts)
+5. Something else or not sure yet
+
+Also — does clearing browser cookies and site data for TaskFlow fix the loop for affected users, if anyone has tried that?
+
+---
+
+### reporter
+
+Good question! I've been trying to figure out the pattern myself. It's not #1 — some affected users hadn't logged into TaskFlow in weeks. It's not #2 or #4 either, we're all cloud-only in Entra and in the same security group. And it's not browser-specific, we've seen it on Chrome, Edge, and Firefox.
+
+What I did notice is that the affected users tend to be the ones who use plus-addressed emails (like jane+taskflow@company.com) or people who had their email changed/aliased at some point during the migration. The users who log in fine all have straightforward email addresses that were the same in both Okta and Entra.
+
+As for clearing cookies — yes, a few people have tried that. It sometimes works if they clear everything and try again right away, and weirdly, a couple people have had luck using incognito/private browsing windows. But it's not a reliable fix, the loop usually comes back.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"SSO redirect loop for users with plus-addressed or aliased emails after Okta-to-Entra migration","problem":"After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. Authentication with Entra succeeds, but TaskFlow fails to complete the session, sending users back to the IdP. The affected population correlates strongly with users who have plus-addressed emails (e.g., jane+taskflow@company.com) or whose email addresses changed/were aliased during the migration.","root_cause_hypothesis":"TaskFlow's authentication callback matches users by comparing the email claim from the IdP token against stored user records. Entra ID is likely returning a different email value than Okta did for these users — either normalizing plus-addressed emails to the base address, returning the primary UPN instead of the alias, or using a different SAML/OIDC claim attribute for email. When the lookup fails, TaskFlow cannot establish a session, so it redirects back to the IdP, creating the loop. The intermittent cookie/incognito fix suggests a stale Okta-era session cookie may also interfere in some cases, but the root cause is the email mismatch on the server side.","reproduction_steps":["Create or identify a user in Entra ID with a plus-addressed email (e.g., testuser+taskflow@company.com)","Ensure that user has an existing account in TaskFlow's database (linked via the plus-addressed email from the Okta era)","Attempt to log into TaskFlow via SSO","Observe the redirect loop: Entra authenticates successfully, TaskFlow callback fails to match the user, redirects back to Entra"],"environment":"TaskFlow with SSO via Microsoft Entra ID (recently migrated from Okta). All users are cloud-only Entra accounts in the same security group. Reproduced across Chrome, Edge, and Firefox.","severity":"high","impact":"~30% of the team cannot reliably log into TaskFlow. No permanent workaround exists — clearing cookies and incognito mode are unreliable. These users are effectively locked out of the application.","recommended_fix":"1. Inspect the OIDC/SAML token claims Entra ID sends during the callback (log the raw id_token or SAML assertion) and compare the email claim value against what TaskFlow has stored in its user table for affected users. 2. Check which claim attribute TaskFlow reads for email — Entra commonly uses `preferred_username`, `email`, or `upn`, and these may differ from what Okta provided. 3. Implement case-insensitive, plus-address-aware email matching in the auth callback (or normalize emails on both sides). 4. For migrated/aliased users, consider a one-time data migration to update stored emails to match what Entra returns, or add support for matching on multiple email aliases. 5. Invalidate stale Okta-era session cookies by rotating the session signing key or bumping the cookie name.","proposed_test_case":"Write an integration test for the SSO callback handler that submits an id_token containing a plus-addressed email (user+tag@domain.com) and verifies that it correctly matches against a stored user record with that same plus-addressed email. Add a second case where the token contains the base email (user@domain.com) and verify it still matches users whose stored email is the plus-addressed variant.","information_gaps":["Exact claim attribute TaskFlow reads from the IdP token (e.g., email vs. upn vs. preferred_username)","Whether TaskFlow's user table stores the original Okta-era email or has been updated post-migration","Server-side auth callback logs showing the specific failure point in the redirect loop"]}
+
+---
+

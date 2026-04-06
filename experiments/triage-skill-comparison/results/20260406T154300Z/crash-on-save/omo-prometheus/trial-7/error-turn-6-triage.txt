@@ -1,0 +1,36 @@
+
+
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter has provided rich, actionable detail: the crash occurs on manual save (not auto-save) of a large task list (~200 tasks) containing special characters (em-dashes, curly quotes) imported from CSV. The brief error dialog mentions 'encoding'. Removing the imported tasks or reducing list size below ~50 tasks avoids the crash. This strongly points to a character encoding issue in the bulk-save/serialization path that manifests under larger payloads. There is enough information for a developer to reproduce and investigate without further reporter contact.",
+  "triage_summary": {
+    "title": "App crashes on manual save of large task lists containing non-ASCII characters imported from CSV",
+    "problem": "TaskFlow crashes (window closes entirely) when the user clicks the toolbar Save button on a task list containing ~200 tasks that were imported from a CSV file with special characters (em-dashes, curly quotes). Auto-save does not trigger the crash. A brief error dialog flashes with the word 'encoding' before the window closes. The crash does not occur if the imported tasks are removed or if the list is small (<50 tasks).",
+    "root_cause_hypothesis": "The manual save path likely uses a different serialization or encoding routine than auto-save. When processing a large number of tasks containing non-ASCII characters (em-dashes U+2014, curly quotes U+201C/U+201D), the save routine either fails to encode them properly (e.g., attempting to write as ASCII/Latin-1 instead of UTF-8) or hits a buffer/memory issue that only manifests at scale. The size dependency suggests the encoding error may accumulate or that a fixed-size buffer overflows when many multi-byte characters are present in a large payload.",
+    "reproduction_steps": [
+      "Create or obtain a CSV file containing ~200 tasks with non-ASCII characters in the task names (em-dashes '—', curly quotes '"', '"')",
+      "Import the CSV into TaskFlow v2.3.1 on macOS 14.2",
+      "Open the imported task list in the editor",
+      "Click the 'Save' button in the toolbar",
+      "Observe: app window closes with a brief flash of an error dialog mentioning 'encoding'"
+    ],
+    "environment": "macOS 14.2, TaskFlow v2.3.1",
+    "severity": "high",
+    "impact": "Users who import task data containing non-ASCII characters (common in real-world data) lose unsaved work when the app crashes on save. This blocks workflows involving CSV imports of any significant size. Workaround exists (remove special characters or keep lists small) but is impractical for real usage.",
+    "recommended_fix": "1. Investigate the manual save code path vs. the auto-save code path — identify where they diverge on encoding/serialization. 2. Ensure the manual save path uses UTF-8 encoding throughout. 3. Check for any fixed-size buffers in the serialization path that could overflow with multi-byte characters at scale. 4. Add proper error handling so encoding failures surface a readable error dialog instead of crashing the app. 5. Verify that the CSV import path normalizes or preserves encoding metadata so downstream save operations handle the characters correctly.",
+    "proposed_test_case": "Create a task list with 200+ tasks where task names contain a mix of non-ASCII characters (em-dashes, curly quotes, accented characters, emoji). Execute a manual save via the toolbar button and verify: (a) the save completes without crashing, (b) the saved file is valid UTF-8, (c) all special characters round-trip correctly when the file is reloaded. Also test at boundary sizes (50, 100, 200, 500 tasks) to confirm no size-dependent failures.",
+    "information_gaps": [
+      "Exact error message from the crash dialog (flashes too quickly to read fully)",
+      "Whether the crash produces a macOS crash report in Console.app that would reveal the exact exception/stack trace",
+      "Whether auto-save uses a completely different code path or just a different trigger mechanism",
+      "Whether this affects other platforms (Windows/Linux) or is macOS-specific"
+    ]
+  },
+  "confidence": {
+    "root_cause": "medium",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

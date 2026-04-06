@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted 5 of 7 expected items: ~5,000 tasks, slow on description/fast on title, regression after v2.2→v2.3, started ~2 weeks ago, 10-15 seconds for description searches. Missed CPU spike during search and didn't quantify how long the descriptions are (though 'lengthy descriptions' and 'pasted meeting notes' were noted). The long descriptions detail was partially captured but not with specificity (2000+ words)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it correctly identifies the switch from indexed full-text search to unindexed LIKE/ILIKE scanning, the missing or dropped FTS index, and that title search retained its index. This matches the actual cause (FTS5 index replaced by naive LIKE query, migration didn't migrate the FTS index) almost exactly. No factual errors in the summary."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions asked across 2 turns, both essential and well-targeted. The first question established timing and scale (version regression vs. gradual growth). The second question differentiated title vs. description search, which was the critical diagnostic distinction. No wasted turns whatsoever."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question correctly identified the key fork: gradual degradation (data growth) vs. sudden regression (code change). The second question was particularly insightful — asking whether all search is slow or only certain kinds directly elicited the title-vs-description distinction that is the core of the bug. The reporter even said 'now that you mention it' indicating the question drew out information they wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary provides clear reproduction steps, a strong root cause hypothesis, and specific recommended fixes (restore FTS index, revert LIKE change, run EXPLAIN ANALYZE). A developer could start investigating immediately by diffing the v2.2 and v2.3 search paths. Slight gap: doesn't identify SQLite FTS5 specifically, and the information gaps around database engine could slow initial investigation slightly."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptionally efficient — extracted the critical diagnostic information in just 2 turns",
+    "Root cause hypothesis is nearly identical to the actual cause without seeing any code",
+    "Second question was masterfully framed, leading the reporter to discover the title-vs-description distinction themselves",
+    "Summary includes concrete, actionable fix recommendations (EXPLAIN ANALYZE, diff query paths, restore FTS index)",
+    "Correctly identified title-only search as a partial workaround"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have further confirmed the full-table-scan hypothesis",
+    "Did not identify the specific database engine (SQLite) — listed it as an information gap but could have asked",
+    "Environment details were incomplete (OS, hardware noted as unknown though reporter mentioned 'work laptop')"
+  ],
+  "most_insightful_question": "Does the slowdown happen on every search, or only certain kinds? For example, is searching for a single common word just as slow as searching for something very specific? And does it matter whether you're searching across all 5,000 tasks or within a filtered view?",
+  "missed_opportunities": [
+    "Could have asked about CPU/memory usage during slow searches to confirm full-scan hypothesis",
+    "Could have asked about the database backend (SQLite vs PostgreSQL) to narrow the fix recommendation",
+    "Could have asked whether the reporter tried reindexing or if there were any post-upgrade migration steps"
+  ]
+}

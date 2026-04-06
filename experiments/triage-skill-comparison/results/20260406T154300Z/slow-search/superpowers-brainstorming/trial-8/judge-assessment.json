@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted ~5,000 tasks, description vs title search distinction, v2.2→v2.3 regression, ~2 weeks timing, and 10-15s latency. Missed CPU spike detail and long descriptions, but captured the most critical items."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "Root cause hypothesis directly names the switch from indexed/full-text search to naive LIKE/full-table scan, which is exactly the actual cause. The divergence between title and description search paths is correctly identified. No inaccuracies."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 1 question turn was needed to extract nearly all critical information. The multi-choice format efficiently covered both timing/trigger and search pattern in a single message. No wasted questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The structured multiple-choice question about timing was excellent — it guided the reporter to connect the upgrade to the regression. The follow-up about whether all searches or specific queries were slow directly elicited the critical title-vs-description distinction the reporter hadn't initially volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a precise root cause hypothesis, clear reproduction steps, a recommended fix pointing exactly where to look (diff search paths between versions, check for removed FTS index), and even a proposed regression test. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extracted the critical title-vs-description distinction in a single turn with a well-crafted question",
+    "Root cause hypothesis is remarkably accurate, correctly identifying FTS-to-LIKE regression",
+    "Excellent actionability — reproduction steps, fix direction, and test case are all concrete and correct",
+    "Multiple-choice format reduced friction for the reporter while covering multiple diagnostic angles"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches",
+    "Did not ask about task description length/content, which is relevant to the full-table scan performance",
+    "Environment details are thin — OS and hardware specs not captured despite being mentioned in ground truth"
+  ],
+  "most_insightful_question": "Also — is every search slow, or only certain queries (e.g., longer search terms, specific filters)?",
+  "missed_opportunities": [
+    "Could have asked about system resource usage (CPU/memory) during slow searches to further confirm full-table scan hypothesis",
+    "Could have asked about description content/length to understand data characteristics",
+    "Could have asked whether the reporter tried any workarounds like clearing cache or reindexing"
+  ]
+}

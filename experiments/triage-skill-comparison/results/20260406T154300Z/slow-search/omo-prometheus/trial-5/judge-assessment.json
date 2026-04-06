@@ -1,0 +1,41 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured ~5,000 tasks, description vs title search difference, v2.3 regression, 2-week timeline, 10-15 second latency, and long descriptions. Missed CPU spike observation, but that wasn't volunteered by the reporter. Got 6 of 7 expected extracts."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "Root cause hypothesis is remarkably close to actual cause — correctly identified a dropped/missing full-text index or switch from indexed to naive scan on descriptions in v2.3. The title-vs-description split reasoning is spot on. This matches the actual cause (FTS5 to LIKE query) almost exactly."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Resolved in a single follow-up question that extracted nearly all key information. The agent asked one well-constructed multi-part question and the reporter's answer was rich enough to close the triage. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The initial question was expertly constructed — it asked about timing, correlated events (updates, imports), task volume, and search pattern specifics all in one turn. This directly elicited the version upgrade correlation, the title-vs-description distinction, and the long description detail. The question about 'certain queries' was the key diagnostic question that surfaced the description-specific slowdown."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear root cause hypothesis pointing to the exact code path to investigate (description search in v2.3 vs v2.2), specific reproduction steps, a recommended fix workflow (diff search logic, check indexes, run EXPLAIN), and a concrete test case. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extracted nearly all critical information in a single conversational turn",
+    "Root cause hypothesis almost perfectly matches the actual cause — identified the FTS index regression without seeing the code",
+    "Excellent summary structure with reproduction steps, recommended fix, and test case that are all directly actionable",
+    "Smart diagnostic reasoning: correctly inferred the title-vs-description split points to a search-path-specific issue rather than infrastructure"
+  ],
+  "notable_weaknesses": [
+    "Did not capture OS/hardware details that the reporter actually had (Ubuntu 22.04, ThinkPad T14, 32GB RAM) — listed as information gap instead of asking",
+    "Could have asked about CPU/memory behavior during search to gather the CPU spike data point"
+  ],
+  "most_insightful_question": "Does the slowdown happen on every search, or only with certain queries (e.g., longer search terms, searching within a specific project)?",
+  "missed_opportunities": [
+    "Could have asked about system resource usage during search (would have surfaced the CPU spike on one core, further supporting the full-scan hypothesis)",
+    "Could have asked whether the reporter had tried any workarounds like reindexing or clearing cache"
+  ]
+}

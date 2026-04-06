@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most key information: ~5,000 tasks, description search slow vs title search fast, v2.2 to v2.3 regression, ~2 weeks ago, 10-15 second latency, long descriptions. Missed CPU spike observation, but that wasn't volunteered and would have required a follow-up question about system resource usage."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. It correctly identifies a likely switch from full-text indexed search to a sequential/LIKE scan on descriptions, with the title index remaining intact. The recommended fix directly targets the actual problem (dropped FTS index, switch to LIKE query). Even the mention of checking migration scripts aligns with the actual cause."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent questions to reach a well-formed diagnosis. The first question efficiently identified the version upgrade trigger. The second question simultaneously probed search type differentiation and dataset size, extracting three key facts in one turn. No wasted questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated strong diagnostic reasoning. The first question correctly hypothesized that the change was event-driven rather than gradual, which led directly to identifying the version upgrade. The second question cleverly combined two diagnostic vectors (search type specificity and data volume) into one turn, and the title-vs-description distinction it surfaced was the single most important diagnostic fact."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, specific investigation path: diff v2.2 and v2.3 search implementation, check for dropped FTS index or switch to LIKE/ILIKE, check migration scripts. Reproduction steps are concrete. A proposed regression test is included. A developer could start investigating immediately with high confidence in where to look."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — only 2 turns to reach a highly accurate diagnosis",
+    "Root cause hypothesis nearly exactly matches the actual cause (FTS index dropped, replaced with LIKE scan)",
+    "Second question was masterfully constructed, combining search type and dataset size probes to maximize information per turn",
+    "Summary includes concrete reproduction steps and a proposed regression test",
+    "Honestly noted information gaps without over-speculating"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have provided additional confirming evidence",
+    "Did not capture the specific OS or hardware details, though the agent correctly noted this as a gap and deprioritized it",
+    "Could have asked one more targeted question about the database backend to close an information gap before concluding"
+  ],
+  "most_insightful_question": "Are *all* searches slow, or have you noticed it depends on what you're searching for? For example, is searching for a single word just as slow as a more complex search? And roughly how many tasks do you have in TaskFlow?",
+  "missed_opportunities": [
+    "Asking whether CPU or memory spikes during slow searches (would confirm full table scan hypothesis)",
+    "Asking what database backend is in use (SQLite vs PostgreSQL affects the fix strategy)"
+  ]
+}

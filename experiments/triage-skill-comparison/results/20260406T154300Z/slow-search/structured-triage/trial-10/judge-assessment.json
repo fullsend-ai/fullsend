@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured ~5,000 tasks, slow description search vs fast title search, v2.2→v2.3 regression, ~2 weeks ago, 10-15 second timing, and the environment. Missed CPU spikes during search and long descriptions in some tasks, though the latter was only partially discoverable without specific probing."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause — it specifically mentions 'a change from indexed full-text search to unindexed LIKE/substring scanning' which is essentially exactly what happened (FTS5 index → naive LIKE query). The regression timing, environment details, and symptom characterization are all accurate."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 rounds of questions were needed to extract the key diagnostic information. The first question efficiently identified the title vs description distinction and task count. The second question pinpointed the version and timing. No wasted turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-structured and immediately zeroed in on search type differentiation, which was the critical diagnostic axis. The second question correctly followed up on version and environment. Could have asked about CPU/memory behavior or description length patterns to extract more of the expected information, but the questions asked were well-targeted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides clear reproduction steps, a highly accurate root cause hypothesis pointing to FTS→LIKE regression, specific recommended fix steps (compare schemas, check for missing indexes, profile queries), and a concrete test case. A developer could immediately start investigating the v2.3 search query changes."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Excellent diagnostic efficiency — only 2 turns to extract the core issue",
+    "Root cause hypothesis almost exactly matches the actual cause (FTS5 → LIKE query)",
+    "Well-structured summary with clear reproduction steps and actionable fix recommendations",
+    "First question smartly asked about search type differentiation, which was the key diagnostic signal"
+  ],
+  "notable_weaknesses": [
+    "Did not probe for system resource behavior (CPU spikes) which would have strengthened the diagnosis",
+    "Did not ask about description content characteristics (long descriptions) which is a contributing factor",
+    "Did not ask whether the reporter had tried any workarounds or troubleshooting steps"
+  ],
+  "most_insightful_question": "What search query or type of search are you running when it's slow? Does it happen with every search, or only with certain queries?",
+  "missed_opportunities": [
+    "Ask about CPU/memory usage during slow searches to confirm full table scan behavior",
+    "Ask about the size or nature of task descriptions (long meeting notes would explain why description search is particularly slow)",
+    "Ask whether the reporter had tried reindexing or clearing cache"
+  ]
+}

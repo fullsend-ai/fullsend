@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured ~5,000 tasks, the v2.2→v2.3 regression, the ~2 week timeline, and the 10-15 second latency. However, it missed several important details: the distinction between description search (slow) vs. title search (fast), CPU spikes during search, and the presence of long descriptions in some tasks. The title-vs-description distinction is the single most diagnostic piece of information and was never pursued."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The information captured is accurate and consistent with ground truth. The root cause hypothesis is impressively close — it mentions a missing/dropped database index, a change from indexed search to full table scan, and new full-text search across more fields scaling poorly. This aligns well with the actual cause (FTS5 index replaced by LIKE query). However, without knowing about the title-vs-description split, the hypothesis remains broader than it could have been."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one compound question and then immediately resolved the issue. While getting key info in one turn is good, resolving after just one exchange was premature. The agent had identified 'exact search queries that are slow' as an information gap but chose to close instead of asking about it. One more targeted question about what kinds of searches are slow would have dramatically improved the triage with minimal cost."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The single question asked was well-structured: using numbered options for task count (reducing ambiguity) and probing for temporal correlation with updates. Both questions yielded high-value information. The compound format was efficient. However, the agent failed to ask any follow-up questions that would distinguish between search types, which was the most important diagnostic axis."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer could start investigating by diffing v2.2 and v2.3 search code, which is a reasonable starting point. However, without knowing that title search is fast and description search is slow, the developer would need to discover this themselves. The reproduction steps are generic. The recommended fix is directionally correct but broad — knowing about the title/description split would have focused it significantly."
+    }
+  },
+  "weighted_total": 3.15,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Excellent root cause hypothesis that closely matches the actual cause despite limited information gathered",
+    "Well-structured initial question with numbered options that efficiently extracted two key facts at once",
+    "Good severity assessment and impact analysis recognizing search as a core workflow feature",
+    "Correctly identified 'exact search queries that are slow' as an information gap"
+  ],
+  "notable_weaknesses": [
+    "Premature resolution after only one exchange — closed with known information gaps",
+    "Failed to ask about which types of searches are slow (title vs. description), which is the most diagnostic distinction",
+    "Did not ask about system resource behavior (CPU spikes) which would have confirmed a full-scan hypothesis",
+    "Noted information gaps but chose not to pursue them before closing"
+  ],
+  "most_insightful_question": "The compound question asking both about task count (with numbered ranges) and temporal correlation with updates was well-designed and efficiently extracted two key facts that established the regression narrative.",
+  "missed_opportunities": [
+    "Ask whether all searches are slow or only certain types (title vs. description/full-text) — this is the key diagnostic differentiator",
+    "Ask about system behavior during slow searches (CPU/memory spikes) to distinguish between I/O-bound and CPU-bound issues",
+    "Ask whether task descriptions vary in length, since long descriptions exacerbate full-scan performance",
+    "Ask whether the user has tried any workarounds or noticed any patterns in which searches are faster"
+  ]
+}

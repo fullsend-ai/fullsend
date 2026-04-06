@@ -1,0 +1,36 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "Round 3 assessment. Symptom: 0.9 (clear crash behavior with encoding error flash). Cause: 0.85 (strong hypothesis — non-ASCII characters from CSV import trigger an encoding error, but only when the document exceeds a size threshold, suggesting a buffer/encoding conversion issue that scales with data size). Reproduction: 0.8 (import CSV with special chars like em-dashes/curly quotes, accumulate ~200 tasks, attempt save). Impact: 0.7 (causes data loss, workaround exists by removing imported data or keeping lists small). Overall ambiguity = 1 - (0.9*0.35 + 0.85*0.30 + 0.8*0.20 + 0.7*0.15) = 0.165, which is below the 0.20 threshold. Sufficient to resolve. The size-dependent aspect is the most interesting clue — it suggests the save path may use a fixed-size buffer for encoding conversion, or a codepath that only triggers when the serialized output exceeds a certain length.",
+  "triage_summary": {
+    "title": "App crashes on save with encoding error when saving large lists containing non-ASCII characters from CSV import",
+    "problem": "When a task list contains imported CSV data with non-ASCII characters (em-dashes, curly quotes) and the list is large enough (~200 tasks), clicking Save causes a brief encoding error dialog to flash and then the app immediately closes, resulting in data loss. Smaller lists with the same special characters save successfully, and lists without special characters save regardless of size.",
+    "root_cause_hypothesis": "The save/serialization path likely has an encoding conversion issue that manifests only when the data exceeds a certain size. Probable causes: (1) a fixed-size buffer used for encoding conversion that overflows with larger payloads containing multi-byte characters, (2) a chunked encoding routine that splits multi-byte characters at chunk boundaries, or (3) a code path that switches from a tolerant to a strict encoder above a size threshold. The encoding error dialog confirms the app detects the problem but crashes instead of recovering gracefully.",
+    "reproduction_steps": [
+      "Prepare a CSV file containing task names with non-ASCII characters such as em-dashes (—), curly quotes (" "), or similar extended Unicode characters",
+      "Import the CSV into TaskFlow",
+      "Ensure the total task list contains approximately 200 or more tasks (a mix of imported and manually created tasks should work)",
+      "Click Save",
+      "Observe: a brief encoding error dialog flashes and the app closes immediately"
+    ],
+    "environment": "Not yet specified — reproduction should be attempted across platforms. The CSV was exported from another tool, suggesting Windows-1252 or similar legacy encoding characters converted to their Unicode equivalents.",
+    "severity": "high",
+    "impact": "Users who import task data from external tools via CSV risk total data loss on save. The crash is deterministic once triggered and the only workaround is removing the imported data. This blocks a core workflow (data migration from other tools) and erodes trust due to silent data loss.",
+    "recommended_fix": "1. Investigate the save/serialization codepath for encoding handling, particularly any size-dependent behavior (chunking, buffering, or conditional code paths). 2. Ensure the entire pipeline uses UTF-8 consistently, or properly converts non-ASCII characters at import time. 3. Add proper error handling around the save operation so encoding failures surface as a recoverable error rather than a crash. 4. Consider normalizing special characters (curly quotes → straight quotes, em-dashes → hyphens) at CSV import time, or at minimum validating encoding on import.",
+    "proposed_test_case": "Create a test that generates a task list of 300+ tasks where ~50% contain non-ASCII characters (em-dashes, curly quotes, accented characters, emoji). Verify that save completes successfully without error. Additionally, test at boundary sizes (100, 200, 500 tasks) to identify the exact threshold where the failure occurs.",
+    "information_gaps": [
+      "Exact size threshold where the crash begins (somewhere between 'small list' and ~200 tasks)",
+      "Operating system and app version",
+      "Whether the CSV file itself uses a non-UTF-8 encoding (e.g., Windows-1252) which could compound the issue",
+      "Whether the crash also occurs with other non-ASCII sources (e.g., emoji typed directly, accented characters) or only with characters typical of legacy encoding conversions"
+    ],
+    "clarity_scores": {
+      "symptom": 0.9,
+      "cause": 0.85,
+      "reproduction": 0.8,
+      "impact": 0.7,
+      "overall_ambiguity": 0.165
+    }
+  }
+}
+```

@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Extracted ~5,000 tasks, v2.2→v2.3 upgrade timing, ~2 weeks ago, and 10-15 second latency. However, missed critical distinctions: description search vs. title search difference, CPU spikes during search, and long descriptions in tasks. The agent correctly identified this gap in its information_gaps section but chose to resolve early rather than asking."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is on the right track — mentions missing/dropped database index, switching from indexed lookup to full-table scan, which is close to the actual cause (FTS5 index replaced by naive LIKE query). The hypothesis is broad but directionally correct. No factual errors in what was captured."
+    },
+    "efficiency": {
+      "score": 3,
+      "rationale": "Only 1 question was asked before resolving, which kept turn count low. However, the agent resolved too early — it should have asked at least one more question to distinguish between title vs. description search and gather environment details. The single question was well-constructed (combined timing and volume), but premature resolution is an efficiency problem in the opposite direction: not enough investigation."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The single question asked was well-crafted — it combined two important threads (timing/trigger and task volume) into one natural question, and successfully elicited the version upgrade correlation. However, only one question was asked, missing the opportunity to probe search type differences which would have been highly diagnostic."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer could start investigating by diffing v2.2 and v2.3 search code, which is reasonable guidance. However, without knowing the title-vs-description distinction, they'd be looking at all search paths rather than being directed to the description/full-text search path specifically. The recommended fix is generic but pointed in the right direction."
+    }
+  },
+  "weighted_total": 3.30,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Excellent first question that efficiently combined two important lines of inquiry (timing and scale)",
+    "Root cause hypothesis correctly identifies index/query regression as likely cause",
+    "Information gaps section honestly acknowledges what wasn't gathered",
+    "Well-structured and detailed triage summary with reproduction steps and test case"
+  ],
+  "notable_weaknesses": [
+    "Resolved after only one exchange — premature closure left critical diagnostic information ungathered",
+    "Failed to discover the title-vs-description search distinction, which is the key diagnostic clue",
+    "Did not gather environment details (OS, hardware) despite the reporter mentioning 'work laptop'",
+    "Did not ask about CPU/resource behavior during slow searches"
+  ],
+  "most_insightful_question": "Did it happen after a specific event — like a TaskFlow update, importing a batch of tasks, or a change in your setup — or did it seem to creep in gradually over time?",
+  "missed_opportunities": [
+    "Ask whether all searches are slow or only certain types (title vs. description/full-text) — this was even listed in information_gaps but not pursued",
+    "Ask about system resource behavior during slow searches (CPU, memory)",
+    "Ask about the nature/size of task content (long descriptions would point to full-text scan issues)",
+    "Ask about the specific OS and hardware since the reporter mentioned 'work laptop'"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most expected information: ~5,000 tasks, slow on description search vs fast on title search, v2.2 to v2.3 regression, ~2 weeks ago timing, 10-15 second searches, and long descriptions. Missed CPU spike during search, though this wasn't volunteered by the reporter and would have required a targeted question about system resource usage."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The summary correctly identifies a change from indexed FTS to a naive scan (LIKE/ILIKE) as the most probable cause, which matches the ground truth exactly (FTS5 index replaced with LIKE query). The isolation to description search path is correctly identified. All facts reported are consistent with ground truth."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions asked across 2 turns, both essential and well-targeted. The first question efficiently combined timing and change-correlation into one ask. The second probed search patterns and surfaced the critical title-vs-description distinction. No wasted turns, no redundancy."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question smartly asked about temporal correlation with changes, which surfaced the version upgrade. The second question about search patterns (first vs subsequent, short vs long queries, any variation) was expertly designed to narrow the search space and directly elicited the title-vs-description distinction — the single most important diagnostic finding. The questions felt conversational rather than formulaic."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, specific investigation path: diff search implementation between v2.2 and v2.3, check for FTS index changes, run EXPLAIN ANALYZE. Reproduction steps are concrete and complete. The proposed test case for CI regression prevention is a valuable addition. A developer could immediately start investigating the v2.3 migration and search query changes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional diagnostic efficiency — extracted all critical information in just 2 turns",
+    "Root cause hypothesis almost exactly matches the actual cause (FTS to naive scan)",
+    "The second question was masterfully constructed to surface the title-vs-description distinction",
+    "Summary includes actionable investigation steps, reproduction steps, and a regression test proposal",
+    "Conversational tone that made the reporter comfortable volunteering additional context naturally"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have further confirmed the full-table-scan hypothesis",
+    "Environment details incomplete — didn't ask about OS or hardware, though correctly noted this is likely irrelevant",
+    "Did not ask about database engine, which is relevant to the specific index type (SQLite FTS5 vs PostgreSQL)"
+  ],
+  "most_insightful_question": "When you search, is it slow every single time, or is there a pattern? For instance, is the first search after opening TaskFlow the worst and then it gets a bit better? And does it matter what you search for — like, are short common words just as slow as longer, more specific queries?",
+  "missed_opportunities": [
+    "Asking whether CPU or memory spikes during the slow searches (would confirm full-scan hypothesis)",
+    "Asking which database backend is in use (SQLite vs PostgreSQL — affects index implementation)",
+    "Asking whether the reporter has tried any workarounds like reindexing or clearing cache"
+  ]
+}

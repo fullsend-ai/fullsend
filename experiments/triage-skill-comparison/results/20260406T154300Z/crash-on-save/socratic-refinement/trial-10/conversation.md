@@ -1,0 +1,44 @@
+# Conversation: crash-on-save x socratic-refinement
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — losing work to crashes is definitely frustrating, and we want to get to the bottom of it.
+
+Could you walk me through what you were doing right before the crash? For example, what kind of task or document were you working on, how long had you been working on it, and what exactly did you click or do to trigger the save? Any detail about the moment leading up to the crash would be really helpful.
+
+---
+
+### reporter
+
+Sure. I have a task list with about 200 tasks in it. I'd been working on it for maybe 20 minutes, adding and editing tasks. When I click the 'Save' button in the toolbar, the app just dies. I see a quick flash of some error dialog — something about 'encoding' I think — and then the whole app closes. I noticed it started happening after I imported a bunch of tasks from a CSV file. The weird thing is auto-save doesn't seem to cause the crash, only when I manually hit Save.
+
+---
+
+### triage-agent
+
+That's really helpful — the connection between the CSV import and the encoding error is a strong clue. Can you tell me a bit about that CSV file? Specifically, where did it come from (another app, a spreadsheet, hand-edited), and did any of the imported tasks contain special characters — things like accented letters, emoji, or symbols that aren't plain English text? Also, if you happen to still have the CSV file, does the crash go away if you delete the imported tasks and try saving again?
+
+---
+
+### reporter
+
+The CSV came from a spreadsheet a coworker sent me — I think they exported it from Excel. Looking at it now, yeah, some of the task names have those fancy curly quotes and em-dashes instead of regular dashes. I don't think there are any emoji or accented letters, just those kinds of typographic characters. And yes, I actually tried deleting the imported tasks and saving worked fine after that. But I need those tasks in there, so that's not really a solution for me.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Manual save crashes with encoding error when tasks contain typographic characters (curly quotes, em-dashes) from CSV import","problem":"The application crashes when the user manually clicks the Save button if the task list contains tasks imported from a CSV file that include typographic characters such as curly/smart quotes and em-dashes. Auto-save does not trigger the crash, only the manual Save button. The user sees a brief error dialog mentioning 'encoding' before the app closes.","root_cause_hypothesis":"The manual save code path uses a character encoding (likely ASCII or a narrow encoding) that cannot handle the typographic Unicode characters (smart quotes U+2018/U+2019/U+201C/U+201D, em-dash U+2014) present in the imported data. The auto-save path likely uses a different serialization method (possibly UTF-8) that handles these characters correctly. The crash is an unhandled encoding exception.","reproduction_steps":["Create or open a task list in TaskFlow","Prepare a CSV file (exported from Excel) containing task names with typographic characters — specifically curly/smart quotes and em-dashes","Import the CSV file into the task list","Click the 'Save' button in the toolbar","Observe the app crashes with a brief encoding error dialog"],"environment":"Not specified — appears to be a desktop application. CSV was exported from Microsoft Excel. Issue is encoding-related and likely platform-independent.","severity":"high","impact":"Any user who imports data containing non-ASCII typographic characters (common in Excel exports) will be unable to manually save their work, leading to data loss. This blocks a core workflow (CSV import + save).","recommended_fix":"Investigate the manual save code path's character encoding handling. Ensure it uses UTF-8 (or the same encoding as auto-save). Specifically: (1) Find where the manual save serializes task data and check the encoding parameter. (2) Compare with the auto-save serialization path to identify the discrepancy. (3) Normalize both paths to use UTF-8. (4) Add proper error handling so encoding failures surface a user-friendly message instead of crashing the app.","proposed_test_case":"Create a task list containing tasks with Unicode typographic characters (smart quotes U+2018/U+2019/U+201C/U+201D, em-dash U+2014). Trigger a manual save and verify it completes successfully without error. Verify the saved file can be reopened and the characters are preserved correctly.","information_gaps":["Exact application version and platform (OS)","Full text of the encoding error dialog","Whether the issue affects all file formats or only a specific save format","Exact encoding used by the manual save vs. auto-save code paths (requires code inspection)"]}
+
+---
+

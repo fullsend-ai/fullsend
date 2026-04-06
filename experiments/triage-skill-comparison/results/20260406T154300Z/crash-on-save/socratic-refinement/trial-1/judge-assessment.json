@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most key information: manual save vs auto-save distinction, CSV import as trigger, ~200 tasks, encoding error flash, and that it started after import. Missing: OS/version (reporter didn't volunteer it but agent didn't ask), whether smaller lists work, and the specific special characters (em-dashes, curly quotes). The agent noted these as information gaps, which is good practice."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis correctly identifies encoding issues from CSV import and the divergence between manual save and auto-save code paths. It's close to the actual cause (non-ASCII characters + payload size threshold causing a panic). The hypothesis doesn't capture the size-dependent aspect (64KB threshold) but the general direction is solid."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "The triage was completed in a single well-crafted question that elicited nearly all the critical information in one response. The agent then immediately produced a comprehensive summary. This is optimal efficiency — one turn of questioning, one turn of resolution."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The opening question was well-structured, asking about context (what they were doing), crash behavior (freeze vs close vs error), and frequency (every time vs sometimes) in a natural, conversational way. It successfully drew out the CSV import connection, auto-save distinction, and encoding error — information the reporter wouldn't have volunteered unprompted. Could have also asked about environment/version."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary provides clear reproduction steps, a plausible root cause hypothesis, and a concrete recommended fix path (compare save code paths, add encoding normalization, improve error handling). A developer could start investigating immediately. The information gaps are honestly noted. Missing the size-dependent aspect means a developer might not immediately find the 64KB threshold, but they'd get there quickly."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted nearly all critical information in a single well-crafted question",
+    "The summary is thorough and well-structured with clear reproduction steps and recommended fixes",
+    "Honest about information gaps rather than guessing or omitting unknowns",
+    "Root cause hypothesis is plausible and close to the actual cause"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about OS/version, which was available and relevant",
+    "Did not probe whether the issue is size-dependent (smaller lists working fine), missing the 64KB threshold aspect",
+    "Did not ask about the specific characters in the CSV that might be causing issues",
+    "Could have asked whether removing the imported tasks restores normal behavior (noted as gap but could have been asked)"
+  ],
+  "most_insightful_question": "Could you walk me through what you were doing when the crash happened? Specifically, what kind of task or content were you working on, and what did the crash actually look like — did the app freeze, close entirely, or show an error message?",
+  "missed_opportunities": [
+    "What operating system and TaskFlow version are you using?",
+    "If you remove the imported tasks, does saving work again?",
+    "Do smaller task lists with the imported CSV data save successfully?",
+    "Do you know what characters or formatting the CSV file contained?"
+  ]
+}

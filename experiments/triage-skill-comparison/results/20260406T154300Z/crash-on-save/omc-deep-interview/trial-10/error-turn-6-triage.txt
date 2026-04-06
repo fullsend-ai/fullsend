@@ -1,0 +1,38 @@
+
+
+```json
+{
+  "action": "resolve",
+  "reasoning": "We have strong clarity across all dimensions. The symptom is clear: app crashes (closes suddenly) on save with a brief 'encoding' dialog flash. The cause is well-established: CSV-imported tasks containing non-ASCII characters (em-dashes, curly quotes) trigger an encoding error on save. Reproduction path is clear: import CSV with special characters, attempt to save. Impact is understood: affects the reporter's main task list of ~200 items, workaround exists (remove imported tasks). This is sufficient for a developer to investigate and fix.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains non-ASCII characters imported from CSV",
+    "problem": "TaskFlow crashes immediately (app closes with a brief 'encoding' error dialog flash) when saving a task list that contains tasks imported from a CSV file with non-ASCII characters such as em-dashes and curly quotes. The crash does not occur with newly created tasks containing only plain ASCII text.",
+    "root_cause_hypothesis": "The save/serialization path likely assumes ASCII or a specific encoding (e.g., Latin-1) and fails when encountering multi-byte or extended Unicode characters (smart quotes, em-dashes) that were imported from the CSV. The encoding error is unhandled, causing the application to crash rather than gracefully reporting or recovering from the error.",
+    "reproduction_steps": [
+      "Install TaskFlow v2.3.1 on macOS 14.2",
+      "Prepare a CSV file containing tasks with non-ASCII characters (em-dashes '—', curly/smart quotes '""')",
+      "Import the CSV file into TaskFlow",
+      "Attempt to save the task list",
+      "Observe: a dialog briefly flashes mentioning 'encoding', then the app closes abruptly"
+    ],
+    "environment": "TaskFlow v2.3.1, macOS 14.2 (Sonoma)",
+    "severity": "high",
+    "impact": "Users who import task data from external sources (CSV) containing non-ASCII characters experience data loss — any unsaved work is lost on crash. The user's primary task list (~200 items) is rendered unsaveable. Workaround exists (remove imported tasks) but defeats the purpose of the import feature.",
+    "recommended_fix": "Investigate the save/serialization code path for encoding assumptions. Ensure the save function uses UTF-8 encoding throughout. Check the CSV import path as well — it may be ingesting data without normalizing or tagging the encoding. Add proper error handling around the encoding step so that even if an encoding issue occurs, the app surfaces a meaningful error dialog rather than crashing. Consider adding encoding validation or normalization at CSV import time.",
+    "proposed_test_case": "Create a task list containing strings with various non-ASCII characters (em-dashes, curly quotes, emoji, accented characters, CJK characters). Verify that save completes without error and that the data round-trips correctly (save then reopen). Additionally, test importing a CSV file with mixed encodings and special characters, then saving.",
+    "information_gaps": [
+      "Exact error message in the flashed dialog (reporter couldn't read it fully)",
+      "Whether the issue is specific to macOS or also affects Windows/Linux",
+      "Whether the CSV file's own encoding (UTF-8 vs. Windows-1252 vs. other) matters at import time",
+      "Whether crash logs exist in macOS Console or TaskFlow's log directory"
+    ],
+    "clarity_scores": {
+      "symptom": 0.9,
+      "cause": 0.85,
+      "reproduction": 0.85,
+      "impact": 0.8,
+      "overall_ambiguity": 0.13
+    }
+  }
+}
+```

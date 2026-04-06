@@ -1,0 +1,7 @@
+```json
+{
+  "action": "ask",
+  "reasoning": "I have a strong lead with the 'encoding' error and the manual-save-only behavior, which points to a divergence between the auto-save and manual save code paths around text serialization. Before resolving, I want to confirm whether the task content contains special characters (unicode, emoji, etc.), because that directly affects whether the fix is about encoding handling in the manual save path specifically or a broader serialization bug. This is a question whose answer changes the root cause hypothesis and fix approach.",
+  "question": "That's really helpful — the 'encoding' error flash and the fact that auto-save works fine are great clues.\n\nOne more question that will help us pin this down: does the task list you're editing contain any special characters? Specifically:\n\n1. Emoji (e.g. ✅, 🔥, 📋)\n2. Non-English or accented characters (e.g. ñ, ü, 日本語)\n3. Special symbols or pasted content from another app (e.g. smart quotes "", bullet points, etc.)\n4. Just plain English text — nothing unusual\n5. Not sure\n\nThis will help us understand whether the encoding error is triggered by specific content or is a general bug in the manual save path."
+}
+```

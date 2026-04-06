@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured the version upgrade (v2.2→v2.3), ~5,000 tasks, 2-week timeline, and 10-15s response times. However, missed critical distinctions: description search vs. title search speed difference, CPU spikes during search, and long task descriptions. These are key diagnostic details that would significantly narrow the root cause."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is impressively close — it correctly suggests a switch from indexed to full-table scan and a missing/dropped search index during migration, which is essentially what happened (FTS5 index replaced by LIKE query). However, it's stated as one of several equal possibilities rather than a leading hypothesis, and it misses the specific description-vs-title distinction that would have sharpened the diagnosis."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "Only one follow-up question was asked before resolving, which sounds efficient — but it resolved too early. The agent should have asked at least one more round of questions to distinguish which search types are slow (title vs. description), whether there are observable system resource effects (CPU/memory), and about task content characteristics. Closing after one exchange left major information gaps that the agent itself acknowledged."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The single question asked was well-constructed — it bundled timeline, potential triggers (import, upgrade, settings change), and scale into one efficient prompt. It successfully extracted the version upgrade correlation and task count. However, the agent never asked diagnostic questions about search behavior patterns (which fields, what types of queries), which would have been the natural next step."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary gives a reasonable starting point — diff search code between versions, check migration for index changes, profile queries. A developer could begin investigating. However, without knowing that description search is slow while title search is fast, the developer would need to discover this themselves, potentially wasting time investigating all search paths rather than focusing on the description/FTS path."
+    }
+  },
+  "weighted_total": 3.20,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Excellent first question that efficiently combined multiple lines of inquiry into a natural prompt",
+    "Root cause hypothesis was remarkably close to the actual cause despite limited information gathering",
+    "Well-structured summary with clear reproduction steps and recommended investigation path",
+    "Correctly identified this as a high-severity regression affecting all users with large task collections"
+  ],
+  "notable_weaknesses": [
+    "Resolved after only one follow-up exchange, leaving significant diagnostic gaps",
+    "Failed to ask about which types of searches are slow (title vs. description), which is the most discriminating diagnostic question",
+    "Never inquired about system resource behavior during searches (CPU spike would point to computation-bound issue)",
+    "Listed information gaps in the summary that it could have asked about before closing"
+  ],
+  "most_insightful_question": "The combined question about timeline, triggering changes, and task volume was effective — it efficiently extracted the version upgrade correlation and dataset scale in one turn.",
+  "missed_opportunities": [
+    "Are all searches slow, or only certain types? (e.g., searching by title vs. searching by description/content)",
+    "Do you notice anything on your system during searches — CPU fan spinning up, high memory usage?",
+    "Do any of your tasks have particularly long descriptions or attached content?",
+    "Have you tried any workarounds, like searching with very specific terms vs. broad terms?"
+  ]
+}

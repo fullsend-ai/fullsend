@@ -1,0 +1,40 @@
+# Conversation: crash-on-save x omo-prometheus
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how frustrating losing work would be. To help us track this down quickly, can you tell me:
+
+1. **What are you saving?** (e.g., a new task, editing an existing task, project settings, etc.)
+2. **What exactly happens when it crashes?** (e.g., does the app close entirely, do you see an error message or dialog, does it freeze/hang?)
+3. **What version of TaskFlow are you running, and on what platform?** (OS, browser if web, etc.)
+
+Also — was this working before and recently broke, or has saving never worked for you?
+
+---
+
+### reporter
+
+I'm saving a task list — I have about 200 tasks in it. When I click Save in the toolbar, the app just closes completely. There's a brief flash of some kind of error dialog — I can barely read it but I think it says something about 'encoding' — and then the whole app is gone. No freeze, just instant crash.
+
+I'm on TaskFlow v2.3.1, macOS 14.2.
+
+It was working fine before. It started happening after I imported a bunch of tasks from a CSV file. If I remove those imported tasks, saving works again.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save when task list contains CSV-imported tasks with encoding issues","problem":"TaskFlow crashes instantly (app closes) when the user clicks Save on a task list containing tasks imported from a CSV file. A brief error dialog mentioning 'encoding' flashes before the app terminates. Removing the imported tasks restores normal save functionality. The user loses unsaved work on each crash.","root_cause_hypothesis":"The CSV import path does not normalize character encoding, allowing non-UTF-8 or malformed characters into task data. The save/serialization code then encounters these characters and throws an unhandled encoding exception, which crashes the app instead of being caught and surfaced gracefully.","reproduction_steps":["Open TaskFlow v2.3.1 on macOS 14.2","Import tasks from a CSV file (particularly one with ~200 tasks or containing non-ASCII/mixed-encoding characters)","Click Save in the toolbar","Observe: app crashes immediately with a brief 'encoding' error flash"],"environment":"TaskFlow v2.3.1, macOS 14.2","severity":"high","impact":"Any user who imports tasks from CSV files risks data loss on every subsequent save. The crash is deterministic and repeatable, with no graceful recovery. Workaround exists (remove imported tasks) but defeats the purpose of the import feature.","recommended_fix":"1. Investigate the save/serialization code path for unhandled encoding exceptions — add proper error handling so encoding failures surface as user-visible errors rather than crashes. 2. Audit the CSV import path to sanitize or re-encode input data to UTF-8 at import time, rejecting or replacing characters that cannot be converted. 3. Consider adding an encoding selector to the CSV import dialog.","proposed_test_case":"Create CSV files with various encodings (Latin-1, Shift-JIS, UTF-8 with BOM, mixed encoding, embedded null bytes) and special characters. Import each into a task list and verify that (a) import either succeeds with clean data or fails with a clear error, and (b) saving a task list containing imported data never crashes the app.","information_gaps":["Exact error message in the crash dialog (reporter could only partially read it)","The specific CSV file contents and its original encoding","Whether the issue reproduces with smaller imports or only at scale (~200 tasks)","Whether crash logs exist in macOS Console/crash reporter"]}
+
+---
+

@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** SSO login redirect loop for users whose email claim from Entra ID doesn't match stored TaskFlow email
+
+## Problem
+After migrating from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. They authenticate successfully with Entra ID but TaskFlow fails to match them to a local account and restarts the auth flow. Affected users fall into two categories: those using plus-addressed emails (e.g., jane+taskflow@company.com) and those whose email was changed or aliased during the Okta-to-Entra migration. Users with identical plain email addresses in both systems are unaffected.
+
+## Root Cause Hypothesis
+TaskFlow's SSO callback handler matches the authenticated user to a local account using the email claim from the identity provider's token. Entra ID likely returns a different email value than Okta did for these users — either stripping or normalizing the plus-address tag, or returning the new/primary email instead of the alias. When the lookup fails (no matching local user), TaskFlow has no error path and restarts the authentication flow, causing the redirect loop instead of surfacing an error.
+
+## Reproduction Steps
+  1. Have a user account in TaskFlow whose stored email uses plus addressing (e.g., jane+taskflow@company.com) or whose email was changed/aliased during the Okta-to-Entra migration
+  2. Attempt to log in to TaskFlow via Entra ID SSO
+  3. Authenticate successfully in Entra ID
+  4. Observe the redirect back to TaskFlow immediately triggers another redirect to Entra ID, looping indefinitely
+
+## Environment
+TaskFlow with SSO authentication, recently migrated from Okta to Microsoft Entra ID. Entra ID app registration and redirect URIs verified correct. All users cleared cookies before the switch.
+
+## Severity: high
+
+## Impact
+~30% of users are completely locked out of TaskFlow. No workaround is available to them short of changing their stored email or Entra ID configuration.
+
+## Recommended Fix
+1. Inspect the SSO callback handler to identify which claim is used for user matching (e.g., email, preferred_username, UPN, sub/oid). 2. Compare the claim value Entra ID actually sends (check token payload or debug logs) against what's stored in TaskFlow's user table for affected users. 3. Fix the matching logic — options include: (a) match on a stable, provider-agnostic identifier like the OIDC `sub` claim or Entra `oid`, (b) normalize emails before comparison (e.g., strip plus tags, case-fold), or (c) add an alias/mapping table so users can have multiple linked identifiers. 4. Add a proper error page when SSO authentication succeeds but no local user is found, instead of silently restarting the auth flow — this would prevent redirect loops for any future matching failures.
+
+## Proposed Test Case
+Create test users with plus-addressed emails and with emails that differ between the identity provider token and the local user store. Verify that SSO login successfully matches them to the correct local account. Also verify that when no match is found, the user sees an actionable error message instead of a redirect loop.
+
+## Information Gaps
+- Which specific claim (email, UPN, preferred_username, sub) TaskFlow currently uses for user matching
+- Whether TaskFlow logs the incoming token claims on auth failure — if not, enabling debug logging would confirm the exact mismatch
+- Whether a bulk remediation (updating stored emails to match Entra ID) is acceptable as a short-term fix while the matching logic is improved

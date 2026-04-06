@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: ~5,000 tasks, slow on description search vs fast on title search, v2.2→v2.3 regression, ~2 weeks ago, 10-15 second searches, and long descriptions. The only missing item from the expected list is the CPU spike during search, which the agent never asked about. Otherwise very thorough."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The top hypothesis — that an FTS index was dropped or not migrated during the v2.3 upgrade, forcing a sequential scan — essentially matches the ground truth (v2.3 switched from FTS5 to naive LIKE queries, migration didn't preserve the FTS index). The ranked alternatives are also plausible and well-reasoned. All factual claims in the summary are consistent with the ground truth."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions were asked, and both were essential and well-targeted. The first question efficiently combined timing/trigger and dataset size into one turn. The second question drilled into the specific search behavior that revealed the critical title-vs-description distinction. No wasted turns at all."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions showed genuine diagnostic reasoning. The first combined multiple high-value queries (timing, correlating events, dataset size) efficiently. The second question was particularly insightful — asking about search type differentiation (title vs description) directly surfaced the key diagnostic signal that pointed to the indexing issue. The reporter even noted 'Good question' and volunteered the long-description detail as a result."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable. It includes clear reproduction steps, a ranked root cause hypothesis that's essentially correct, a concrete recommended fix (diff migrations, check FTS index, review query path), and even a proposed regression test. A developer could immediately start by diffing v2.2 and v2.3 migration scripts and search query logic."
+    }
+  },
+  "weighted_total": 4.80,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extremely efficient — extracted nearly all key information in just 2 questions",
+    "Root cause hypothesis accurately identified the FTS index migration issue as the top candidate",
+    "The second question masterfully elicited the title-vs-description distinction, which is the critical diagnostic signal",
+    "Reproduction steps are concrete and actionable, including a comparison methodology between v2.2 and v2.3",
+    "Recommended fix is specific and directly addresses the actual root cause"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource behavior during searches, missing the CPU spike observation",
+    "Did not capture OS/hardware details (Ubuntu 22.04, ThinkPad T14, 32GB RAM), though correctly noted these are less relevant given the version-correlated regression",
+    "Did not ask about or identify the specific database backend (SQLite), which would have further sharpened the hypothesis"
+  ],
+  "most_insightful_question": "Does the slowness happen on every search, or is it specific to certain types of queries? For example, is searching for a single common word just as slow as searching for an exact task title?",
+  "missed_opportunities": [
+    "Asking whether CPU or memory usage spikes during the slow searches would have added supporting evidence for the full-table-scan hypothesis",
+    "Asking about the database backend (SQLite vs PostgreSQL) would have narrowed the root cause hypothesis further"
+  ]
+}

@@ -1,0 +1,54 @@
+# Conversation: slow-search x structured-triage
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help us investigate the slowness, could you walk us through the steps to reproduce the issue? Specifically:
+
+- What are you searching for? (e.g., a keyword, a tag, a specific phrase)
+- How many tasks do you have approximately?
+- Does it happen with every search query, or only certain ones (like broad terms vs. specific ones)?
+
+This will help us narrow down where the bottleneck might be.
+
+---
+
+### reporter
+
+I have about 5,000 tasks built up over the past couple years. The weird thing is it's not ALL searches that are slow — when I search by task title, it's still pretty fast. But when I'm doing a full-text search across task descriptions, that's when it crawls to a halt. I usually search for keywords like project names or action items that are buried in the descriptions. Some of my tasks have really long descriptions because I paste in meeting notes and stuff. It's pretty consistent — any full-text search on descriptions is slow, doesn't matter if the term is broad or specific.
+
+---
+
+### triage-agent
+
+Thanks for those details — that's really helpful context, especially the distinction between title search and full-text description search.
+
+Could you share a few environment details so we can try to reproduce this on our end?
+
+- What OS are you running? (e.g., Windows 11, macOS Sonoma, Ubuntu 22.04)
+- Are you using TaskFlow in a browser or the desktop app? If browser, which one?
+- What version of TaskFlow are you on? (You can usually find this under Settings → About)
+
+---
+
+### reporter
+
+I'm on Ubuntu 22.04, it's a ThinkPad T14 with 32GB RAM. I'm using the desktop app. I'm on version 2.3 — actually, I upgraded from 2.2 to 2.3 about two weeks ago, and now that I think about it, the slowness started around that same time. Not sure if that's related or just a coincidence.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text search on task descriptions extremely slow (~10-15s) since v2.3 upgrade","problem":"Full-text search across task descriptions takes 10-15 seconds to return results for a user with ~5,000 tasks, many with long descriptions (pasted meeting notes). Title-only search remains fast. The slowness is consistent across all full-text queries regardless of search term specificity. The issue appeared around the time of upgrading from v2.2 to v2.3.","root_cause_hypothesis":"The v2.3 upgrade likely introduced a regression in the full-text search implementation for task descriptions — possibly a missing or dropped search index on the descriptions field, a change in the query strategy (e.g., switching from indexed search to sequential scan), or a new feature (like search ranking or snippet extraction) that scales poorly with description length and task count.","reproduction_steps":["Create or import a dataset with ~5,000 tasks, including tasks with long descriptions (multi-paragraph meeting notes)","Open TaskFlow desktop app","Use the search feature to perform a full-text search across task descriptions for any keyword","Observe that results take 10-15 seconds to return","Compare with a title-only search for the same keyword, which should return quickly"],"environment":"Ubuntu 22.04, ThinkPad T14 with 32GB RAM, TaskFlow desktop app v2.3 (upgraded from v2.2 approximately two weeks ago)","severity":"high","impact":"Users with large task databases (~5,000+ tasks) who rely on full-text search across descriptions are experiencing severe performance degradation, making a core feature effectively unusable for daily workflows. Title search users are unaffected.","recommended_fix":"Diff the search implementation between v2.2 and v2.3 to identify what changed. Likely areas: (1) check whether a full-text index on the descriptions column/field was dropped or is no longer being used, (2) check for query plan changes (EXPLAIN/ANALYZE if SQL-backed), (3) look for new processing on descriptions during search (e.g., snippet generation, relevance scoring) that might not scale. Profile the full-text search query with a 5,000-task dataset to confirm the bottleneck.","proposed_test_case":"Performance regression test: seed a database with 5,000 tasks including 500+ tasks with descriptions over 1,000 characters. Execute a full-text description search and assert that results are returned within 2 seconds. Run this test against both v2.2 and v2.3 to confirm the regression and validate the fix.","information_gaps":["No confirmation whether the slowness started exactly with the v2.3 upgrade or just around the same time","No database/storage backend details (SQLite, PostgreSQL, etc.)","No profiling data or logs showing where time is spent during the search"]}
+
+---
+

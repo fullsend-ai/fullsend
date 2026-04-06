@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured the version upgrade regression (v2.2→v2.3), ~5,000 tasks, ~2 weeks ago timing, and 10-15 second latency. However, missed critical distinctions: description search vs title search difference, CPU spikes during search, and long descriptions in some tasks. The agent noted 'exact search queries that are slow' as an information gap but didn't ask the follow-up question to find out."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The information captured is accurate and consistent with ground truth. The root cause hypothesis is close — it correctly identifies a likely lost index or switch from indexed to unoptimized search, which is essentially what happened (FTS5 index → LIKE query). However, it doesn't pinpoint the description-vs-title distinction that would have narrowed it further."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "Only 1 follow-up question was asked before resolving, which sounds efficient but is actually premature. The agent closed the triage after just one exchange, leaving several important diagnostic questions unasked. The single question was well-structured but the agent should have asked at least 1-2 more rounds to distinguish title vs description search and probe CPU/resource behavior."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The initial question was well-crafted — offering multiple-choice options to quickly identify the change vector, and bundling the task count question efficiently. The numbered options made it easy for the reporter to respond precisely. However, the agent failed to ask any follow-up questions that would differentiate search types or probe system behavior."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer could start investigating by diffing v2.2 and v2.3 search code, which is reasonable guidance. However, without knowing that only description search is slow (title search is fine), the developer would need to discover this themselves. The reproduction steps are reasonable but generic. The recommendation to check indexes is on the right track but lacks the specificity that one more question would have provided."
+    }
+  },
+  "weighted_total": 3.15,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Excellent initial question design with multiple-choice format that efficiently identified the version upgrade as the trigger",
+    "Root cause hypothesis correctly identifies the general class of problem (lost index / unoptimized search path)",
+    "Good severity assessment and impact analysis for power users",
+    "Clean, well-structured summary format with actionable reproduction steps"
+  ],
+  "notable_weaknesses": [
+    "Premature resolution after only one exchange — critical diagnostic information left on the table",
+    "Failed to discover the title-vs-description search distinction, which is the single most diagnostic clue",
+    "Did not ask about CPU/memory behavior during searches",
+    "Listed information gaps in the summary but didn't attempt to fill them before closing"
+  ],
+  "most_insightful_question": "The initial multiple-choice question effectively narrowed the cause to a version upgrade rather than data growth, which was the right first diagnostic step",
+  "missed_opportunities": [
+    "Are all searches slow, or only certain types? (e.g., searching by title vs searching across descriptions)",
+    "Do you notice any CPU or memory spikes when searching?",
+    "Do any of your tasks have particularly long descriptions or unusual content?",
+    "Have you tried clearing cache or reindexing since the upgrade?"
+  ]
+}

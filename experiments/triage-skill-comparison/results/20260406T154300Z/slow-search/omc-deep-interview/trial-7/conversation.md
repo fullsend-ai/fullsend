@@ -1,0 +1,30 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! A few details would really help us dig in: roughly how many tasks do you have in TaskFlow, and can you tell us what you're typically searching for when it's slow — is it a keyword search, filtering by label/status, or something else? Also, did the slowdown start suddenly (e.g., after an update or after importing a batch of tasks), or was it more gradual?
+
+---
+
+### reporter
+
+I have about 5,000 tasks built up over the past couple years. The slowness is specifically when I search by keyword across task descriptions — like searching for a phrase I know is in a task's description. Searching by title is still quick, it's just the description search that crawls. And now that you mention it, I think it started around 2 weeks ago when I upgraded from v2.2 to v2.3. It was basically instant before that.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Keyword search across task descriptions regressed to 10-15s in v2.3 (title search unaffected)","problem":"After upgrading from v2.2 to v2.3, keyword searches across task descriptions take 10-15 seconds for a user with ~5,000 tasks. Previously this was near-instant. Searching by title remains fast, isolating the regression to description-field search.","root_cause_hypothesis":"The v2.3 upgrade likely changed how description search is executed — most probably a dropped or missing full-text index on the task descriptions column, a query planner regression, or a switch from indexed search to unoptimized LIKE/ILIKE scanning. The fact that title search is unaffected suggests title search still uses an index while description search does not.","reproduction_steps":["Set up TaskFlow v2.3","Populate the database with ~5,000 tasks with non-trivial descriptions","Perform a keyword search targeting task descriptions","Observe query latency (expected: 10-15 seconds)","Compare against v2.2 with the same dataset (expected: near-instant)"],"environment":"TaskFlow v2.3 (upgraded from v2.2), ~5,000 tasks, work laptop (specific OS/hardware unknown but not likely relevant given the regression is version-correlated)","severity":"medium","impact":"Users with large task counts experience significant delays on description search, degrading daily workflow. Title search still works as a partial workaround. Likely affects all users with non-trivial task volumes on v2.3.","recommended_fix":"Diff the database migration and search query logic between v2.2 and v2.3. Check whether a full-text or B-tree index on the task descriptions column was dropped, altered, or never created in the v2.3 migration. Run EXPLAIN ANALYZE on the description search query to confirm a sequential scan. Restore or add the appropriate index. If the search implementation changed (e.g., from indexed full-text search to application-level filtering), revert or optimize the new approach.","proposed_test_case":"Performance test: with 5,000+ tasks, a keyword search across descriptions must return results in under 1 second. Run this test against both v2.2 and v2.3 schemas to catch regressions.","information_gaps":["Exact database engine and version in use","Whether other v2.3 users report the same issue or this is dataset-specific","v2.3 changelog or migration diff (not yet inspected)"],"clarity_scores":{"symptom":0.9,"cause":0.75,"reproduction":0.8,"impact":0.7,"overall_ambiguity":0.195}}
+
+---
+

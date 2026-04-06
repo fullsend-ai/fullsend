@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts were captured: ~5,000 tasks, slow on description search vs fast on title search, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 second latency, and long descriptions. The only item not explicitly surfaced was CPU spikes during search, but the reporter never mentioned it in conversation (it's ground truth the reporter didn't volunteer). The triage also extracted additional useful context like the 2-year usage history and the meeting-notes pattern."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is very close — it correctly identifies a likely switch from indexed/FTS lookup to a full table scan on descriptions, and correctly notes the two search paths diverge. It doesn't pinpoint the exact mechanism (SQLite FTS5 → LIKE query due to failed migration), but the hypothesis is directionally accurate and would lead a developer to the right area. The summary accurately reflects all reporter-stated facts."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions were asked, and both were essential and well-targeted. The first established timing, correlation with upgrades, and dataset size. The second narrowed down the specific search type affected. No wasted turns, no redundancy. The agent resolved in the minimum number of exchanges needed."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question efficiently combined three related inquiries (timing, correlation with changes, dataset size). The second question was particularly insightful — asking about title vs description search filters directly uncovered the key differentiating symptom that points to the root cause. The reporter explicitly said 'Good question — now that you mention it' indicating this drew out information they wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable. It provides clear reproduction steps with specific dataset requirements, a well-reasoned root cause hypothesis pointing to the exact code path to investigate, concrete debugging steps (diff search paths, check indexes, EXPLAIN/ANALYZE), and even a proposed regression test. A developer could immediately start investigating the v2.3 description search path."
+    }
+  },
+  "weighted_total": 4.80,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extremely efficient — extracted nearly all critical information in just 2 questions",
+    "The second question about title vs description search was a masterful diagnostic probe that uncovered the key differentiating symptom",
+    "Root cause hypothesis correctly identified the FTS/index regression pattern",
+    "Summary includes concrete, actionable debugging steps and a proposed regression test",
+    "Reproduction steps are specific and realistic"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have further confirmed the full-scan hypothesis",
+    "Environment details (OS, hardware) were noted as gaps but could have been quickly asked — though the agent correctly judged them low-priority",
+    "Could have asked whether the reporter had tried reindexing or clearing cache as a diagnostic step"
+  ],
+  "most_insightful_question": "does the slowness happen on *every* search, or only certain kinds? For instance, is searching for a single common word just as slow as searching for something very specific? And does it matter whether you're searching task titles only or across descriptions/comments too (if you use those filters)?",
+  "missed_opportunities": [
+    "Asking about CPU or memory usage during slow searches would have strengthened the full-scan hypothesis",
+    "Asking whether the reporter had tried any workarounds like reindexing could have confirmed the missing FTS index theory"
+  ]
+}

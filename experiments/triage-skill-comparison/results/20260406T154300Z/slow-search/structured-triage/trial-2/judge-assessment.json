@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most expected information: ~5,000 tasks, slow on description search vs fast on title search, v2.3 upgrade correlation, ~2 weeks timing, 10-15 second delays, and long descriptions. Missed CPU spike detail, but that wasn't volunteered and would have required a specific follow-up question."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it correctly identifies the likely switch from indexed search to naive LIKE/substring scanning, the missing or dropped full-text index on descriptions, and that the title search path remains indexed. This matches the actual cause (FTS5 index replaced by LIKE query) almost exactly."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent turns to reach a comprehensive and accurate triage summary. Every question was well-targeted. The first question established the baseline and timeline, the second elicited reproduction details and task count. The reporter volunteered the critical title-vs-description distinction in response to well-framed questions."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Questions were well-structured and diagnostic. The first question efficiently targeted both baseline performance and timeline. The second bundled reproduction steps, scale, and query patterns effectively. The multi-part format in the second question successfully prompted the reporter to think critically and discover the title-vs-description distinction themselves. Could have asked about CPU/resource usage or system monitoring to get the CPU spike detail."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it identifies the specific version, the specific feature (description search), provides a clear root cause hypothesis pointing to migration scripts and index changes, includes concrete debugging steps (EXPLAIN/ANALYZE), reproduction steps with specific numbers, and even a proposed test case with acceptance criteria. A developer could start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extremely efficient — reached a high-quality conclusion in just 2 turns",
+    "Root cause hypothesis almost perfectly matches the actual cause without seeing any code",
+    "The second question's structure prompted the reporter to self-discover the critical title-vs-description distinction",
+    "Recommended fix steps are concrete and correctly ordered for investigation",
+    "Proposed test case is specific and regression-oriented"
+  ],
+  "notable_weaknesses": [
+    "Did not capture CPU spike behavior during searches",
+    "Environment details are incomplete — dismissed OS/hardware as 'likely irrelevant' rather than capturing what was available",
+    "Did not ask whether the reporter had tried any workarounds or troubleshooting steps"
+  ],
+  "most_insightful_question": "Does every search take 10-15 seconds, or only certain queries? — This question directly led the reporter to test and discover that title search was fast while description search was slow, which is the key diagnostic finding.",
+  "missed_opportunities": [
+    "Could have asked about system resource usage during slow searches (would have revealed CPU spike)",
+    "Could have asked about the specific upgrade path — clean install vs migration — which is relevant to whether the FTS index was properly migrated",
+    "Could have asked if the reporter had tried reindexing or clearing cache, which would have confirmed the index hypothesis"
+  ]
+}
