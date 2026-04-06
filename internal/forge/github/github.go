@@ -655,6 +655,12 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 
 // GetTokenScopes returns the OAuth scopes granted to the current token
 // by inspecting the X-OAuth-Scopes header from a lightweight API call.
+//
+// GitHub only populates X-OAuth-Scopes for classic PATs and OAuth tokens.
+// Fine-grained PATs and GitHub App installation tokens return an empty
+// header, making scope introspection impossible for those token types.
+// There is no alternative API to query fine-grained PAT permissions.
+// See: https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#missing-or-incorrect-x-oauth-scopes-header
 func (c *LiveClient) GetTokenScopes(ctx context.Context) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodHead, "/user", nil)
 	if err != nil {
@@ -665,7 +671,7 @@ func (c *LiveClient) GetTokenScopes(ctx context.Context) ([]string, error) {
 
 	header := resp.Header.Get("X-OAuth-Scopes")
 	if header == "" {
-		// Fine-grained tokens and GitHub App tokens don't have this header.
+		// Fine-grained tokens and GitHub App tokens don't populate this header.
 		// Return nil to indicate scope introspection isn't available.
 		return nil, nil
 	}

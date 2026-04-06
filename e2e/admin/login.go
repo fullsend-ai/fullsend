@@ -26,7 +26,7 @@ func verifyGitHubSession(page playwright.Page, screenshotDir string, logf func(s
 
 	if strings.Contains(url, "/login") || strings.Contains(url, "/session") {
 		saveDebugScreenshot(page, screenshotDir, "session-expired", logf)
-		return fmt.Errorf("session is not authenticated: navigating to /settings/profile redirected to %s — re-export the storageState locally", url)
+		return fmt.Errorf("session is not authenticated: navigating to /settings/profile redirected to %s\n\nThe stored browser session has expired. To fix:\n  1. make e2e-export-session   # re-login and export a fresh session\n  2. make e2e-upload-session   # export + upload to GitHub secret", url)
 	}
 
 	logf("[session] Session is valid")
