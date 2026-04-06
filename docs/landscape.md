@@ -131,6 +131,14 @@ Steve Yegge's open-source multi-agent orchestration system, described as "Kubern
 
 **Relevance to fullsend:** Gas Town's use of git as crash-recovery persistence validates the "repo is the coordinator" principle — all state is in git, not in ephemeral coordinator memory. However, it uses a coordinator agent (the Mayor), which conflicts with fullsend's position that coordination should happen through branch protection, CODEOWNERS, and status checks rather than through a coordinator agent. The Refinery merge queue concept is relevant to how we'd sequence autonomous merges.
 
+### Ambient Code Platform (ACP)
+
+[GitHub](https://github.com/ambient-code/platform)
+
+Kubernetes-native pattern: custom resources and an operator drive Jobs or Pods that run agent CLIs (with UI for session management). Often discussed alongside Red Hat Emerging Tech’s [cloud-native ambient agents](https://next.redhat.com/2026/01/21/architecting-cloud-native-ambient-agents-patterns-for-scale-and-control/) write-up as a reference architecture for agents on Kube.
+
+**Relevance to fullsend:** Useful as a **wiring reference** for running agents on Kubernetes. For **why it is a weak match** to our reliability, security, and scale goals—extra controller, UI/chat-first vs SCM–event automation, friction with Tekton-style pipelines, shared-workspace injection risk, limits of plain-Pod execution for tasks like image builds—see [agent-infrastructure.md](problems/agent-infrastructure.md#ambient-code-platform-acp).
+
 ## Agent connectivity and protocol gateways
 
 A separate category from review tools and end-to-end orchestrators: **proxies and gateways** that sit on the paths agents already use to reach models, tools, and (in some designs) other agents. They standardize protocols and centralize policy instead of replacing git-mediated coordination.
