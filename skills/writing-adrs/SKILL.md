@@ -93,12 +93,29 @@ The threat model establishes least-privilege as a cross-cutting principle
 
 If this decision builds on or relates to another ADR, say so in Context.
 
+### Normative specs (`docs/normative/`)
+
+- **Use** when the decision needs **byte-level or field-level** contracts, JSON
+  Schema (or equivalent), **canonical YAML** or snapshots, or **compatibility
+  / conformance** artifacts aimed at **multiple implementations** or automated
+  checks.
+- **Do not use** for open-ended trade-off exploration (that stays in **problem
+  docs**), for a **single architectural choice** with no large artifact (keep
+  that in the **ADR only**), or for duplicating
+  [ADR 0003](../../docs/ADRs/0003-org-config-repo-convention.md)-style
+  repository convention **without** a versioned contract (do not invent a
+  normative subtree for that).
+- **Relationship:** the **ADR** states the decision, high-level versioning
+  expectations, and **links** to `docs/normative/<topic>/v<major>/...`; the
+  normative folder holds the detailed, **versioned** contract (`v1`, `v2`, …).
+
 ## Checklist
 
 Follow these steps in order:
 
-1. **Find the next number.** List `docs/ADRs/` and pick the next sequential
-   four-digit number.
+1. **Find the next number.** List `docs/ADRs/` on current `main`, then scan
+   **open pull requests** for new `docs/ADRs/NNNN-*.md` files so you do not
+   collide with in-flight ADRs. Pick the lowest unused four-digit `NNNN`.
 2. **Read the template.** Use `docs/ADRs/0000-adr-template.md` exactly.
 3. **Fill in frontmatter.** `relates_to` must reference existing filenames
    (without `.md`) from `docs/problems/`. Use `"*"` only for ADRs that truly
