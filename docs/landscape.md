@@ -1,6 +1,6 @@
 # Landscape Analysis
 
-A survey of AI-driven code review systems, with analysis of how they relate to the fullsend vision of fully autonomous merge-to-production.
+A survey of AI-driven code review systems and **adjacent agent infrastructure** (orchestration, protocol gateways), with analysis of how they relate to the fullsend vision of fully autonomous merge-to-production.
 
 > **Conducted: 2026-03-06.** This landscape is moving fast. This document will rot. If you're reading this months after the date above, it likely needs updating or removing. Treat the specific tool capabilities and pricing as potentially stale; the architectural patterns and gaps analysis may age better.
 
@@ -138,6 +138,22 @@ Steve Yegge's open-source multi-agent orchestration system, described as "Kubern
 Kubernetes-native pattern: custom resources and an operator drive Jobs or Pods that run agent CLIs (with UI for session management). Often discussed alongside Red Hat Emerging Tech’s [cloud-native ambient agents](https://next.redhat.com/2026/01/21/architecting-cloud-native-ambient-agents-patterns-for-scale-and-control/) write-up as a reference architecture for agents on Kube.
 
 **Relevance to fullsend:** Useful as a **wiring reference** for running agents on Kubernetes. For **why it is a weak match** to our reliability, security, and scale goals—extra controller, UI/chat-first vs SCM–event automation, friction with Tekton-style pipelines, shared-workspace injection risk, limits of plain-Pod execution for tasks like image builds—see [agent-infrastructure.md](problems/agent-infrastructure.md#ambient-code-platform-acp).
+
+## Agent connectivity and protocol gateways
+
+A separate category from review tools and end-to-end orchestrators: **proxies and gateways** that sit on the paths agents already use to reach models, tools, and (in some designs) other agents. They standardize protocols and centralize policy instead of replacing git-mediated coordination.
+
+### Agent Gateway
+
+[GitHub](https://github.com/agentgateway/agentgateway) | [Documentation](https://agentgateway.dev/docs/)
+
+Open-source proxy built around AI-native protocols — [MCP](https://modelcontextprotocol.io/introduction) for tool and data access, [A2A](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/) for agent-to-agent traffic — plus an OpenAI-compatible **LLM gateway** surface toward major providers. It targets the same connectivity problems as ad-hoc SDK configuration: multiple transports (stdio, HTTP, SSE, streamable HTTP), OAuth toward tools, OpenAPI-backed MCP, unified routing to models with budget and failover, and optional **Kubernetes Inference Gateway**–style routing signals (utilization, queues, adapters).
+
+**Controls and observability:** Multi-layer **guardrails** (pattern filters, vendor moderation APIs, custom webhooks), authentication (JWT, API keys, OAuth), **RBAC** expressed with a CEL policy engine, rate limiting, TLS, and **OpenTelemetry** for metrics, logs, and traces.
+
+**Relevance to fullsend:** This maps most directly to [agent-infrastructure.md](problems/agent-infrastructure.md) (where egress and tool access are enforced), [architecture.md](architecture.md) (sandbox network regulation and observability), and [governance.md](problems/governance.md) (org-wide guardrails and who can change gateway policy). Centralizing LLM and MCP traffic can improve **attribution, spend control, and consistent tool allowlists** — the same problems called out for headless runtimes that cannot rely on a laptop's implicit trust boundary.
+
+It does **not** substitute for fullsend's intent tiering, zero-trust review composition, or **repo-as-coordinator** semantics. In particular, adopting an A2A gateway does not mean agents should coordinate merge decisions or trust through a side channel; see [agent-architecture.md](problems/agent-architecture.md#how-agents-communicate). A gateway is one way to implement **controlled egress** and **edge guardrails** for the traffic agents generate while still using GitHub-visible mechanisms for coordination.
 
 ## Architectural patterns in the field
 

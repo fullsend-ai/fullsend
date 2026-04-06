@@ -198,6 +198,10 @@ Agent evaluations in Konflux would run as Tekton tasks, so cost includes both LL
 
 The [lightspeed-evaluation](https://github.com/instructlab/lightspeed-evaluation) framework from the InstructLab project is worth noting because of its proximity to the Red Hat ecosystem that konflux-ci operates in.
 
+### Agent infrastructure
+
+Konflux runs work as Kubernetes/Tekton workloads; anything in [agent infrastructure](../../agent-infrastructure.md#challenges-in-headless-and-cluster-hosted-runtimes) about headless and cluster-hosted agents applies here directly.
+
 ### Human factors
 
 Konflux-ci is an open-source project. Contributors participate for reasons beyond a paycheck — learning, building reputation, solving interesting problems, and being part of a community. Most konflux-ci contributors are paid engineers, which adds a professional dimension to the concerns about role shift and job security.

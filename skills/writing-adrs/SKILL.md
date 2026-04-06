@@ -14,6 +14,36 @@ An ADR records exactly **one** decision. Problem docs explore; ADRs decide.
 `docs/architecture.md` and problem docs are the current state (mutable). ADRs
 are point-in-time records (immutable once accepted).
 
+### ADRs are immutable records
+
+Once an ADR is accepted, its content is frozen. It captures the decision, the
+context that existed at that time, and the consequences as understood then. When
+new information arrives or circumstances change, write a **new** ADR that
+supersedes the old one -- do not edit the original's Context, Decision, or
+Consequences sections.
+
+**Acceptable modifications to an accepted ADR:**
+
+- Changing its `status` (e.g., from Accepted to Deprecated or Superseded)
+- Adding a link or note pointing to a newer ADR that supersedes it
+
+**Not acceptable:**
+
+- Rewriting the Context to reflect updated understanding
+- Editing the Decision to match a revised approach
+- Modifying Consequences based on what actually happened
+
+If a decision turned out to be wrong, that is exactly what supersession is for.
+The original ADR remains as a historical record of what was decided and why.
+
+### docs/architecture.md is always current
+
+Unlike ADRs, `docs/architecture.md` is a **living document**. It must always
+reflect the current state of architectural decisions. When a new ADR is accepted
+(or when an ADR supersedes an older one), `docs/architecture.md` must be updated
+to reflect the latest decision. It is the single place a reader can go to
+understand what is true *now*, without tracing a chain of ADRs.
+
 ## When to Use
 
 - A specific decision has emerged from discussion in a problem doc
@@ -141,6 +171,8 @@ If the ADR partially answers a question, add a parenthetical:
 - You're rewriting a section of architecture.md -- make a surgical edit instead
 - `relates_to` lists more than 3 problem docs -- the decision may be too broad
 - You didn't run `make lint` -- stop and run it
+- You're editing the Context, Decision, or Consequences of an accepted ADR --
+  write a new superseding ADR instead
 
 ## Common Mistakes
 
@@ -153,3 +185,5 @@ If the ADR partially answers a question, add a parenthetical:
 | Rewriting existing doc sections | Make surgical additions only |
 | Skipping linters | Run `make lint` before committing |
 | Wrong ADR number | Check existing files in `docs/ADRs/` first |
+| Editing an accepted ADR's content | Write a new ADR that supersedes it |
+| Forgetting to update architecture.md | It must always reflect current decisions |

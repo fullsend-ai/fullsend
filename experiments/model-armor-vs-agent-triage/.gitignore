@@ -1,0 +1,4 @@
+# Exclude raw agent outputs and scan results (large, per-run)
+results/*/*.txt
+results/*/*.json
+results/*/summary.md

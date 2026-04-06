@@ -1,0 +1,94 @@
+// Package forge defines the interface for interacting with git forges
+// (GitHub, GitLab, Forgejo). All forge-specific operations flow through
+// the Client interface, keeping the rest of the codebase forge-agnostic.
+package forge
+
+import (
+	"context"
+	"errors"
+)
+
+// ConfigRepoName is the conventional name for the org-level fullsend
+// configuration repository. See ADR-0003.
+const ConfigRepoName = ".fullsend"
+
+// ErrNotFound indicates a requested resource was not found on the forge.
+var ErrNotFound = errors.New("not found")
+
+// IsNotFound reports whether err indicates a resource was not found.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
+
+// Repository represents a repository on a git forge.
+type Repository struct {
+	Name          string
+	FullName      string
+	DefaultBranch string
+	Private       bool
+	Archived      bool
+	Fork          bool
+}
+
+// ChangeProposal represents a pull request or merge request.
+type ChangeProposal struct {
+	URL    string
+	Title  string
+	Number int
+}
+
+// WorkflowRun represents a CI/CD workflow execution.
+type WorkflowRun struct {
+	ID         int
+	Name       string
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", etc.
+	HTMLURL    string
+	CreatedAt  string
+}
+
+// Installation represents an app installation on an org.
+type Installation struct {
+	ID      int
+	AppID   int
+	AppSlug string
+}
+
+// Client abstracts all git forge operations.
+// Implementations exist for GitHub (and eventually GitLab, Forgejo).
+type Client interface {
+	// Repository operations
+	ListOrgRepos(ctx context.Context, org string) ([]Repository, error)
+	GetRepo(ctx context.Context, owner, repo string) (*Repository, error)
+	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
+	DeleteRepo(ctx context.Context, owner, repo string) error
+
+	// File operations
+	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+	CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+
+	// Branch operations
+	CreateBranch(ctx context.Context, owner, repo, branchName string) error
+	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
+
+	// Change proposals (PRs/MRs)
+	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error)
+	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
+
+	// Authentication
+	GetAuthenticatedUser(ctx context.Context) (string, error)
+
+	// Secrets and variables
+	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
+	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
+	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
+
+	// CI/Workflow operations
+	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
+	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
+
+	// App installation operations
+	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
+}

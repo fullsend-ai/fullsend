@@ -15,6 +15,11 @@ Date: YYYY-MM-DD
 
 {Proposed | Undecided | Accepted | Deprecated | Superseded}
 
+<!-- Once this ADR is Accepted, its content is frozen. Do not edit the Context,
+     Decision, or Consequences sections. If circumstances change, write a new
+     ADR that supersedes this one. Only status changes and links to superseding
+     ADRs should be added after acceptance. -->
+
 ## Context
 
 What is the issue that we're seeing that motivates this decision or change?

@@ -1,0 +1,1608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fullsend Document Graph</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.4/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1e1e1e; color: #c9d1d9; }
+  #cy { width: 100%; height: 100vh; cursor: grab; position: relative; z-index: 0; }
+  #cy:active { cursor: grabbing; }
+  #dot-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 5;
+  }
+  #labels {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 6; overflow: hidden;
+  }
+  .node-label {
+    position: absolute; white-space: nowrap; font-size: 11px; color: #dadada;
+    transform: translate(-50%, 0); pointer-events: none;
+    text-shadow: 0 0 4px #1e1e1e, 0 0 4px #1e1e1e, 0 0 2px #1e1e1e;
+    transition: opacity 0.1s;
+  }
+  #controls {
+    position: absolute; top: 16px; left: 16px; z-index: 10;
+    display: flex; flex-direction: column; gap: 8px; max-width: 300px;
+  }
+  .graph-input {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(30,30,30,0.85); color: #dadada; font-size: 14px; width: 240px;
+    backdrop-filter: blur(8px);
+  }
+  .graph-input:focus { border-color: rgba(255,255,255,0.3); outline: none; }
+  .graph-input::placeholder { color: #666; }
+  #search { position: relative; z-index: 11; pointer-events: auto; }
+  .btn {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(30,30,30,0.85); color: #bababa; font-size: 13px; cursor: pointer;
+    text-align: left; transition: background 0.15s, border-color 0.15s;
+    backdrop-filter: blur(8px);
+  }
+  .btn:hover { background: rgba(60,60,60,0.85); }
+  .btn.active { background: rgba(127,109,242,0.6); border-color: rgba(127,109,242,0.5); color: #fff; }
+  #legend {
+    position: absolute; bottom: 16px; left: 16px; z-index: 10;
+    background: rgba(30,30,30,0.8); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 12px 16px; font-size: 12px;
+    backdrop-filter: blur(8px);
+  }
+  #legend h4 { margin-bottom: 8px; font-size: 13px; color: #dadada; }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .legend-item[data-group], .legend-item[data-pr-filter] { cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: opacity 0.15s; }
+  .legend-item[data-group]:hover, .legend-item[data-pr-filter]:hover { background: rgba(255,255,255,0.06); }
+  .legend-item[data-group].legend-off, .legend-item[data-pr-filter].legend-off { opacity: 0.3; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  #loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 20; text-align: center; font-size: 16px;
+  }
+  .spinner {
+    width: 40px; height: 40px; border: 3px solid #333; border-top-color: #7f6df2;
+    border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #error-banner {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 20; background: #161b22; border: 1px solid #da3633; color: #c9d1d9;
+    padding: 24px 32px; border-radius: 12px; font-size: 14px; max-width: 480px;
+    display: none; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  #error-banner h3 { color: #da3633; margin-bottom: 12px; font-size: 16px; }
+  #error-banner .error-login { margin-top: 16px; }
+  #sidebar {
+    position: absolute; top: 0; right: 0; width: 340px; height: 100vh; z-index: 30;
+    background: rgba(26,26,26,0.95); border-left: 1px solid rgba(255,255,255,0.08);
+    backdrop-filter: blur(12px); transform: translateX(100%);
+    transition: transform 0.2s ease; overflow-y: auto; padding: 20px;
+    font-size: 13px; color: #bababa;
+  }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar .close {
+    position: absolute; top: 12px; right: 14px; cursor: pointer;
+    color: #666; font-size: 20px; line-height: 1;
+  }
+  #sidebar .close:hover { color: #dadada; }
+  #sidebar h3 { font-size: 15px; color: #dadada; margin-bottom: 4px; word-break: break-word; }
+  #sidebar .path { font-size: 11px; color: #666; margin-bottom: 16px; word-break: break-all; }
+  #sidebar a { color: #58a6ff; text-decoration: none; }
+  #sidebar a:hover { text-decoration: underline; }
+  #sidebar .section { margin-top: 16px; }
+  #sidebar .section h4 { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  #sidebar .pr-item {
+    padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  #sidebar .pr-item:first-child { border-top: none; }
+  #sidebar .pr-number { color: #58a6ff; font-weight: 500; }
+  #sidebar .pr-title { color: #dadada; }
+  #sidebar .pr-author { color: #666; font-size: 12px; }
+  #sidebar .pr-badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px;
+    margin-left: 6px; font-weight: 500;
+  }
+  #sidebar .pr-badge.added { background: rgba(63,185,80,0.15); color: #3fb950; }
+  #sidebar .pr-badge.removed { background: rgba(218,54,51,0.15); color: #da3633; }
+  #sidebar .pr-badge.modified { background: rgba(210,168,255,0.15); color: #d2a8ff; }
+  #sidebar .open-github {
+    display: inline-block; margin-top: 12px; padding: 6px 14px; border-radius: 6px;
+    background: rgba(255,255,255,0.08); color: #dadada; font-size: 13px;
+    border: 1px solid rgba(255,255,255,0.1); transition: background 0.15s;
+  }
+  #sidebar .open-github:hover { background: rgba(255,255,255,0.14); text-decoration: none; }
+  #auth {
+    position: absolute; top: 16px; right: 16px; z-index: 10;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #auth-user { font-size: 13px; color: #8b949e; }
+  #auth-user strong { color: #c9d1d9; }
+  #token-modal {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 50;
+    background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center;
+  }
+  #token-modal .modal-box {
+    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 32px; max-width: 420px;
+  }
+  #token-modal h3 { font-size: 18px; color: #e6edf3; margin-bottom: 8px; }
+  #token-modal p { font-size: 13px; color: #8b949e; margin: 8px 0; line-height: 1.5; }
+  #token-modal a { color: #58a6ff; text-decoration: none; }
+  #token-modal a:hover { text-decoration: underline; }
+  #token-modal input[type="password"] {
+    width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #30363d;
+    background: #0d1117; color: #c9d1d9; font-size: 14px; font-family: monospace;
+    margin: 12px 0;
+  }
+  #token-modal .modal-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  #token-modal .btn-primary {
+    background: #238636; border-color: #238636; color: #fff;
+  }
+  #token-modal .btn-primary:hover { background: #2ea043; }
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div>Loading document graph...</div>
+<div id="error-banner"></div>
+
+<div id="controls">
+  <input id="search" class="graph-input" type="text" placeholder="Search documents...">
+  <button id="refit-btn" class="btn" style="display:none;">Refit layout</button>
+  <div id="pr-status" class="btn" style="display:none; cursor:default; opacity:0.7;">Loading PRs...</div>
+  <button id="pr-toggle" class="btn" style="display:none;">Show PR changes</button>
+  <input id="pr-search" class="graph-input" type="text" placeholder="Filter PRs (#number or title)..." style="display:none;">
+</div>
+
+<div id="legend">
+  <h4>Directories</h4>
+  <div class="legend-item" data-group="problem"><span class="legend-dot" style="background:#6a9fd8;"></span> problems</div>
+  <div class="legend-item" data-group="applied"><span class="legend-dot" style="background:#5cb87a;"></span> problems-applied</div>
+  <div class="legend-item" data-group="adr"><span class="legend-dot" style="background:#d4a054; border-radius:2px;"></span> ADRs</div>
+  <div class="legend-item" data-group="plan"><span class="legend-dot" style="background:#a06ad8;"></span> plans</div>
+  <div class="legend-item" data-group="experiment"><span class="legend-dot" style="background:#5cb8a8; clip-path:polygon(50% 0%,100% 100%,0% 100%); border-radius:0;"></span> experiments</div>
+  <div class="legend-item" data-group="docs,root"><span class="legend-dot" style="background:#c0c0c0;"></span> other</div>
+  <div id="legend-pr" style="display:none;">
+    <hr style="border-color:rgba(255,255,255,0.08); margin:8px 0;">
+    <h4>PR changes</h4>
+    <div class="legend-item" data-pr-filter="added-node"><span class="legend-dot" style="background:transparent; border:2px solid #3fb950;"></span> Added node</div>
+    <div class="legend-item" data-pr-filter="removed-node"><span class="legend-dot" style="background:transparent; border:2px solid #da3633;"></span> Removed node</div>
+    <div class="legend-item" data-pr-filter="modified-node"><span class="legend-dot" style="background:repeating-linear-gradient(-45deg, #959595, #959595 2px, transparent 2px, transparent 4px);"></span> Modified node</div>
+    <div class="legend-item" data-pr-filter="added-link"><span style="display:inline-block; width:16px; height:0; border-top:2px dashed #3fb950; flex-shrink:0;"></span> Added link</div>
+    <div class="legend-item" data-pr-filter="removed-link"><span style="display:inline-block; width:16px; height:0; border-top:2px dashed #da3633; flex-shrink:0;"></span> Removed link</div>
+  </div>
+</div>
+
+<div id="auth">
+  <span id="auth-user"></span>
+  <button id="login-btn" class="btn">Login with GitHub</button>
+  <button id="logout-btn" class="btn" style="display:none;">Logout</button>
+</div>
+
+<div id="token-modal">
+  <div class="modal-box">
+    <h3>Login with GitHub</h3>
+    <p>Paste a <a href="https://github.com/settings/tokens/new?scopes=repo&description=fullsend-mindmap" target="_blank">Personal Access Token</a> with <code>repo</code> scope. It is stored only in your browser's localStorage.</p>
+    <input id="token-input" type="password" placeholder="ghp_...">
+    <div id="token-error" style="color:#da3633; font-size:13px; display:none;"></div>
+    <div class="modal-buttons">
+      <button id="token-cancel" class="btn">Cancel</button>
+      <button id="token-save" class="btn btn-primary">Login</button>
+    </div>
+  </div>
+</div>
+
+<div id="sidebar"><span class="close">&times;</span><div id="sidebar-content"></div></div>
+
+<div id="cy"></div>
+<canvas id="dot-overlay"></canvas>
+<div id="labels"></div>
+
+<script>
+// Register cose-bilkent layout extension
+cytoscape.use(cytoscapeCoseBilkent);
+
+// ── Configuration ──────────────────────────────────────────────────
+// Change these to point at your repository.
+const OWNER = 'fullsend-ai';
+const REPO = 'fullsend';
+const BRANCH = 'main';
+const API = 'https://api.github.com';
+const RAW = 'https://raw.githubusercontent.com';
+
+const TOKEN_KEY = 'fullsend-mindmap-token';
+
+// ── Auth ───────────────────────────────────────────────────────────
+let authToken = localStorage.getItem(TOKEN_KEY) || '';
+
+function authHeaders() {
+  if (!authToken) return {};
+  return { 'Authorization': `token ${authToken}` };
+}
+
+async function verifyToken() {
+  if (!authToken) return false;
+  try {
+    const resp = await fetch(`${API}/user`, { headers: authHeaders() });
+    if (resp.ok) {
+      const user = await resp.json();
+      document.getElementById('auth-user').innerHTML = `<strong>${esc(user.login)}</strong>`;
+      document.getElementById('login-btn').style.display = 'none';
+      document.getElementById('logout-btn').style.display = 'block';
+      return true;
+    }
+    authToken = '';
+    localStorage.removeItem(TOKEN_KEY);
+    return false;
+  } catch { return false; }
+}
+
+const tokenModal = document.getElementById('token-modal');
+const tokenInput = document.getElementById('token-input');
+const tokenError = document.getElementById('token-error');
+
+document.getElementById('token-cancel').addEventListener('click', () => { tokenModal.style.display = 'none'; });
+
+document.getElementById('token-save').addEventListener('click', async () => {
+  const token = tokenInput.value.trim();
+  if (!token) { tokenError.textContent = 'Please paste a token.'; tokenError.style.display = 'block'; return; }
+
+  const resp = await fetch(`${API}/user`, { headers: { 'Authorization': `token ${token}` } });
+  if (!resp.ok) { tokenError.textContent = 'Invalid token. Check scopes and try again.'; tokenError.style.display = 'block'; return; }
+
+  authToken = token;
+  localStorage.setItem(TOKEN_KEY, authToken);
+  tokenModal.style.display = 'none';
+  location.reload();
+});
+
+tokenInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('token-save').click(); });
+
+function showTokenModal() {
+  tokenInput.value = '';
+  tokenError.style.display = 'none';
+  tokenModal.style.display = 'flex';
+  tokenInput.focus();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+function esc(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+
+// Group by directory (for coloring)
+function nodeGroup(path) {
+  if (path.startsWith('docs/problems/applied/')) return 'applied';
+  if (path.startsWith('docs/problems/'))         return 'problem';
+  if (path.startsWith('docs/ADRs/'))             return 'adr';
+  if (path.startsWith('docs/plans/'))            return 'plan';
+  if (path.startsWith('experiments/'))            return 'experiment';
+  if (path.startsWith('docs/'))                  return 'docs';
+  return 'root';
+}
+
+// Muted grayish colors per directory
+const GROUP_COLORS = {
+  problem:    '#8a95a5',
+  applied:    '#8a9e8f',
+  adr:        '#a5988a',
+  plan:       '#958aa5',
+  docs:       '#959595',
+  experiment: '#8a9e9a',
+  root:       '#959595',
+};
+// Bright versions for hover
+const GROUP_COLORS_BRIGHT = {
+  problem:    '#6a9fd8',
+  applied:    '#5cb87a',
+  adr:        '#d4a054',
+  plan:       '#a06ad8',
+  docs:       '#c0c0c0',
+  experiment: '#5cb8a8',
+  root:       '#c0c0c0',
+};
+
+// Shape by node type
+function nodeShape(path) {
+  if (path.startsWith('experiments/')) return 'triangle';
+  if (path.startsWith('docs/ADRs/')) return 'round-rectangle';
+  return 'ellipse';
+}
+
+function label(path) {
+  const base = path.replace(/\.md$/, '').split('/').pop();
+  if (path.startsWith('docs/ADRs/')) {
+    const m = base.match(/^(\d{4})-/);
+    return m ? `ADR ${parseInt(m[1])}` : base;
+  }
+  // READMEs: show parent directory name
+  if (base === 'README') {
+    if (path === 'README.md') return 'fullsend';
+    const parts = path.replace(/\/README\.md$/, '').split('/');
+    return parts[parts.length - 1];
+  }
+  // Just the filename
+  return base;
+}
+
+function resolvePath(from, to) {
+  if (to.startsWith('http://') || to.startsWith('https://') || to.startsWith('#')) return null;
+  const target = to.split('#')[0];
+  if (!target || !target.endsWith('.md')) return null;
+  const dir = from.substring(0, from.lastIndexOf('/') + 1);
+  const parts = (dir + target).split('/');
+  const resolved = [];
+  for (const p of parts) {
+    if (p === '..') resolved.pop();
+    else if (p !== '.' && p !== '') resolved.push(p);
+  }
+  return resolved.join('/');
+}
+
+function parseFrontmatterRelatesTo(content) {
+  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) return [];
+  const end = content.indexOf('\n---\n', 4);
+  if (end === -1) return [];
+  const fm = content.substring(4, end);
+  const relates = [];
+  let inRelates = false;
+  for (const line of fm.split('\n')) {
+    if (line.match(/^relates_to\s*:/)) {
+      inRelates = true;
+      const inline = line.replace(/^relates_to\s*:\s*/, '').trim();
+      if (inline.startsWith('[')) {
+        try {
+          const arr = JSON.parse(inline.replace(/'/g, '"'));
+          return arr.filter(x => x !== '*');
+        } catch { /* fall through to list parsing */ }
+      }
+      continue;
+    }
+    if (inRelates) {
+      if (line.match(/^\s+-\s+/)) {
+        const val = line.replace(/^\s+-\s+/, '').trim().replace(/^["']|["']$/g, '');
+        if (val !== '*') relates.push(val);
+      } else if (!line.match(/^\s*$/)) {
+        break;
+      }
+    }
+  }
+  return relates;
+}
+
+function extractLinks(filePath, content) {
+  const edges = new Set();
+  let match;
+  LINK_RE.lastIndex = 0;
+  while ((match = LINK_RE.exec(content)) !== null) {
+    const resolved = resolvePath(filePath, match[2]);
+    if (resolved) edges.add(resolved);
+  }
+  // ADR frontmatter relates_to
+  if (filePath.startsWith('docs/ADRs/')) {
+    for (const ref of parseFrontmatterRelatesTo(content)) {
+      edges.add('docs/problems/' + ref + '.md');
+    }
+  }
+  return [...edges];
+}
+
+async function fetchJSON(url) {
+  const headers = url.startsWith(API) ? authHeaders() : {};
+  const resp = await fetch(url, { headers });
+  if (resp.status === 403 || resp.status === 429) {
+    const isAuth = !!authToken;
+    throw new Error(isAuth
+      ? 'GitHub API rate limit reached (authenticated). Please wait a minute and reload.'
+      : 'GitHub API rate limit reached. Login with GitHub for higher limits (5,000 req/hour).');
+  }
+  if (!resp.ok) throw new Error(`GitHub API error: ${resp.status} ${resp.statusText}`);
+  return resp.json();
+}
+
+async function fetchText(url) {
+  const headers = url.startsWith(API) ? authHeaders() : {};
+  const resp = await fetch(url, { headers });
+  if (!resp.ok) return null;
+  return resp.text();
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  const isRateLimit = msg.includes('rate limit');
+  el.innerHTML = `<h3>${isRateLimit ? 'Rate limit reached' : 'Error'}</h3><p>${esc(msg)}</p>`;
+  if (isRateLimit && !authToken) {
+    el.innerHTML += `<div class="error-login"><button class="btn" onclick="showTokenModal()" style="background:#238636;border-color:#238636;color:#fff;">Login with GitHub</button></div>`;
+  }
+  el.style.display = 'block';
+}
+
+// ── Main ───────────────────────────────────────────────────────────
+async function main() {
+  // Auth setup
+  document.getElementById('login-btn').addEventListener('click', showTokenModal);
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    authToken = '';
+    localStorage.removeItem(TOKEN_KEY);
+    location.reload();
+  });
+
+  // Check existing token
+  await verifyToken();
+
+  const loading = document.getElementById('loading');
+
+  try {
+    // 1. Fetch repo tree
+    const tree = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`);
+    const mdFiles = tree.tree
+      .filter(f => f.type === 'blob' && f.path.endsWith('.md'))
+      .filter(f => f.path === 'README.md' || f.path.startsWith('docs/') || f.path.startsWith('experiments/'))
+      .map(f => f.path);
+
+    // 2. Fetch all file contents in parallel
+    const contents = {};
+    await Promise.all(mdFiles.map(async (path) => {
+      const text = await fetchText(`${RAW}/${OWNER}/${REPO}/${BRANCH}/${path}`);
+      if (text !== null) contents[path] = text;
+    }));
+
+    // 3. Build graph
+    const nodes = new Set(Object.keys(contents));
+    const edgeSet = new Set();
+    const edges = [];
+
+    // Only include edges where the target is within scope (docs/ or README.md)
+    const mdFileSet = new Set(mdFiles);
+    for (const [filePath, content] of Object.entries(contents)) {
+      for (const target of extractLinks(filePath, content)) {
+        if (!mdFileSet.has(target)) continue; // skip links outside scope
+        const key = `${filePath}→${target}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          edges.push({ source: filePath, target });
+        }
+      }
+    }
+
+    // 4. Calculate in-degrees
+    const inDegree = {};
+    for (const path of nodes) inDegree[path] = 0;
+    for (const e of edges) {
+      if (e.target in inDegree) inDegree[e.target]++;
+    }
+    const maxInDegree = Math.max(1, ...Object.values(inDegree));
+
+    // 5. Build Cytoscape elements
+    const cyNodes = [...nodes].map(path => {
+      const g = nodeGroup(path);
+      return {
+        data: {
+          id: path,
+          label: label(path),
+          group: g,
+          color: GROUP_COLORS[g] || '#959595',
+          colorBright: GROUP_COLORS_BRIGHT[g] || '#c0c0c0',
+          shape: nodeShape(path),
+          inDegree: inDegree[path] || 0,
+          exists: path in contents,
+          prs: [],
+          githubUrl: `https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${path}`,
+        },
+      };
+    });
+
+    const cyEdges = edges.map((e, i) => ({
+      data: {
+        id: `e${i}`,
+        source: e.source,
+        target: e.target,
+        prs: [],
+        prType: null, // 'added' | 'removed' | null
+      },
+    }));
+
+    // 6. Render graph
+    loading.style.display = 'none';
+
+    const LAYOUT_OPTIONS = {
+      name: 'cose-bilkent',
+      animate: false,
+      idealEdgeLength: 200,
+      nodeRepulsion: 50000,
+      nestingFactor: 0.1,
+      gravity: 0.2,
+      gravityRange: 1.5,
+      nodeDimensionsIncludeLabels: true,
+      numIter: 5000,
+      padding: 80,
+    };
+
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      pixelRatio: 'auto',
+      wheelSensitivity: 0.3,
+      textureOnViewport: false,
+      elements: [...cyNodes, ...cyEdges],
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'label': '',
+            'background-color': 'data(color)',
+            'shape': 'data(shape)',
+            'width': `mapData(inDegree, 0, ${maxInDegree}, 14, 48)`,
+            'height': `mapData(inDegree, 0, ${maxInDegree}, 14, 48)`,
+            'border-width': 0,
+            'transition-property': 'opacity, border-width, border-color, background-color',
+            'transition-duration': '0.15s',
+          },
+        },
+        {
+          selector: 'node[!exists]',
+          style: {
+            'border-width': 2,
+            'border-color': '#484f58',
+            'border-style': 'dashed',
+            'background-opacity': 0.3,
+            'background-color': '#484f58',
+          },
+        },
+        {
+          selector: 'edge',
+          style: {
+            'width': 0.3,
+            'line-color': '#3a3a3a',
+            'target-arrow-color': '#3a3a3a',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'straight',
+            'arrow-scale': 0.4,
+            'opacity': 0.4,
+            'transition-property': 'opacity, width, line-color',
+            'transition-duration': '0.15s',
+          },
+        },
+        {
+          selector: '.dimmed',
+          style: { 'opacity': 0.12 },
+        },
+        {
+          selector: '.highlighted',
+          style: { 'opacity': 1 },
+        },
+        // Direct neighbors: full bright fill
+        {
+          selector: 'node.hover-highlighted',
+          style: {
+            'opacity': 1,
+            'background-color': 'data(colorBright)',
+            'border-width': 0,
+          },
+        },
+        {
+          selector: 'edge.hover-highlighted',
+          style: {
+            'width': 1.2,
+            'line-color': '#777',
+            'target-arrow-color': '#777',
+            'opacity': 0.8,
+          },
+        },
+        // Same group: border only (not filled bright)
+        {
+          selector: 'node.hover-group',
+          style: {
+            'opacity': 0.7,
+            'border-width': 2,
+            'border-color': 'data(colorBright)',
+            'background-color': 'data(color)',
+          },
+        },
+        {
+          selector: '.hover-dimmed',
+          style: { 'opacity': 0.12 },
+        },
+        {
+          selector: '.legend-highlight',
+          style: { 'background-color': 'data(colorBright)' },
+        },
+        // PR overlay — only green/red, thin and subtle
+        {
+          selector: '.pr-new-node',
+          style: {
+            'border-width': 2,
+            'border-color': '#3fb950',
+            'background-opacity': 0.5,
+          },
+        },
+        {
+          selector: '.pr-removed-node',
+          style: {
+            'border-width': 2,
+            'border-color': '#da3633',
+            'background-opacity': 0.3,
+          },
+        },
+        {
+          selector: '.pr-added-edge',
+          style: {
+            'line-color': '#3fb950',
+            'line-style': 'dashed',
+            'target-arrow-color': '#3fb950',
+            'width': 0.3,
+            'opacity': 0.4,
+          },
+        },
+        {
+          selector: '.pr-removed-edge',
+          style: {
+            'line-color': '#da3633',
+            'line-style': 'dashed',
+            'target-arrow-color': '#da3633',
+            'width': 0.3,
+            'opacity': 0.4,
+          },
+        },
+        {
+          selector: '.has-pr-badge',
+          style: {
+            'background-image': 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="6" height="6"><line x1="0" y1="6" x2="6" y2="0" stroke="rgba(255,255,255,0.2)" stroke-width="1"/></svg>'),
+            'background-image-opacity': 1,
+            'background-fit': 'none',
+            'background-repeat': 'repeat',
+          },
+        },
+        // PR elements intensify on hover
+        {
+          selector: '.pr-added-edge.hover-highlighted',
+          style: {
+            'line-color': '#3fb950',
+            'target-arrow-color': '#3fb950',
+            'width': 1.2,
+            'opacity': 1,
+          },
+        },
+        {
+          selector: '.pr-removed-edge.hover-highlighted',
+          style: {
+            'line-color': '#da3633',
+            'target-arrow-color': '#da3633',
+            'width': 1.2,
+            'opacity': 1,
+          },
+        },
+        {
+          selector: '.pr-new-node.hover-highlighted',
+          style: {
+            'border-color': '#3fb950',
+            'border-width': 3,
+            'background-opacity': 0.8,
+            'opacity': 1,
+          },
+        },
+        {
+          selector: '.pr-removed-node.hover-highlighted',
+          style: {
+            'border-color': '#da3633',
+            'border-width': 3,
+            'background-opacity': 0.6,
+            'opacity': 1,
+          },
+        },
+      ],
+      layout: LAYOUT_OPTIONS,
+    });
+
+    const LAYOUT_ANIMATED = { ...LAYOUT_OPTIONS, animate: 'end', animationDuration: 500, fit: true };
+
+    // ── Search ───────────────────────────────────────────────────
+    const searchInput = document.getElementById('search');
+    searchInput.addEventListener('input', () => {
+      const q = searchInput.value.trim().toLowerCase();
+      if (!q) {
+        cy.elements().removeClass('dimmed highlighted');
+        cy.elements().style('display', 'element');
+        resetAllLabels();
+        updateLabelPositions();
+        return;
+      }
+      const matched = cy.nodes().filter(n => n.data('label').toLowerCase().includes(q) || n.data('id').toLowerCase().includes(q));
+      const connectedEdges = matched.connectedEdges();
+      const neighbors = connectedEdges.connectedNodes().difference(matched);
+      const visible = matched.union(connectedEdges).union(neighbors);
+      cy.elements().style('display', 'none');
+      visible.style('display', 'element');
+      visible.removeClass('highlighted dimmed');
+      matched.addClass('highlighted');
+      neighbors.addClass('dimmed');
+      connectedEdges.addClass('dimmed');
+      // Update DOM labels to match
+      labelEls.forEach(el => { el.style.display = 'none'; });
+      matched.forEach(n => { setLabelOpacity(n.id(), '1'); const el = labelEls.get(n.id()); if (el) el.style.display = ''; });
+      neighbors.forEach(n => { setLabelOpacity(n.id(), '0.3'); const el = labelEls.get(n.id()); if (el) el.style.display = ''; });
+      updateLabelPositions();
+    });
+
+    // ── Legend filter ─────────────────────────────────────────────
+    const hiddenGroups = new Set();
+    document.querySelectorAll('.legend-item[data-group]').forEach(item => {
+      item.addEventListener('click', () => {
+        const groups = item.dataset.group.split(',');
+        const isOff = item.classList.toggle('legend-off');
+        groups.forEach(g => isOff ? hiddenGroups.add(g) : hiddenGroups.delete(g));
+        applyLegendFilter();
+      });
+      item.addEventListener('mouseenter', () => {
+        if (searchInput.value.trim()) return;
+        const groups = new Set(item.dataset.group.split(','));
+        cy.nodes().forEach(n => {
+          if (groups.has(n.data('group'))) n.addClass('legend-highlight');
+        });
+      });
+      item.addEventListener('mouseleave', () => {
+        cy.nodes('.legend-highlight').removeClass('legend-highlight');
+      });
+    });
+
+    // PR legend filter
+    const hiddenPrFilters = new Set();
+    const PR_FILTER_CLASSES = {
+      'added-node': 'pr-new-node',
+      'removed-node': 'pr-removed-node',
+      'modified-node': 'has-pr-badge',
+      'added-link': 'pr-added-edge',
+      'removed-link': 'pr-removed-edge',
+    };
+    document.querySelectorAll('.legend-item[data-pr-filter]').forEach(item => {
+      item.addEventListener('click', () => {
+        const filter = item.dataset.prFilter;
+        const isOff = item.classList.toggle('legend-off');
+        isOff ? hiddenPrFilters.add(filter) : hiddenPrFilters.delete(filter);
+        applyLegendFilter();
+      });
+    });
+
+    function applyLegendFilter() {
+      // Reset everything visible first
+      cy.elements().style('display', 'element');
+      labelEls.forEach(el => { el.style.display = ''; });
+
+      // Apply directory group filters
+      if (hiddenGroups.size > 0) {
+        cy.nodes().forEach(n => {
+          if (hiddenGroups.has(n.data('group'))) {
+            n.style('display', 'none');
+            const el = labelEls.get(n.id());
+            if (el) el.style.display = 'none';
+          }
+        });
+      }
+
+      // Apply PR filters
+      for (const [filter, cls] of Object.entries(PR_FILTER_CLASSES)) {
+        if (hiddenPrFilters.has(filter)) {
+          cy.elements('.' + cls).forEach(el => {
+            el.style('display', 'none');
+            if (el.isNode()) {
+              const lbl = labelEls.get(el.id());
+              if (lbl) lbl.style.display = 'none';
+            }
+          });
+        }
+      }
+
+      // Hide edges with hidden endpoints
+      cy.edges().forEach(e => {
+        if (e.style('display') === 'none') return;
+        const srcVisible = e.source().style('display') !== 'none';
+        const tgtVisible = e.target().style('display') !== 'none';
+        if (!srcVisible || !tgtVisible) e.style('display', 'none');
+      });
+
+      updateLabelPositions();
+    }
+
+    // ── Hover (Obsidian-style) ─────────────────────────────────────
+    let hoverActive = false;
+    function clearHoverState() {
+      hoverActive = false;
+      cy.elements().removeClass('hover-dimmed hover-highlighted hover-group');
+      resetAllLabels();
+      stopHoverRepulsion();
+      stopDotAnimation();
+    }
+    function setLabelOpacity(nodeId, opacity) {
+      const el = labelEls.get(nodeId);
+      if (el) el.style.opacity = opacity;
+    }
+    function showFullPath(nodeId) {
+      const el = labelEls.get(nodeId);
+      if (el) {
+        const full = nodeId.replace(/\.md$/, '');
+        // READMEs: show parent/README (e.g. fullsend/README, problems/README)
+        if (full.endsWith('/README') || full === 'README') {
+          const parts = full === 'README' ? ['fullsend', 'README'] : full.split('/');
+          const parent = parts[parts.length - 2];
+          el.textContent = parent + '/README';
+        } else {
+          el.textContent = full;
+        }
+        el.style.fontSize = '13px';
+      }
+    }
+    function resetAllLabels() {
+      cy.nodes().forEach(n => {
+        const el = labelEls.get(n.id());
+        if (el) { el.style.opacity = ''; el.style.fontSize = '11px'; el.textContent = n.data('label'); }
+      });
+    }
+
+    cy.on('mouseover', 'node', (evt) => {
+      if (searchInput.value.trim()) return;
+      hoverActive = true;
+      const node = evt.target;
+      const neighborhood = node.closedNeighborhood();
+      const hoveredGroup = node.data('group');
+
+      // Dim everything first
+      cy.elements().addClass('hover-dimmed');
+      labelEls.forEach(el => { el.style.opacity = '0.12'; });
+
+      // Direct neighbors: full bright fill + show full path
+      neighborhood.removeClass('hover-dimmed').addClass('hover-highlighted');
+      neighborhood.nodes().forEach(n => {
+        setLabelOpacity(n.id(), '1');
+        showFullPath(n.id());
+      });
+
+      // Same group (not neighbors): border-only highlight
+      cy.nodes().filter(n => n.data('group') === hoveredGroup && !neighborhood.contains(n))
+        .removeClass('hover-dimmed').addClass('hover-group');
+
+      // Push non-neighbors away
+      startHoverRepulsion(node);
+
+      // Animate dots along connected edges
+      startDotAnimation(neighborhood.edges().toArray());
+    });
+
+    // ── Hover repulsion (push non-neighbors away) ──────────────────
+    let hoverRAF = null;
+    let hoverNode = null;
+    const HOVER_REPULSE_RADIUS = 180;
+    const HOVER_REPULSE_STRENGTH = 2.5;
+    const savedPositions = new Map();
+
+    function startHoverRepulsion(node) {
+      hoverNode = node;
+      const neighborhood = node.closedNeighborhood().nodes();
+      const others = cy.nodes().not(neighborhood);
+
+      // Save original positions for smooth return
+      others.forEach(n => {
+        if (!savedPositions.has(n.id())) {
+          savedPositions.set(n.id(), { ...n.position() });
+        }
+      });
+
+      function repulse() {
+        if (!hoverNode) return;
+        const gp = hoverNode.position();
+        others.forEach(n => {
+          const np = n.position();
+          const dx = np.x - gp.x;
+          const dy = np.y - gp.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < HOVER_REPULSE_RADIUS && dist > 1) {
+            const force = HOVER_REPULSE_STRENGTH * (1 - dist / HOVER_REPULSE_RADIUS);
+            n.position({
+              x: np.x + (dx / dist) * force,
+              y: np.y + (dy / dist) * force,
+            });
+          }
+        });
+        hoverRAF = requestAnimationFrame(repulse);
+      }
+      hoverRAF = requestAnimationFrame(repulse);
+    }
+
+    function stopHoverRepulsion() {
+      hoverNode = null;
+      if (hoverRAF) { cancelAnimationFrame(hoverRAF); hoverRAF = null; }
+      // Animate nodes back to saved positions
+      savedPositions.forEach((pos, id) => {
+        const n = cy.getElementById(id);
+        if (n.length) n.animate({ position: pos }, { duration: 200 });
+      });
+      savedPositions.clear();
+    }
+
+    // ── Animated dots along edges (show direction on hover) ──────
+    const dotCanvas = document.getElementById('dot-overlay');
+    const dotCtx = dotCanvas.getContext('2d');
+    let dotRAF = null;
+    let dotEdges = []; // edges to animate dots on
+    const DOT_SPEED = 0.003; // progress per frame (0→1)
+    const DOT_COUNT = 5; // dots per edge
+    const DOT_RADIUS = 2.5;
+    let dotPhase = 0;
+
+    function resizeDotCanvas() {
+      dotCanvas.width = dotCanvas.offsetWidth;
+      dotCanvas.height = dotCanvas.offsetHeight;
+    }
+    resizeDotCanvas();
+    window.addEventListener('resize', resizeDotCanvas);
+
+    function startDotAnimation(edges) {
+      dotEdges = edges;
+      dotPhase = 0;
+      if (dotRAF) cancelAnimationFrame(dotRAF);
+      function drawDots() {
+        dotCtx.clearRect(0, 0, dotCanvas.width, dotCanvas.height);
+        dotPhase = (dotPhase + DOT_SPEED) % 1;
+        const pan = cy.pan();
+        const zoom = cy.zoom();
+        dotEdges.forEach(edge => {
+          if (!edge.visible()) return;
+
+          // Use model coordinates + pan/zoom (same system as labels)
+          const srcPos = edge.source().position();
+          const tgtPos = edge.target().position();
+          const sx = srcPos.x * zoom + pan.x;
+          const sy = srcPos.y * zoom + pan.y;
+          const tx = tgtPos.x * zoom + pan.x;
+          const ty = tgtPos.y * zoom + pan.y;
+
+          const isPrAdded = edge.hasClass('pr-added-edge');
+          const isPrRemoved = edge.hasClass('pr-removed-edge');
+          const dotColor = isPrAdded ? '#3fb950' : isPrRemoved ? '#da3633' : '#aaa';
+
+          for (let i = 0; i < DOT_COUNT; i++) {
+            const t = (dotPhase + i / DOT_COUNT) % 1;
+            const px = sx + (tx - sx) * t;
+            const py = sy + (ty - sy) * t;
+
+            dotCtx.beginPath();
+            dotCtx.arc(px, py, DOT_RADIUS, 0, Math.PI * 2);
+            dotCtx.fillStyle = dotColor;
+            dotCtx.globalAlpha = 0.7 + 0.3 * (1 - Math.abs(t - 0.5) * 2);
+            dotCtx.fill();
+          }
+        });
+        dotCtx.globalAlpha = 1;
+        dotRAF = requestAnimationFrame(drawDots);
+      }
+      dotRAF = requestAnimationFrame(drawDots);
+    }
+
+    function stopDotAnimation() {
+      if (dotRAF) { cancelAnimationFrame(dotRAF); dotRAF = null; }
+      dotCtx.clearRect(0, 0, dotCanvas.width, dotCanvas.height);
+      dotEdges = [];
+    }
+
+    cy.on('mouseout', 'node', () => {
+      if (!hoverActive) return;
+      clearHoverState();
+    });
+
+    cy.on('mouseover', 'edge', (evt) => {
+      if (searchInput.value.trim()) return;
+      hoverActive = true;
+      const edge = evt.target;
+      const connected = edge.connectedNodes().union(edge);
+      cy.elements().addClass('hover-dimmed');
+      connected.removeClass('hover-dimmed').addClass('hover-highlighted');
+      labelEls.forEach(el => { el.style.opacity = '0.12'; });
+      connected.nodes().forEach(n => {
+        setLabelOpacity(n.id(), '1');
+        showFullPath(n.id());
+      });
+      startDotAnimation([edge]);
+    });
+
+    cy.on('mouseout', 'edge', () => {
+      if (!hoverActive) return;
+      clearHoverState();
+    });
+
+    // ── DOM labels (crisp at any zoom) ──────────────────────────────
+    const labelsContainer = document.getElementById('labels');
+    const labelEls = new Map();
+
+    cy.nodes().forEach(n => {
+      const el = document.createElement('div');
+      el.className = 'node-label';
+      el.textContent = n.data('label');
+      labelsContainer.appendChild(el);
+      labelEls.set(n.id(), el);
+    });
+
+    function updateLabelPositions() {
+      const pan = cy.pan();
+      const zoom = cy.zoom();
+      cy.nodes().forEach(n => {
+        const el = labelEls.get(n.id());
+        if (!el) return;
+        const pos = n.position();
+        const rh = n.renderedHeight();
+        const x = pos.x * zoom + pan.x;
+        const y = pos.y * zoom + pan.y + rh / 2 + 12;
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+        el.style.display = n.visible() ? '' : 'none';
+      });
+    }
+    updateLabelPositions();
+    cy.on('pan zoom position resize layoutstop', updateLabelPositions);
+
+    // ── Drag repulsion (nodes escape when you drag one around) ────
+    const DRAG_REPULSE_RADIUS = 150;
+    const DRAG_REPULSE_STRENGTH = 3;
+    let dragRAF = null;
+    cy.on('grab', 'node', () => {
+      function repulse() {
+        const grabbed = cy.nodes(':grabbed');
+        if (grabbed.length === 0) return;
+        const gp = grabbed.position();
+        cy.nodes().not(grabbed).forEach(n => {
+          if (n.grabbed()) return;
+          const np = n.position();
+          const dx = np.x - gp.x;
+          const dy = np.y - gp.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < DRAG_REPULSE_RADIUS && dist > 1) {
+            const force = DRAG_REPULSE_STRENGTH * (1 - dist / DRAG_REPULSE_RADIUS);
+            n.position({
+              x: np.x + (dx / dist) * force,
+              y: np.y + (dy / dist) * force,
+            });
+          }
+        });
+        dragRAF = requestAnimationFrame(repulse);
+      }
+      dragRAF = requestAnimationFrame(repulse);
+    });
+    cy.on('free', 'node', () => {
+      if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
+    });
+
+    // ── Refit layout ──────────────────────────────────────────────
+    const refitBtn = document.getElementById('refit-btn');
+    refitBtn.style.display = 'block';
+    refitBtn.addEventListener('click', () => {
+      cy.layout(LAYOUT_ANIMATED).run();
+    });
+
+    // ── Sidebar ──────────────────────────────────────────────────
+    const sidebar = document.getElementById('sidebar');
+    const sidebarContent = document.getElementById('sidebar-content');
+    sidebar.querySelector('.close').addEventListener('click', () => { sidebar.classList.remove('open'); });
+    cy.on('tap', (evt) => {
+      if (evt.target === cy) sidebar.classList.remove('open');
+    });
+
+    // SVG icon for a node (matches shape + group color)
+    function nodeIcon(n, size) {
+      const s = size || 12;
+      const color = n.data('colorBright');
+      const shape = n.data('shape');
+      if (shape === 'triangle') {
+        return `<svg width="${s}" height="${s}" viewBox="0 0 12 12"><polygon points="6,1 11,11 1,11" fill="${color}"/></svg>`;
+      } else if (shape === 'round-rectangle') {
+        return `<svg width="${s}" height="${s}" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="2" fill="${color}"/></svg>`;
+      }
+      return `<svg width="${s}" height="${s}" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="${color}"/></svg>`;
+    }
+
+    function nodeCard(n, opts) {
+      const isLink = opts && opts.link;
+      const tag = isLink ? 'a href="#"' : 'div';
+      const endTag = isLink ? 'a' : 'div';
+      const dataAttr = isLink ? ` data-node="${esc(n.id())}"` : '';
+      return `<${tag}${dataAttr} style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:6px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); text-decoration:none; transition:background 0.15s; margin-bottom:4px;">`
+        + `${nodeIcon(n)}`
+        + `<span style="color:#dadada; font-size:13px;">${esc(n.data('label'))}</span>`
+        + `</${endTag}>`;
+    }
+
+    function renderPRList(prs) {
+      if (!prs || prs.length === 0) return '';
+      // Sort by updatedAt descending (newest first)
+      const sorted = [...prs].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+      // Compute age range for color interpolation
+      const now = Date.now();
+      const ages = sorted.map(pr => now - new Date(pr.updatedAt).getTime());
+      const maxAge = Math.max(...ages);
+
+      let html = `<div class="section"><h4>Open PRs (${sorted.length})</h4>`;
+      for (let i = 0; i < sorted.length; i++) {
+        const pr = sorted[i];
+        const date = new Date(pr.updatedAt);
+        const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+
+        // Color: pink (#d86a9e) for recent → grey (#888) for old
+        const t = maxAge > 0 ? ages[i] / maxAge : 0;
+        const r = Math.round(216 + (136 - 216) * t);
+        const g = Math.round(106 + (136 - 106) * t);
+        const b = Math.round(158 + (136 - 158) * t);
+        const accentColor = `rgb(${r},${g},${b})`;
+
+        html += `<div class="pr-item" style="border-left:3px solid ${accentColor}; padding-left:10px; margin-bottom:8px;">`;
+        html += `<a href="${esc(pr.url)}" target="_blank"><span class="pr-number" style="color:${accentColor};">#${pr.number}</span> <span class="pr-title">${esc(pr.title)}</span></a>`;
+        html += `<div style="display:flex; gap:12px; margin-top:3px;">`;
+        html += `<span class="pr-author">by @${esc(pr.author)}</span>`;
+        html += `<span style="color:#666; font-size:12px;">${dateStr}</span>`;
+        html += `</div>`;
+        html += `</div>`;
+      }
+      html += `</div>`;
+      return html;
+    }
+
+    function openSidebar(node) {
+      const path = node.id();
+      const name = node.data('label');
+      const githubUrl = node.data('githubUrl');
+      const prs = node.data('prs') || [];
+
+      // Outgoing links
+      const outEdges = node.outgoers('edge');
+      const outNodes = outEdges.targets();
+      // Incoming links
+      const inEdges = node.incomers('edge');
+      const inNodes = inEdges.sources();
+
+      // Header with icon
+      let html = `<div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">`;
+      html += nodeIcon(node, 18);
+      html += `<h3 style="margin:0;">${esc(name)}</h3>`;
+      html += `</div>`;
+      html += `<div class="path">${esc(path)}</div>`;
+      html += `<a href="${esc(githubUrl)}" target="_blank" class="open-github">Open on GitHub</a>`;
+
+      // Links to
+      if (outNodes.length > 0) {
+        html += `<div class="section"><h4>Links to (${outNodes.length})</h4>`;
+        outNodes.forEach(n => { html += nodeCard(n, { link: true }); });
+        html += `</div>`;
+      }
+
+      // Linked from
+      if (inNodes.length > 0) {
+        html += `<div class="section"><h4>Linked from (${inNodes.length})</h4>`;
+        inNodes.forEach(n => { html += nodeCard(n, { link: true }); });
+        html += `</div>`;
+      }
+
+      // PRs
+      html += renderPRList(prs);
+
+      // PR new/removed status
+      if (node.hasClass('pr-new-node')) {
+        html += `<div class="section"><span class="pr-badge added">New in PR</span></div>`;
+      }
+      if (node.hasClass('pr-removed-node')) {
+        html += `<div class="section"><span class="pr-badge removed">Removed in PR</span></div>`;
+      }
+
+      showSidebar(html);
+    }
+
+    // ── Click to open sidebar ───────────────────────────────────
+    cy.on('tap', 'node', (evt) => {
+      openSidebar(evt.target);
+    });
+
+    cy.on('tap', 'edge', (evt) => {
+      openEdgeSidebar(evt.target);
+    });
+
+    function openEdgeSidebar(edge) {
+      const srcId = edge.data('source');
+      const tgtId = edge.data('target');
+      const srcNode = cy.getElementById(srcId);
+      const tgtNode = cy.getElementById(tgtId);
+      const prs = edge.data('prs') || [];
+      const prType = edge.data('prType');
+
+      let html = `<h3>Link</h3>`;
+      html += `<div style="display:flex; flex-direction:column; align-items:center; margin:24px 0; gap:4px;">`;
+      if (srcNode.length) html += nodeCard(srcNode, { link: true });
+      else html += `<div style="padding:8px 12px; color:#888;">${esc(srcId)}</div>`;
+      html += `<svg width="20" height="32" viewBox="0 0 20 32" style="flex-shrink:0; opacity:0.4;">`;
+      html += `<line x1="10" y1="2" x2="10" y2="24" stroke="#888" stroke-width="1.5"/>`;
+      html += `<polygon points="4,22 10,30 16,22" fill="#888"/>`;
+      html += `</svg>`;
+      if (tgtNode.length) html += nodeCard(tgtNode, { link: true });
+      else html += `<div style="padding:8px 12px; color:#888;">${esc(tgtId)}</div>`;
+      html += `</div>`;
+
+      if (prType === 'added') {
+        html += `<div class="section"><span class="pr-badge added">Added in PR</span></div>`;
+      } else if (prType === 'removed') {
+        html += `<div class="section"><span class="pr-badge removed">Removed in PR</span></div>`;
+      }
+
+      html += renderPRList(prs);
+
+      showSidebar(html);
+    }
+
+    // Wire up sidebar link hover/click behavior
+    function showSidebar(html) {
+      sidebarContent.innerHTML = html;
+      sidebar.classList.add('open');
+
+      sidebarContent.querySelectorAll('a[data-node]').forEach(a => {
+        a.addEventListener('mouseenter', () => {
+          const targetNode = cy.getElementById(a.dataset.node);
+          if (!targetNode.length || searchInput.value.trim()) return;
+          hoverActive = true;
+          const neighborhood = targetNode.closedNeighborhood();
+          const hoveredGroup = targetNode.data('group');
+          cy.elements().addClass('hover-dimmed');
+          labelEls.forEach(el => { el.style.opacity = '0.12'; });
+          neighborhood.removeClass('hover-dimmed').addClass('hover-highlighted');
+          neighborhood.nodes().forEach(n => {
+            setLabelOpacity(n.id(), '1');
+            showFullPath(n.id());
+          });
+          cy.nodes().filter(n => n.data('group') === hoveredGroup && !neighborhood.contains(n))
+            .removeClass('hover-dimmed').addClass('hover-group');
+          startHoverRepulsion(targetNode);
+          startDotAnimation(neighborhood.edges().toArray());
+        });
+        a.addEventListener('mouseleave', () => {
+          if (!hoverActive) return;
+          clearHoverState();
+        });
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          clearHoverState();
+          const targetNode = cy.getElementById(a.dataset.node);
+          if (targetNode.length) {
+            cy.animate({ center: { eles: targetNode }, zoom: cy.zoom() }, { duration: 300 });
+            openSidebar(targetNode);
+          }
+        });
+      });
+    }
+
+    // ── PR Overlay ───────────────────────────────────────────────
+    let prData = null;
+    let prOverlayActive = false; // set to true once PR data loads
+    const prToggle = document.getElementById('pr-toggle');
+    const prStatus = document.getElementById('pr-status');
+
+    async function loadPRData() {
+      try {
+        const pulls = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/pulls?state=open&per_page=100`);
+        if (pulls.length === 0) return null;
+
+        const prInfo = [];
+        for (const pr of pulls) {
+          prInfo.push({
+            number: pr.number,
+            title: pr.title,
+            author: pr.user.login,
+            url: pr.html_url,
+            updatedAt: pr.updated_at,
+            headSha: pr.head.sha,
+            headRef: pr.head.ref,
+          });
+        }
+
+        // Fetch changed files for each PR
+        const prFiles = await Promise.all(prInfo.map(async (pr) => {
+          const files = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/pulls/${pr.number}/files?per_page=300`);
+          const mdFiles = files.filter(f => f.filename.endsWith('.md') && (f.filename === 'README.md' || f.filename.startsWith('docs/')));
+          return { ...pr, files: mdFiles };
+        }));
+
+        // Fetch PR branch content for changed md files and parse links
+        const newEdges = []; // {source, target, prs:[]}
+        const removedEdges = []; // {source, target, prs:[]}
+        const newNodes = new Map(); // path -> [pr]
+        const removedNodes = new Map(); // path -> [pr]
+        const touchedNodes = new Map(); // path -> [pr]
+
+        // Collect all file-fetch tasks, then run in parallel
+        const fetchTasks = [];
+        for (const pr of prFiles) {
+          for (const file of pr.files) {
+            const prMeta = { number: pr.number, title: pr.title, author: pr.author, url: pr.url, updatedAt: pr.updatedAt };
+
+            if (file.status === 'added') {
+              if (!newNodes.has(file.filename)) newNodes.set(file.filename, []);
+              newNodes.get(file.filename).push(prMeta);
+            } else if (file.status === 'removed') {
+              if (!removedNodes.has(file.filename)) removedNodes.set(file.filename, []);
+              removedNodes.get(file.filename).push(prMeta);
+              continue; // no content to fetch
+            }
+
+            if (!touchedNodes.has(file.filename)) touchedNodes.set(file.filename, []);
+            touchedNodes.get(file.filename).push(prMeta);
+
+            fetchTasks.push({ file, pr, prMeta });
+          }
+        }
+
+        await Promise.all(fetchTasks.map(async ({ file, pr, prMeta }) => {
+          const prContent = await fetchText(`${RAW}/${OWNER}/${REPO}/${pr.headSha}/${file.filename}`);
+          if (prContent === null) return;
+
+          const prLinks = new Set(extractLinks(file.filename, prContent));
+          const baseLinks = new Set(contents[file.filename] ? extractLinks(file.filename, contents[file.filename]) : []);
+
+          for (const link of prLinks) {
+            if (!baseLinks.has(link)) {
+              newEdges.push({ source: file.filename, target: link, pr: prMeta });
+            }
+          }
+          for (const link of baseLinks) {
+            if (!prLinks.has(link)) {
+              removedEdges.push({ source: file.filename, target: link, pr: prMeta });
+            }
+          }
+        }));
+
+        return { newEdges, removedEdges, newNodes, removedNodes, touchedNodes };
+      } catch (e) {
+        console.warn('PR data fetch failed:', e.message);
+        return null;
+      }
+    }
+
+    // Kick off PR loading in background — show status while loading
+    prStatus.style.display = 'block';
+    loadPRData().then(data => {
+      prStatus.style.display = 'none';
+      if (!data) return;
+      prData = data;
+
+      const hasPRContent = data.newEdges.length > 0 || data.removedEdges.length > 0 ||
+                           data.newNodes.size > 0 || data.removedNodes.size > 0 || data.touchedNodes.size > 0;
+      if (hasPRContent) {
+        // Store PR metadata on nodes (but don't apply visual styles yet)
+        for (const [path, prs] of data.touchedNodes) {
+          const node = cy.getElementById(path);
+          if (node.length) node.data('prs', prs);
+        }
+
+        prToggle.style.display = 'block';
+      }
+    }).catch(() => {
+      prStatus.textContent = 'PR data unavailable';
+      setTimeout(() => { prStatus.style.display = 'none'; }, 3000);
+    });
+
+    // Create a DOM label for a newly added node
+    function addLabelForNode(node) {
+      if (labelEls.has(node.id())) return;
+      const el = document.createElement('div');
+      el.className = 'node-label';
+      el.textContent = node.data('label');
+      labelsContainer.appendChild(el);
+      labelEls.set(node.id(), el);
+    }
+    // Remove a DOM label for a removed node
+    function removeLabelForNode(nodeId) {
+      const el = labelEls.get(nodeId);
+      if (el) { el.remove(); labelEls.delete(nodeId); }
+    }
+
+    // Apply / remove PR overlay
+    function applyPROverlay() {
+      if (!prData) return;
+
+      // Add badges to touched nodes
+      for (const [path] of prData.touchedNodes) {
+        const node = cy.getElementById(path);
+        if (node.length) node.addClass('has-pr-badge');
+      }
+
+      // Add new nodes
+      for (const [path, prs] of prData.newNodes) {
+        if (cy.getElementById(path).length === 0) {
+          const g = nodeGroup(path);
+          const added = cy.add({
+            data: {
+              id: path, label: label(path), group: g,
+              color: GROUP_COLORS[g] || '#768390',
+              colorBright: GROUP_COLORS_BRIGHT[g] || '#c0c0c0',
+              shape: nodeShape(path),
+              inDegree: 0, exists: true, prs: prs,
+              githubUrl: `https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${path}`,
+            },
+            classes: 'pr-new-node',
+          });
+          addLabelForNode(added);
+        } else {
+          cy.getElementById(path).addClass('pr-new-node');
+        }
+      }
+
+      // Mark removed nodes
+      for (const [path] of prData.removedNodes) {
+        const node = cy.getElementById(path);
+        if (node.length) node.addClass('pr-removed-node');
+      }
+
+      // Add new edges
+      for (let i = 0; i < prData.newEdges.length; i++) {
+        const e = prData.newEdges[i];
+        const id = `pr-new-e${i}`;
+        if (cy.getElementById(id).length === 0) {
+          if (cy.getElementById(e.target).length === 0) {
+            const tg = nodeGroup(e.target);
+            const addedTarget = cy.add({
+              data: {
+                id: e.target, label: label(e.target), group: tg,
+                color: GROUP_COLORS[tg] || '#768390',
+                colorBright: GROUP_COLORS_BRIGHT[tg] || '#c0c0c0',
+                shape: nodeShape(e.target),
+                inDegree: 0, exists: false, prs: [e.pr],
+                githubUrl: `https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${e.target}`,
+              },
+              classes: 'pr-new-node',
+            });
+            addLabelForNode(addedTarget);
+          }
+          cy.add({
+            data: { id, source: e.source, target: e.target, prs: [e.pr], prType: 'added' },
+            classes: 'pr-added-edge',
+          });
+        }
+      }
+
+      // Add removed edges
+      for (let i = 0; i < prData.removedEdges.length; i++) {
+        const e = prData.removedEdges[i];
+        const id = `pr-rm-e${i}`;
+        if (cy.getElementById(id).length === 0) {
+          cy.add({
+            data: { id, source: e.source, target: e.target, prs: [e.pr], prType: 'removed' },
+            classes: 'pr-removed-edge',
+          });
+        }
+      }
+
+      cy.layout(LAYOUT_ANIMATED).run();
+    }
+
+    function removePROverlay() {
+      if (!prData) return;
+      // Clear PR data from touched nodes so popups stop showing
+      for (const [path] of prData.touchedNodes) {
+        const node = cy.getElementById(path);
+        if (node.length) node.data('prs', []);
+      }
+      cy.elements('.has-pr-badge').removeClass('has-pr-badge');
+      cy.elements('.pr-new-node').forEach(el => {
+        if (prData.newNodes.has(el.id())) { removeLabelForNode(el.id()); cy.remove(el); }
+        else el.removeClass('pr-new-node');
+      });
+      cy.elements('.pr-removed-node').removeClass('pr-removed-node');
+      cy.remove('.pr-added-edge');
+      cy.remove('.pr-removed-edge');
+      cy.layout(LAYOUT_ANIMATED).run();
+    }
+
+    // Toggle PR overlay
+    const prSearchInput = document.getElementById('pr-search');
+    prToggle.addEventListener('click', () => {
+      if (!prData) return;
+      prOverlayActive = !prOverlayActive;
+      prToggle.classList.toggle('active', prOverlayActive);
+      prToggle.textContent = prOverlayActive ? 'Hide PR changes' : 'Show PR changes';
+      document.getElementById('legend-pr').style.display = prOverlayActive ? 'block' : 'none';
+      prSearchInput.style.display = prOverlayActive ? 'block' : 'none';
+      if (!prOverlayActive) prSearchInput.value = '';
+      if (prOverlayActive) applyPROverlay();
+      else removePROverlay();
+    });
+
+    // PR search filter — matches PR number, title, or author; shows only affected nodes
+    prSearchInput.addEventListener('input', () => {
+      if (!prData || !prOverlayActive) return;
+      const q = prSearchInput.value.trim().toLowerCase();
+
+      // Reset: show everything and remove dimming
+      cy.elements().removeClass('hover-dimmed');
+      cy.elements().style('display', 'element');
+      labelEls.forEach(el => { el.style.display = ''; el.style.opacity = ''; });
+
+      if (!q) { applyLegendFilter(); updateLabelPositions(); return; }
+
+      // Find matching PR numbers
+      const matchingPRs = new Set();
+      // Search through all PR sources
+      const allPrs = new Map();
+      for (const [, prs] of prData.touchedNodes) {
+        for (const pr of prs) allPrs.set(pr.number, pr);
+      }
+      for (const e of prData.newEdges) allPrs.set(e.pr.number, e.pr);
+      for (const e of prData.removedEdges) allPrs.set(e.pr.number, e.pr);
+      for (const [, prs] of prData.newNodes) {
+        for (const pr of prs) allPrs.set(pr.number, pr);
+      }
+      for (const [, prs] of prData.removedNodes) {
+        for (const pr of prs) allPrs.set(pr.number, pr);
+      }
+      for (const [num, pr] of allPrs) {
+        if ((`#${num}`).includes(q) || pr.title.toLowerCase().includes(q) || pr.author.toLowerCase().includes(q)) {
+          matchingPRs.add(num);
+        }
+      }
+
+      // Collect affected node IDs
+      const affectedNodes = new Set();
+      for (const [path, prs] of prData.touchedNodes) {
+        if (prs.some(p => matchingPRs.has(p.number))) affectedNodes.add(path);
+      }
+      for (const [path, prs] of prData.newNodes) {
+        if (prs.some(p => matchingPRs.has(p.number))) affectedNodes.add(path);
+      }
+      for (const [path, prs] of prData.removedNodes) {
+        if (prs.some(p => matchingPRs.has(p.number))) affectedNodes.add(path);
+      }
+      for (const e of prData.newEdges) {
+        if (matchingPRs.has(e.pr.number)) { affectedNodes.add(e.source); affectedNodes.add(e.target); }
+      }
+      for (const e of prData.removedEdges) {
+        if (matchingPRs.has(e.pr.number)) { affectedNodes.add(e.source); affectedNodes.add(e.target); }
+      }
+
+      // Dim everything, highlight affected
+      cy.elements().addClass('hover-dimmed');
+      labelEls.forEach(el => { el.style.opacity = '0.12'; });
+
+      affectedNodes.forEach(id => {
+        const n = cy.getElementById(id);
+        if (n.length) {
+          n.removeClass('hover-dimmed');
+          const el = labelEls.get(id);
+          if (el) el.style.opacity = '1';
+        }
+      });
+
+      // Show matching PR edges, dim non-matching
+      cy.edges('.pr-added-edge, .pr-removed-edge').forEach(e => {
+        const edgePrs = e.data('prs') || [];
+        if (edgePrs.some(p => matchingPRs.has(p.number))) {
+          e.removeClass('hover-dimmed');
+        }
+      });
+
+      // Show edges between affected nodes
+      cy.edges().forEach(e => {
+        if (affectedNodes.has(e.data('source')) && affectedNodes.has(e.data('target'))) {
+          e.removeClass('hover-dimmed');
+        }
+      });
+
+      updateLabelPositions();
+    });
+
+  } catch (e) {
+    loading.style.display = 'none';
+    showError(e.message);
+  }
+}
+
+main();
+</script>
+</body>
+</html>

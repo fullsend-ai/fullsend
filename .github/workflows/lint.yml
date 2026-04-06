@@ -16,6 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"

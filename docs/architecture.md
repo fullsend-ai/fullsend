@@ -2,6 +2,13 @@
 
 What are the components of the agent execution stack?
 
+> **This is a living document.** It must always reflect the current state of
+> architectural decisions. When an ADR is accepted (or superseded), this
+> document is updated to match. ADRs are point-in-time records and are not
+> modified after acceptance; this document is where the *current* truth lives.
+> A reader should be able to understand the system's architecture from this
+> document alone, without tracing a chain of ADRs.
+
 This document names the parts of the system without deciding how they work. It establishes shared vocabulary that the [problem documents](problems/) can reference when discussing design choices. Each component gets a responsibility statement and open questions — implementation decisions live in the problem docs and will crystallize into [ADRs](ADRs/) as they mature.
 
 This is not exhaustive. Not every problem doc maps to a component here, and not every component here has a corresponding problem doc yet.
@@ -12,13 +19,14 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-Infrastructure platform choice and configuration are specified in the org's `<org>/.fullsend` repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Infrastructure platform choice and configuration are specified in the adopting organization's **`.fullsend`** repository. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
 - Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? (See [agent-infrastructure.md](problems/agent-infrastructure.md) for the three directions.)
 - Can different agent types (short-lived review vs. long-running implementation) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
+- Should model and MCP (or other tool-protocol) traffic from agent runtimes go through a **shared gateway** for authentication, spend limits, allowlists, and telemetry? (See [landscape.md](landscape.md#agent-gateway).)
 
 ## Agent Sandbox
 
@@ -26,12 +34,12 @@ The isolation boundary around a running agent. Responsible for filesystem access
 
 The sandbox is a security primitive. Its job is containment: if an agent is compromised or misbehaves, the blast radius is limited to what the sandbox permits.
 
-Sandbox defaults (network policy, filesystem restrictions) are configured in the org's `<org>/.fullsend` repo and can be overridden per-repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Sandbox defaults (network policy, filesystem restrictions) are configured in the adopting organization's **`.fullsend`** repository and can be overridden per-repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
-- How granular is network regulation? Allowlist of endpoints, or coarser controls?
+- How granular is network regulation? Allowlist of endpoints, or coarser controls? (A **protocol gateway** toward approved model and MCP endpoints is one way to narrow egress without handing agents raw internet access; see [landscape.md](landscape.md#agent-gateway).)
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
 - Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?
 
@@ -41,7 +49,7 @@ The configuration and context layer that prepares an agent for its task. Respons
 
 The harness is what makes a generic LLM into a specific agent with a specific role. It assembles what the agent needs to know and what it's allowed to do before the agent starts working.
 
-The harness draws its configuration from the org's `<org>/.fullsend` repo — skills, workflow definitions, and agent behavioral instructions are assembled from the layered config (fullsend defaults < org config < per-repo overrides). (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+The harness draws its configuration from the adopting organization's **`.fullsend`** repository — skills, workflow definitions, and agent behavioral instructions are assembled from the layered config (fullsend defaults, then org config, then per-repo overrides). (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
@@ -94,7 +102,7 @@ Where agent behavioral rules live. Responsible for holding autonomy levels, revi
 
 Policy is distinct from the harness (which configures *how* an agent works) and from intent (which defines *what* work is authorized). Policy defines the *boundaries* of agent behavior — what an agent is allowed to do regardless of what it's asked to do.
 
-The org's `<org>/.fullsend` repo is the natural home for policy configuration — org-wide guardrails, per-repo autonomy levels, and escalation rules all live there, governed by the org's own CODEOWNERS and review process. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+The adopting organization's **`.fullsend`** repository is the natural home for policy configuration — org-wide guardrails, per-repo autonomy levels, and escalation rules all live there, governed by the org's own CODEOWNERS and review process. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
@@ -108,7 +116,7 @@ The system that provides authorized intent for agent work. Responsible for repre
 
 Intent answers the question "should this change exist?" before anyone asks "is this change correct?" Without authorized intent, an agent has no basis for deciding what to work on or whether its output matches what was asked for.
 
-The org's `<org>/.fullsend` repo holds the pointer to the intent source (e.g., `intent_repo: <org>/features`), so tooling discovers where intent lives without hardcoding. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+The adopting organization's **`.fullsend`** repository holds the pointer to the intent source (for example, `intent_repo: your-org/features`), so tooling discovers where intent lives without hardcoding. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
@@ -137,10 +145,84 @@ The catalog of available agent roles and their configurations. Responsible for d
 
 The registry is the bridge between the abstract roles defined in [agent-architecture.md](problems/agent-architecture.md) (correctness agent, intent alignment agent, etc.) and the concrete runtime configurations that the harness uses to set up each agent.
 
-Fullsend provides a base set of agent definitions. The org's `<org>/.fullsend` repo extends this with org-specific agents in its `agents/` directory, following the inheritance model: fullsend defaults < org config < per-repo overrides. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Fullsend provides a base set of agent definitions. The adopting organization's **`.fullsend`** repository extends this with org-specific agents in its `agents/` directory, following the inheritance model: fullsend defaults, then org config, then per-repo overrides. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
 - How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).)
 - Does the registry include version information, so we can roll back to a previous agent configuration?
 - How does the registry relate to the policy store — does policy reference registry entries, or are they independent?
+
+## Reference workflow components (ADR 0002)
+
+The [Initial Fullsend Design](ADRs/0002-initial-fullsend-design.md) describes a concrete GitHub-centric issue→merge workflow. Its **building blocks** are named below so this document and the ADR stay aligned. Descriptions are brief; the ADR is normative for behavior.
+
+### 1. Webhook + dispatch service
+
+Normalizes GitHub events (issue/PR/label/comment/check/merge), deduplicates flapping events, and dispatches work to agent runtimes.
+ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service).
+
+### 2. Slash-command parser + ACL
+
+Parses `/triage`, `/implement`, `/review`, and related commands and enforces who is allowed to invoke each.
+ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
+
+### 3. Label state machine guard
+
+Validates legal label transitions and enforces mutual exclusion and run-start reset semantics (triage start clears **`duplicate`** and downstream labels; PR/review strips per ADR).
+ADR 0002: [Building block 3](ADRs/0002-initial-fullsend-design.md#3-label-state-machine-guard).
+
+### 4. triage agent runtime
+
+Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, readiness, reproducibility, test handoff; can close as duplicate again if still a match.
+ADR 0002: [Building block 4](ADRs/0002-initial-fullsend-design.md#4-triage-agent-runtime).
+
+### 5. Duplicate / similarity search
+
+Provides candidate duplicate retrieval and confidence scoring for triage duplicate decisions.
+ADR 0002: [Building block 5](ADRs/0002-initial-fullsend-design.md#5-duplicate--similarity-search).
+
+### 6. Repro sandbox template
+
+Isolated environment used by triage for reproducibility checks.
+ADR 0002: [Building block 6](ADRs/0002-initial-fullsend-design.md#6-repro-sandbox-template).
+
+### 7. Test artifact formatter
+
+Formats triage test artifacts in repo-native conventions for PR handoff.
+ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#7-test-artifact-formatter).
+
+### 8. implementation agent runtime
+
+Implements changes, runs local/CI-equivalent tests, handles check failures, and advances handoff to **Review** (`ready-for-review`).
+ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#8-implementation-agent-runtime).
+
+### 9. PR sandbox / CI mirror
+
+Execution environment for **Implementation** and test loops, aligned to contributor/CI toolchains.
+ADR 0002: [Building block 9](ADRs/0002-initial-fullsend-design.md#9-pr-sandbox--ci-mirror).
+
+### 10. Check failure triage
+
+Fetches and classifies failing check logs to guide **implementation agent** remediation loops.
+ADR 0002: [Building block 10](ADRs/0002-initial-fullsend-design.md#10-check-failure-triage).
+
+### 11. review agent runtime
+
+Runs N parallel **review agent** invocations and produces structured review verdicts/comments.
+ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-agent-runtime).
+
+### 12. Coordinator merge algorithm
+
+Aggregates review verdicts and applies labels:
+
+- unanimous approve-merge → `ready-for-merge` (for the **current** PR head at the end of that round only)
+- unanimous rework → `ready-to-implement`
+- split/conflicting (including conflicting security severities) → `requires-manual-review`
+- each **review run start** (including push-triggered re-review) clears **`ready-for-merge`** together with **`ready-for-review`** so merge approval is never stale after new commits
+ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinator-merge-algorithm).
+
+### 13. Observability
+
+Traceability layer across issue, **Triage**, **Implementation**, **Review**, checks, and merge for incident response and correlation across automation runs.
+ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observability).

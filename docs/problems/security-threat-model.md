@@ -6,8 +6,9 @@ Defending the agentic system against adversarial attacks. Security is not a feat
 
 1. **External prompt injection** — most immediate, most novel
 2. **Insider threat / compromised credentials** — amplified by agent authority
-3. **Agent drift** — insidious, slow, hard to detect
-4. **Supply chain attacks** — partially addressed by existing tooling, but agentic development introduces a novel trust boundary
+3. **Denial of Service / Resource Exhaustion** — cost asymmetry and automated-response amplification make it high-impact
+4. **Agent drift** — insidious, slow, hard to detect
+5. **Supply chain attacks** — partially addressed by existing tooling, but agentic development introduces a novel trust boundary
 
 ## Threat 1: External prompt injection
 
@@ -47,6 +48,8 @@ This undermines several of the defenses listed below:
 The attack surface is the same as for visible prompt injection — PR descriptions, issue bodies, code comments, commit messages, upstream dependency content — but the detection difficulty is fundamentally higher because the payload is not visible under any normal inspection.
 
 ### Defense considerations
+
+- **Edge and proxy guardrails** — Some organizations filter or moderate **outbound** model traffic (prompts or completions) or tool invocations at a **gateway** in front of providers and MCP servers — for example policy-as-code, rate limits, or vendor moderation hooks. That can add defense in depth and consistent telemetry, but it does not remove the need for **in-agent** separation of trusted instructions from untrusted forge content; see [landscape.md](../landscape.md#agent-gateway). A compromised gateway policy is a concentrated risk, so gateway configuration should be governed like other agent infrastructure.
 
 - **Input sanitization** — strip or flag non-rendering Unicode characters before content reaches agents. Specific character classes to target: Tag characters (U+E0000–U+E007F), zero-width characters (U+200B, U+200C, U+200D, U+FEFF), bidirectional overrides (U+202A–U+202E, U+2066–U+2069), and variation selectors. This is more tractable than general prompt injection detection because the characters themselves are the signal — their mere presence in a PR description or code comment is suspicious, regardless of what they encode. However, some of these characters have legitimate uses in internationalized text, so stripping must be context-aware or at minimum flag rather than silently remove.
 - **Separation of data and instructions** — agent prompts should clearly delineate between "system instructions" and "untrusted input being analyzed"
@@ -291,6 +294,72 @@ This means the attack surface includes:
 - Is assertion-density or mutation-testing-score regression a practical merge gate, or too expensive/noisy for routine use?
 - How does this interact with the agent drift problem? Gradual, non-malicious test quality degradation creates the same blind spots that a deliberate attacker would exploit.
 - What heuristics should agents use to identify opaque/binary files? File extension? Entropy analysis? MIME type detection? How do we avoid blocking legitimate binary test fixtures (e.g., golden files for image processing)?
+
+## Threat 6: Denial of Service (DOS) / Resource Exhaustion
+
+### The attack
+
+An attacker triggers excessive consumption of compute, API tokens, or event-processing capacity to degrade or disable the agentic system. Unlike traditional web application DOS which targets request handling, agentic DOS targets the uniquely expensive operations that agents perform — LLM inference, sandbox provisioning, code generation, and multi-agent coordination.
+
+### Attack vectors
+
+**Event flooding:**
+- Rapidly filing issues, posting comments, toggling labels, or creating PRs to trigger agent invocations at scale
+- Abusing slash commands (`/triage`, `/implement`) to queue expensive operations
+- Creating issues in bulk across multiple repos in an organization to saturate shared infrastructure
+
+**Cost amplification:**
+- Crafting issues that cause maximum LLM token consumption (extremely long descriptions, requests for exhaustive analysis)
+- Triggering implementation agents on problems designed to maximize iteration loops (ambiguous requirements that never converge)
+- Exploiting the implement-review feedback loop to cause unbounded cycles between agents
+- Filing issues that reference enormous external documents (via URLs) that the agent will attempt to fetch and process
+
+**Cascade amplification:**
+- Injecting events that cause agent-to-agent reaction chains (implementation triggers review, review rejection triggers re-implementation, ad infinitum)
+- Exploiting label state machine transitions to create oscillating states that repeatedly trigger agent runs
+- Causing concurrent agent invocations that compete for the same resources (file locks, API rate limits) leading to repeated failures and retries
+
+**Sandbox resource exhaustion:**
+- Crafting issues where the described fix requires computationally expensive operations (large-scale refactoring, combinatorial test generation)
+- Triggering agents that clone and process very large repositories
+- Causing agents to produce extremely large diffs or output artifacts that consume storage
+
+### Why it's dangerous
+
+Agentic systems are uniquely vulnerable to DOS because:
+
+1. **Automated response guarantees amplification.** A human developer ignores spam. An agent configured to respond to qualifying events cannot — every event that matches the trigger criteria produces an expensive response.
+2. **Cost is asymmetric.** Filing a GitHub issue is free. Processing it with an LLM agent costs real money (API tokens, compute time). The attacker's cost-to-damage ratio is extremely favorable.
+3. **Shared infrastructure multiplies impact.** If the organization uses shared runners or a centralized fullsend repo, DOS against one repository can block agent operations across the entire organization.
+4. **Recovery is not instant.** Unlike a web server that recovers when the flood stops, agent backlogs persist — queued work items, partial implementations, and cascading retries may continue consuming resources after the attack ceases.
+
+### Defense considerations
+
+Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox resource quotas via cgroups/Kata Containers, compute limits). The following focus on what is unique to this context:
+
+- **Cost budgets** — set per-repo and per-org budgets for LLM API token consumption. When a budget threshold is reached, require human approval before further agent invocations.
+- **Loop circuit breakers** — enforce hard limits on implement-review cycles. The entry point script should enforce these limits deterministically, not rely on the agent's self-restraint.
+- **Event debouncing and deduplication** — collapse rapid-fire events on the same issue/PR into a single agent invocation rather than spawning one per event.
+- **Tiered response based on actor trust** — events from non-org-members or new contributors could be subject to stricter rate limits or require human approval before triggering agents.
+- **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
+- **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
+- **Rate limiting per actor and per repository** — cap the number of agent-triggering events a single user can generate within a time window, and limit concurrent agent runs per repository and per organization. Note: [Threat 2](#threat-2-insider-threat--compromised-credentials) discusses rate limiting for anomaly detection of compromised credentials via behavioral patterns. DOS rate limiting is distinct — it caps event volume from any actor regardless of intent, as a resource protection mechanism rather than a compromise detection signal.
+
+### Intersection with other threats
+
+DOS has elements that touch several existing threats:
+- **Prompt injection** — a prompt injection payload could instruct the agent to perform expensive operations, turning a prompt injection into a DOS amplification
+- **Agent-to-agent injection** — a compromised agent could generate outputs designed to trigger expensive cascades in downstream agents
+- **Insider threat** — a compromised account with org membership bypasses actor-based rate limits
+- **Agent drift** — gradual increases in agent response time or resource consumption may indicate an unintentional DOS caused by system degradation
+
+### Open questions
+
+- Should cost budgets trigger a hard stop or a human-in-the-loop approval flow?
+- How do we distinguish legitimate bursts of activity (e.g., a major outage generating many related bug reports) from an attack, and should rate limits be configurable per organization to account for this?
+- How do we handle the case where rate limiting causes legitimate high-priority issues to be delayed?
+- Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?
+- Should the event debouncing strategy from the March 31 concurrency discussion be treated as a DOS defense or purely a correctness concern? (It serves both purposes.)
 
 ## Cross-cutting security principles
 

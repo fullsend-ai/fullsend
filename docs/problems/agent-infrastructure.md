@@ -59,6 +59,20 @@ Design and operate dedicated agent infrastructure: runner pool, sandboxing, tool
 - How does it integrate with the organization's existing CI/CD infrastructure?
 - Can we iterate with a thin custom layer on top of internal or 3rd party compute and only “build our own” where we must?
 
+## Challenges in headless and cluster-hosted runtimes
+
+Agents are often discussed as if they run on a developer workstation: fast local builds, an interactive shell, and a stable working tree. In practice, many organizations will run them on **shared CI runners, Kubernetes, or other ephemeral, network-only environments**. That shift surfaces tensions that are easy to underestimate when prototyping locally.
+
+- **Privilege versus validation** — Implementation agents may need to build container images, run integration tests, or reproduce fixtures that mirror CI. That pressure leads toward Docker-in-Docker, nested builders, or highly capable pods. Granting **`privileged`-equivalent or host-level access** to a workload whose behavior is driven by an LLM greatly expands blast radius; the overlap with [security-threat-model.md](security-threat-model.md) is direct. The design problem is how to validate changes **without** making the agent runtime a root-equivalent attack surface.
+
+- **Monolithic runner images** — Putting every compiler, SDK, and linter into a single “agent runner” image minimizes per-job setup, but it produces **large images, slow provisioning, a wide dependency footprint, and painful upgrade cycles**. It also fights stack heterogeneity: real orgs use many languages and build systems (see [applied/konflux-ci](applied/konflux-ci/README.md) for one example). Finer-grained patterns — dedicated tool or task images, hermetic layers, or on-demand tooling — trade pull and scheduling latency against maintainability and security review surface.
+
+- **CI feedback latency** — Keeping agents out of **local** execution for policy or isolation reasons often leaves only **asynchronous** CI (webhooks, queued pipeline runs). That weakens the tight edit–test–fix loop models assume on a laptop. The gap between “patch pushed” and “signal returned” affects whether an agent can clear syntax and unit failures within a single session; [repo-readiness.md](repo-readiness.md) covers CI maturity and reliable signals more broadly.
+
+- **Workspace and context continuity** — Ephemeral jobs reset filesystem state between runs or stages. Carrying **in-progress repo state, partial edits, and task context** across those boundaries requires explicit design: shared volumes (for example PVCs in Kubernetes), artifact handoff between steps, branches or WIP commits, or external systems (issues, design docs). Without a deliberate handoff story, every run starts cold and context-window limits bite harder.
+
+- **Compute held open for human latency** — A long-lived pod that **blocks on PR approval, architecture sign-off, or escalation** consumes cluster quota and cost while idle. That misaligns with typical “always-on service” defaults. Better fits include **event-driven** scheduling (wake on comment or approval), aggressive scale-to-zero, or separating **planning** from **execution** so capacity is not reserved across human response times; see [human-factors.md](human-factors.md) and [autonomy-spectrum.md](autonomy-spectrum.md).
+
 ## Ambient Code Platform (ACP)
 
 [Ambient Code Platform](https://github.com/ambient-code/platform) is a Kubernetes-native stack (API, operator, runner pods) for agentic sessions—aligned in spirit with “ambient,” CR-driven agent workloads on a cluster.
@@ -84,7 +98,7 @@ ACP may still be useful for **narrow experiments** where those constraints are a
 - **Agent architecture** — Instance topology (per-repo vs shared) and “local vs remote” for pre-PR review depend on what infrastructure we have. Infrastructure enables or constrains those choices.
 - **Security threat model** — Isolation and “separate execution environments” are implemented by this layer. Supply chain (what base images and dependencies the runtime uses) also lives here.
 - **Governance** — Policy may be applied at runtime by agents reading from a policy repo; infrastructure determines where that runtime runs and how it accesses policy.
-- **Repo readiness** — Repos need reliable CI and signals; agent infrastructure may consume or depend on the same CI (e.g. for “run tests” or “run linters”) and should not conflict with it.
+- **Repo readiness** — Repos need reliable CI and signals; agent infrastructure may consume or depend on the same CI (e.g. for “run tests” or “run linters”) and should not conflict with it. Headless runtimes amplify **feedback latency** and **workspace handoff** costs when CI is the only execution path.
 
 ## Open questions
 
@@ -93,3 +107,4 @@ ACP may still be useful for **narrow experiments** where those constraints are a
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?
 - Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership?
+- For cluster-hosted agents, how do we preserve an acceptable inner loop (fast local or sandboxed tests) without granting dangerous privilege, and how do we avoid paying for idle capacity while work waits on humans?

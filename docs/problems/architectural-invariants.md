@@ -109,7 +109,7 @@ Architectural invariants aren't permanent. They evolve — sometimes an ADR supe
 
 - **Creating invariants** — follows the existing architecture repo process (PR with ADR, 2 peer approvals)
 - **Modifying invariants** — same process, with explicit documentation of what changed and why
-- **Superseding invariants** — ADRs already have a supersession mechanism. Agents need to recognize which ADRs are current vs. superseded.
+- **Superseding invariants** — ADRs already have a supersession mechanism. When a new ADR supersedes an older one, the old ADR's status is updated and a link to the successor is added, but its content remains unchanged (ADRs are point-in-time records). `docs/architecture.md` is then updated to reflect the current decision. Agents need to recognize which ADRs are current vs. superseded.
 - **Temporary exceptions** — sometimes a PR needs to violate an invariant with a plan to address it later. How is this represented? A time-bounded exception in the architecture repo? A label on the PR?
 
 This lifecycle is a [governance](governance.md) concern — who can create, modify, and grant exceptions to invariants. But the representation and enforcement mechanism belongs here.
@@ -130,4 +130,4 @@ This lifecycle is a [governance](governance.md) concern — who can create, modi
 - Can drift detection be bidirectional — if the code has drifted from the docs, maybe the docs are wrong? How do we distinguish "code drifted from intent" from "intent was never updated to match a legitimate evolution"?
 - What's the priority ordering when invariants conflict? (e.g., a security invariant vs. a performance invariant)
 - How do agents handle ADRs that reference context outside the repo (Slack discussions, meeting decisions, JIRA tickets mentioned in the ADR's context section)?
-- Should agents that detect invariant violations be able to propose ADR amendments, or should that always be human-initiated?
+- Should agents that detect invariant violations be able to propose new superseding ADRs, or should that always be human-initiated? (Note: ADRs are not amended after acceptance — proposing a change means writing a new ADR that supersedes the existing one.)

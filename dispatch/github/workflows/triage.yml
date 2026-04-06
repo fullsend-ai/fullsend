@@ -1,0 +1,43 @@
+name: Triage
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: fullsend-triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    name: Triage
+    if: |
+      github.event_name == 'issues' ||
+      (github.event_name == 'issue_comment' && (
+        startsWith(github.event.comment.body || '', '/triage ') ||
+        (github.event.comment.body || '') == '/triage'
+      ))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FULLSEND_TRIAGE_BOT_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup agent environment
+        env:
+          STAGE_PREFIX: TRIAGE_
+          TRIAGE_FULLSEND_TRIAGE_BOT_TOKEN: ${{ secrets.FULLSEND_TRIAGE_BOT_TOKEN }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run triage agent(s)
+        uses: ./.github/actions/fullsend
+        with:
+          stage: triage

@@ -1,0 +1,44 @@
+name: Implementation
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: fullsend-implementation-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  implementation:
+    name: Implementation
+    if: |
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'ready-to-implement') ||
+      (github.event_name == 'issue_comment' && (
+        startsWith(github.event.comment.body || '', '/implement ') ||
+        (github.event.comment.body || '') == '/implement'
+      ))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.FULLSEND_IMPLEMENTATION_BOT_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup agent environment
+        env:
+          STAGE_PREFIX: IMPLEMENTATION_
+          IMPLEMENTATION_FULLSEND_IMPLEMENTATION_BOT_TOKEN: ${{ secrets.FULLSEND_IMPLEMENTATION_BOT_TOKEN }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run implementation agent(s)
+        uses: ./.github/actions/fullsend
+        with:
+          stage: implementation

@@ -1,0 +1,92 @@
+name: Fullsend
+description: >-
+  Install fullsend-cli and run the stage entrypoint for the given SCM (default github). Does not
+  read agent configuration from the repository; configure the job environment or CLI as needed.
+
+branding:
+  icon: zap
+  color: purple
+
+inputs:
+  stage:
+    description: Pipeline stage passed to fullsend (e.g. triage, implementation, review).
+    required: true
+  scm:
+    description: Value for fullsend --scm (optional; defaults to github).
+    required: false
+    default: github
+  version:
+    description: >-
+      Release tag or version: use latest, v0.0.1, or 0.0.1. Download URLs use a leading v; asset
+      names use the version without v (fullsend_0.0.1_linux_amd64.tar.gz).
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - name: Install fullsend CLI
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        VERSION="$(printf '%s' "${VERSION:-latest}" | tr -d '[:space:]')"
+        VERSION="${VERSION:-latest}"
+
+        os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
+        case "${os}" in
+          macos) os=darwin ;;
+        esac
+
+        arch="$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
+        case "${arch}" in
+          x64) arch=amd64 ;;
+          x86) arch=386 ;;
+          arm64|aarch64) arch=arm64 ;;
+        esac
+
+        if [[ "${VERSION}" == "latest" ]]; then
+          TAG="$(curl -fsSL -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/fullsend-ai/fullsend/releases/latest" | jq -r '.tag_name')"
+          if [[ -z "${TAG}" || "${TAG}" == "null" ]]; then
+            echo "::error::Could not resolve latest release tag"
+            exit 1
+          fi
+          if [[ "${TAG}" == v* ]]; then
+            VERSION_URL="${TAG}"
+            VERSION_ASSET="${TAG#v}"
+          else
+            VERSION_URL="v${TAG}"
+            VERSION_ASSET="${TAG}"
+          fi
+          BASE_URL="https://github.com/fullsend-ai/fullsend/releases/download/${VERSION_URL}"
+        else
+          if [[ "${VERSION}" == v* ]]; then
+            VERSION_URL="${VERSION}"
+            VERSION_ASSET="${VERSION#v}"
+          else
+            VERSION_URL="v${VERSION}"
+            VERSION_ASSET="${VERSION}"
+          fi
+          BASE_URL="https://github.com/fullsend-ai/fullsend/releases/download/${VERSION_URL}"
+        fi
+
+        ASSET_NAME="fullsend_${VERSION_ASSET}_${os}_${arch}.tar.gz"
+        URL="${BASE_URL}/${ASSET_NAME}"
+
+        echo "Downloading from: ${URL}"
+        curl -fsSL "$URL" -o "/tmp/${ASSET_NAME}"
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        tar -xzf "/tmp/${ASSET_NAME}" -C "${RUNNER_TEMP}/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+    - name: Run fullsend
+      shell: bash
+      env:
+        SCM: ${{ inputs.scm || 'github' }}
+        STAGE: ${{ inputs.stage }}
+      run: |
+        set -euo pipefail
+        fullsend entrypoint "${STAGE}" --scm "${SCM}"
