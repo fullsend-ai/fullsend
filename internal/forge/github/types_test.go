@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,4 +81,20 @@ func TestAgentAppConfig_UnknownRole(t *testing.T) {
 	assert.Empty(t, cfg.Permissions.PullRequests)
 
 	assert.Contains(t, cfg.Events, "issues")
+}
+
+func TestAppConfig_RedirectURL_InJSON(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "fullsend")
+	cfg.RedirectURL = "http://127.0.0.1:12345/callback"
+
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	var raw map[string]interface{}
+	err = json.Unmarshal(data, &raw)
+	require.NoError(t, err)
+
+	redirectURL, ok := raw["redirect_url"]
+	assert.True(t, ok, "JSON must contain redirect_url key")
+	assert.Equal(t, "http://127.0.0.1:12345/callback", redirectURL)
 }
