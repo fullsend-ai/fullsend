@@ -24,15 +24,15 @@ The remaining components described in this document (Policy Store, Intent Source
 
 The compute and orchestration layer that runs agent workloads. Responsible for provisioning, scheduling, scaling, and lifecycle management of agent execution environments.
 
-This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
+The initial execution platform is **GitHub Actions**. Enrolled repos contain a thin workflow stub that calls a reusable workflow in the org's `.fullsend` repo. The reusable workflow passes the raw forge event to a platform-agnostic entry point, which consults `.fullsend` config to select a sandbox policy, harness configuration, and agent runtime, then orchestrates their launch. Nothing below the infrastructure layer knows it is running on GitHub Actions. **Kubernetes**, **GitLab CI**, and **Forgejo Runners** are anticipated future platforms; when added, only the trigger and infrastructure layers change. (See [ADR 0007](ADRs/0007-github-actions-initial-execution-platform.md).)
 
 Infrastructure platform choice and configuration are specified in the org's `<org>/.fullsend` repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
 **Open questions:**
 
-- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? (See [agent-infrastructure.md](problems/agent-infrastructure.md) for the three directions.)
 - Can different agent types (short-lived review vs. long-running implementation) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
+- What are the concrete resource limits (runner size, timeout, concurrency) that should be set as defaults for GitHub Actions runners?
 
 ## Agent Sandbox
 
@@ -106,6 +106,8 @@ The abstraction applies to two specific code paths: the **agent runtime wrapper*
 The mechanism that assigns work to agents and prevents conflicts. Responsible for translating triggers (forge events, schedules, manual requests) into agent tasks and ensuring two agents don't work the same problem simultaneously.
 
 The existing design principle is that [the repo is the coordinator](problems/agent-architecture.md#interaction-model-the-repo-as-coordinator) — branch protection, CODEOWNERS, status checks, and forge events provide coordination without a central orchestrator. The agent dispatch and coordination layer may be nothing more than the glue that connects forge webhooks to agent infrastructure. Or it may need to be more.
+
+For the initial implementation, GitHub Actions' event system (`on:` triggers in workflow YAML) serves as the trigger layer — translating forge events into agent workload invocations. This collapses the trigger and infrastructure into a single system initially; a future platform (Kubernetes, GitLab CI, or Forgejo Runners) would decouple them. (See [ADR 0007](ADRs/0007-github-actions-initial-execution-platform.md).)
 
 **Open questions:**
 
