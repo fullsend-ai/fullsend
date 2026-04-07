@@ -13,6 +13,7 @@
 #   --max-turns N      Max dialogue turns per trial (default: 6)
 #   --agent COMMAND    Agent CLI for triage/reporter: "claude" or "opencode" (default: claude)
 #   --judge-model ID   Model ID for the judge agent (default: claude-sonnet-4-6)
+#   --resume DIR       Resume a previous run, skipping completed trials
 #   --dry-run          Print prompts without invoking agents
 #   --help             Show this help
 # =============================================================================
@@ -32,6 +33,7 @@ JUDGE_MODEL=claude-sonnet-4-6
 DRY_RUN=""
 FILTER_SCENARIO=""
 FILTER_STRATEGY=""
+RESUME_DIR=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --max-turns)    MAX_TURNS="$2"; shift 2 ;;
     --agent)        AGENT_CLI="$2"; shift 2 ;;
     --judge-model)  JUDGE_MODEL="$2"; shift 2 ;;
+    --resume)       RESUME_DIR="$2"; shift 2 ;;
     --dry-run)      DRY_RUN="--dry-run"; shift ;;
     --help|-h)
       sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
@@ -66,14 +69,23 @@ if ! command -v "$AGENT_CLI" &>/dev/null && [[ -z "$DRY_RUN" ]]; then
   exit 1
 fi
 
-# Create results directory
-TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-RESULTS_DIR="$EXPERIMENT_DIR/results/$TIMESTAMP"
+# Create or reuse results directory
+if [[ -n "$RESUME_DIR" ]]; then
+  if [[ ! -d "$RESUME_DIR" ]]; then
+    echo "Error: resume directory does not exist: $RESUME_DIR" >&2
+    exit 1
+  fi
+  RESULTS_DIR="$(cd "$RESUME_DIR" && pwd)"
+else
+  TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+  RESULTS_DIR="$EXPERIMENT_DIR/results/$TIMESTAMP"
+fi
 mkdir -p "$RESULTS_DIR"
 
 CELLS=$((${#SCENARIOS[@]} * ${#STRATEGIES[@]}))
 TOTAL=$((CELLS * NUM_TRIALS))
 CURRENT=0
+SKIPPED=0
 
 echo "=============================================="
 echo "Triage Strategy Evaluation (v2)"
@@ -85,6 +97,7 @@ echo "Strategies:  ${STRATEGIES[*]}"
 echo "Trials/cell: $NUM_TRIALS"
 echo "Max turns:   $MAX_TURNS"
 echo "Results:     $RESULTS_DIR"
+echo "Resume:      ${RESUME_DIR:-no}"
 echo "Total runs:  $TOTAL ($CELLS cells x $NUM_TRIALS trials)"
 echo "=============================================="
 echo ""
@@ -94,7 +107,10 @@ echo ""
 # ---------------------------------------------------------------------------
 
 SEED_DIR="$RESULTS_DIR/seed-app"
-if [[ -f "$EXPERIMENT_DIR/prompts/seed-app.md" ]] && [[ -z "$DRY_RUN" ]]; then
+if [[ -n "$RESUME_DIR" ]] && [[ -d "$SEED_DIR" ]]; then
+  echo "Phase 1: Skipping seed app (already exists from previous run)"
+  echo ""
+elif [[ -f "$EXPERIMENT_DIR/prompts/seed-app.md" ]] && [[ -z "$DRY_RUN" ]]; then
   echo "Phase 1: Seeding TaskFlow application..."
   SEED_PROMPT="$(cat "$EXPERIMENT_DIR/prompts/seed-app.md")"
   mkdir -p "$SEED_DIR"
@@ -120,6 +136,9 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "Phase 2: Running triage trials..."
+if [[ -n "$RESUME_DIR" ]]; then
+  echo "(Resuming — completed trials will be skipped)"
+fi
 echo ""
 
 for scenario in "${SCENARIOS[@]}"; do
@@ -127,6 +146,14 @@ for scenario in "${SCENARIOS[@]}"; do
     for trial_num in $(seq 1 "$NUM_TRIALS"); do
       CURRENT=$((CURRENT + 1))
       TRIAL_DIR="$RESULTS_DIR/$scenario/$strategy/trial-$trial_num"
+
+      # Skip completed trials when resuming
+      if [[ -n "$RESUME_DIR" ]] && [[ -f "$TRIAL_DIR/trial-metadata.json" ]]; then
+        SKIPPED=$((SKIPPED + 1))
+        echo "[$CURRENT/$TOTAL] $scenario x $strategy (trial $trial_num/$NUM_TRIALS) — skipped (complete)"
+        continue
+      fi
+
       mkdir -p "$TRIAL_DIR"
 
       echo "[$CURRENT/$TOTAL] $scenario x $strategy (trial $trial_num/$NUM_TRIALS)"
@@ -150,8 +177,12 @@ if [[ -z "$DRY_RUN" ]]; then
       for trial_num in $(seq 1 "$NUM_TRIALS"); do
         TRIAL_DIR="$RESULTS_DIR/$scenario/$strategy/trial-$trial_num"
         if [[ -f "$TRIAL_DIR/conversation.json" ]]; then
-          echo "  Judging: $scenario x $strategy (trial $trial_num)"
-          "$SCRIPT_DIR/judge.sh" "$scenario" "$TRIAL_DIR" "$AGENT_CLI" "$JUDGE_MODEL"
+          if [[ -n "$RESUME_DIR" ]] && [[ -f "$TRIAL_DIR/judge-assessment.json" ]]; then
+            echo "  Skipping (already judged): $scenario x $strategy (trial $trial_num)"
+          else
+            echo "  Judging: $scenario x $strategy (trial $trial_num)"
+            "$SCRIPT_DIR/judge.sh" "$scenario" "$TRIAL_DIR" "$AGENT_CLI" "$JUDGE_MODEL"
+          fi
         fi
       done
     done
@@ -164,8 +195,12 @@ if [[ -z "$DRY_RUN" ]]; then
 
   for scenario in "${SCENARIOS[@]}"; do
     if ls "$RESULTS_DIR/$scenario"/*/trial-*/judge-assessment.json &>/dev/null; then
-      echo "  Analyzing: $scenario"
-      "$SCRIPT_DIR/analyze-scenario.sh" "$scenario" "$RESULTS_DIR" "$AGENT_CLI"
+      if [[ -n "$RESUME_DIR" ]] && [[ -f "$RESULTS_DIR/$scenario/cross-strategy-analysis.md" ]]; then
+        echo "  Skipping (already analyzed): $scenario"
+      else
+        echo "  Analyzing: $scenario"
+        "$SCRIPT_DIR/analyze-scenario.sh" "$scenario" "$RESULTS_DIR" "$AGENT_CLI"
+      fi
     fi
   done
   echo ""
@@ -181,6 +216,10 @@ echo "Phase 4: Generating summary..."
 echo ""
 echo "=============================================="
 echo "Experiment complete."
+if [[ $SKIPPED -gt 0 ]]; then
+  echo "Skipped:  $SKIPPED/$TOTAL trials (already complete)"
+  echo "Ran:      $((TOTAL - SKIPPED))/$TOTAL trials"
+fi
 echo "Results: $RESULTS_DIR"
 echo "Summary: $RESULTS_DIR/summary.md"
 echo "=============================================="
