@@ -1,0 +1,49 @@
+# stages/code.yaml
+#
+# Stage definition for the code stage.
+# This stage runs two agents sequentially: the code agent implements
+# the fix, then the review agent evaluates the local branch before
+# anything is pushed. Both agents run in the same sandbox on the
+# same filesystem — the review agent sees the code agent's commits.
+
+agents:
+  - name: code
+    definition: agents/code.md
+    # The code agent implements the fix, runs tests/linters locally,
+    # and commits to the working branch. It does not push.
+
+  - name: review
+    definition: agents/review.md
+    # The review agent evaluates the code agent's commits on the local
+    # branch. This is a mandatory pre-push security gate — catches
+    # leaked secrets, obvious defects, and policy violations before
+    # anything reaches the remote. The full review agent runs again
+    # after the PR is posted (trust model requires it), but this
+    # pre-push pass reduces the risk of exposing secrets publicly.
+
+sandbox:
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  # Network egress allowlist — agents can only reach these endpoints.
+  # Everything else is blocked by the sandbox firewall (OpenShell / network policy).
+  firewall:
+    allow:
+      - "api.github.com"
+      - "github.com"
+      - "objects.githubusercontent.com"
+      - "api.anthropic.com"          # model provider
+      - "pypi.org"                    # dependency resolution (repo-specific)
+      - "proxy.golang.org"            # dependency resolution (repo-specific)
+  filesystem:
+    # The working directory is mounted from the host VM,
+    # so post-scripts can access the agents' git commits.
+    workspace: /home/agent/workspace  # mounted from host
+    readonly:
+      - /home/agent/.config           # agent config, injected by harness
+
+runtime:
+  model: claude-sonnet-4-20250514
+  max_retries: 2                      # local test/lint retry cap (code agent)
+  timeout_minutes: 120                # hard timeout for the full stage
+
+pre_script: stages/scripts/code-pre.sh
+post_script: stages/scripts/code-post.sh
