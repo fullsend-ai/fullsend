@@ -2,6 +2,11 @@ package appsetup
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +180,96 @@ func TestSetup_NoExistingApp(t *testing.T) {
 	assert.NotContains(t, err.Error(), "private key")
 	// Browser should have been asked to open a URL.
 	assert.NotEmpty(t, browser.openedURLs, "should have tried to open browser")
+}
+
+func TestManifestFlow_HTMLForm(t *testing.T) {
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{},
+	}
+	browser := &fakeBrowser{}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, &fakePrompter{}, browser, printer)
+
+	// Use a short timeout — we only need the server to start and serve the
+	// HTML page, not complete the full manifest flow.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Run the manifest flow in a goroutine; it will block waiting for the
+	// GitHub callback until the context expires.
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := s.Run(ctx, "testorg", "coder")
+		errCh <- err
+	}()
+
+	// Wait for the browser to receive the URL.
+	var formURL string
+	deadline := time.After(2 * time.Second)
+	for {
+		if len(browser.openedURLs) > 0 {
+			formURL = browser.openedURLs[0]
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for browser.Open to be called")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	// Fetch the HTML page from the local server.
+	resp, err := http.Get(formURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	html := string(body)
+
+	// 1. There must be exactly one hidden input named "manifest".
+	manifestInputRe := regexp.MustCompile(`<input[^>]+name="manifest"[^>]*>`)
+	manifestInputs := manifestInputRe.FindAllString(html, -1)
+	assert.Len(t, manifestInputs, 1, "expected exactly one hidden input named 'manifest'")
+
+	// 2. There must be NO hidden input named "redirect_url".
+	redirectInputRe := regexp.MustCompile(`<input[^>]+name="redirect_url"[^>]*>`)
+	redirectInputs := redirectInputRe.FindAllString(html, -1)
+	assert.Empty(t, redirectInputs, "there must be no hidden input named 'redirect_url'")
+
+	// 3. The manifest JSON must contain redirect_url matching the callback URL.
+	valueRe := regexp.MustCompile(`<input[^>]+name="manifest"[^>]+value="([^"]*)"`)
+	matches := valueRe.FindStringSubmatch(html)
+	require.Len(t, matches, 2, "could not extract manifest value from HTML")
+
+	// The value is HTML-escaped; decode it.
+	manifestJSON := strings.NewReplacer(
+		"&amp;", "&",
+		"&lt;", "<",
+		"&gt;", ">",
+		"&#34;", "\"",
+		"&#39;", "'",
+	).Replace(matches[1])
+
+	var manifest map[string]interface{}
+	err = json.Unmarshal([]byte(manifestJSON), &manifest)
+	require.NoError(t, err, "manifest value must be valid JSON")
+
+	redirectURL, ok := manifest["redirect_url"]
+	require.True(t, ok, "manifest JSON must contain redirect_url key")
+
+	// The callback URL should point to the local server's /callback path.
+	redirectStr, isString := redirectURL.(string)
+	require.True(t, isString, "redirect_url must be a string")
+	assert.True(t, strings.HasPrefix(redirectStr, "http://127.0.0.1:"),
+		"redirect_url should start with http://127.0.0.1:, got %s", redirectStr)
+	assert.True(t, strings.HasSuffix(redirectStr, "/callback"),
+		"redirect_url should end with /callback, got %s", redirectStr)
+
+	// Wait for the flow to finish (context timeout).
+	<-errCh
 }
 
 // discardWriter implements io.Writer, discarding all output.
