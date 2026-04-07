@@ -151,6 +151,11 @@ func (l *WorkflowsLayer) codeownersContent() string {
 const agentWorkflowContent = `# Agent dispatch workflow
 # Triggered by shim workflows in enrolled repos via workflow_dispatch.
 # Reads its own repo secrets (App PEMs) — secrets never leave this repo.
+#
+# Security scanning runs as a separate step before the agent. If the scan
+# detects critical findings (prompt injection, credential exfil), the job
+# fails and the agent step never executes. Non-critical findings (unicode
+# normalization) are sanitized and passed to the agent via GITHUB_OUTPUT.
 name: Agent Dispatch
 
 on:
@@ -171,12 +176,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run fullsend entrypoint
-        run: echo "fullsend entrypoint - event=${{ inputs.event_type }} repo=${{ inputs.source_repo }}"
+
+      - name: Install fullsend CLI
+        uses: ./.github/actions/fullsend
+
+      - name: Security scan input
+        id: scan
+        run: fullsend scan input
+        env:
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
+
+      - name: Run agent
+        run: echo "fullsend agent - event=${{ inputs.event_type }} repo=${{ inputs.source_repo }}"
         env:
           EVENT_TYPE: ${{ inputs.event_type }}
           SOURCE_REPO: ${{ inputs.source_repo }}
           EVENT_PAYLOAD: ${{ inputs.event_payload }}
+          SANITIZED_PAYLOAD: ${{ steps.scan.outputs.sanitized_payload }}
 `
 
 const onboardWorkflowContent = `# Repo onboarding workflow
