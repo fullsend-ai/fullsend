@@ -184,9 +184,23 @@ Open-source proxy built around AI-native protocols — [MCP](https://modelcontex
 
 It does **not** substitute for fullsend's intent tiering, zero-trust review composition, or **repo-as-coordinator** semantics. In particular, adopting an A2A gateway does not mean agents should coordinate merge decisions or trust through a side channel; see [agent-architecture.md](problems/agent-architecture.md#how-agents-communicate). A gateway is one way to implement **controlled egress** and **edge guardrails** for the traffic agents generate while still using GitHub-visible mechanisms for coordination.
 
+### Collo.dev AI Scrum Master Template
+
+[GitHub](https://github.com/plusai-solutions/ai-scrum-master-template) | [Website](https://collo.dev)
+
+Open-source GitHub Actions template that deploys four Claude-powered agents — Scrum Master, Planner, Fullstack Dev, QA Tester — coordinated through a Kanban board issue. Nine workflow YAMLs trigger agents via label transitions. Users fork the template, add an API key, and comment on a Kanban issue to initiate feature development. The pipeline runs: human describes feature → Scrum Master creates backlog tickets → Planner creates implementation plan → human approves plan → Dev implements and opens PR → QA Tester runs lint/test/build → human merges.
+
+**Architecture:** Labels drive a state machine (`feature-request` → `approved-plan` → `tests-passed` → `ready-for-merge`). Each agent has a dedicated prompt config in `.claude/agents/`. All coordination happens in GitHub Actions workflow YAML — the "Scrum Master" agent is primarily a Kanban board updater rather than a true coordinator. Agents read a CLAUDE.md file for project context, making the template stack-agnostic.
+
+**Human checkpoints:** Plan approval (add `approved-plan` label) and PR merge. All PR merges target a `develop` branch; only humans merge `develop` → `main`.
+
+**What it doesn't address:** No security threat model, no injection defense, no intent verification beyond human plan approval, no inter-agent trust model, no governance framework, no drift detection, no autonomy spectrum. The QA Tester is a single agent running lint/test/build — no decomposed review. Merge authority always stays with humans.
+
+**Relevance to fullsend:** The template is a concrete implementation of the happy path that fullsend's problem documents explore in depth. It independently converged on labels as the state machine primitive and CLAUDE.md as the context mechanism, validating those patterns. However, it illustrates the gap between "agents that help build features" and "agents trusted to merge autonomously" — the template assumes good-faith actors and benign inputs, with no defense against prompt injection via issue text or PR descriptions (fullsend's highest-ranked threat). The Scrum Master role is a coordinator agent in thin disguise, conflicting with fullsend's repo-as-coordinator position. The template is useful as a reference for what a minimal viable agent pipeline looks like and what problems surface first when you ship one.
+
 ## Architectural patterns in the field
 
-Three distinct approaches:
+Five distinct approaches:
 
 ### 1. Specialized sub-agent decomposition (Sourcery, CodeRabbit, Qodo)
 
@@ -204,7 +218,11 @@ Make the problem easier by making PRs smaller. Stacked PRs with clear scope are 
 
 Structure the workflow as a pipeline where deterministic steps (context prefetching, linting, pushing) alternate with agentic steps (implementation, CI fix attempts). The agent operates within a bounded, instrumented pipeline rather than with open-ended autonomy. Bounded retry limits prevent runaway loops.
 
-These are complementary, not competing. A system could use stacked PRs (Graphite's insight) reviewed by specialized sub-agents (CodeRabbit's insight) with deep codebase context where needed (Greptile's insight), all orchestrated through a deterministic pipeline with agentic steps (Stripe's insight).
+### 5. GitHub Actions as agent runtime (Collo.dev)
+
+Use GitHub's native workflow engine as both the orchestration layer and the compute runtime. Agents are invoked by workflow triggers (label changes, issue comments), run in ephemeral Actions runners, and coordinate through issues and labels. Zero infrastructure beyond a GitHub repo and an API key. The trade-off: tightly coupled to GitHub's event model, limited to what Actions runners can do, and no isolation between agent invocations beyond what Actions provides.
+
+These are complementary, not competing. A system could use stacked PRs (Graphite's insight) reviewed by specialized sub-agents (CodeRabbit's insight) with deep codebase context where needed (Greptile's insight), all orchestrated through a deterministic pipeline with agentic steps (Stripe's insight), running on GitHub Actions (Collo.dev's insight for teams that want zero infrastructure overhead).
 
 ### 4. Multi-agent swarm frameworks (MetaGPT, MAGIS, Swarms.ai, CrewAI)
 
