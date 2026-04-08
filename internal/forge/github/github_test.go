@@ -626,6 +626,42 @@ func TestCreateOrgSecret(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreateOrgSecret_NilRepoIDs_VisibilityAll(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			// GET org public key
+			pubKey := make([]byte, 32)
+			for i := range pubKey {
+				pubKey[i] = byte(i + 1)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"key_id": "org-key-123",
+				"key":    base64.StdEncoding.EncodeToString(pubKey),
+			})
+		case 2:
+			// PUT org secret — should use visibility "all" with no repo IDs
+			assert.Equal(t, "PUT", r.Method)
+
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			assert.Equal(t, "all", body["visibility"],
+				"visibility should be 'all' when no repo IDs are specified")
+			assert.Nil(t, body["selected_repository_ids"],
+				"selected_repository_ids should be absent when visibility is 'all'")
+
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", nil)
+	require.NoError(t, err)
+}
+
 func TestOrgSecretExists(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

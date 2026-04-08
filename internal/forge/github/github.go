@@ -940,12 +940,18 @@ func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value strin
 		return fmt.Errorf("encrypt org secret: %w", err)
 	}
 
-	// Step 3: Upload the encrypted secret with selected repo visibility.
+	// Step 3: Upload the encrypted secret.
+	// When repo IDs are provided, scope the secret to those repos only.
+	// When no repos are specified, make it available to all repos in the org.
 	payload := map[string]any{
-		"encrypted_value":         base64.StdEncoding.EncodeToString(encrypted),
-		"key_id":                  pubKey.KeyID,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
+		"encrypted_value": base64.StdEncoding.EncodeToString(encrypted),
+		"key_id":          pubKey.KeyID,
+	}
+	if len(selectedRepoIDs) > 0 {
+		payload["visibility"] = "selected"
+		payload["selected_repository_ids"] = selectedRepoIDs
+	} else {
+		payload["visibility"] = "all"
 	}
 
 	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), payload)
@@ -996,6 +1002,9 @@ func (c *LiveClient) DeleteOrgSecret(ctx context.Context, org, name string) erro
 
 // SetOrgSecretRepos sets the list of repositories that can access an org secret.
 func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error {
+	if repoIDs == nil {
+		repoIDs = []int64{}
+	}
 	payload := map[string]any{
 		"selected_repository_ids": repoIDs,
 	}

@@ -96,10 +96,13 @@ go-vet:
 go-tidy:
 	go mod tidy
 
-E2E_SESSION_FILE ?= .playwright/session.json
+E2E_SESSION_FILE ?= $(CURDIR)/.playwright/session.json
 
 e2e-test: e2e-playwright
-	@if [ -z "$$E2E_GITHUB_SESSION_FILE" ] && [ -n "$$E2E_GITHUB_USERNAME" ] && [ -n "$$E2E_GITHUB_PASSWORD" ]; then \
+	@if [ -n "$$E2E_GITHUB_PASSWORD_FILE" ] && [ -z "$$E2E_GITHUB_PASSWORD" ]; then \
+		export E2E_GITHUB_PASSWORD="$$(cat "$$E2E_GITHUB_PASSWORD_FILE")"; \
+	fi; \
+	if [ -z "$$E2E_GITHUB_SESSION_FILE" ] && [ -n "$$E2E_GITHUB_USERNAME" ] && [ -n "$$E2E_GITHUB_PASSWORD" ]; then \
 		echo "==> No session file set, generating one from credentials..."; \
 		$(MAKE) e2e-export-session; \
 		export E2E_GITHUB_SESSION_FILE="$(E2E_SESSION_FILE)"; \
@@ -107,6 +110,9 @@ e2e-test: e2e-playwright
 	go test -tags e2e -v -count=1 -timeout 4m ./e2e/admin/
 
 e2e-export-session: e2e-playwright
+	@if [ -n "$$E2E_GITHUB_PASSWORD_FILE" ] && [ -z "$$E2E_GITHUB_PASSWORD" ]; then \
+		export E2E_GITHUB_PASSWORD="$$(cat "$$E2E_GITHUB_PASSWORD_FILE")"; \
+	fi; \
 	E2E_GITHUB_SESSION_FILE="$(E2E_SESSION_FILE)" go run ./e2e/cmd/export-session/
 
 e2e-upload-session: e2e-export-session
