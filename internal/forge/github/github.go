@@ -590,6 +590,9 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 		HTMLURL string `json:"html_url"`
 		Title   string `json:"title"`
 		Number  int    `json:"number"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
 	}
 	if err := decodeJSON(resp, &pr); err != nil {
 		return nil, fmt.Errorf("decode pull request: %w", err)
@@ -599,6 +602,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 		URL:    pr.HTMLURL,
 		Title:  pr.Title,
 		Number: pr.Number,
+		Head:   pr.Head.Ref,
 	}, nil
 }
 
@@ -616,6 +620,9 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
+			Head    struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
 		}
 		if err := decodeJSON(resp, &prs); err != nil {
 			return nil, fmt.Errorf("decode pull requests page %d: %w", page, err)
@@ -626,6 +633,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				URL:    pr.HTMLURL,
 				Title:  pr.Title,
 				Number: pr.Number,
+				Head:   pr.Head.Ref,
 			})
 		}
 
@@ -1015,6 +1023,126 @@ func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, re
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// AddIssueLabel adds a label to an issue or pull request.
+func (c *LiveClient) AddIssueLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	payload := map[string]any{
+		"labels": []string{label},
+	}
+	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("add label %s to issue %d: %w", label, number, err)
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return fmt.Errorf("add label %s to issue %d: %w", label, number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// RemoveIssueLabel removes a label from an issue or pull request.
+// A 404 response is treated as success (label already removed).
+func (c *LiveClient) RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, number, label), nil)
+	if err != nil {
+		return fmt.Errorf("remove label %s from issue %d: %w", label, number, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusNoContent); err != nil {
+		return fmt.Errorf("remove label %s from issue %d: %w", label, number, err)
+	}
+	return nil
+}
+
+// AddIssueComment posts a comment on an issue or pull request.
+func (c *LiveClient) AddIssueComment(ctx context.Context, owner, repo string, number int, body string) error {
+	payload := map[string]string{
+		"body": body,
+	}
+	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("add comment to issue %d: %w", number, err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated); err != nil {
+		return fmt.Errorf("add comment to issue %d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// FindOpenPRByHead returns the first open pull request whose head branch matches head.
+// Returns forge.ErrNotFound (wrapped) if no matching PR exists.
+func (c *LiveClient) FindOpenPRByHead(ctx context.Context, owner, repo, head string) (*forge.ChangeProposal, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls?head=%s:%s&state=open&per_page=1", owner, repo, owner, head))
+	if err != nil {
+		return nil, fmt.Errorf("find open PR by head %s: %w", head, err)
+	}
+
+	var prs []struct {
+		HTMLURL string `json:"html_url"`
+		Title   string `json:"title"`
+		Number  int    `json:"number"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := decodeJSON(resp, &prs); err != nil {
+		return nil, fmt.Errorf("decode PRs for head %s: %w", head, err)
+	}
+
+	if len(prs) == 0 {
+		return nil, fmt.Errorf("%w: no open PR with head %s in %s/%s", forge.ErrNotFound, head, owner, repo)
+	}
+
+	pr := prs[0]
+	return &forge.ChangeProposal{
+		URL:    pr.HTMLURL,
+		Title:  pr.Title,
+		Number: pr.Number,
+		Head:   pr.Head.Ref,
+	}, nil
+}
+
+// CreateDraftChangeProposal creates a draft pull request.
+func (c *LiveClient) CreateDraftChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
+	payload := map[string]any{
+		"title": title,
+		"body":  body,
+		"head":  head,
+		"base":  base,
+		"draft": true,
+	}
+
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls", owner, repo), payload)
+	if err != nil {
+		return nil, fmt.Errorf("create draft pull request: %w", err)
+	}
+
+	var pr struct {
+		HTMLURL string `json:"html_url"`
+		Title   string `json:"title"`
+		Number  int    `json:"number"`
+		Draft   bool   `json:"draft"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return nil, fmt.Errorf("decode draft pull request: %w", err)
+	}
+
+	return &forge.ChangeProposal{
+		URL:    pr.HTMLURL,
+		Title:  pr.Title,
+		Number: pr.Number,
+		Head:   pr.Head.Ref,
+		Draft:  true,
+	}, nil
 }
 
 // isNotFound checks whether an error is a 404 API error.

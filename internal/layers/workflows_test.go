@@ -278,3 +278,18 @@ func (c *codeownersErrorClient) CreateOrUpdateFileOnBranch(context.Context, stri
 func (c *codeownersErrorClient) DispatchWorkflow(context.Context, string, string, string, string, map[string]string) error {
 	return nil
 }
+func (c *codeownersErrorClient) AddIssueLabel(context.Context, string, string, int, string) error {
+	return nil
+}
+func (c *codeownersErrorClient) RemoveIssueLabel(context.Context, string, string, int, string) error {
+	return nil
+}
+func (c *codeownersErrorClient) AddIssueComment(context.Context, string, string, int, string) error {
+	return nil
+}
+func (c *codeownersErrorClient) FindOpenPRByHead(context.Context, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (c *codeownersErrorClient) CreateDraftChangeProposal(context.Context, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}

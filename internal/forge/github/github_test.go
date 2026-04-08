@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -778,4 +779,152 @@ func TestListOrgRepos_Pagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, repos, 101)
 	assert.Equal(t, 2, page) // Should have made exactly 2 requests
+}
+
+func TestAddIssueLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/7/labels", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		labels, ok := body["labels"].([]any)
+		require.True(t, ok)
+		require.Len(t, labels, 1)
+		assert.Equal(t, "bug", labels[0])
+
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"name": "bug"},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.AddIssueLabel(context.Background(), "owner", "repo", 7, "bug")
+	require.NoError(t, err)
+}
+
+func TestRemoveIssueLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/7/labels/bug", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.RemoveIssueLabel(context.Background(), "owner", "repo", 7, "bug")
+	require.NoError(t, err)
+}
+
+func TestRemoveIssueLabel_AlreadyRemoved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/7/labels/bug", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Label does not exist"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.RemoveIssueLabel(context.Background(), "owner", "repo", 7, "bug")
+	require.NoError(t, err)
+}
+
+func TestAddIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/7/comments", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "Hello, world!", body["body"])
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":   101,
+			"body": "Hello, world!",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.AddIssueComment(context.Background(), "owner", "repo", 7, "Hello, world!")
+	require.NoError(t, err)
+}
+
+func TestFindOpenPRByHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls", r.URL.Path)
+		assert.Equal(t, "owner:feature-branch", r.URL.Query().Get("head"))
+		assert.Equal(t, "open", r.URL.Query().Get("state"))
+		assert.Equal(t, "1", r.URL.Query().Get("per_page"))
+
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"html_url": "https://github.com/owner/repo/pull/55",
+				"title":    "My feature",
+				"number":   55,
+				"head":     map[string]any{"ref": "feature-branch"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	cp, err := client.FindOpenPRByHead(context.Background(), "owner", "repo", "feature-branch")
+	require.NoError(t, err)
+	assert.Equal(t, 55, cp.Number)
+	assert.Equal(t, "My feature", cp.Title)
+	assert.Equal(t, "feature-branch", cp.Head)
+	assert.Equal(t, "https://github.com/owner/repo/pull/55", cp.URL)
+}
+
+func TestFindOpenPRByHead_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.FindOpenPRByHead(context.Background(), "owner", "repo", "no-such-branch")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+}
+
+func TestCreateDraftChangeProposal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "Draft PR", body["title"])
+		assert.Equal(t, "WIP", body["body"])
+		assert.Equal(t, "draft-branch", body["head"])
+		assert.Equal(t, "main", body["base"])
+		assert.Equal(t, true, body["draft"])
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"html_url": "https://github.com/owner/repo/pull/99",
+			"title":    "Draft PR",
+			"number":   99,
+			"draft":    true,
+			"head":     map[string]any{"ref": "draft-branch"},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	cp, err := client.CreateDraftChangeProposal(context.Background(), "owner", "repo", "Draft PR", "WIP", "draft-branch", "main")
+	require.NoError(t, err)
+	assert.Equal(t, 99, cp.Number)
+	assert.Equal(t, "Draft PR", cp.Title)
+	assert.Equal(t, "draft-branch", cp.Head)
+	assert.True(t, cp.Draft)
+	assert.Equal(t, "https://github.com/owner/repo/pull/99", cp.URL)
 }
