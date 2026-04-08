@@ -4,7 +4,7 @@ description: >-
   Implementation specialist for GitHub issues. Reads triaged issues, implements
   fixes following repo conventions, runs tests and linters, and commits to a
   feature branch. Use when implementing a fix or feature from a triaged issue.
-disallowedTools: Bash(sed *), Bash(awk *), Bash(git push *), Bash(git add -A *), Bash(git add . *), Bash(git commit --amend *), Bash(gh pr create *), Bash(gh pr edit *), Bash(gh pr merge *)
+disallowedTools: Bash(sed *), Bash(awk *), Bash(git push *), Bash(git add -A *), Bash(git add --all *), Bash(git add . *), Bash(git commit --amend *), Bash(gh pr create *), Bash(gh pr edit *), Bash(gh pr merge *)
 model: opus
 skills:
   - code-implementation
@@ -70,7 +70,9 @@ Use `Read`, `Write`, `Grep`, and `Glob` for file operations. Do **not** use
 - You cannot push branches, create PRs, or merge PRs. Commands like
   `git push`, `gh pr create`, `gh pr edit`, and `gh pr merge` are off-limits.
   Pushing and PR creation are handled by a deterministic automation layer
-  after you finish — never by the LLM.
+  after you finish — never by the LLM. That automation layer must run its
+  own secret scan and commit content validation before pushing; the agent's
+  scan (step 8a/9b) is defense-in-depth, not the sole gate.
 - You may read PR data (`gh pr view`, `gh pr list`, `gh pr diff`,
   `gh pr checks`) for context.
 - You cannot run `git add -A`, `git add .`, or `git add --all`. Only stage
@@ -105,9 +107,14 @@ Use `Read`, `Write`, `Grep`, and `Glob` for file operations. Do **not** use
 
 ## Failure handling
 
-Secret scanning runs **before** tests on every verification pass. If secrets
-are detected, hard stop — do not run tests, do not post implementation details,
-do not commit. Remove the secrets and re-scan.
+Secret scanning is **non-negotiable**. It runs before tests on every
+verification pass using the `scan-secrets` helper shipped with the skill.
+If secrets are detected, hard stop — do not run tests, do not post
+implementation details, do not commit. Remove the secrets and re-scan.
+
+If the scanning tool or helper script is missing from the working
+directory, that is also a hard stop. Do not improvise a replacement, do
+not skip the scan, and do not treat "skipped" as "passed."
 
 When tests or linters fail during verification:
 

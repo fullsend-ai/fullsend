@@ -31,6 +31,41 @@ Commands you will need during this procedure:
 Use `Read`/`Write`/`Grep`/`Glob` for file operations. Do not use `sed` or
 `awk` for edits.
 
+### Helper scripts
+
+This skill ships with a `scan-secrets` helper in `scripts/` (relative to
+this file). When the skill is deployed to a target repo, the script is at:
+
+```
+skills/code-implementation/scripts/scan-secrets
+```
+
+**Before starting step 8, verify the script exists and is executable:**
+
+```bash
+test -x skills/code-implementation/scripts/scan-secrets
+```
+
+If the script is missing, **STOP**. Do not improvise a replacement or
+skip secret scanning. Post a comment on the issue stating that the
+skill's helper scripts are missing from the working directory, apply
+`requires-manual-review`, and stop. Secret scanning cannot be skipped
+or worked around.
+
+The script is **self-bootstrapping** and runner-agnostic. It works on
+GitHub Actions, Tekton, GitLab CI, or any environment with `bash`,
+`git`, and `curl` or `wget`. If `gitleaks` is not on PATH, the script
+downloads it automatically. You do not need to install scanning tools
+before running it.
+
+Two modes:
+
+- `skills/code-implementation/scripts/scan-secrets <files>` — stage,
+  scan, unstage. Use in step 8a for early detection during development.
+- `skills/code-implementation/scripts/scan-secrets --staged` — scan
+  whatever is in the index without modifying it. Use in step 9b as the
+  final gate before commit.
+
 **Steps 8 and 9 require Bash. Do not skip them.**
 
 ## Process
@@ -78,21 +113,15 @@ code before relying on it.
 
 ### 3. Discover repo conventions
 
-Before writing any code, understand how this repository works. Read the
-project's configuration files to discover conventions:
+Before writing any code, understand how this repository works. Use `Read`
+and `Glob` — not `cat` or `ls` — to inspect project configuration:
 
-```bash
-# Check for project-level instructions
-cat CLAUDE.md 2>/dev/null || cat CONTRIBUTING.md 2>/dev/null || true
-cat AGENTS.md 2>/dev/null || true
-
-# Discover build and test commands
-cat Makefile 2>/dev/null | head -60 || true
-cat package.json 2>/dev/null | head -40 || true
-
-# Check for linter configuration
-ls .golangci.yml .eslintrc* .pre-commit-config.yaml ruff.toml pyproject.toml 2>/dev/null || true
-```
+1. **Read project-level instructions.** Use `Read` on `CLAUDE.md`,
+   `CONTRIBUTING.md`, and `AGENTS.md` (if they exist).
+2. **Discover build and test commands.** Use `Read` on `Makefile`,
+   `package.json`, `pyproject.toml`, or equivalent build config.
+3. **Check for linter configuration.** Use `Glob` to find files like
+   `.golangci.yml`, `.eslintrc*`, `.pre-commit-config.yaml`, `ruff.toml`.
 
 From these files, determine:
 
@@ -107,7 +136,7 @@ If a `TARGET_BRANCH` environment variable is set, use it. Otherwise, determine
 the default branch:
 
 ```bash
-git remote show origin | grep 'HEAD branch' | awk '{print $NF}'
+git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
 
 ### 4. Check for existing branch
@@ -185,29 +214,36 @@ Write the code change:
 
 ### 8. Verify locally
 
-Verification has two mandatory phases that **must** run in order. Do not
-reorder them. Do not skip 8a.
+Verification has two mandatory phases that **must** run in this exact
+order. Do not reorder them. Do not skip 8a. Do not delegate steps 8
+and 9 to a subagent unless the subagent preserves this exact ordering.
+
+First, confirm the helper script is available:
+
+```bash
+test -x skills/code-implementation/scripts/scan-secrets
+```
+
+If this fails, STOP — see the "Helper scripts" section above.
 
 ---
 
 **8a. Secret scan — MANDATORY FIRST STEP**
 
 **CHECKPOINT: You must complete this step and confirm it passed before
-running any tests, linters, or other commands that produce output.**
+running any tests, linters, or other commands that produce output.
+"Skipped" is not "passed." If the scan cannot run (missing tools,
+missing script, error), treat it as a failure and stop.**
 
-Run pre-commit secret checks (gitleaks or equivalent) against your changed
-files before anything else:
+Run the secret scan helper against your changed files:
 
 ```bash
-git add <files-you-modified>
-pre-commit run gitleaks --files <files-you-modified> || pre-commit run --files <files-you-modified>
-git reset HEAD  # unstage — commit happens in step 9
+skills/code-implementation/scripts/scan-secrets <files-you-modified>
 ```
 
-**Never run `git add -A`, `git add .`, or `git add --all`.** Only stage files
-you explicitly created or modified. CI runners and other tooling may leave
-credentials or temporary files in the working directory — blanket staging
-risks committing them.
+The script handles tool installation, staging, scanning, and unstaging
+internally. It exits non-zero if secrets are detected or if it cannot
+obtain a scanner.
 
 If secret scanning detects secrets in your changes:
 
@@ -244,9 +280,9 @@ make lint        # or: pre-commit run --files <changed-files>
 
 1. Read the failure output. Identify the root cause.
 2. Fix the issue in your implementation. Do not weaken or skip tests.
-3. **Re-run the secret scan (8a) first**, then the test suite. This consumes
-   one retry iteration. Do not skip the re-scan — your fix may have
-   introduced secrets.
+3. **Re-run the secret scan (8a) first**, then the test suite. This
+   consumes one retry iteration. Do not skip the re-scan — your fix may
+   have introduced secrets.
 4. Repeat until tests pass or the retry limit (default: 2) is reached.
 
 **If the retry limit is reached and tests still fail:**
@@ -280,33 +316,28 @@ intentionally changed. Then stage them:
 git add path/to/file1 path/to/file2
 ```
 
-**Never run `git add -A`, `git add .`, or `git add --all`.** The working
-directory may contain credentials, temp files, or artifacts that must not
-be committed.
-
-**Never stage these even if they show up in `git status`:**
-- `*.pyc`, `__pycache__/` — Python bytecode (generated by pre-commit hooks)
-- `*.o`, `*.so`, `*.exe` — compiled binaries
-- `vendor/` changes — vendored dependency updates you didn't make
-- `.env`, `*.key`, `*.pem` — credentials and secrets
-- Any file inside a `__pycache__/`, `node_modules/`, or `dist/` directory
-
-**9b. Review what you are committing**
+**9b. Review and scan what you are committing**
 
 ```bash
 git diff --cached --stat
 ```
 
-**CHECKPOINT: Read the output of `git diff --cached --stat` line by line.**
-If any staged file is not in the list you built in 9a — particularly
-`.pyc` files, `__pycache__/` paths, or binary files — unstage it now:
+Read the output and confirm only your intended files are present. If anything
+unexpected is staged, unstage it:
 
 ```bash
 git reset HEAD <file-you-did-not-intend-to-stage>
 ```
 
-Re-run `git diff --cached --stat` and confirm only your intended files
-remain before proceeding.
+Then run the secret scan against the actual staged content:
+
+```bash
+skills/code-implementation/scripts/scan-secrets --staged
+```
+
+**This is not a repeat of step 8a.** Step 8a scans the files you *named*.
+This scans the files you *actually staged*, which may differ. If the scan
+fails, do not commit — fix the issue and re-stage.
 
 **9c. Commit**
 
@@ -314,18 +345,23 @@ remain before proceeding.
 previous agent run left a commit on the branch, create a new commit on top.
 Amending rewrites someone else's commit and loses attribution.
 
+The commit message must:
+
+- **Use the repo's commit convention as discovered in step 3.** If
+  `CONTRIBUTING.md`, `CLAUDE.md`, or the existing commit history uses a
+  specific format (e.g., Conventional Commits, Angular-style, ticket
+  prefixes), follow it.
+- **Fall back to `<type>: <description>` only if no convention was found.**
+- Be concise but descriptive — a reviewer should understand the change from
+  the message alone.
+- Reference the issue number with `Closes #<number>` in the body.
+
 ```bash
+# Example using the fallback format — replace with discovered convention
 git commit -s -m "<type>: <description>
 
 Closes #<number>"
 ```
-
-The commit message must:
-
-- Follow the repo's commit convention as discovered in step 3
-- Be concise but descriptive — a reviewer should understand the change from
-  the message alone
-- Reference the issue number with `Closes #<number>` in the body
 
 If the pre-commit hooks fail, read the output, fix the issues, and re-run
 `git add <files-you-modified> && git commit`. This iteration is expected —
@@ -339,37 +375,12 @@ job ends when the commit is clean and tests pass.
 
 ## Constraints
 
-- **Never run `git add -A`, `git add .`, or `git add --all`.** Only stage
-  files you explicitly created or modified. The working directory may contain
-  credentials or artifacts from the CI runner that must not be committed.
-- **Always review staged files before committing.** Run `git diff --cached --stat`
-  and unstage any files you did not intentionally create or modify (compiled
-  binaries, `.pyc`, `__pycache__/`, vendored changes, editor artifacts).
-- **Never use `sed`, `awk`, or other stream editors to modify source files.**
-  Use the `Write` tool for all file edits. Stream editors produce fragile
-  line-number-based edits that silently corrupt files when line counts shift.
-- **Always run secret scanning before tests.** Step 8a is not optional and
-  must complete before 8b. Every retry iteration must re-run the secret scan.
-- **Never use `git commit --amend`.** Always create a new commit. Even if a
-  previous run left a commit on the branch, commit on top — never rewrite.
-- **Never push branches or create PRs.** The `git push`, `gh pr create`,
-  `gh pr edit`, and `gh pr merge` commands are off-limits. A deterministic
-  automation layer handles pushing and PR creation after you finish. Reading
-  PR data (`gh pr view`, `gh pr list`, `gh pr diff`, `gh pr checks`) is
-  allowed for context.
-- **Never commit code with tests you know are failing.** If tests fail after
-  exhausting retries, report the failure instead.
-- **Never weaken tests to make them pass.** If a test is failing because your
-  implementation is wrong, fix the implementation. If a test is genuinely
-  incorrect, explain why in the commit message and fix the test with
-  justification.
-- **Never modify files outside the issue scope.** Unrelated fixes, even
-  obviously correct ones, belong in separate issues.
-- **Never modify guardrail files.** CODEOWNERS, `.github/workflows/`,
-  `.claude/`, and `agents/` directories are off-limits.
-- **Always include the issue number in the commit message.** The automation
-  layer and review agent depend on this link.
-- **Report failure rather than committing incomplete work.** If you cannot
-  implement the issue (ambiguous requirements, missing context, test failures
-  you cannot resolve), say so clearly on the issue rather than committing
-  code you know will fail review.
+The agent definition (`agents/code.md`) is the authoritative list of
+prohibitions — what you cannot do. This skill does not restate them. The
+`scan-secrets` helper in `skills/code-implementation/scripts/` enforces
+the scan-before-test ordering with guaranteed cleanup. Other constraints
+are enforced by `disallowedTools` in the agent definition and by the
+procedural steps above.
+
+If a step in this skill appears to conflict with the agent definition, the
+agent definition wins.
