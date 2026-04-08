@@ -139,6 +139,9 @@ This makes "ask" the default and "resolve" the marked choice, reducing the bias 
 # Use a different model for judging
 ./scripts/run-experiment.sh --judge-model claude-sonnet-4-6
 
+# Resume a partially completed run
+./scripts/run-experiment.sh --resume results/20260407T010118Z
+
 # Dry run (print prompts without invoking agents)
 ./scripts/run-experiment.sh --dry-run
 ```
@@ -163,6 +166,65 @@ results/<timestamp>/
     ...
   summary.md
 ```
+
+## Results (2026-04-07, N=10 trials per cell)
+
+Full results: [`results/20260407T010118Z/summary.md`](results/20260407T010118Z/summary.md)
+
+### Strategy rankings
+
+| Rank | Strategy | Mean score | Reliability |
+|------|----------|-----------|-------------|
+| 1 (tie) | omo-prometheus | 4.38 | 98% |
+| 1 (tie) | omc-deep-interview | 4.38 | 97% |
+| 3 | socratic-refinement | 4.32 | 100% |
+| 4 | structured-triage | 3.89 | 99% |
+| 5 | superpowers-brainstorming | 3.87 | 100% |
+
+Scores are weighted totals (1–5 scale) across completeness (25%), accuracy (25%), thoroughness (15%), question quality (15%), economy (10%), and actionability (10%). Each strategy was evaluated against 10 scenarios × 10 trials = 100 runs, with parse failures excluded from quality scores.
+
+### What separates the top from the bottom
+
+The 0.5-point gap (~12%) between the top three and bottom two is not about asking more questions — it is about asking *better* ones. The top strategies share three habits:
+
+1. **Hypothesis-first questioning.** omo-prometheus and omc-deep-interview propose falsifiable hypotheses and ask reporters to test them ("look for yellow warning triangles next to the Set-Cookie header", "toggle the filter and search again"). This converts a single exchange into both data collection and hypothesis elimination. The bottom two strategies gather symptoms without proposing mechanisms.
+
+2. **Causal dating.** Top strategies ask "when did this start?" early and immediately connect the answer to a code change or deployment event. omo-prometheus caught the phrase "like I always do" and inferred a regression — then asked what changed. structured-triage asks "when" but treats it as a checklist item rather than a causal pivot.
+
+3. **Dual-structure questions.** Top strategies pair competing hypotheses in a single turn ("does it follow the user or the browser?"), eliminating a class of causes per exchange. Bottom strategies ask one dimension at a time.
+
+### Scenario-specific patterns
+
+No single strategy dominates everywhere, but the patterns are consistent enough to be useful:
+
+| Bug class | Best strategy | Worst | Gap | Why |
+|-----------|--------------|-------|-----|-----|
+| Regression (version-triggered) | omo (4.75) | structured (4.04) | 0.71 | Requires immediate causal dating; omo links version → code path in ≤3 turns |
+| Multi-cause (auth + cookies) | omc (4.12) | superpowers (3.31) | 0.81 | Needs hypothesis layering; omc isolates compounding issues |
+| Intermittent/infra | omc (4.66) | superpowers (3.83) | 0.83 | Requires systematic-vs-edge-case distinction |
+| Silent corruption | omo (4.83) | superpowers (4.61) | 0.22 | All strategies do well; high-leverage questions give a slight edge |
+
+The widest gaps appear on multi-cause and intermittent bugs — exactly the scenarios where checklist-style triage resolves prematurely.
+
+### Premature resolution (v1 finding revisited)
+
+v1 found premature resolution as the dominant failure mode. v2's reframed prompt ("your default action is to ask") reduced but did not eliminate it. structured-triage still resolves after 2–3 questions despite having clear follow-ups available, scoring 2.0–3.0 on thoroughness in its worst trials. The top strategies avoid this by self-checking: omo-prometheus explicitly reviews its information gaps before resolving.
+
+### Implications for Story 3 (Triage Agent)
+
+These results point to several design consequences for the triage agent described in [Issue #126](https://github.com/fullsend-ai/fullsend/issues/126):
+
+**1. Strategy matters more than model choice.** The 0.5-point quality gap between strategies is larger than typical model-to-model variation at the same capability tier. The triage agent's prompt adapter is a higher-leverage design choice than which model it runs on.
+
+**2. Adopt hypothesis-driven prompting, not checklist prompting.** The structured-triage approach (expected behavior → actual behavior → steps → environment) maps to a traditional bug template, but it consistently underperforms strategies that form and test hypotheses. The triage agent should be prompted to propose a mechanism ("I think X is happening because Y — can you check Z?") rather than collect fields.
+
+**3. The "information sufficiency" check needs teeth.** Story 3's acceptance criteria say "assesses information sufficiency." The experiment shows that simply listing information gaps is not enough — structured-triage lists gaps but resolves anyway. The prompt should require the agent to explain *why* each remaining gap is not worth pursuing before it can resolve, similar to omo-prometheus's self-check.
+
+**4. Budget 3–4 exchanges, not 1.** The top strategies achieve their best scores in 3–4 turns. A triage agent that resolves on first read (the single-shot model) will miss the multi-cause and intermittent bugs where the gap between good and bad triage is largest. The asynchronous comment-based dialogue modeled in this experiment maps directly to GitHub issue comments.
+
+**5. Reliability is a non-issue at this scale.** All strategies achieved ≥97% parse reliability. The triage agent does not need elaborate retry/fallback logic for JSON formatting — a simple retry-once is sufficient.
+
+**6. Consider scenario-aware strategy selection.** The performance gap between strategies varies by bug class (0.22 points for silent corruption vs. 0.83 for intermittent bugs). A future enhancement could classify the incoming bug report and select a strategy adapter accordingly, though a single hypothesis-driven adapter (omo-prometheus or omc-deep-interview) is a reasonable starting point.
 
 ## Extending the experiment
 
