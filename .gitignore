@@ -6,3 +6,5 @@ __pycache__/
 _site/
 bin/
 .playwright/
+/secretarial-agent
+/secretarial-agent-dry-run-report.html
