@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	// SecretCredentials is the repo secret name for the GCP service account key.
-	SecretCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
+	// SecretCredentials is the repo secret name for the GCP service account key JSON.
+	// Uses the FULLSEND_ prefix to avoid confusion with the GCP SDK env var
+	// GOOGLE_APPLICATION_CREDENTIALS, which expects a file path, not JSON content.
+	SecretCredentials = "FULLSEND_GCP_SA_KEY_JSON"
 
 	// SecretProjectID is the repo secret name for the GCP project ID.
 	SecretProjectID = "GCP_PROJECT_ID"

@@ -364,7 +364,7 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 
 	// Inference secrets exist if vertex key was provided.
 	if os.Getenv("E2E_HALFSEND_VERTEX_KEY") != "" {
-		for _, secretName := range []string{"GOOGLE_APPLICATION_CREDENTIALS", "GCP_PROJECT_ID"} {
+		for _, secretName := range []string{"FULLSEND_GCP_SA_KEY_JSON", "GCP_PROJECT_ID"} {
 			exists, secErr := env.client.RepoSecretExists(ctx, testOrg, forge.ConfigRepoName, secretName)
 			assert.NoError(t, secErr, "checking inference secret %s", secretName)
 			assert.True(t, exists, "inference secret %s should exist", secretName)

@@ -116,6 +116,11 @@ func newInstallCmd() *cobra.Command {
 				roles[i] = strings.TrimSpace(roles[i])
 			}
 
+			// Validate GCP flag dependencies.
+			if gcpProject == "" && (gcpServiceAccount != "" || gcpCredentialsFile != "") {
+				return fmt.Errorf("--gcp-service-account and --gcp-credentials-file require --gcp-project to be set")
+			}
+
 			// Build inference provider from GCP flags.
 			var inferenceProvider inference.Provider
 			var inferenceProviderName string
@@ -130,6 +135,9 @@ func newInstallCmd() *cobra.Command {
 				}
 				inferenceProvider = vertex.New(vcfg, vertex.NewLiveGCPClient())
 				inferenceProviderName = "vertex"
+			} else {
+				// Preserve existing inference config if no GCP flags provided.
+				inferenceProviderName = loadExistingInferenceProvider(ctx, client, org)
 			}
 
 			if dryRun {
@@ -675,6 +683,21 @@ func printAnalysis(ctx context.Context, stack *layers.Stack, printer *ui.Printer
 	}
 
 	return nil
+}
+
+// loadExistingInferenceProvider reads the inference provider name from
+// an existing config.yaml in .fullsend, if available. This prevents
+// re-installs without --gcp-project from silently erasing the inference section.
+func loadExistingInferenceProvider(ctx context.Context, client forge.Client, org string) string {
+	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
+	if err != nil {
+		return ""
+	}
+	cfg, err := config.ParseOrgConfig(data)
+	if err != nil {
+		return ""
+	}
+	return cfg.Inference.Provider
 }
 
 // loadKnownSlugs tries to read agent slugs from an existing config.

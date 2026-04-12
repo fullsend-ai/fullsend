@@ -37,9 +37,9 @@ func newInferenceLayer(t *testing.T, client *forge.FakeClient, provider inferenc
 func vertexProvider() *fakeProvider {
 	return &fakeProvider{
 		name:        "vertex",
-		secretNames: []string{"GOOGLE_APPLICATION_CREDENTIALS", "GCP_PROJECT_ID"},
+		secretNames: []string{"FULLSEND_GCP_SA_KEY_JSON", "GCP_PROJECT_ID"},
 		secrets: map[string]string{
-			"GOOGLE_APPLICATION_CREDENTIALS": `{"type":"service_account"}`,
+			"FULLSEND_GCP_SA_KEY_JSON": `{"type":"service_account"}`,
 			"GCP_PROJECT_ID":                 "my-project",
 		},
 	}
@@ -67,7 +67,7 @@ func TestInferenceLayer_Install_StoresSecrets(t *testing.T) {
 		secretMap[s.Name] = s.Value
 	}
 
-	assert.Equal(t, `{"type":"service_account"}`, secretMap["GOOGLE_APPLICATION_CREDENTIALS"])
+	assert.Equal(t, `{"type":"service_account"}`, secretMap["FULLSEND_GCP_SA_KEY_JSON"])
 	assert.Equal(t, "my-project", secretMap["GCP_PROJECT_ID"])
 }
 
@@ -104,6 +104,22 @@ func TestInferenceLayer_Install_SecretWriteError(t *testing.T) {
 	assert.Contains(t, err.Error(), "permission denied")
 }
 
+func TestInferenceLayer_Install_SkipsWhenSecretsExist(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_SA_KEY_JSON"] = true
+	client.Secrets["test-org/.fullsend/GCP_PROJECT_ID"] = true
+	provider := vertexProvider()
+	layer, buf := newInferenceLayer(t, client, provider)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	// Should not have created any new secrets.
+	assert.Empty(t, client.CreatedSecrets)
+	// Should indicate skipping in output.
+	assert.Contains(t, buf.String(), "already provisioned")
+}
+
 func TestInferenceLayer_Uninstall_Noop(t *testing.T) {
 	client := forge.NewFakeClient()
 	provider := vertexProvider()
@@ -116,7 +132,7 @@ func TestInferenceLayer_Uninstall_Noop(t *testing.T) {
 
 func TestInferenceLayer_Analyze_AllPresent(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.Secrets["test-org/.fullsend/GOOGLE_APPLICATION_CREDENTIALS"] = true
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_SA_KEY_JSON"] = true
 	client.Secrets["test-org/.fullsend/GCP_PROJECT_ID"] = true
 	provider := vertexProvider()
 	layer, _ := newInferenceLayer(t, client, provider)
@@ -145,7 +161,7 @@ func TestInferenceLayer_Analyze_NonePresent(t *testing.T) {
 func TestInferenceLayer_Analyze_Partial(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Secrets["test-org/.fullsend/GCP_PROJECT_ID"] = true
-	// GOOGLE_APPLICATION_CREDENTIALS missing
+	// FULLSEND_GCP_SA_KEY_JSON missing
 	provider := vertexProvider()
 	layer, _ := newInferenceLayer(t, client, provider)
 

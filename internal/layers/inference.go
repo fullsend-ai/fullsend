@@ -45,9 +45,30 @@ func (l *InferenceLayer) RequiredScopes(op Operation) []string {
 }
 
 // Install provisions inference credentials and stores them as repo secrets.
+// If all expected secrets already exist, provisioning is skipped to maintain
+// idempotency (avoids accumulating SA keys against GCP's 10-key limit).
 func (l *InferenceLayer) Install(ctx context.Context) error {
 	if l.provider == nil {
 		l.ui.StepInfo("no inference provider configured, skipping")
+		return nil
+	}
+
+	// Check if secrets already exist to avoid re-provisioning.
+	allExist := true
+	for _, name := range l.provider.SecretNames() {
+		exists, err := l.client.RepoSecretExists(ctx, l.org, forge.ConfigRepoName, name)
+		if err != nil {
+			// Can't verify — proceed with provisioning.
+			allExist = false
+			break
+		}
+		if !exists {
+			allExist = false
+			break
+		}
+	}
+	if allExist {
+		l.ui.StepDone(fmt.Sprintf("%s credentials already provisioned, skipping", l.provider.Name()))
 		return nil
 	}
 
