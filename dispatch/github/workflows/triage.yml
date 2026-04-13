@@ -21,6 +21,7 @@ jobs:
       ))
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
       issues: write
 
@@ -40,4 +41,4 @@ jobs:
       - name: Run triage agent(s)
         uses: ./.github/actions/fullsend
         with:
-          stage: triage
+          agent: triage

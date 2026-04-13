@@ -26,6 +26,7 @@ jobs:
       github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
       issues: write
       pull-requests: write
@@ -46,4 +47,4 @@ jobs:
       - name: Run review agent(s)
         uses: ./.github/actions/fullsend
         with:
-          stage: review
+          agent: review

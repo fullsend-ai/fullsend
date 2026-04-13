@@ -1,30 +1,33 @@
 name: Fullsend
 description: >-
-  Install fullsend-cli and run the stage entrypoint for the given SCM (default github). Does not
-  read agent configuration from the repository; configure the job environment or CLI as needed.
+  Install fullsend-cli, run fullsend entrypoint (stdout must be the artifact directory path), then
+  upload that directory with actions/upload-artifact. Does not read agent configuration from the repository;
+  configure the job environment or CLI as needed.
 
 branding:
   icon: zap
   color: purple
 
 inputs:
-  stage:
-    description: Pipeline stage passed to fullsend (e.g. triage, code, review).
+  agent:
+    description: Agent name passed to fullsend entrypoint (e.g. triage, code, review).
     required: true
-  scm:
-    description: Value for fullsend --scm (optional; defaults to github).
-    required: false
-    default: github
   version:
     description: >-
       Release tag or version: use latest, v0.0.1, or 0.0.1. Download URLs use a leading v; asset
       names use the version without v (fullsend_0.0.1_linux_amd64.tar.gz).
     default: latest
 
+outputs:
+  artifact_dir:
+    description: Absolute path printed by fullsend entrypoint on stdout (same path uploaded as an artifact).
+    value: ${{ steps.run-fullsend.outputs.artifact_dir }}
+
 runs:
   using: composite
   steps:
-    - name: Install fullsend CLI
+    - id: install-fullsend
+      name: Install fullsend CLI
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
@@ -82,11 +85,24 @@ runs:
         tar -xzf "/tmp/${ASSET_NAME}" -C "${RUNNER_TEMP}/fullsend"
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
-    - name: Run fullsend
+    - id: run-fullsend
+      name: Run fullsend
       shell: bash
       env:
-        SCM: ${{ inputs.scm || 'github' }}
-        STAGE: ${{ inputs.stage }}
+        AGENT: ${{ inputs.agent }}
       run: |
         set -euo pipefail
-        fullsend entrypoint "${STAGE}" --scm "${SCM}"
+        # fullsend must print the artifact directory path on stdout (last line wins if multiple lines).
+        ARTIFACT_DIR="$(echo fullsend entrypoint "${AGENT}" | tail -n1)"
+        ARTIFACT_DIR="$(printf '%s' "${ARTIFACT_DIR}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [[ -z "${ARTIFACT_DIR}" ]]; then
+          echo "::error::fullsend entrypoint did not print an artifact directory on stdout"
+          exit 1
+        fi
+        echo "artifact_dir=${ARTIFACT_DIR}" >> "${GITHUB_OUTPUT}"
+
+    - name: Upload fullsend artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: fullsend-${{ inputs.agent }}
+        path: ${{ steps.run-fullsend.outputs.artifact_dir }}
