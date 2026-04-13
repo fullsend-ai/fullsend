@@ -1,0 +1,12 @@
+# Cloudflare Worker serving static assets only (no user Worker script).
+# The deploy workflow passes --name to match your account Worker name (GitHub variable CLOUDFLARE_PROJECT_NAME).
+# See: https://developers.cloudflare.com/workers/static-assets/
+
+name = "documentation-site"
+compatibility_date = "2026-04-09"
+workers_dev = true
+preview_urls = true
+
+[assets]
+directory = "./public"
+not_found_handling = "single-page-application"

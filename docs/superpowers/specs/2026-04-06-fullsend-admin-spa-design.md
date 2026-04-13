@@ -46,7 +46,7 @@ Mirror the existing **layer model** and the **GitHub REST/GraphQL** usage of `in
 
 - **Production GitHub App** registered for the **official admin origin** (homepage + fixed callback path, e.g. `/oauth/callback`).
 - User completes **user authorization** for that app; the SPA exchanges the `code` for tokens per **current GitHub documentation** for **GitHub App user access tokens**.
-- **Verification gate before implementation:** confirm whether token exchange is possible from a **pure static page** without embedding a **client secret**. If not, document the **smallest** adjustment consistent with project constraints (without introducing an unapproved “backend”).
+- **Verification gate before implementation:** Task 1 in [`2026-04-12-fullsend-admin-spa.md`](../plans/2026-04-12-fullsend-admin-spa.md) records hands-on outcomes; GitHub’s docs already require **`client_secret`** for the web-application exchange (see **Open items** and **Appendix A**). If maintainer Part B/C notes differ, update those sections after the experiment.
 - Tokens: **short TTL**; store in **`localStorage`**; **sign-out** clears storage; handle **refresh** if GitHub provides it, otherwise **re-auth**.
 
 ### Self-hosted
@@ -156,7 +156,9 @@ Steps follow CLI **install** ordering: **`.fullsend` / config** → **agent GitH
 
 During implementation, add a **row per GitHub capability** the SPA uses (REST paths or GraphQL operations), with **documented permission or role** expectations and notes for **enterprise** edge cases. Derive rows from `internal/forge/github` and from each layer’s `Install` / `Analyze` / `Uninstall` path. The **first PR** that introduces a new API surface **adds** the corresponding row(s) here.
 
-The table itself lives in this document once the first row exists; until then, this appendix is intentionally **empty** except for the rule above.
+| Capability | HTTP | Notes |
+|------------|------|-------|
+| User access token exchange (GitHub App web application flow) | `POST https://github.com/login/oauth/access_token` | Form body / query parameters per GitHub: `client_id`, **`client_secret`** (required in official docs), `code`, optional `redirect_uri` (must match a registered callback URL), optional PKCE `code_verifier` when `code_challenge` was used at authorize time. JSON response includes `access_token` (user tokens use the `ghu_` prefix), `token_type` (`bearer`), and optionally `expires_in` / `refresh_token` (`ghr_`) when expiring tokens are enabled. See [Generating a user access token for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app#using-the-web-application-flow-to-generate-a-user-access-token). |
 
 ## Appendix B — Related code references
 
@@ -166,6 +168,10 @@ The table itself lives in this document once the first row exists; until then, t
 
 ## Open items
 
-- Confirm **GitHub App** user token **web** flow for **static SPA** (secret-less or accepted deviation).
-- Finalize **Svelte** vs alternative frontend after team input.
-- Expand **Appendix A** from code during first implementation PRs.
+- **GitHub App user access token exchange vs pure static SPA (Task 1, 2026-04-12):**
+  - **Documented contract:** GitHub’s **web application flow** for GitHub Apps lists **`client_secret`** as **required** on `POST https://github.com/login/oauth/access_token` together with `client_id` and the authorization `code` (optional `redirect_uri`, optional PKCE `code_verifier`). A successful JSON body includes `access_token` (user tokens use the `ghu_` prefix) and `token_type` (`bearer`). Source: [Using the web application flow to generate a user access token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app#using-the-web-application-flow-to-generate-a-user-access-token).
+  - **Part B (browser `fetch` without `client_secret`, real `code`):** In an embedded / restricted browser context, `fetch` to `https://github.com/login/oauth/access_token` was blocked by the **page’s Content-Security-Policy** (`connect-src` / `default-src chrome:`), so the request never reached a stage where GitHub’s **CORS** policy could be observed. The [`oauth-localhost-part-b/serve.py`](../experiments/oauth-localhost-part-b/serve.py) helper uses a **same-origin** callback → local `POST` → server-side GitHub exchange only (so the one-time `code` is not spent on a cross-origin browser attempt first). For a **manual** CORS check, use DevTools on a normal **`http://localhost:<PORT>`** tab and the plan’s `fetch` snippet—not `file://` or locked-down embedded previews. Use **`localhost`** consistently (not `127.0.0.1`) so the tab origin matches the GitHub callback URL. Task 2’s Vite dev server is also fine once it exists.
+  - **Part C (terminal `curl` with `client_secret`, secret never in repo or browser bundle):** Optional; same outcome as a server-side `POST` exchange. **2026-04-12:** full exchange validated via [`oauth-localhost-part-b/serve.py`](../experiments/oauth-localhost-part-b/README.md) with `CLIENT_SECRET` in the process environment only (proxy → GitHub), yielding a usable `ghu_` token when the authorization `code` was valid. `refresh_token` / `expires_in` appear when expiring user tokens are enabled on the app.
+  - **Smallest production-shaped adjustment:** keep `client_secret` **only** on a confidential path (for example a **Cloudflare Worker** handler with `GITHUB_APP_CLIENT_SECRET` in Wrangler secrets) that performs the `POST` exchange and returns tokens to the SPA over the **same admin origin**; do **not** embed the secret in static assets. **Device flow** is for headless clients and is **not** a substitute for the browser admin experience.
+- **Frontend stack (decided 2026-04-12):** **Svelte 5** + **TypeScript** + **Vite** for the admin SPA (see implementation plan).
+- Expand **Appendix A** from code during first implementation PRs (beyond the OAuth exchange row above).

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Use serve.py</title>
+  </head>
+  <body>
+    <p>
+      OAuth redirects must hit the callback served by <code>serve.py</code> so
+      <code>CLIENT_ID</code> is injected and Part B runs automatically. Start from the repo
+      copy:
+    </p>
+    <pre>export CLIENT_ID='Iv23…'
+python3 serve.py</pre>
+    <p>Register <code>http://localhost:5173/oauth/callback.html</code> on your GitHub App (adjust port if you set <code>PORT</code>). See <code>README.md</code>.</p>
+  </body>
+</html>

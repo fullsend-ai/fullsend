@@ -1,0 +1,32 @@
+name: Build Site
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Prepare site
+        run: |
+          mkdir -p _site
+          cp docs/mindmap.html _site/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: _site/
+          retention-days: 5
