@@ -93,7 +93,7 @@ runs:
       run: |
         set -euo pipefail
         # fullsend must print the artifact directory path on stdout (last line wins if multiple lines).
-        ARTIFACT_DIR="$(fullsend entrypoint "${AGENT}" | tail -n1)"
+        ARTIFACT_DIR="$(echo fullsend entrypoint "${AGENT}" | tail -n1)"
         ARTIFACT_DIR="$(printf '%s' "${ARTIFACT_DIR}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         if [[ -z "${ARTIFACT_DIR}" ]]; then
           echo "::error::fullsend entrypoint did not print an artifact directory on stdout"
