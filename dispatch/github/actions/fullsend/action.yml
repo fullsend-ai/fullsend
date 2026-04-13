@@ -93,13 +93,23 @@ runs:
       run: |
         set -euo pipefail
         # fullsend must print the artifact directory path on stdout (last line wins if multiple lines).
-        ARTIFACT_DIR="$(echo fullsend entrypoint "${AGENT}" | tail -n1)"
+        ARTIFACT_DIR="$(fullsend entrypoint "${AGENT}" | tail -n1)"
         ARTIFACT_DIR="$(printf '%s' "${ARTIFACT_DIR}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         if [[ -z "${ARTIFACT_DIR}" ]]; then
           echo "::error::fullsend entrypoint did not print an artifact directory on stdout"
           exit 1
         fi
-        echo "artifact_dir=${ARTIFACT_DIR}" >> "${GITHUB_OUTPUT}"
+        # Validate path is absolute and within expected boundaries.
+        if [[ "${ARTIFACT_DIR}" != /* ]]; then
+          echo "::error::fullsend entrypoint returned a non-absolute path: ${ARTIFACT_DIR}"
+          exit 1
+        fi
+        # Use heredoc delimiter to prevent GITHUB_OUTPUT injection via newlines.
+        {
+          echo "artifact_dir<<FULLSEND_EOF"
+          echo "${ARTIFACT_DIR}"
+          echo "FULLSEND_EOF"
+        } >> "${GITHUB_OUTPUT}"
 
     - name: Upload fullsend artifacts
       uses: actions/upload-artifact@v4
