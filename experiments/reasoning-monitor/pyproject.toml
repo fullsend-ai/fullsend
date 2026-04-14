@@ -1,0 +1,24 @@
+[project]
+name = "reasoning-monitor"
+version = "0.1.0"
+description = "Experiment 005: Reasoning Monitor Agent for Prompt Injection Detection"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic[vertex]>=0.75.0",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["monitor*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.0",
+]
