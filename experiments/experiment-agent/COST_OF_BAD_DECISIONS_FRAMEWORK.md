@@ -20,8 +20,8 @@ Strategic decisions made without rigorous experimentation often scale bad ideas 
 ### Formula: Cost of a Bad Decision
 
 ```
-Cost of Bad Decision = 
-  (Number of people affected) 
+Cost of Bad Decision =
+  (Number of people affected)
   × (Time wasted or value lost per person per day)
   × (Work days per year)
   × (Average hourly cost)
@@ -122,7 +122,7 @@ Inputs:
 
 Calculation:
 1. Daily waste: [people] × [min/day] ÷ 60 = ___ hours/day
-2. Annual waste: [hours/day] × 220 = ___ hours/year  
+2. Annual waste: [hours/day] × 220 = ___ hours/year
 3. Dollar cost: [hours/year] × $[hourly rate] = $___/year
 4. Tool cost: [people] × $[monthly cost] × 12 = $___/year
 5. Total annual cost: $___ (3) + $___ (4) = $___/year
@@ -221,7 +221,7 @@ Process:
 6. Painful removal process
 7. Trust in decision-making damaged
 
-Total cost: 
+Total cost:
 - Bad decision scaled for 6-12 months: $500K-$4M depending on scope
 - Change management to remove: $50K-$200K
 - Reputation damage: Hard to quantify
@@ -339,7 +339,7 @@ ROI: 1,500x - 12,000x
 
 Use formula:
 ```
-Cost of Bad Decision = 
+Cost of Bad Decision =
   [People] × [Time lost per day] × [Days/year] × [$/hour]
   + [Tool costs]
   + [Change management if failed]
@@ -394,6 +394,6 @@ Typical ROI: **1,000x - 10,000x**
 
 ---
 
-**Prepared by:** Jerry Becker  
-**Date:** April 12, 2026  
+**Prepared by:** Jerry Becker
+**Date:** April 12, 2026
 **Purpose:** Quantify financial impact of evidence-based vs gut-feel strategic decisions

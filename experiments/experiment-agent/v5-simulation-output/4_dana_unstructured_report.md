@@ -1,7 +1,7 @@
 # Daily Standups Experiment - Summary
 
-**Author:** Dana (Designer)  
-**Date:** April 26, 2026  
+**Author:** Dana (Designer)
+**Date:** April 26, 2026
 **Experiment Duration:** April 15-26 (2 weeks)
 
 ---
@@ -14,7 +14,7 @@ We tried daily standups for 2 weeks. The team met every morning at 9 AM for quic
 
 ## What Happened
 
-Overall, it went well! The standups were pretty short (usually 5-10 minutes) and didn't feel like a big time burden. 
+Overall, it went well! The standups were pretty short (usually 5-10 minutes) and didn't feel like a big time burden.
 
 Some highlights:
 - **Better coordination:** Marcus and I were both working on checkout-related stuff in Week 1. We caught it in standup and synced up, which prevented a mess later.

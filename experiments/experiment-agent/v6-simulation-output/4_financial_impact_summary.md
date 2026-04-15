@@ -8,9 +8,9 @@
 
 **V6 simulated what happens when a "good-seeming" idea (async standup tool) gets scaled based on gut-feel instead of rigorous data.**
 
-**Result:**  
-- **Without agent:** $1.47M/year disaster  
-- **With agent:** Disaster killed in 2 weeks  
+**Result:**
+- **Without agent:** $1.47M/year disaster
+- **With agent:** Disaster killed in 2 weeks
 - **Value created:** $1.47M/year savings
 
 ---
@@ -123,7 +123,7 @@ Week 3:     Jerry kills idea, shares learnings
 Month 1+:   Team continues with daily standups (V3 validated)
 ```
 
-**Total cost:** ~50 min experiment design + 2 weeks team time  
+**Total cost:** ~50 min experiment design + 2 weeks team time
 **Value created:** $1.47M disaster prevented
 
 ---
@@ -212,7 +212,7 @@ Or: 1,901,200% return on investment
 4. Team learns, shares knowledge
 5. Next experiment benefits from learnings
 
-**Annual cost:** ~$1,000 in experiment time  
+**Annual cost:** ~$1,000 in experiment time
 **Annual value:** $3M-10M in prevented disasters
 
 **Net impact:** $3M-10M improvement in decision quality
@@ -253,6 +253,6 @@ Or: 1,901,200% return on investment
 
 ---
 
-**Prepared by:** Jerry Becker  
-**Date:** April 12, 2026  
+**Prepared by:** Jerry Becker
+**Date:** April 12, 2026
 **Context:** V6 simulation - async standup tool disaster prevention

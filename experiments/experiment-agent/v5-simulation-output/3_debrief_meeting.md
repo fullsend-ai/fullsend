@@ -1,7 +1,7 @@
 # V5 Debrief Meeting: Daily Standups (No Agent)
 
-**Date:** April 26, 2026, 3:00 PM  
-**Duration:** 38 minutes  
+**Date:** April 26, 2026, 3:00 PM
+**Duration:** 38 minutes
 **Attendees:** Jerry (Manager), Dana (Designer), Marcus (Engineer), Priya (Engineer)
 
 ---

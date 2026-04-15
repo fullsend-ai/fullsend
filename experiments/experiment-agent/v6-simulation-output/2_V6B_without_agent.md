@@ -170,11 +170,11 @@ This is a no-brainer win. We save ~6 minutes/day per person, team is happier, an
 
 ## What Jerry DIDN'T Track
 
-❌ Actual time spent answering questions (4 min/person/day = longer than meeting)  
-❌ Notification count (100/person over 2 weeks)  
-❌ Context switching cost (2.5 interruptions/day × 3 min = 7.5 min lost/day)  
-❌ Coordination delay times (blockers delayed 2-4 hours vs immediate)  
-❌ Duplicate work cost (3 hours lost to Dana+Priya overlap)  
+❌ Actual time spent answering questions (4 min/person/day = longer than meeting)
+❌ Notification count (100/person over 2 weeks)
+❌ Context switching cost (2.5 interruptions/day × 3 min = 7.5 min lost/day)
+❌ Coordination delay times (blockers delayed 2-4 hours vs immediate)
+❌ Duplicate work cost (3 hours lost to Dana+Priya overlap)
 ❌ Net cost-benefit analysis (costs actually exceeded benefits 27x)
 
 ---
@@ -188,8 +188,8 @@ This is a no-brainer win. We save ~6 minutes/day per person, team is happier, an
 - 66.7 hours/day × 220 days = 14,674 hours/year
 - 14,674 hours × $100/hr = **$1,467,400/year LOST**
 
-**Jerry's projected benefit:** $220,000/year  
-**Actual cost:** $1,467,400/year  
+**Jerry's projected benefit:** $220,000/year
+**Actual cost:** $1,467,400/year
 **Net impact if scaled:** **-$1,247,400/year** (disaster)
 
 ---

@@ -43,8 +43,8 @@ We ran the **same experiment** (daily standups) **two ways:**
 **V5 (No Agent) Recommendation:**
 > "I think we should keep doing daily standups for now. They seem to help with coordination and don't take much time."
 
-**Confidence:** 6/10  
-**Defense:** "It felt helpful during the experiment"  
+**Confidence:** 6/10
+**Defense:** "It felt helpful during the experiment"
 **Evidence:** 1 coordination example, vague blocker mention
 
 ---
@@ -52,8 +52,8 @@ We ran the **same experiment** (daily standups) **two ways:**
 **V3 (With Agent) Recommendation:**
 > "VALIDATED ✅ - Daily standups are the optimal standup frequency. They provide similar coordination benefits to hourly standups but with 83% less meeting overhead (38 min vs 7.2 hrs)."
 
-**Confidence:** 9/10  
-**Defense:** Specific metrics, cost/benefit analysis, quantified tradeoffs  
+**Confidence:** 9/10
+**Defense:** Specific metrics, cost/benefit analysis, quantified tradeoffs
 **Evidence:** 12 structured observations, explicit cost tracking, baseline comparison
 
 ---
@@ -139,19 +139,19 @@ We ran the **same experiment** (daily standups) **two ways:**
 
 **Hypothetical interview with Dana after running both V5 and V3:**
 
-**Q:** Which approach felt more rigorous?  
+**Q:** Which approach felt more rigorous?
 **A:** "V3, no question. V5 felt like we were just winging it."
 
-**Q:** Which would you trust more if you had to defend to Jerry's director?  
+**Q:** Which would you trust more if you had to defend to Jerry's director?
 **A:** "V3 by a mile. V5 is just my opinion. V3 has actual data."
 
-**Q:** Which took less total time?  
+**Q:** Which took less total time?
 **A:** "V3 was actually faster! And way less stressful because I didn't have to remember everything in my head."
 
-**Q:** Which could other teams replicate?  
+**Q:** Which could other teams replicate?
 **A:** "Only V3. V5 is gone as soon as we stop thinking about it."
 
-**Q:** Would you use the Experiment Agent for real Red Hat experiments?  
+**Q:** Would you use the Experiment Agent for real Red Hat experiments?
 **A:** "YES, without hesitation. V5 showed me what we've been doing wrong - we make decisions on gut feel and hope we're right. V3 showed me we can actually KNOW if we're right."
 
 ---
@@ -196,6 +196,6 @@ If teams run strategic experiments **with Experiment Agent** (V3 approach):
 
 ---
 
-**Prepared by:** Scotty (Claude)  
-**Date:** April 12, 2026  
+**Prepared by:** Scotty (Claude)
+**Date:** April 12, 2026
 **Context:** V5 control group simulation to measure Experiment Agent value

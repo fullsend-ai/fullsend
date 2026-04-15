@@ -1,7 +1,7 @@
 # V5 Kickoff Meeting: Daily Standups (No Agent)
 
-**Date:** April 12, 2026  
-**Duration:** 15 minutes  
+**Date:** April 12, 2026
+**Duration:** 15 minutes
 **Attendees:** Jerry (Manager), Dana (Designer), Marcus (Engineer), Priya (Engineer)
 
 ---

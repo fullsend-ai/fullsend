@@ -34,9 +34,9 @@ We ran the same experiment (async standup tool) two ways:
 ## The Critical Difference: What Each Approach Found
 
 ### V6B Found (No Agent)
-✅ Benefit: Saves 6 min/day meeting time  
-✅ Benefit: Team likes flexibility  
-⚠️ Cost: $3/person/month tool cost  
+✅ Benefit: Saves 6 min/day meeting time
+✅ Benefit: Team likes flexibility
+⚠️ Cost: $3/person/month tool cost
 ⚠️ Cost: "Some notifications" (vague, dismissed as manageable)
 
 **Conclusion:** Benefits >> Costs → Scale it
@@ -44,13 +44,13 @@ We ran the same experiment (async standup tool) two ways:
 ---
 
 ### V6A Found (With Agent)
-✅ Benefit: Saves 6 min/day meeting time (60 min total)  
-✅ Benefit: Flexibility  
-❌ Cost: $3/person/month tool cost  
-❌ Cost: 4 min/day answering questions (640 min total)  
-❌ Cost: 100 notifications/person (300 min context switching)  
-❌ Cost: 9 hours coordination delays  
-❌ Cost: 3 hours duplicate work  
+✅ Benefit: Saves 6 min/day meeting time (60 min total)
+✅ Benefit: Flexibility
+❌ Cost: $3/person/month tool cost
+❌ Cost: 4 min/day answering questions (640 min total)
+❌ Cost: 100 notifications/person (300 min context switching)
+❌ Cost: 9 hours coordination delays
+❌ Cost: 3 hours duplicate work
 
 **Conclusion:** Costs (1,660 min) >> Benefits (60 min) → Abandon it
 
@@ -59,7 +59,7 @@ We ran the same experiment (async standup tool) two ways:
 ## Why V6B Missed the Costs
 
 ### 1. No Explicit Cost Tracking
-**V6B:** "Did coordination suffer?" (vague)  
+**V6B:** "Did coordination suffer?" (vague)
 **V6A:** "Track coordination delay times" (specific metric)
 
 **Result:** V6B never measured the 9 hours of delayed blockers.
@@ -67,7 +67,7 @@ We ran the same experiment (async standup tool) two ways:
 ---
 
 ### 2. Confirmation Bias
-**V6B:** Team wanted to avoid meetings → saw what they wanted to see  
+**V6B:** Team wanted to avoid meetings → saw what they wanted to see
 **V6A:** Devil's advocate mode forced contradictory evidence search
 
 **Result:** V6B missed that "no meetings" created worse overhead.
@@ -75,7 +75,7 @@ We ran the same experiment (async standup tool) two ways:
 ---
 
 ### 3. Missing the Invisible
-**V6B:** "Some notifications, but manageable"  
+**V6B:** "Some notifications, but manageable"
 **V6A:** "100 notifications/person × 3 min context switch = 300 min cost"
 
 **Result:** V6B underestimated context switching by 100x.
@@ -83,7 +83,7 @@ We ran the same experiment (async standup tool) two ways:
 ---
 
 ### 4. Time Answering Questions
-**V6B:** Never tracked how long it takes to type answers  
+**V6B:** Never tracked how long it takes to type answers
 **V6A:** Measured 4 min/person/day (vs 1.5 min in synchronous standup)
 
 **Result:** V6B thought they saved time, actually lost time.
@@ -96,8 +96,8 @@ We ran the same experiment (async standup tool) two ways:
 
 > "Geekbot saves 6 min/day per person with minimal cost. If we scale to 20 teams (100 people):
 >
-> **Value:** 100 people × 6 min/day × 220 days × $100/hr = **$220,000/year**  
-> **Cost:** 100 people × $3/month × 12 months = **$3,600/year**  
+> **Value:** 100 people × 6 min/day × 220 days × $100/hr = **$220,000/year**
+> **Cost:** 100 people × $3/month × 12 months = **$3,600/year**
 > **ROI:** $216,400 net benefit
 >
 > **Recommendation:** Roll out org-wide immediately."
@@ -110,7 +110,7 @@ We ran the same experiment (async standup tool) two ways:
 
 **Hidden costs kick in:**
 - Time answering: 4 min/day × 100 people = 400 min/day
-- Context switching: 7.5 min/day × 100 people = 750 min/day  
+- Context switching: 7.5 min/day × 100 people = 750 min/day
 - Coordination delays: 2.7 hr/person/week × 100 people = 270 hr/week
 - Duplicate work increases: 20% uptick in overlapping efforts
 
@@ -124,7 +124,7 @@ We ran the same experiment (async standup tool) two ways:
 
 ### Year 1 Post-Mortem (Hypothetical)
 
-**Leadership in Q4 review:**  
+**Leadership in Q4 review:**
 "Wait, why did productivity DROP after we scaled Geekbot? Jerry said this would save $220K."
 
 **Reality check:**
@@ -135,7 +135,7 @@ We ran the same experiment (async standup tool) two ways:
 
 **Cost to fix:**
 1. Remove Geekbot from 100 people (change management pain)
-2. Retrain teams back to synchronous standups  
+2. Retrain teams back to synchronous standups
 3. Rebuild trust in leadership decisions ("Why did we scale something that hurt us?")
 4. Lost productivity: $1.47M
 
@@ -214,7 +214,7 @@ We ran the same experiment (async standup tool) two ways:
 | **V6B (No Agent)** | "Scale it!" | -$1.47M/year | Disaster |
 | **V6A (With Agent)** | "Kill it" | $0 (prevented) | Success |
 
-**The Experiment Agent's value isn't just improving decisions.**  
+**The Experiment Agent's value isn't just improving decisions.**
 **It's preventing million-dollar mistakes.**
 
 ---
@@ -245,16 +245,16 @@ We ran the same experiment (async standup tool) two ways:
 
 ## Updated Value Proposition
 
-**Before V6:**  
+**Before V6:**
 "Experiment Agent improves decision quality"
 
-**After V6:**  
+**After V6:**
 "Experiment Agent prevents million-dollar mistakes by surfacing hidden costs that gut-feel approaches miss"
 
 **This is the killer value prop for executives.**
 
 ---
 
-**Prepared by:** Jerry Becker  
-**Date:** April 12, 2026  
+**Prepared by:** Jerry Becker
+**Date:** April 12, 2026
 **Context:** V6 simulation proving agent prevents costly scaling mistakes

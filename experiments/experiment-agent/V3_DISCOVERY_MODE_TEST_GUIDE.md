@@ -1,6 +1,6 @@
 # V3.0 Discovery Mode - Test Guide
 
-**Date:** April 15, 2026  
+**Date:** April 15, 2026
 **Purpose:** Test Discovery Mode with real fullsend repo and strategy docs
 
 ---
@@ -90,7 +90,7 @@ Or just say:
 
 When agent asks:
 ```
-"Do you already have an experiment in mind, or would you like me to 
+"Do you already have an experiment in mind, or would you like me to
 suggest experiments?"
 ```
 
@@ -117,7 +117,7 @@ When agent asks what to analyze, say:
 
 **Option C (Both):**
 ```
-"Analyze the fullsend-ai/fullsend repo AND my Agentic SDLC Strategy 
+"Analyze the fullsend-ai/fullsend repo AND my Agentic SDLC Strategy
 docs at ~/Desktop/RH Claude Code/Agentic SDLC Strategy Proposal/"
 ```
 
@@ -300,7 +300,7 @@ B - Suggest experiments
 
 [Wait for agent to ask what to analyze]
 
-Analyze the fullsend-ai/fullsend GitHub repository and my Agentic SDLC 
+Analyze the fullsend-ai/fullsend GitHub repository and my Agentic SDLC
 Strategy docs at ~/Desktop/RH Claude Code/Agentic SDLC Strategy Proposal/
 
 [Wait for agent to present 5 experiments]

@@ -1,7 +1,7 @@
 # Experiment Agent v2.5-Lite: User-Facing Definition
 
-**Version:** 2.5-Lite (Persistent Memory - Single Experiment)  
-**Date:** April 10, 2026  
+**Version:** 2.5-Lite (Persistent Memory - Single Experiment)
+**Date:** April 10, 2026
 **Status:** Production-ready for real experiments
 
 ---
@@ -105,11 +105,11 @@ User designs experiment through conversation or doc upload
 
 **Step 2: Save to persistent storage**
 ```
-Agent: "Your Experiment Design is complete! I'm saving this to persistent 
+Agent: "Your Experiment Design is complete! I'm saving this to persistent
        storage so we can continue tracking across multiple sessions.
-       
+
        Saved to: /experiments/current/
-       
+
        You can close this session and return anytime - I'll remember everything."
 ```
 
@@ -131,15 +131,15 @@ User: "Hi, I'm back to update my experiment"
 
 Agent: [checks /experiments/current/]
        [reads experiment_design.md and metadata.json]
-       
+
        "Welcome back! I remember your experiment:
-       
+
        📊 AI Assistant for Project Managers Pilot
        • Status: Week 3 of 7 (Treatment phase)
        • Participants: Douglas, Rachel
        • Last update: April 25, 2026
        • Metrics: 30-50% time reduction, NPS >70
-       
+
        What update do you have today?"
 ```
 
@@ -156,7 +156,7 @@ User: "I have new meeting notes from Douglas"
 Agent: "Got it! Adding to AI Assistant for PMs experiment..."
        [saves to /experiments/current/docs/douglas_week3_notes.txt]
        [reads document]
-       
+
        "I see Douglas mentioned [key findings]. Logged in Week 3 observations.
         This will be included in the final report."
 ```
@@ -171,23 +171,23 @@ Agent: "Got it! Adding to AI Assistant for PMs experiment..."
 [Week 7 - Experiment complete]
 
 Agent: [generates final report]
-       
-       "Final report complete! 
-       
+
+       "Final report complete!
+
        Would you like to:
        A) Archive this experiment and start fresh
        B) Keep it active for future updates
-       
-       If archived, I'll move it to /experiments/archive/ and you can 
+
+       If archived, I'll move it to /experiments/archive/ and you can
        start a new experiment."
 
 User: "Archive it"
 
 Agent: [moves /current/ to /archive/ai_assistant_pms_pilot_2026_04/]
        [clears /current/ for next experiment]
-       
+
        "✅ AI Assistant for PMs Pilot archived.
-       
+
        Ready to start a new experiment whenever you are!"
 ```
 
@@ -206,16 +206,16 @@ Agent: [moves /current/ to /archive/ai_assistant_pms_pilot_2026_04/]
 **Example auto-load:**
 ```
 Agent: [reads /experiments/current/metadata.json]
-       
-       "I see you have an active experiment: Process Improvement Pilot 
+
+       "I see you have an active experiment: Process Improvement Pilot
         (Week 2 of 4, Baseline phase).
-        
+
         Options:
         A) Continue tracking (provide update)
         B) Add new documents
         C) View experiment design
         D) Archive and start fresh
-        
+
         What would you like to do?"
 ```
 
@@ -228,11 +228,11 @@ Agent: [reads /experiments/current/metadata.json]
 Agent: [creates /experiments/current/ directory]
        [writes experiment_design.md]
        [writes metadata.json]
-       
+
        "✅ Experiment saved to persistent storage.
-       
+
        Directory: /Users/jbecker/.claude/projects/-Users-jbecker/experiments/current/
-       
+
        You can close this session and return anytime. I'll remember everything."
 ```
 
@@ -240,7 +240,7 @@ Agent: [creates /experiments/current/ directory]
 ```
 Agent: [saves to /experiments/current/updates/week3_update.md]
        [updates metadata.json: last_updated, current_week]
-       
+
        "✅ Week 3 update saved. Progress: Week 3 of 7."
 ```
 
@@ -251,12 +251,12 @@ Agent: [saves to /experiments/current/updates/week3_update.md]
 ```
 User: "I have a new Miro board to share"
 Agent: "Great! Uploading to current experiment..."
-       
+
        [if image] [saves to /experiments/current/docs/miro_board_v2.png]
        [if PDF] [saves to /experiments/current/docs/new_proposal.pdf]
        [reads document]
-       
-       "I see [description of content]. This will be referenced in observations 
+
+       "I see [description of content]. This will be referenced in observations
         and final report."
 ```
 
@@ -292,7 +292,7 @@ Agent: "Great! Uploading to current experiment..."
 
 **Week 1:**
 ```
-User: "Define 'routine project tasks' as 'status updates, meeting notes, 
+User: "Define 'routine project tasks' as 'status updates, meeting notes,
        task tracking, timeline updates, resource coordination, basic documentation'"
 Agent: [saves definition in experiment_design.md]
        "Got it - logged in Experiment Design under Success Metrics."
@@ -302,9 +302,9 @@ Agent: [saves definition in experiment_design.md]
 ```
 Agent: [loads experiment_design.md]
        [reads metric definition]
-       
-       "Based on your 'routine project tasks' definition from Week 1 
-        (status updates, meeting notes, task tracking...), 
+
+       "Based on your 'routine project tasks' definition from Week 1
+        (status updates, meeting notes, task tracking...),
         Douglas spent 1.25 hours on these tasks today."
 ```
 
@@ -316,7 +316,7 @@ Agent: [loads experiment_design.md]
 
 **Week 1:**
 ```
-Hypothesis: IF we give Douglas and Rachel an AI assistant 
+Hypothesis: IF we give Douglas and Rachel an AI assistant
             BY providing it during normal workflow for 4 weeks
             THEN we'll see 30-50% time reduction AND NPS >70
 ```
@@ -325,10 +325,10 @@ Hypothesis: IF we give Douglas and Rachel an AI assistant
 ```
 Agent: [loads original hypothesis from experiment_design.md]
        [compares to actual results]
-       
+
        "Your hypothesis predicted 30-50% time reduction.
         Actual: 83% reduction (exceeded target).
-        
+
         Hypothesis: VALIDATED ✅"
 ```
 
@@ -344,13 +344,13 @@ Agent: [loads original hypothesis from experiment_design.md]
 User: "I want to update my experiment"
 Agent: [checks /experiments/current/]
        [directory is empty or doesn't exist]
-       
+
        "I don't see an active experiment right now.
-       
+
        Would you like to:
        A) Start a new experiment
        B) Resume a previously archived experiment
-       
+
        If you recently archived an experiment, I can restore it from archive."
 ```
 
@@ -360,8 +360,8 @@ User: "Resume my Process Improvement pilot"
 Agent: [searches /experiments/archive/]
        [finds process_improvement_pilot_2026_03/]
        [copies to /current/]
-       
-       "Restored Process Improvement Pilot to active state. Last update was 
+
+       "Restored Process Improvement Pilot to active state. Last update was
         Week 4 of 4. Want to add more updates or regenerate final report?"
 ```
 
@@ -374,13 +374,13 @@ Agent: [searches /experiments/archive/]
 ```
 Agent: [tries to load /experiments/current/experiment_design.md]
        [file not found or unreadable]
-       
+
        "I expected to find your experiment design but couldn't locate it.
-        
+
         Possible issues:
         • File was moved or deleted
         • Experiment directory is corrupted
-        
+
         Would you like to:
         A) Start fresh (create new experiment)
         B) Try to recover from partial data
@@ -397,9 +397,9 @@ Agent: [tries to load /experiments/current/experiment_design.md]
 Agent: [loads metadata.json: "Week 3"]
        [reads latest update file: week5_update.md]
        [mismatch detected]
-       
+
        "I see a mismatch: metadata says Week 3, but latest update is Week 5.
-        
+
         Which is correct? I'll update metadata to match."
 ```
 
@@ -454,7 +454,7 @@ If active experiment exists:
 If no active experiment:
   "Hi! I'm the Experiment Agent. Do you have context to share before we start?
    A) Share documents
-   B) Paste text  
+   B) Paste text
    C) Design from scratch
    D) Use template"
 ```
@@ -467,10 +467,10 @@ If no active experiment:
 **Phase 8: Save to Persistent Storage (NEW)**
 ```
 Agent: "Experiment Design complete! Saving to persistent storage...
-       
+
        ✅ Saved to: /experiments/current/
-       
-       You can close this session and return anytime. All your progress 
+
+       You can close this session and return anytime. All your progress
        is saved automatically."
 ```
 
@@ -482,13 +482,13 @@ Agent: "Experiment Design complete! Saving to persistent storage...
 ```
 Agent: [auto-loads experiment]
        "Welcome back! Week 3 check-in for AI Assistant for PMs Pilot.
-       
+
        I need a few things:
        1. Daily log data for this week
        2. NPS scores
        3. Qualitative observations
        4. Any new documents to share?
-       
+
        Or drop a week3_update.md file!"
 ```
 
@@ -496,7 +496,7 @@ Agent: [auto-loads experiment]
 ```
 Agent: [saves to /experiments/current/updates/week3_update.md]
        [updates metadata.json: current_week = 3, last_updated = today]
-       
+
        "✅ Week 3 update saved. Progress: Week 3 of 7."
 ```
 
@@ -509,16 +509,16 @@ Agent: [saves to /experiments/current/updates/week3_update.md]
 Agent: [loads all data from /current/]
        [generates final report]
        [saves to /current/reports/final_report.md]
-       
-       "Final report complete! 
-       
+
+       "Final report complete!
+
        📊 Report saved: /experiments/current/reports/final_report.md
-       
+
        Next steps:
        A) Archive this experiment (move to /archive/)
        B) Keep active for future updates
        C) Generate stakeholder communications
-       
+
        What would you like to do?"
 ```
 
@@ -540,7 +540,7 @@ Agent: "Yes! Share your existing experiment files:
        • experiment_design.md (required)
        • Any observation files
        • Any update files
-       
+
        I'll organize them into the new persistent structure."
 
 User: [shares files]
@@ -549,7 +549,7 @@ Agent: [creates /experiments/current/]
        [saves experiment_design.md]
        [organizes other files into docs/, updates/, observations/]
        [creates metadata.json from experiment_design info]
-       
+
        "✅ Migrated! Your v2.2 experiment is now in persistent storage.
        You can continue tracking from here."
 ```
@@ -616,10 +616,10 @@ Agent: [creates /experiments/current/]
 
 ## Version History
 
-**v1.0:** Initial version (confirmation bias issues)  
-**v2.0:** Bias corrections (strict metrics, devil's advocate)  
-**v2.1:** UX improvements (progressive disclosure, context-first)  
-**v2.2:** Images, collaboration, templates, previews  
+**v1.0:** Initial version (confirmation bias issues)
+**v2.0:** Bias corrections (strict metrics, devil's advocate)
+**v2.1:** UX improvements (progressive disclosure, context-first)
+**v2.2:** Images, collaboration, templates, previews
 **v2.5-Lite:** Persistent memory, auto-load, mid-experiment docs, archive workflow
 
 ---

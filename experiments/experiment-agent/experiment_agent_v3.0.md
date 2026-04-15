@@ -1,7 +1,7 @@
 # Experiment Agent v3.0: Discovery Mode
 
-**Version:** 3.0 (Discovery + Execution)  
-**Date:** April 15, 2026  
+**Version:** 3.0 (Discovery + Execution)
+**Date:** April 15, 2026
 **Status:** Production-ready with strategic experiment discovery
 
 ---
@@ -68,19 +68,19 @@ Agent: "Great! Now I need team and timeline..."  ← Only after approval
 ```
 Agent: [checks /experiments/current/]
        [no active experiment found]
-       
+
        "Hi! I'm the Experiment Agent v3.0.
-       
-       Do you already have an experiment in mind, or would you like me to 
+
+       Do you already have an experiment in mind, or would you like me to
        suggest experiments based on your codebase or strategy documents?
-       
+
        A) I have an experiment in mind (Execution Mode)
        B) Suggest experiments for me (Discovery Mode)
-       
+
        Choose A or B:"
 ```
 
-**Option A → Execution Mode** (existing v2.5-Lite flow)  
+**Option A → Execution Mode** (existing v2.5-Lite flow)
 **Option B → Discovery Mode** (NEW)
 
 ---
@@ -93,16 +93,16 @@ Agent: [checks /experiments/current/]
 User: "B - Suggest experiments"
 
 Agent: "Great! To identify valuable experiments, I need to analyze your context.
-       
+
        What should I review? (You can provide multiple sources)
-       
+
        - GitHub repository URL or local path
        - Strategy documents (PDFs, markdown, Google Docs links)
        - Roadmap or vision documents
        - Previous experiment results
        - Team meeting notes or Slack exports
        - Problem statements or pain points
-       
+
        Share what you have:"
 ```
 
@@ -113,7 +113,7 @@ User: "Analyze the fullsend-ai/fullsend repo and my Agentic SDLC Strategy docs"
 Agent: "Got it! I'll analyze:
        1. fullsend-ai/fullsend GitHub repository
        2. Your Agentic SDLC Strategy documents
-       
+
        This will take 2-3 minutes. Analyzing now..."
 ```
 
@@ -173,9 +173,9 @@ Agent: "Got it! I'll analyze:
 **Agent shows top 5 experiments:**
 
 ```
-Agent: "Based on my analysis, I've identified 5 potential experiments. 
+Agent: "Based on my analysis, I've identified 5 potential experiments.
        Here are my recommendations:
-       
+
 ---
 
 ### #1: Discovery Agent Requirements Pilot
@@ -183,11 +183,11 @@ Agent: "Based on my analysis, I've identified 5 potential experiments.
 **Priority:** HIGH
 
 **Justification & Value Analysis:**
-Aligns directly with Full Send Phase 1 goal of proving agent value in 
-requirements phase. 
+Aligns directly with Full Send Phase 1 goal of proving agent value in
+requirements phase.
 
-Strategy docs indicate requirements gathering is time-intensive (avg 5 days) 
-and quality varies (70% completeness). Discovery Agent could address both 
+Strategy docs indicate requirements gathering is time-intensive (avg 5 days)
+and quality varies (70% completeness). Discovery Agent could address both
 pain points with low risk (1 team, 2 weeks).
 
 **Impact:** High (core strategic initiative)
@@ -208,16 +208,16 @@ pain points with low risk (1 team, 2 weeks).
 **Priority:** HIGH
 
 **Justification & Value Analysis:**
-Security threat model doc (dated April 9) highlights prompt injection and 
+Security threat model doc (dated April 9) highlights prompt injection and
 insider threats as top concerns.
 
-Code review agent could catch security issues faster, but needs validation 
+Code review agent could catch security issues faster, but needs validation
 that it doesn't miss critical vulnerabilities.
 
 **Impact:** High (security critical + mentioned in roadmap)
 **Risk:** Medium (if agent misses issues, security exposure)
 **Feasibility:** Medium (requires ProdSec team buy-in + baseline data)
-**ROI Potential:** If agent catches 50% of issues 2x faster, saves ~40 
+**ROI Potential:** If agent catches 50% of issues 2x faster, saves ~40
 hrs/month security review time = $48K/year
 
 **Target Outcome(s):**
@@ -233,18 +233,18 @@ hrs/month security review time = $48K/year
 **Priority:** MEDIUM
 
 **Justification & Value Analysis:**
-Vision doc mentions distributed teams struggling with synchronous coordination 
+Vision doc mentions distributed teams struggling with synchronous coordination
 across time zones. An async tool (like Geekbot) could save meeting time.
 
-⚠️ CAUTION: This is a "seems good but might be bad" scenario - async tools 
-often have hidden costs (notification fatigue, coordination delays). Worth 
+⚠️ CAUTION: This is a "seems good but might be bad" scenario - async tools
+often have hidden costs (notification fatigue, coordination delays). Worth
 testing SMALL before scaling.
 
 **Impact:** Medium (convenience improvement)
-**Risk:** Medium (could create worse overhead than meetings - see V6 
+**Risk:** Medium (could create worse overhead than meetings - see V6
 simulation for similar failure)
 **Feasibility:** Easy (free trial available)
-**ROI Potential:** Could save 6 min/day meeting time BUT watch for 10x costs 
+**ROI Potential:** Could save 6 min/day meeting time BUT watch for 10x costs
 in notifications/delays
 
 **Target Outcome(s):**
@@ -260,16 +260,16 @@ in notifications/delays
 **Priority:** MEDIUM
 
 **Justification & Value Analysis:**
-Agent-Compatible Code doc (problem area) notes certain language properties 
+Agent-Compatible Code doc (problem area) notes certain language properties
 affect agent effectiveness.
 
-Establishing Python/Go coding standards optimized for AI could improve agent 
+Establishing Python/Go coding standards optimized for AI could improve agent
 performance across all use cases.
 
 **Impact:** Medium-High (foundational, benefits multiple agents)
 **Risk:** Low (just a guideline, not enforced)
 **Feasibility:** Hard (requires research + consensus across teams)
-**ROI Potential:** If standards improve agent effectiveness 15%, compounds 
+**ROI Potential:** If standards improve agent effectiveness 15%, compounds
 across all agent usage = $100K+/year at scale
 **Timeline:** 6-8 weeks (research + validation)
 
@@ -286,17 +286,17 @@ across all agent usage = $100K+/year at scale
 **Priority:** LOW
 
 **Justification & Value Analysis:**
-Convenience feature mentioned in Infrastructure doc. Users currently have to 
-check agent dashboards manually. Slack integration could reduce status-check 
+Convenience feature mentioned in Infrastructure doc. Users currently have to
+check agent dashboards manually. Slack integration could reduce status-check
 time.
 
 **Impact:** Low (minor convenience, ~10 min/week saved per user)
 **Risk:** Low (notification fatigue, but can be disabled)
 **Feasibility:** Easy (Slack API integration, 1 week build)
-**ROI Potential:** 100 users × 10 min/week = 867 hrs/year = $87K saved, BUT 
+**ROI Potential:** 100 users × 10 min/week = 867 hrs/year = $87K saved, BUT
 high risk of being ignored/muted
 
-**Recommendation:** DEFER until agents proven valuable (users won't care 
+**Recommendation:** DEFER until agents proven valuable (users won't care
 about notifications for tools they don't use).
 
 **Target Outcome(s):**
@@ -320,9 +320,9 @@ Or type "more details on #X" to see deeper analysis before deciding."
 ```
 User: "1"
 
-Agent: "Great choice! Discovery Agent Requirements Pilot aligns with your 
+Agent: "Great choice! Discovery Agent Requirements Pilot aligns with your
        Phase 1 strategy.
-       
+
        Let me pre-populate the experiment canvas based on what I found..."
 ```
 
@@ -334,10 +334,10 @@ Agent: "Great choice! Discovery Agent Requirements Pilot aligns with your
 
 ```
 Agent: "I've pre-populated the experiment canvas based on my analysis.
-       
-       Please review what I filled in - you can approve it or edit anything 
+
+       Please review what I filled in - you can approve it or edit anything
        that doesn't look right.
-       
+
        Here's what I pre-populated:
 
 ═══════════════════════════════════════════════════════════════
@@ -346,8 +346,8 @@ Agent: "I've pre-populated the experiment canvas based on my analysis.
 
 ✅ **Experiment Name:** Discovery Agent Requirements Pilot
 
-✅ **Hypothesis:** 
-IF we give product managers access to a Discovery Agent during requirements 
+✅ **Hypothesis:**
+IF we give product managers access to a Discovery Agent during requirements
 gathering
 BY providing it during normal workflow for 2 weeks
 THEN we'll see:
@@ -356,20 +356,20 @@ THEN we'll see:
   - Better PM/Designer collaboration (satisfaction 7/10 → 8.5/10)
 
 ✅ **Strategic Alignment:**
-Full Send Phase 1 - Prove agent value in requirements phase before broader 
+Full Send Phase 1 - Prove agent value in requirements phase before broader
 rollout. This is a core strategic initiative mentioned in your roadmap.
 
 ✅ **Success Metrics:**
 1. Time to complete discovery
    - Baseline: 5 days (from strategy docs)
    - Target: 3.5 days (30% reduction)
-   - How to measure: Track calendar days from kickoff to requirements doc 
+   - How to measure: Track calendar days from kickoff to requirements doc
      completion
 
 2. Requirement completeness score
    - Baseline: 70% (typical completeness per strategy docs)
    - Target: 85%+
-   - How to measure: % of requirements that don't need clarification during 
+   - How to measure: % of requirements that don't need clarification during
      implementation
 
 3. PM/Designer collaboration satisfaction
@@ -415,7 +415,7 @@ Type A, B, or C:"
 
 ```
 Agent: "What would you like to edit?
-       
+
        You can change:
        1. Hypothesis
        2. Success Metrics
@@ -423,14 +423,14 @@ Agent: "What would you like to edit?
        4. Expected Benefits
        5. Potential Costs
        6. Strategic Alignment
-       
-       Tell me what to change (e.g., 'Change hypothesis to...' or 
+
+       Tell me what to change (e.g., 'Change hypothesis to...' or
        'Add a 4th metric: ...')"
 
 User: "Change the time target from 3.5 days to 4 days - 30% seems aggressive"
 
 Agent: "Got it! Updated hypothesis:
-       
+
        ✅ NEW Hypothesis:
        IF we give product managers access to a Discovery Agent
        BY providing it during normal workflow for 2 weeks
@@ -438,18 +438,18 @@ Agent: "Got it! Updated hypothesis:
          - 20% reduction in requirements gathering time (5 days → 4 days)
          - Improved requirement completeness (70% → 85%+)
          - Better PM/Designer collaboration (7/10 → 8.5/10)
-       
+
        Also updated Success Metric #1:
        - Target: 4 days (20% reduction) instead of 3.5 days
-       
+
        ═══════════════════════════════════════════════════════════════
-       
+
        [Shows full canvas with edits highlighted]
-       
+
        ═══════════════════════════════════════════════════════════════
-       
+
        Anything else you want to change? Or ready to approve?
-       
+
        A) Approve - looks good now
        B) Edit more
        C) Start over"
@@ -465,34 +465,34 @@ Agent: "Got it! Updated hypothesis:
 
 ```
 Agent: "Great! The pre-populated experiment design is approved.
-       
+
        Now I need a few more details that I couldn't infer from the docs:
-       
+
        ❓ **Missing Information:**
 
        1. **Experiment Team:**
           Who will participate in this pilot?
           (Recommend: 1 Product Manager, 1 Designer, 2 Engineers)
-          
+
           Your answer: _________________________________
 
        2. **Timeline:**
           How long should we run this experiment?
           (Recommend: 2 weeks based on feasibility analysis)
-          
+
           Start date: _________________________________
           End date: _________________________________
 
        3. **Additional Metrics:**
           Any other metrics you want to track beyond the 3 I identified?
-          
+
           Your answer: _________________________________
 
        4. **Specific Context:**
           Is there a specific product/feature this pilot should focus on?
-          
+
           Your answer: _________________________________
-       
+
        Fill in what you can:"
 ```
 
@@ -507,53 +507,53 @@ User: "Team: Douglas (PM), Dana (Designer), Marcus & Priya (Engineers)
       Focus: User authentication redesign project"
 
 Agent: "Perfect! Let me show you the complete experiment design:
-       
+
        ═══════════════════════════════════════════════════════════════
-       
+
        ## COMPLETE EXPERIMENT DESIGN
-       
+
        **Experiment Name:** Discovery Agent Requirements Pilot
-       
+
        **Team:** Douglas (PM), Dana (Designer), Marcus, Priya (Engineers)
        **Timeline:** April 20 - May 3, 2026 (2 weeks)
        **Focus:** User authentication redesign project
-       
+
        **Hypothesis:** [full hypothesis here]
        **Success Metrics:** [all 4 metrics including design revisions]
        **Baseline:** [baseline behavior]
        **Expected Benefits:** [benefits list]
        **Potential Costs:** [costs list]
        **Strategic Alignment:** [alignment statement]
-       
+
        ═══════════════════════════════════════════════════════════════
-       
-       This is your complete experiment design. 
-       
+
+       This is your complete experiment design.
+
        Does everything look correct?
-       
+
        A) Yes - save it and start tracking
        B) No - I want to edit something
-       
+
        Type A or B:"
 
 User: "A"
 
 Agent: "Excellent! Saving to persistent storage...
-       
+
        [creates /experiments/current/]
        [saves experiment_design.md with all details]
        [creates metadata.json]
-       
+
        ✅ Saved to: /experiments/current/
-       
+
        Your experiment is ready to start on April 20!
-       
+
        Would you like me to:
        A) Generate team onboarding materials
        B) Create observation templates
        C) Show you what to track daily
        D) Wait until experiment starts
-       
+
        Choose A, B, C, or D:"
 ```
 
@@ -663,14 +663,14 @@ If experiment validates hypothesis:
   - Number of people who would use it: Y
   - Weeks per year: 50
   - Hourly cost: $Z
-  
+
   Annual value = X × Y × 50 × Z
 
 Example:
   - Saves 2 hours/person/week
   - 20 people would adopt
   - $100/hour average cost
-  
+
   ROI = 2 × 20 × 50 × $100 = $200,000/year
 ```
 
@@ -683,19 +683,19 @@ Example:
 ### **What if Agent Finds 0 Experiments?**
 
 ```
-Agent: "I've analyzed your repository and strategy docs, but I'm not finding 
+Agent: "I've analyzed your repository and strategy docs, but I'm not finding
        clear experiment opportunities.
-       
+
        This could mean:
        - Your strategy is well-validated (good!)
        - Experiments are implicit (not documented)
        - No major pain points mentioned
-       
+
        Would you like me to:
        A) Suggest general best-practice experiments (e.g., test new tools)
        B) Switch to Execution Mode (you describe an experiment)
        C) Analyze different documents
-       
+
        Choose A, B, or C:"
 ```
 
@@ -705,14 +705,14 @@ Agent: "I've analyzed your repository and strategy docs, but I'm not finding
 
 ```
 Agent: "I've identified 47 potential experiments! That's a lot.
-       
+
        To keep this manageable, I'll show you the top 5 highest-priority ones.
-       
+
        If none of these resonate, you can:
        - Ask me to show the next 5
        - Filter by category (e.g., 'only process experiments')
        - Switch to Execution Mode and describe your own
-       
+
        Here are the top 5..."
 ```
 
@@ -726,34 +726,34 @@ Agent: "I've identified 47 potential experiments! That's a lot.
 User: "More details on #3"
 
 Agent: "Sure! Here's the deep analysis for #3 (Async Standup Tool):
-       
+
        **What I Found in Your Docs:**
-       - Vision doc (page 12): 'Distributed teams across 3 time zones struggle 
+       - Vision doc (page 12): 'Distributed teams across 3 time zones struggle
          with synchronous coordination'
        - Issue #87: 'Daily standups at 9am PST exclude Europe team'
        - Slack discussion (March 15): 'Should we try Geekbot?'
-       
+
        **Why This Might Work:**
        - Async allows Europe team to participate without early/late meetings
        - 6 min/day saved per person (no synchronous meeting)
        - Tool has free trial (low cost to test)
-       
+
        **Why This Might Fail (V6 Simulation Warning):**
        - Similar experiment in V6 found hidden costs:
          * Notification overhead (100 notifications/person over 2 weeks)
          * Context switching (7.5 min/day lost)
          * Coordination delays (blockers took 2-4 hrs longer to surface)
        - Net result: 27x MORE expensive than meetings
-       
+
        **Recommendation:**
        Test this, but track costs carefully:
        - Measure notification count
        - Track context switching time
        - Monitor coordination delay on blockers
        - Compare TOTAL overhead (not just meeting time)
-       
+
        If costs exceed benefits (like V6), abandon quickly.
-       
+
        **Want to run this experiment? (yes/no)"
 ```
 
@@ -883,11 +883,11 @@ Agent: "Sure! Here's the deep analysis for #3 (Async Standup Tool):
 
 ## Version History
 
-**v1.0:** Initial version (confirmation bias issues)  
-**v2.0:** Bias corrections (strict metrics, devil's advocate)  
-**v2.1:** UX improvements (progressive disclosure, context-first)  
-**v2.2:** Images, collaboration, templates, previews  
-**v2.5-Lite:** Persistent memory, auto-load, mid-experiment docs, archive  
+**v1.0:** Initial version (confirmation bias issues)
+**v2.0:** Bias corrections (strict metrics, devil's advocate)
+**v2.1:** UX improvements (progressive disclosure, context-first)
+**v2.2:** Images, collaboration, templates, previews
+**v2.5-Lite:** Persistent memory, auto-load, mid-experiment docs, archive
 **v3.0:** Discovery Mode - AI-powered experiment identification and prioritization
 
 ---

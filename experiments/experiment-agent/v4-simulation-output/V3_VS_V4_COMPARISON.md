@@ -1,7 +1,7 @@
 # V3 vs V4: Quantitative Comparison
 
-**Purpose:** Measure improvement from Experiment Agent v2.2 → v2.5-Lite  
-**Date:** May 1, 2026  
+**Purpose:** Measure improvement from Experiment Agent v2.2 → v2.5-Lite
+**Date:** May 1, 2026
 **Status:** V4 Simulation Complete
 
 ---
@@ -316,7 +316,7 @@
 
 **Likely outcome:** Dana runs the experiment confidently.
 
-**Time savings:** 32-50 minutes (32-43% reduction)  
+**Time savings:** 32-50 minutes (32-43% reduction)
 **Cognitive savings:** Massive (no re-explaining, agent remembers everything)
 
 ---

@@ -1,8 +1,8 @@
 # Experiment Agent v2.5-Lite: Usability Feedback (V4)
 
-**Evaluator:** Dana (Product Designer, Red Hat)  
-**Date:** May 1, 2026  
-**Context:** Just completed 3-week daily standups experiment across 4 sessions  
+**Evaluator:** Dana (Product Designer, Red Hat)
+**Date:** May 1, 2026
+**Context:** Just completed 3-week daily standups experiment across 4 sessions
 **Version Tested:** Experiment Agent v2.5-Lite (persistent memory)
 
 ---
@@ -235,7 +235,7 @@
 - Session 3: 9 min (Week 2 update + stakeholder email)
 - Session 4: 14 min (final report + archive)
 
-**Comparison to V3 (hypothetical multi-session):** 59-66 minutes  
+**Comparison to V3 (hypothetical multi-session):** 59-66 minutes
 **Time savings:** 11-18 minutes (19-27% reduction)
 
 **My perspective:**
@@ -508,7 +508,7 @@ The agent didn't just remember the conversation - it helped ME remember the expe
 I thought multi-week experiment tracking would be painful. I'd need external notes, spreadsheets, reminders of what I'd already shared. I honestly wouldn't have run a 6-week experiment with v2.2 - too much cognitive overhead.
 
 **After V4:**
-The persistent memory changes everything. The agent acts as my external brain for experiments. I don't need perfect memory - the agent remembers for me AND refreshes my memory when I return. 
+The persistent memory changes everything. The agent acts as my external brain for experiments. I don't need perfect memory - the agent remembers for me AND refreshes my memory when I return.
 
 This makes multi-week strategic experiments feel tractable. I'd confidently run a 6-week Discovery Agent pilot now.
 
@@ -518,6 +518,6 @@ This makes multi-week strategic experiments feel tractable. I'd confidently run 
 
 ---
 
-**Usability Feedback Complete.**  
-**Recommendation: DEPLOY v2.5-Lite to real Red Hat product teams.**  
+**Usability Feedback Complete.**
+**Recommendation: DEPLOY v2.5-Lite to real Red Hat product teams.**
 **Next: Pilot with Jerry's Innovation & Transformation team.**

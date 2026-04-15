@@ -1,7 +1,7 @@
 # Addendum: V5 Control Group - Decision Quality Analysis
 
-**Date:** April 12, 2026  
-**Context:** Additional validation testing conducted after initial briefing  
+**Date:** April 12, 2026
+**Context:** Additional validation testing conducted after initial briefing
 **Bottom Line:** Experiment Agent transforms decision quality, not just time
 
 ---
@@ -47,7 +47,7 @@ To measure the **true value** of the Experiment Agent, we ran a control group te
 - Vague blocker mention
 - No quantified costs or benefits
 
-**Confidence:** 6/10  
+**Confidence:** 6/10
 **Stakeholder Defense:** "If Jerry's director asked me to defend this decision, I'd probably struggle a bit - it's mostly based on gut feel."
 
 ---
@@ -64,7 +64,7 @@ To measure the **true value** of the Experiment Agent, we ran a control group te
 - 83% less overhead than hourly alternative
 - Explicit cost/benefit analysis
 
-**Confidence:** 9/10  
+**Confidence:** 9/10
 **Stakeholder Defense:** "Data shows clear tradeoffs. Easy to justify with quantified evidence."
 
 ---
@@ -188,7 +188,7 @@ To measure the **true value** of the Experiment Agent, we ran a control group te
 
 We ran the same experiment two ways to isolate the agent's value:
 
-**Without agent (V5):** Gut-feel decision, weak defense, lost knowledge  
+**Without agent (V5):** Gut-feel decision, weak defense, lost knowledge
 **With agent (V3):** Evidence-based decision, strong defense, built knowledge
 
 **Same time investment. Dramatically different decision quality.**
@@ -207,6 +207,6 @@ Deploy Experiment Agent v2.5-Lite on Jerry's next strategic experiment.
 
 ---
 
-**Prepared by:** Jerry Becker  
-**Date:** April 12, 2026  
+**Prepared by:** Jerry Becker
+**Date:** April 12, 2026
 **Context:** V5 control group validation testing

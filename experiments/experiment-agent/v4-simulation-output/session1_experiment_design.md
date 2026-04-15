@@ -1,15 +1,15 @@
 # Session 1: Experiment Design (Day 1)
 
-**Date:** April 10, 2026, 2:15 PM  
-**Session Duration:** 18 minutes  
-**Agent Version:** Experiment Agent v2.5-Lite  
+**Date:** April 10, 2026, 2:15 PM
+**Session Duration:** 18 minutes
+**Agent Version:** Experiment Agent v2.5-Lite
 **Participant:** Dana (Product Designer, Red Hat)
 
 ---
 
 ## Session Start: 2:15 PM
 
-**Experiment Agent:** Hi Dana! I'm Experiment Agent v2.5-Lite. 
+**Experiment Agent:** Hi Dana! I'm Experiment Agent v2.5-Lite.
 
 I checked for active experiments and don't see any in progress. Ready to start a new one?
 
@@ -29,7 +29,7 @@ Before we dive in, do you have any context to share?
 
 **Experiment Agent:** [reading experiment_design.md...]
 
-Got it! I see you ran V3 (Daily Standups validation) as a 4-day controlled experiment. 
+Got it! I see you ran V3 (Daily Standups validation) as a 4-day controlled experiment.
 
 For V4, do you want to:
 - A) Reuse the same experiment design (daily standups validation)
@@ -42,10 +42,10 @@ For V4, do you want to:
 
 Here's what I'm extracting from V3:
 
-**Hypothesis:**  
-IF a product squad uses 1x daily structured standups (Yesterday/Today/Blockers/Help)  
-BY providing systematic coordination without excessive overhead  
-WILL reduce duplicate work to <2 incidents, surface blockers within 2 hours, maintain feature quality  
+**Hypothesis:**
+IF a product squad uses 1x daily structured standups (Yesterday/Today/Blockers/Help)
+BY providing systematic coordination without excessive overhead
+WILL reduce duplicate work to <2 incidents, surface blockers within 2 hours, maintain feature quality
 COMPARED TO poorly-run meetings with no structure
 
 **Participants:**
@@ -133,15 +133,15 @@ Sound good?
 
 ### Experiment: Daily Standups Validation (V4 - Multi-Week Tracking)
 
-**Designer:** Dana  
-**Created:** April 10, 2026  
-**Status:** Active  
+**Designer:** Dana
+**Created:** April 10, 2026
+**Status:** Active
 **Duration:** 3 weeks
 
-**Hypothesis:**  
-IF squad uses 1x daily standups (structured 4-question format)  
-BY providing systematic coordination without excessive overhead  
-WILL reduce duplicate work <2 incidents, surface blockers <2hrs, maintain quality  
+**Hypothesis:**
+IF squad uses 1x daily standups (structured 4-question format)
+BY providing systematic coordination without excessive overhead
+WILL reduce duplicate work <2 incidents, surface blockers <2hrs, maintain quality
 COMPARED TO poorly-run meetings
 
 **Participants:**

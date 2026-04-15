@@ -1,8 +1,8 @@
 # Session 3: Week 2 Update + New Document (Day 15 - 2 Weeks Later)
 
-**Date:** April 24, 2026, 3:20 PM  
-**Session Duration:** 9 minutes  
-**Agent Version:** Experiment Agent v2.5-Lite  
+**Date:** April 24, 2026, 3:20 PM
+**Session Duration:** 9 minutes
+**Agent Version:** Experiment Agent v2.5-Lite
 **Participant:** Dana (Product Designer, Red Hat)
 
 ---
@@ -15,9 +15,9 @@
 
 ## Auto-Load Context: 3:20 PM (< 2 seconds)
 
-**Experiment Agent:** [Checking /experiments/current/...]  
-[Loading experiment_design.md...]  
-[Loading metadata.json...]  
+**Experiment Agent:** [Checking /experiments/current/...]
+[Loading experiment_design.md...]
+[Loading metadata.json...]
 [Loading updates/week1_update.md...]
 
 Welcome back, Dana!
@@ -95,9 +95,9 @@ Now, what's the stakeholder email you mentioned?
 
 ---
 
-**From:** Jerry Becker <jbecker@redhat.com>  
-**To:** Dana <dana@redhat.com>  
-**Date:** April 24, 2026, 9:15 AM  
+**From:** Jerry Becker <jbecker@redhat.com>
+**To:** Dana <dana@redhat.com>
+**Date:** April 24, 2026, 9:15 AM
 **Subject:** V4 Experiment Check-In
 
 Hey Dana,

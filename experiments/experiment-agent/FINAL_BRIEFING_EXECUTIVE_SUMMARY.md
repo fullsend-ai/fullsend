@@ -4,9 +4,9 @@
 
 ---
 
-**Date:** April 10, 2026  
-**For:** Red Hat Leadership  
-**Status:** Ready for Deployment  
+**Date:** April 10, 2026
+**For:** Red Hat Leadership
+**Status:** Ready for Deployment
 **Length:** 2 pages
 
 ---
@@ -213,6 +213,6 @@ Start with real usage, validate in production, then scale to Red Hat teams.
 
 ---
 
-**Prepared by:** Jerry Becker 
-**For:** Red Hat Leadership  
+**Prepared by:** Jerry Becker
+**For:** Red Hat Leadership
 **Date:** April 10, 2026

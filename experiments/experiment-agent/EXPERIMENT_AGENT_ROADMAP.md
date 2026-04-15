@@ -1,7 +1,7 @@
 # Experiment Agent: Product Roadmap
 
-**Version:** 2.0 → 2.2 → 2.5-Lite → 3.0+  
-**Owner:** Jerry Becker (Product) + Scotty (Engineering)  
+**Version:** 2.0 → 2.2 → 2.5-Lite → 3.0+
+**Owner:** Jerry Becker (Product) + Scotty (Engineering)
 **Last Updated:** April 10, 2026 (v2.5-Lite shipped)
 
 ---
@@ -46,7 +46,7 @@
 
 ## Phase 1: Polish Current Capabilities (v2.1 → v2.2) ✅ COMPLETE
 
-**Timeline:** Completed April 10, 2026  
+**Timeline:** Completed April 10, 2026
 **Goal:** Make what exists work smoothly for Jerry's real experiments
 
 ### Features Completed in v2.2:
@@ -128,7 +128,7 @@
 **2. Graceful Google Docs Handling**
 ```
 User: "Here's my doc: [private Google Doc link]"
-Agent: "I can't access that due to permissions. No problem! 
+Agent: "I can't access that due to permissions. No problem!
         Can you either:
         • Change sharing to 'Anyone with link can view'
         • Download as PDF and share the file path
@@ -173,8 +173,8 @@ Agent: "I've read all 3. Here's what I synthesized:
 
 ## Phase 2-Lite: Persistent Memory (Single Experiment) ✅ COMPLETE
 
-**Timeline:** Completed April 10, 2026 (built in ~60 minutes)  
-**Goal:** Agent remembers context across sessions for multi-week experiments  
+**Timeline:** Completed April 10, 2026 (built in ~60 minutes)
+**Goal:** Agent remembers context across sessions for multi-week experiments
 **Approach:** LLM agent definition (not custom software infrastructure)
 
 ### Features Completed in v2.5-Lite:
@@ -227,8 +227,8 @@ Agent: "I've read all 3. Here's what I synthesized:
 
 ## Phase 2.5: Multi-Experiment Tracking (Future)
 
-**Timeline:** TBD (after validating v2.5-Lite with real usage)  
-**Goal:** Track multiple experiments in parallel  
+**Timeline:** TBD (after validating v2.5-Lite with real usage)
+**Goal:** Track multiple experiments in parallel
 **Estimated Build Time:** 3-5 days (agent definition) or 2 weeks (custom software - Option B)
 
 ### Features to Build:
@@ -239,7 +239,7 @@ User: "What experiments am I tracking?"
 Agent: "You have 2 active experiments:
         1. Process Improvement Agent pilot (Week 2 of 4)
         2. Discovery Agent validation (Week 1 of 6)
-        
+
         Which one would you like to discuss?"
 ```
 - List all active experiments with progress
@@ -261,17 +261,17 @@ Agent: "I see you're tracking 2 experiments. Which one is this for?
 ```
 User: "How did Process Improvement compare to Discovery Agent?"
 Agent: "Comparing final results:
-        
+
         Process Improvement:
         • Result: VALIDATED (80% time reduction)
         • Confidence: High (85%)
         • Duration: 4 weeks
-        
+
         Discovery Agent:
         • Result: INCONCLUSIVE (mixed signals)
         • Confidence: Medium (60%)
         • Duration: 6 weeks
-        
+
         Key difference: Process Improvement had clearer metrics..."
 ```
 - Generate comparison reports across experiments
@@ -288,7 +288,7 @@ Agent: "Comparing final results:
 
 ## Phase 3: Advanced Collaboration & Automation (v3.0)
 
-**Timeline:** 8-16 weeks (future)  
+**Timeline:** 8-16 weeks (future)
 **Goal:** Proactive agent, minimal user effort, team collaboration
 
 ### Features to Build:
@@ -299,7 +299,7 @@ User: "Watch this Google Drive folder for experiment updates"
 Agent: [monitors folder]
 
 [New doc appears: "Team A Week 2 standup notes.pdf"]
-Agent: "I noticed new standup notes from Team A. I've read them and 
+Agent: "I noticed new standup notes from Team A. I've read them and
         updated Week 2 observations. Want to see what I found?"
 ```
 - Connect to Google Drive / Notion
@@ -310,7 +310,7 @@ Agent: "I noticed new standup notes from Team A. I've read them and
 **2. Automated Metric Extraction**
 ```
 [Reads standup notes: "Spent 3 hours fixing broken CI pipeline this week"]
-Agent: "I detected a process work incident (3 hours on CI). 
+Agent: "I detected a process work incident (3 hours on CI).
         Should I count this toward Team A's baseline metrics?"
 ```
 - NLP extraction of metric-relevant data from docs
@@ -336,7 +336,7 @@ Agent: "Weekly summary for Process Improvement experiment:
         • Team A: 7.5 hours process work this week (baseline avg: 8)
         • Team B: 4.2 hours process work (using agent)
         • Delta: 3.3 hours saved with agent
-        
+
         No action needed - I'll include this in final report.
         Questions? Reply anytime."
 ```
@@ -365,8 +365,8 @@ Agent: "Got it. Cloning experiment structure:
         • Same 4-week timeline
         • Same metrics (time saved, satisfaction, adoption)
         • Same baseline vs. treatment design
-        
-        What's different? Just the intervention (Discovery Agent vs. 
+
+        What's different? Just the intervention (Discovery Agent vs.
         Process Improvement Agent)?"
 ```
 - Save experiment designs as templates
@@ -383,7 +383,7 @@ Agent: "Got it. Cloning experiment structure:
 
 ## Phase 4: AI-Powered Insights (v4.0+)
 
-**Timeline:** 16+ weeks (visionary)  
+**Timeline:** 16+ weeks (visionary)
 **Goal:** Agent doesn't just track — it provides strategic insights
 
 ### Moonshot Features:
@@ -391,13 +391,13 @@ Agent: "Got it. Cloning experiment structure:
 **1. Cross-Experiment Pattern Recognition**
 ```
 Agent: "I've now tracked 8 experiments for you. I noticed a pattern:
-        
-        Experiments with clear baseline metrics (5/8) validated their 
+
+        Experiments with clear baseline metrics (5/8) validated their
         hypothesis 80% of the time.
-        
+
         Experiments with vague metrics (3/8) were all inconclusive.
-        
-        Recommendation: Spend more time defining metrics upfront - it 
+
+        Recommendation: Spend more time defining metrics upfront - it
         predicts experiment success."
 ```
 - Learn from portfolio of experiments
@@ -411,10 +411,10 @@ Agent: "Based on Week 1-2 data, I'm projecting:
         • 65% chance of validating hypothesis
         • 20% chance of inconclusive
         • 15% chance of invalidating
-        
-        Early indicator: Team B adoption is strong (80%), which correlates 
+
+        Early indicator: Team B adoption is strong (80%), which correlates
         with success in past experiments.
-        
+
         Should we continue or adjust course?"
 ```
 - Predict experiment outcomes before completion
@@ -425,13 +425,13 @@ Agent: "Based on Week 1-2 data, I'm projecting:
 ```
 User: "I think our new code review agent might help quality"
 Agent: "Let me design an experiment for you:
-        
+
         Based on similar experiments (AI tool adoption), I suggest:
         • Metric 1: Defect rate (bugs found in production)
         • Metric 2: Review time (hours from PR to merge)
         • Metric 3: Developer satisfaction (weekly survey)
         • Timeline: 6 weeks (4 weeks baseline, 2 weeks treatment)
-        
+
         Sound good or want to adjust?"
 ```
 - Learn from past experiments
@@ -444,10 +444,10 @@ Agent: "Red Hat has now run 25 experiments using me:
         • 15 validated (60%)
         • 5 invalidated (20%)
         • 5 inconclusive (20%)
-        
+
         Average confidence: 72% (up from 65% in first 10 experiments)
-        
-        Top learning: Teams that run 4-week experiments have 2x validation 
+
+        Top learning: Teams that run 4-week experiments have 2x validation
         rate vs. 2-week experiments. Consider extending future pilots."
 ```
 - Aggregate learnings across all experiments
@@ -458,9 +458,9 @@ Agent: "Red Hat has now run 25 experiments using me:
 
 ## Option B: Custom Software Infrastructure (Future Alternative)
 
-**Timeline:** TBD (if agent-based approach hits limitations)  
-**Approach:** Build dedicated experiment tracking system (custom code, not LLM agent)  
-**Build Time:** 8-12 weeks (full dev team)  
+**Timeline:** TBD (if agent-based approach hits limitations)
+**Approach:** Build dedicated experiment tracking system (custom code, not LLM agent)
+**Build Time:** 8-12 weeks (full dev team)
 **Status:** Idea/backup plan - only pursue if agent-based approach proves insufficient
 
 ### Why Option B Might Be Needed
@@ -593,11 +593,11 @@ Based on Jerry's stated preferences:
 1. **Google Docs link handling** with graceful permission errors
    - Primary workflow: share link
    - Fallback: download PDF if permissions fail
-   
+
 2. **Miro board image interpretation**
    - Extract Experiment Canvas from visual exports
    - Read sticky notes and diagrams
-   
+
 3. **Persistent memory across sessions**
    - Remember experiment context
    - Add docs mid-experiment
@@ -613,7 +613,7 @@ Based on Jerry's stated preferences:
 5. **Automated weekly summaries**
    - Reduce burden of "here's my update"
    - Proactive check-ins
-   
+
 6. **Experiment library** (multiple parallel experiments)
    - Track Process Improvement AND Discovery Agent simultaneously
    - Easy context switching
@@ -709,6 +709,6 @@ Based on Jerry's stated preferences:
 
 ---
 
-**Maintained by:** Scotty (Engineering) + Jerry (Product)  
-**Last Review:** April 9, 2026  
+**Maintained by:** Scotty (Engineering) + Jerry (Product)
+**Last Review:** April 9, 2026
 **Next Review:** After Jerry's first real experiment completes

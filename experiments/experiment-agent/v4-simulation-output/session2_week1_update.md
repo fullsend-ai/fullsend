@@ -1,8 +1,8 @@
 # Session 2: Week 1 Update (Day 8 - 1 Week Later)
 
-**Date:** April 17, 2026, 10:45 AM  
-**Session Duration:** 7 minutes  
-**Agent Version:** Experiment Agent v2.5-Lite  
+**Date:** April 17, 2026, 10:45 AM
+**Session Duration:** 7 minutes
+**Agent Version:** Experiment Agent v2.5-Lite
 **Participant:** Dana (Product Designer, Red Hat)
 
 ---
@@ -15,8 +15,8 @@
 
 ## Auto-Load Context: 10:45 AM (< 2 seconds)
 
-**Experiment Agent:** [Checking /experiments/current/...]  
-[Loading experiment_design.md...]  
+**Experiment Agent:** [Checking /experiments/current/...]
+[Loading experiment_design.md...]
 [Loading metadata.json...]
 
 Welcome back, Dana!
@@ -77,7 +77,7 @@ Team feels uncoordinated. People don't know what others are working on. Blockers
 
 **Experiment Agent:** Got it - I'm logging all of this.
 
-Quick clarification: 
+Quick clarification:
 
 Your hypothesis predicted **<2 duplicate work incidents in treatment phase**. Week 1 baseline showed **5 incidents**. That's a clear baseline to compare against.
 
@@ -95,7 +95,7 @@ This gives us strong baseline data. Week 2 will show if daily standups reduce th
 
 **Experiment Agent:** Saving Week 1 update to persistent storage...
 
-[Writing to /experiments/current/updates/week1_update.md...]  
+[Writing to /experiments/current/updates/week1_update.md...]
 [Updating metadata.json: current_week = 1, last_updated = 2026-04-17...]
 
 **Saved to:** `/experiments/current/updates/week1_update.md`

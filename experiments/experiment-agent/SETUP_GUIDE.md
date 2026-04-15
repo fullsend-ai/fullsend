@@ -168,7 +168,7 @@ The agent should automatically load and ask if you have an experiment in mind or
 ### "Agent didn't auto-load when I said 'run an experiment'"
 
 **Check:**
-1. Is the reference file in the right location? 
+1. Is the reference file in the right location?
    ```bash
    ls ~/.claude/projects/-Users-[username]/memory/reference_experiment_agent.md
    ```
@@ -215,5 +215,5 @@ See [V3_DISCOVERY_MODE_TEST_GUIDE.md](./V3_DISCOVERY_MODE_TEST_GUIDE.md) for det
 
 ---
 
-**Prepared by:** Jerry Becker (Innovation Manager, Red Hat)  
+**Prepared by:** Jerry Becker (Innovation Manager, Red Hat)
 **Date:** April 15, 2026

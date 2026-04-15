@@ -8,8 +8,8 @@
 
 This experiment developed an AI agent that helps teams run rigorous strategic experiments with 75-80% less time investment while maintaining scientific rigor through bias-corrected methodology.
 
-**Status:** Production-ready (v2.5-Lite)  
-**Owner:** Jerry Becker  
+**Status:** Production-ready (v2.5-Lite)
+**Owner:** Jerry Becker
 **Date:** April 10, 2026
 
 ---
