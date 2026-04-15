@@ -79,6 +79,7 @@ USER_CONTENT_TOOLS: frozenset[str] = frozenset(
         "mcp__github__pr_read",
         "mcp__github__issue_comment_list",
         "mcp__github__pr_comment_list",
+        "mcp__github__search_issues",
         "WebFetch",
     }
 )
@@ -91,8 +92,9 @@ MAX_TRANSCRIPT_CHARS = 16_000
 def strip_user_input(transcript: list[dict]) -> list[dict]:
     """Remove user-controlled content from the transcript before monitor evaluation.
 
-    Two classes of content are redacted:
-      1. The initial user message (the issue/task description itself).
+    Three classes of content are redacted:
+      1. All user messages (the issue/task description and any subsequent user
+         turns in multi-turn conversations).
       2. Tool results from tools that return user-controlled content (e.g. issue
          bodies fetched via mcp__github__issue_read). These are the primary vector
          for second-order injection — the attacker controls the GitHub issue body,
@@ -103,11 +105,15 @@ def strip_user_input(transcript: list[dict]) -> list[dict]:
     never the content those tools returned from user-controlled sources.
     """
     stripped = []
-    for i, entry in enumerate(transcript):
+    for entry in transcript:
         role = entry.get("role")
-        if i == 0 and role == "user":
-            # Redact the triggering user message (the issue body / task description).
-            stripped.append({"role": "user", "content": "[REDACTED: original user input not shown to monitor]"})
+        if role == "user":
+            # Redact all user messages — not just the first one. In multi-turn
+            # conversations, subsequent user messages may also contain attacker-
+            # controlled content (e.g. follow-up injection attempts).
+            stripped.append(
+                {"role": "user", "content": "[REDACTED: user input not shown to monitor]"}
+            )
         elif role == "tool_result" and entry.get("tool") in USER_CONTENT_TOOLS:
             # Redact tool results that contain user-controlled content. Keep the
             # tool name so the monitor can see the agent called the tool, but hide
