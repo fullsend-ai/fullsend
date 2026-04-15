@@ -1,0 +1,4 @@
+name: github
+type: generic
+credentials:
+  GH_TOKEN: "${FULLSEND_CODE_BOT_TOKEN}"
