@@ -14,7 +14,7 @@ cd "${REPO_DIR}"
 
 BRANCH="$(git branch --show-current)"
 
-if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ]; then
+if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
   echo "error: agent did not create a feature branch" >&2
   exit 1
 fi
