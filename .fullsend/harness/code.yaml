@@ -1,0 +1,12 @@
+agent: agents/code.md
+image: quay.io/manonru/fullsend-exp:latest
+policy: policies/code.yaml
+
+providers:
+  - github
+
+post_script: scripts/post-code.sh
+
+runner_env:
+  ISSUE_NUMBER: "${ISSUE_NUMBER}"
+  REPO_FULL_NAME: "${REPO_FULL_NAME}"
