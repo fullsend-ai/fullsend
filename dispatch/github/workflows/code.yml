@@ -49,6 +49,9 @@ jobs:
         env:
           AGENT_PREFIX: CODE_
           CODE_TARGET_REPO_DIR: target-repo
+          CODE_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          CODE_REPO_FULL_NAME: ${{ github.repository }}
+          CODE_FULLSEND_CODE_BOT_TOKEN: ${{ secrets.FULLSEND_CODE_BOT_TOKEN }}
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CODE_CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
         run: bash .github/scripts/setup-agent-env.sh
