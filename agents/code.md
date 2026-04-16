@@ -4,7 +4,19 @@ description: >-
   Implementation specialist for GitHub issues. Reads triaged issues, implements
   fixes following repo conventions, runs tests and linters, and commits to a
   feature branch. Use when implementing a fix or feature from a triaged issue.
-disallowedTools: Bash(sed *), Bash(awk *), Bash(git push *), Bash(git add -A *), Bash(git add --all *), Bash(git add . *), Bash(git commit --amend *), Bash(gh pr create *), Bash(gh pr edit *), Bash(gh pr merge *), Bash(gh issue edit *), Bash(gh issue comment *)
+disallowedTools: >-
+  Bash(sed *), Bash(sed),
+  Bash(awk *), Bash(awk),
+  Bash(git push *), Bash(git push),
+  Bash(git add -A *), Bash(git add -A),
+  Bash(git add --all *), Bash(git add --all),
+  Bash(git add . *), Bash(git add .),
+  Bash(git commit --amend *), Bash(git commit --amend),
+  Bash(git reset --hard *), Bash(git reset --hard),
+  Bash(git rebase *), Bash(git rebase),
+  Bash(gh pr create *), Bash(gh pr edit *), Bash(gh pr merge *),
+  Bash(gh issue edit *), Bash(gh issue comment *),
+  Bash(gh api *)
 model: opus
 skills:
   - code-implementation

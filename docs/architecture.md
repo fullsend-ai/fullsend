@@ -226,7 +226,11 @@ The code agent definition ([`agents/code.md`](../agents/code.md)) and its implem
 
 **Stream editors blocked.** `sed` and `awk` are disallowed for source file modification. The agent must use structured Write/Edit tools, which produce cleaner diffs and avoid silent corruption from regex misfires.
 
-**Protected paths.** The agent cannot modify CODEOWNERS, CI workflows, agent configurations, harness definitions, sandbox policies, or pre/post scripts — preserving the integrity of its own guardrails.
+**Protected paths.** The agent cannot modify CODEOWNERS, CI workflows, agent configurations, harness definitions, sandbox policies, or pre/post scripts — preserving the integrity of its own guardrails. Protected-path enforcement is layered: the agent definition declares which paths are off-limits, `disallowedTools` catches obvious violations at the tool level, and the post-script independently verifies that no protected files appear in the commit diff before pushing. The post-script check is the authoritative gate — the agent cannot be trusted to police its own constraints.
+
+**Defense-in-depth model.** No single enforcement layer is airtight. Security relies on the combination of four layers: (1) agent instructions (prose constraints the model follows), (2) `disallowedTools` patterns (belt-and-suspenders catch for obvious violations — pattern-matching has known limitations around argument reordering and subshell wrapping), (3) sandbox network policy (the authoritative control for preventing exfiltration and unauthorized API access), and (4) post-script validation (independent verification of the agent's output before it leaves the sandbox boundary). Sandbox-level enforcement and post-script validation are the load-bearing layers; agent instructions and `disallowedTools` are defense-in-depth.
+
+**Three-layer secret scanning.** Secret scanning runs at three points: (1) a file-level scan during development (step 9a — early warning), (2) a staged-content scan before commit (step 10b — catches anything that slipped through or changed after the first scan), and (3) a post-script scan before push (the authoritative gate, independent of the agent). Layers 1 and 2 run inside the sandbox under agent control; layer 3 runs outside the sandbox under the automation layer's control.
 
 ### 9. PR sandbox / CI mirror
 

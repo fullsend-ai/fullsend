@@ -28,8 +28,7 @@ Commands you will need during this procedure:
 - `pre-commit run --files <files>` — linting and secret scanning
 - `go build ./...`, `go vet ./...` — compilation checks
 
-Use `Read`/`Write`/`Grep`/`Glob` for file operations. Do not use `sed` or
-`awk` for edits.
+Use `Read`/`Write`/`Grep`/`Glob` for file operations.
 
 ### Secret scanning
 
@@ -97,7 +96,7 @@ code before relying on it.
 ### 3. Discover repo conventions
 
 Before writing any code, understand how this repository works. Use `Read`
-and `Glob` — not `cat` or `ls` — to inspect project configuration:
+and `Glob` to inspect project configuration:
 
 1. **Read project-level instructions.** Use `Read` on `CLAUDE.md`,
    `CONTRIBUTING.md`, and `AGENTS.md` (if they exist).
@@ -131,7 +130,12 @@ issue from a previous run:
 git branch -a | grep "agent/<number>-"
 ```
 
-**If a branch exists:** Check it out and work on top of it.
+**If a branch exists:** Check it out and work on top of it. Previous runs
+may have left commits that were later rejected by the review agent. Before
+building on top, read the existing commits (`git log --oneline origin/<target>..HEAD`)
+and understand the delta from the target branch. If a previous commit
+introduced a problem the review agent flagged, fix it in your new commit
+rather than amending.
 
 **If no branch exists:** Proceed to step 5.
 
@@ -198,8 +202,10 @@ Before writing code, form a concrete plan:
 4. **Follow cross-repo references** — if the issue, docs, or triage comments
    link to other repos (e.g., an e2e test suite, a dependent service, a
    related PR in another repo), read those references to understand the full
-   picture. Use `gh issue view`, `gh pr view`, or
-   `gh api repos/{owner}/{repo}/contents/{path}` to fetch what you need.
+   picture. Use `gh issue view`, `gh pr view`, or `gh pr diff` to fetch
+   what you need. For files in other repos that are not part of an issue
+   or PR, use `Read` on a local clone if available, or note the gap in
+   your plan and proceed with the context you have.
    Do not chase every import — focus on references that the issue context
    points you toward.
 5. **Identify what to change** — list the specific files and functions you will
@@ -258,7 +264,12 @@ make lint        # or: pre-commit run --files <changed-files>
 1. Read the failure output. Identify the root cause.
 2. Fix the issue in your implementation. Do not weaken or skip tests.
 3. Re-run secret scan (9a), then tests. This consumes one retry iteration.
-4. Repeat until tests pass or the retry limit (default: 2) is reached.
+4. Repeat until tests pass or the retry limit is reached.
+
+The retry limit is read from the `MAX_RETRIES` environment variable
+(default: 2 if unset). The harness may also enforce a hard timeout
+independently — if the harness kills the session, your retry count is
+irrelevant.
 
 If the retry limit is reached and tests still fail, do not commit. Stop.
 
@@ -274,8 +285,8 @@ Read every line. Check for:
 
 - Changes that don't serve the issue (scope creep, unrelated formatting)
 - Accidental artifacts: debug prints, commented-out code, TODO comments
-- Forbidden files in the diff: `.env`, `*.pem`, `*.key`, `credentials.json`,
-  `CODEOWNERS`, `.github/workflows/`
+- Secret material: `.env`, `*.pem`, `*.key`, `credentials.json`
+- Protected-path files (see agent definition for the authoritative list)
 
 If you added more than necessary, revert the extras before staging.
 
@@ -337,6 +348,15 @@ it also fails on the base branch before skipping it.
 
 **Do not push the branch.** The post-script handles pushing, PR creation,
 and failure reporting.
+
+## Partial work
+
+If you hit a token limit or context window boundary before completing the
+implementation, and the tests pass on the partial work: commit what you have.
+The review agent downstream will evaluate completeness — incomplete-but-passing
+code is caught at the review stage, not the implementation stage. The commit
+message should note that the work is partial (e.g., "partial implementation"
+in the description) so the review agent and post-script can act accordingly.
 
 ## Constraints
 
