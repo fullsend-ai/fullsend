@@ -74,6 +74,14 @@ The harness is what makes a generic LLM into a specific agent with a specific ro
 
 The harness draws its configuration from the adopting organization's **`.fullsend`** repository — skills, workflow definitions, and agent behavioral instructions are assembled from the layered config (fullsend defaults, then org config, then per-repo overrides). (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
+**Decided:**
+
+- Output schema enforcement: a harness post-script validates every agent's
+  output against a declared JSON schema on the host. Non-compliant output
+  triggers a retry (capped); exhaustion is a hard failure — no unvalidated
+  output is emitted
+  ([ADR 0020](ADRs/0020-harness-level-output-schema-enforcement.md)).
+
 **Open questions:**
 
 - Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)?
