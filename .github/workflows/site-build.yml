@@ -29,9 +29,7 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
-      - name: Build admin SPA (injects public GitHub App client id)
-        env:
-          GITHUB_APP_CLIENT_ID: ${{ vars.FULLSEND_GITHUB_APP_CLIENT_ID }}
+      - name: Build admin SPA
         run: npm run build
 
       - name: Prepare deploy bundle

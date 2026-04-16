@@ -33,13 +33,15 @@ Create a **GitHub App** used for **user** sign-in to the admin UI (not the same 
 
 **mise users:** with repo-root **`.env.local`** present, mise injects those values into the shell (see **`mise.toml`**). **Everyone else:** use `export`, direnv, your editor, CI secrets, etc.
 
-Vite only injects the **client id** into the client bundle.
+The SPA **does not** embed the GitHub App OAuth **client id** at build time. Sign-in navigates to **`GET /api/oauth/authorize`** on the site Worker, which **redirects** to `https://github.com/login/oauth/authorize` with `client_id` from Worker configuration (local env / Wrangler deploy only).
 
 The committed **`sample.env.local`** at the repository root documents variable names and the GitHub App checklist; copy it to **`.env.local`** if you want a file-based workflow (and keep it gitignored).
 
 ## Production and CI (Cloudflare Workers)
 
-For **`main`** (and PR previews that use the same deploy path), the **Build Site** workflow injects the public id from the repository variable **`FULLSEND_GITHUB_APP_CLIENT_ID`**. **Deploy Site** passes it to the Worker as **`GITHUB_APP_CLIENT_ID`** and sets **`GITHUB_APP_CLIENT_SECRET`** from the repository secret **`FULLSEND_GITHUB_APP_CLIENT_SECRET`** (Wrangler production `deploy` and PR `versions upload`).
+**Build Site** runs **`npm run build`** with no GitHub App id in CI env (the static bundle stays id-agnostic).
+
+**Deploy Site** passes **`GITHUB_APP_CLIENT_ID`** and **`GITHUB_APP_CLIENT_SECRET`** to Wrangler via repository variable **`FULLSEND_GITHUB_APP_CLIENT_ID`** and secret **`FULLSEND_GITHUB_APP_CLIENT_SECRET`** (`workflow_run` uses the base repo; set both for previews and production).
 
 On the GitHub App, add a **Callback URL** that matches your deployed admin entry, for example `https://<your-project>.<account>.workers.dev/admin/` (use the exact URL your users open; trailing slash must match what the SPA sends as `redirect_uri`).
 

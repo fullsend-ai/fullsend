@@ -29,21 +29,11 @@ export function getOAuthRedirectUri(): string {
   return new URL(adminAppBasePath(), window.location.origin).href;
 }
 
-export function getGithubAppClientId(): string {
-  const id = import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? "";
-  if (!id) {
-    throw new Error(
-      "Missing GITHUB_APP_CLIENT_ID — set GITHUB_APP_CLIENT_ID in the environment before running the dev server.",
-    );
-  }
-  return id;
-}
-
 /**
- * Redirects the browser to GitHub authorize. Stores PKCE verifier + state in sessionStorage.
+ * Starts GitHub OAuth: stores PKCE + state, then navigates to the site Worker
+ * `/api/oauth/authorize`, which redirects to GitHub with `client_id` (never embedded in the SPA bundle).
  */
 export async function startGithubSignIn(): Promise<void> {
-  const clientId = getGithubAppClientId();
   const redirectUri = getOAuthRedirectUri();
   const verifier = randomVerifier();
   const challenge = await challengeS256(verifier);
@@ -52,8 +42,7 @@ export async function startGithubSignIn(): Promise<void> {
   sessionStorage.setItem(PKCE_VERIFIER_KEY, verifier);
   sessionStorage.setItem(OAUTH_STATE_KEY, state);
 
-  const u = new URL("https://github.com/login/oauth/authorize");
-  u.searchParams.set("client_id", clientId);
+  const u = new URL("/api/oauth/authorize", window.location.origin);
   u.searchParams.set("redirect_uri", redirectUri);
   u.searchParams.set("state", state);
   u.searchParams.set("code_challenge", challenge);

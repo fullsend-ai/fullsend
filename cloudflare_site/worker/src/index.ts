@@ -2,8 +2,7 @@
 
 /**
  * Site Worker: static assets via `[assets]` plus OAuth BFF + `/user` proxy for the admin SPA.
- * Local: loopback origins. Deployed: same-origin as this Worker (`Origin` matches request URL)
- * and OAuth `redirect_uri` must match that origin (GitHub App callback list is the other guard).
+ * `GET /api/oauth/authorize` adds `client_id` and redirects to GitHub (SPA has no build-time client id).
  */
 export interface Env {
   ASSETS?: Fetcher;
@@ -14,11 +13,17 @@ export interface Env {
 }
 
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
+const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_USER_URL = "https://api.github.com/user";
+
+const MAX_STATE_LEN = 512;
+const MAX_PKCE_CHALLENGE_LEN = 256;
 
 function isAdminApiPath(pathname: string): boolean {
   return (
-    pathname === "/api/oauth/token" || pathname === "/api/github/user"
+    pathname === "/api/oauth/authorize" ||
+    pathname === "/api/oauth/token" ||
+    pathname === "/api/github/user"
   );
 }
 
@@ -132,6 +137,78 @@ function corsHeaders(allowOrigin: string): HeadersInit {
       "Content-Type, Authorization, Accept, X-GitHub-Api-Version",
     "Access-Control-Max-Age": "86400",
   };
+}
+
+/**
+ * Redirect browser to GitHub authorize with `client_id` from env. Query must include PKCE + state.
+ */
+async function handleOAuthAuthorize(
+  request: Request,
+  env: Env,
+  url: URL,
+  corsOrigin: string,
+): Promise<Response> {
+  const redirect_uri = url.searchParams.get("redirect_uri")?.trim() ?? "";
+  const state = url.searchParams.get("state") ?? "";
+  const code_challenge =
+    url.searchParams.get("code_challenge")?.trim() ?? "";
+  const code_challenge_method =
+    url.searchParams.get("code_challenge_method")?.trim() ?? "";
+
+  const cors = corsHeaders(corsOrigin);
+
+  if (
+    !redirect_uri ||
+    !state ||
+    !code_challenge ||
+    code_challenge_method !== "S256"
+  ) {
+    return new Response(
+      JSON.stringify({ error: "missing_or_invalid_oauth_params" }),
+      {
+        status: 400,
+        headers: { "content-type": "application/json", ...cors },
+      },
+    );
+  }
+
+  if (state.length > MAX_STATE_LEN || code_challenge.length > MAX_PKCE_CHALLENGE_LEN) {
+    return new Response(JSON.stringify({ error: "param_too_long" }), {
+      status: 400,
+      headers: { "content-type": "application/json", ...cors },
+    });
+  }
+
+  if (!isAllowedOAuthRedirectUri(redirect_uri)) {
+    return new Response(JSON.stringify({ error: "invalid_redirect_uri" }), {
+      status: 400,
+      headers: { "content-type": "application/json", ...cors },
+    });
+  }
+
+  if (!browserOriginMatchesRedirectUri(request, redirect_uri)) {
+    return new Response(JSON.stringify({ error: "forbidden_origin" }), {
+      status: 403,
+      headers: { "content-type": "application/json", ...cors },
+    });
+  }
+
+  const clientId = (env.GITHUB_APP_CLIENT_ID ?? "").trim();
+  if (!clientId) {
+    return new Response(JSON.stringify({ error: "server_misconfigured" }), {
+      status: 500,
+      headers: { "content-type": "application/json", ...cors },
+    });
+  }
+
+  const gh = new URL(GITHUB_AUTHORIZE_URL);
+  gh.searchParams.set("client_id", clientId);
+  gh.searchParams.set("redirect_uri", redirect_uri);
+  gh.searchParams.set("state", state);
+  gh.searchParams.set("code_challenge", code_challenge);
+  gh.searchParams.set("code_challenge_method", "S256");
+
+  return Response.redirect(gh.toString(), 302);
 }
 
 type ExchangeBody = {
@@ -331,6 +408,23 @@ async function handleAdminApi(
       status: 204,
       headers: corsHeaders(corsOrigin),
     });
+  }
+
+  if (url.pathname === "/api/oauth/authorize") {
+    if (request.method !== "GET") {
+      const cors = corsOrigin ? corsHeaders(corsOrigin) : {};
+      return new Response(JSON.stringify({ error: "method_not_allowed" }), {
+        status: 405,
+        headers: { "content-type": "application/json", ...cors },
+      });
+    }
+    if (!corsOrigin) {
+      return new Response(JSON.stringify({ error: "forbidden_origin" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return handleOAuthAuthorize(request, env, url, corsOrigin);
   }
 
   if (!corsOrigin) {
