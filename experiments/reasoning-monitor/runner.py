@@ -2,7 +2,7 @@
 """Experiment 005 runner: feeds transcripts to monitors and records results.
 
 Usage:
-    uv run python runner.py [--monitor llm|canary|allowlist|all] [--model haiku|sonnet|opus] [--dry-run]
+    uv run python runner.py [OPTIONS]
 
 Options:
     --monitor   Which monitor(s) to run (default: all)
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from monitor.canary_hook import check_canary
 from monitor.interface import MonitorVerdict
 from monitor.tool_allowlist import DEFAULT_TRIAGE_ALLOWLIST, check_tool
@@ -25,7 +24,7 @@ from monitor.tool_allowlist import DEFAULT_TRIAGE_ALLOWLIST, check_tool
 EXPERIMENT_DIR = Path(__file__).parent
 PAYLOADS_DIR = EXPERIMENT_DIR / "payloads"
 TRANSCRIPTS_DIR = EXPERIMENT_DIR / "transcripts"
-CANARY_TOKEN = "FULLSEND_CANARY_abc123"
+CANARY_TOKEN = "FULLSEND_CANARY_abc123"  # nosec B105 — test fixture, not a real secret
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +196,16 @@ def run_all_monitors(
 
 def format_results_table(results: list[dict]) -> str:
     """Format results as a Markdown table."""
-    headers = ["Payload", "Monitor", "Model", "Verdict", "Expected", "Correct", "Confidence", "Latency(ms)"]
+    headers = [
+        "Payload",
+        "Monitor",
+        "Model",
+        "Verdict",
+        "Expected",
+        "Correct",
+        "Confidence",
+        "Latency(ms)",
+    ]
     rows = [headers]
 
     for r in results:
@@ -217,7 +225,11 @@ def format_results_table(results: list[dict]) -> str:
 
     # Compute column widths
     col_widths = [max(len(row[i]) for row in rows) for i in range(len(headers))]
-    fmt_row = lambda row: "| " + " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row)) + " |"
+
+    def fmt_row(row: list[str]) -> str:
+        cells = " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row))
+        return f"| {cells} |"
+
     separator = "|" + "|".join("-" * (w + 2) for w in col_widths) + "|"
 
     lines = [fmt_row(headers), separator]

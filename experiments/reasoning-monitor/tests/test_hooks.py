@@ -1,10 +1,9 @@
 """Unit tests for canary_hook.py and tool_allowlist.py."""
 
-import pytest
+from pathlib import Path
 
 from monitor.canary_hook import check_canary
 from monitor.tool_allowlist import DEFAULT_TRIAGE_ALLOWLIST, check_tool
-
 
 # ---------------------------------------------------------------------------
 # Canary hook tests
@@ -139,15 +138,12 @@ def _run_hook(hook_module: str, stdin: str, env: dict | None = None) -> tuple[in
     return result.returncode, result.stdout
 
 
-from pathlib import Path
-
-
 def test_canary_hook_fail_closed_on_malformed_json():
     """Canary hook must exit 1 (block) when stdin is malformed JSON."""
     exit_code, stdout = _run_hook(
         "monitor.canary_hook",
         stdin="not valid json{{",
-        env={"FULLSEND_CANARY_TOKEN": "FULLSEND_CANARY_abc123"},
+        env={"FULLSEND_CANARY_TOKEN": "FULLSEND_CANARY_abc123"},  # nosec B105
     )
     assert exit_code == 1
     assert "block" in stdout.lower()
@@ -170,7 +166,7 @@ def test_canary_hook_allows_valid_clean_input():
     exit_code, stdout = _run_hook(
         "monitor.canary_hook",
         stdin=payload,
-        env={"FULLSEND_CANARY_TOKEN": "FULLSEND_CANARY_abc123"},
+        env={"FULLSEND_CANARY_TOKEN": "FULLSEND_CANARY_abc123"},  # nosec B105
     )
     assert exit_code == 0
 
