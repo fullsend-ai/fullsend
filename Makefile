@@ -67,7 +67,7 @@ fmt:
 	uvx ruff format .
 
 mindmap:
-	@xdg-open docs/mindmap.html 2>/dev/null || open docs/mindmap.html 2>/dev/null || echo "Open docs/mindmap.html in your browser"
+	@xdg-open web/public/index.html 2>/dev/null || open web/public/index.html 2>/dev/null || echo "Open web/public/index.html in your browser"
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 

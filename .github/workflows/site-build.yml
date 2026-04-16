@@ -1,0 +1,39 @@
+name: Build Site
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Prepare deploy bundle
+        run: |
+          set -euo pipefail
+          mkdir -p _bundle/public
+          # Static tree → artifact public/ (Deploy copies only _bundle/public and _bundle/worker into cloudflare_site/).
+          # Root page: interactive graph (source of truth: web/public/index.html).
+          # When a Vite app exists under web/, extend this step (e.g. _bundle/public/admin/).
+          cp web/public/index.html _bundle/public/index.html
+          # Worker source from this checkout (PR head on PR builds) — deploy never clones PR for Wrangler; only this tree is untrusted.
+          mkdir -p _bundle/worker
+          cp -a cloudflare_site/worker/. _bundle/worker/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: _bundle/
+          retention-days: 5

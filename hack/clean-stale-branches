@@ -1,0 +1,134 @@
+#!/bin/bash
+
+# clean-stale-branches - Delete remote branches with no open PR and no recent commits
+#
+# This workflow handles orphaned/abandoned branches (no open PR, 30+ days inactive).
+# Related: stale.yml handles branch deletion for PRs closed by the stale bot,
+# and the repo's auto-delete setting handles merged PR branches.
+#
+# Requires: gh CLI authenticated with contents:write and pull-requests:read
+#
+# Usage: clean-stale-branches [--dry-run]
+#
+# Environment:
+#   GH_REPO            - owner/repo (defaults to current repo via gh)
+#   STALE_DAYS         - days of inactivity before a branch is considered stale (default: 30)
+#   PROTECTED_PATTERNS - space-separated branch patterns to skip (default: "main master release/*")
+#   MAX_BRANCHES       - maximum number of branches to process per run (default: 100)
+
+set -euo pipefail
+
+dry_run=false
+if [[ "${1:-}" == "--dry-run" ]]; then
+  dry_run=true
+fi
+
+: "${GH_REPO:=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')}"
+: "${STALE_DAYS:=30}"
+: "${PROTECTED_PATTERNS:=main master release/*}"
+: "${MAX_BRANCHES:=100}"
+
+cutoff=$(date -u -d "${STALE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
+deleted=0
+skipped=0
+processed=0
+
+echo "Cutoff: ${cutoff}"
+if [ "${dry_run}" = true ]; then
+  echo "[DRY RUN] No branches will be deleted."
+fi
+echo "Branches with no open PR and no commits in ${STALE_DAYS} days will be deleted."
+echo "Protected patterns: ${PROTECTED_PATTERNS}"
+echo "Max branches: ${MAX_BRANCHES}"
+echo ""
+
+is_protected() {
+  local branch="$1"
+  for pattern in ${PROTECTED_PATTERNS}; do
+    # shellcheck disable=SC2254
+    case "${branch}" in ${pattern}) return 0 ;; esac
+  done
+  return 1
+}
+
+urlencode_branch() {
+  python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+}
+
+while IFS= read -r branch; do
+  if [ "${processed}" -ge "${MAX_BRANCHES}" ]; then
+    echo "LIMIT: reached max branches (${MAX_BRANCHES}), stopping."
+    break
+  fi
+  processed=$((processed + 1))
+
+  if is_protected "${branch}"; then
+    echo "SKIP (protected): ${branch}"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  pr_count=$(gh pr list --repo "${GH_REPO}" --head "${branch}" --state open --json number --jq 'length')
+  if [ "${pr_count}" -gt 0 ]; then
+    echo "SKIP (open PR): ${branch}"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  encoded_branch=$(urlencode_branch "${branch}")
+  last_commit=$(gh api -X GET "repos/${GH_REPO}/commits" -f sha="${branch}" -f per_page=1 --jq '.[0].commit.committer.date' 2>/dev/null) || true
+
+  if [[ -z "${last_commit}" ]]; then
+    echo "SKIP (no commit data): ${branch}"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  if [[ "${last_commit}" < "${cutoff}" ]]; then
+    last_sha=$(gh api -X GET "repos/${GH_REPO}/commits" -f sha="${branch}" -f per_page=1 --jq '.[0].sha' 2>/dev/null) || true
+    if [ "${dry_run}" = true ]; then
+      echo "WOULD DELETE: ${branch} (last commit: ${last_commit}, sha: ${last_sha:-unknown})"
+    else
+      echo "DELETE: ${branch} (last commit: ${last_commit}, sha: ${last_sha:-unknown})"
+      if ! gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${encoded_branch}" 2>&1; then
+        echo "  ERROR: failed to delete ${branch} — see above for details"
+        skipped=$((skipped + 1))
+        continue
+      fi
+    fi
+    deleted=$((deleted + 1))
+  else
+    echo "KEEP (recent): ${branch} (last commit: ${last_commit})"
+    skipped=$((skipped + 1))
+  fi
+done < <(gh api "repos/${GH_REPO}/branches" --paginate --jq '.[].name')
+
+echo ""
+if [ "${dry_run}" = true ]; then
+  echo "[DRY RUN] Done. Would delete: ${deleted}, Skipped: ${skipped}"
+else
+  echo "Done. Deleted: ${deleted}, Skipped: ${skipped}"
+fi
+
+# Write summary for GitHub Actions
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    if [ "${dry_run}" = true ]; then
+      echo "## Branch Cleanup (Dry Run)"
+    else
+      echo "## Branch Cleanup"
+    fi
+    echo ""
+    echo "| Metric | Count |"
+    echo "|--------|-------|"
+    if [ "${dry_run}" = true ]; then
+      echo "| Would delete | ${deleted} |"
+    else
+      echo "| Deleted | ${deleted} |"
+    fi
+    echo "| Skipped | ${skipped} |"
+    echo "| Processed | ${processed} |"
+    echo ""
+    echo "Cutoff: \`${cutoff}\` (${STALE_DAYS} days)"
+  } >> "${GITHUB_STEP_SUMMARY}"
+fi

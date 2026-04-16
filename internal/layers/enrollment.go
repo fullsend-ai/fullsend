@@ -176,7 +176,10 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	}
 
 	switch {
-	case len(notEnrolled) == 0 && len(enrolled) > 0:
+	case len(l.enabledRepos) == 0:
+		report.Status = StatusInstalled
+		report.Details = append(report.Details, "no repositories enrolled")
+	case len(notEnrolled) == 0:
 		report.Status = StatusInstalled
 		for _, r := range enrolled {
 			report.Details = append(report.Details, r+" enrolled")

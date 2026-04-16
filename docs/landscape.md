@@ -100,6 +100,7 @@ Launched November 2025. The closest thing in the industry to autonomous merging.
 - **Kodus (Kody)** — Open source. Scans old PRs to learn your team's review style, then mimics it. Learns over time.
 - **OpenAI Codex** — Triggered by `@codex review` in GitHub PRs. Behaves as an additional reviewer focused on high-severity issues.
 - **Bito** — Uses Claude Sonnet for human-like review. GitHub, GitLab, Bitbucket integration.
+- **Caveman** — Output token compression via prompt engineering (~65% savings). Constrains agent output to terse, technical language while preserving reasoning depth. The `caveman-review` format (single-line, emoji-coded comments) is a concrete output format for review sub-agents. [GitHub](https://github.com/juliusbrussee/caveman)
 
 ## Production agent orchestration systems
 

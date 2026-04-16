@@ -224,6 +224,21 @@ func TestEnrollmentLayer_Analyze_Partial(t *testing.T) {
 	assert.Contains(t, report.WouldFix[0], "repo-b")
 }
 
+func TestEnrollmentLayer_Analyze_NoReposEnabled(t *testing.T) {
+	client := &forge.FakeClient{}
+	layer, _ := newEnrollmentLayer(t, client, nil, nil)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "enrollment", report.Name)
+	assert.Equal(t, StatusInstalled, report.Status)
+	require.Len(t, report.Details, 1)
+	assert.Equal(t, "no repositories enrolled", report.Details[0])
+	assert.Empty(t, report.WouldInstall)
+	assert.Empty(t, report.WouldFix)
+}
+
 // perRepoFileErrorClient wraps FakeClient but fails CreateOrUpdateFileOnBranch for a specific repo.
 type perRepoFileErrorClient struct {
 	*forge.FakeClient

@@ -626,7 +626,7 @@ func TestCreateOrgSecret(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCreateOrgSecret_NilRepoIDs_VisibilityAll(t *testing.T) {
+func TestCreateOrgSecret_NilRepoIDs_VisibilitySelected(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callNum++
@@ -642,15 +642,17 @@ func TestCreateOrgSecret_NilRepoIDs_VisibilityAll(t *testing.T) {
 				"key":    base64.StdEncoding.EncodeToString(pubKey),
 			})
 		case 2:
-			// PUT org secret — should use visibility "all" with no repo IDs
+			// PUT org secret — should use visibility "selected" with empty repo IDs
+			// so that SetOrgSecretRepos can later update access without a 409 Conflict.
 			assert.Equal(t, "PUT", r.Method)
 
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "all", body["visibility"],
-				"visibility should be 'all' when no repo IDs are specified")
-			assert.Nil(t, body["selected_repository_ids"],
-				"selected_repository_ids should be absent when visibility is 'all'")
+			assert.Equal(t, "selected", body["visibility"],
+				"visibility should be 'selected' even when no repo IDs are specified")
+			repoIDs, ok := body["selected_repository_ids"].([]any)
+			require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
+			assert.Empty(t, repoIDs, "selected_repository_ids should be empty")
 
 			w.WriteHeader(http.StatusCreated)
 		}
@@ -659,6 +661,44 @@ func TestCreateOrgSecret_NilRepoIDs_VisibilityAll(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", nil)
+	require.NoError(t, err)
+}
+
+func TestCreateOrgSecret_EmptySliceRepoIDs_VisibilitySelected(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			// GET org public key
+			pubKey := make([]byte, 32)
+			for i := range pubKey {
+				pubKey[i] = byte(i + 1)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"key_id": "org-key-123",
+				"key":    base64.StdEncoding.EncodeToString(pubKey),
+			})
+		case 2:
+			// PUT org secret — empty slice should behave the same as nil:
+			// visibility "selected" with an empty repo ID array.
+			assert.Equal(t, "PUT", r.Method)
+
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			assert.Equal(t, "selected", body["visibility"],
+				"visibility should be 'selected' even with an empty slice")
+			repoIDs, ok := body["selected_repository_ids"].([]any)
+			require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
+			assert.Empty(t, repoIDs, "selected_repository_ids should be empty")
+
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", []int64{})
 	require.NoError(t, err)
 }
 

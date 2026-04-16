@@ -1,0 +1,28 @@
+# Clean up orphaned/abandoned branches that have no open PR and no recent commits.
+# Related workflows:
+#   - stale.yml: closes stale PRs/issues and deletes their branches (delete-branch: true)
+#   - Repo setting "auto-delete head branches": removes branches after PR merge
+# This workflow covers the gap: branches pushed but never opened as a PR.
+
+name: Clean up stale branches
+
+on:
+  schedule:
+    - cron: "0 3 * * 0" # Weekly on Sundays at 3am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - name: Delete stale branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          STALE_DAYS: "30"
+        run: ./hack/clean-stale-branches

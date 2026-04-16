@@ -941,17 +941,17 @@ func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value strin
 	}
 
 	// Step 3: Upload the encrypted secret.
-	// When repo IDs are provided, scope the secret to those repos only.
-	// When no repos are specified, make it available to all repos in the org.
-	payload := map[string]any{
-		"encrypted_value": base64.StdEncoding.EncodeToString(encrypted),
-		"key_id":          pubKey.KeyID,
+	// Always use visibility "selected" so that SetOrgSecretRepos can later
+	// update the repo access list without a 409 Conflict (which GitHub
+	// returns when trying to set selected repos on a visibility "all" secret).
+	if selectedRepoIDs == nil {
+		selectedRepoIDs = []int64{}
 	}
-	if len(selectedRepoIDs) > 0 {
-		payload["visibility"] = "selected"
-		payload["selected_repository_ids"] = selectedRepoIDs
-	} else {
-		payload["visibility"] = "all"
+	payload := map[string]any{
+		"encrypted_value":       base64.StdEncoding.EncodeToString(encrypted),
+		"key_id":                pubKey.KeyID,
+		"visibility":            "selected",
+		"selected_repository_ids": selectedRepoIDs,
 	}
 
 	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), payload)
