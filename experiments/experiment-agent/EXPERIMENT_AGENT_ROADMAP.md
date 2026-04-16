@@ -1,12 +1,12 @@
 # Experiment Agent: Product Roadmap
 
-**Version:** 2.0 → 2.2 → 2.5-Lite → 3.0+
+**Version:** 2.0 → 2.2 → 2.5-Lite → 3.0 → 3.1 (planned) → 4.0 (planned)
 **Owner:** Jerry Becker (Product) + Scotty (Engineering)
-**Last Updated:** April 10, 2026 (v2.5-Lite shipped)
+**Last Updated:** April 16, 2026 (v3.0 shipped, v3.1/v4.0 planned)
 
 ---
 
-## Current State (v2.5-Lite) ✅ LATEST
+## Current State (v3.0) ✅ LATEST
 
 **What works today:**
 - ✅ Experiment Design via conversation (renamed from "Canvas")
@@ -21,10 +21,14 @@
 - ✅ Editable observations (edit any file, auto-incorporated in reports)
 - ✅ Experiment template library (save/load experiment structures)
 - ✅ Report format preview (show 9-section structure during setup)
-- ✅ **NEW:** Persistent memory across sessions (multi-week experiments)
-- ✅ **NEW:** Auto-load context when user returns (zero re-explaining)
-- ✅ **NEW:** Mid-experiment document uploads (add context anytime)
-- ✅ **NEW:** Archive completed experiments (clean separation)
+- ✅ Persistent memory across sessions (multi-week experiments)
+- ✅ Auto-load context when user returns (zero re-explaining)
+- ✅ Mid-experiment document uploads (add context anytime)
+- ✅ Archive completed experiments (clean separation)
+- ✅ **NEW (v3.0):** Discovery Mode - AI analyzes repos/docs and suggests experiments
+- ✅ **NEW (v3.0):** Review + Approve UX - two-gate approval system for pre-populated content
+- ✅ **NEW (v3.0):** Pre-population of experiment canvas (saves 10-15 min setup time)
+- ✅ **NEW (v3.0):** Evaluation framework (Impact/Risk/Feasibility/Strategic Alignment/ROI)
 
 **Document handling (v2.5-Lite):**
 - ✅ Paste text directly into chat
@@ -34,13 +38,24 @@
 - ✅ Multi-doc synthesis with source attribution
 - ✅ Persistent document library per experiment
 
+**Check-In Workflow (v3.0):**
+- ⚠️ **Current state:** Manual check-ins (you must remember to come back and say "continue experiment")
+- 💡 **Recommended TODAY:** Use Slack `/remind` to set up check-in reminders
+  - Run in any Slack channel or DM: `/remind me [message] [when]`
+  - Example: `/remind me to "Update experiment: open Claude and say 'continue experiment'" every Monday at 10am starting April 22 until May 29`
+  - No integration needed - it's a built-in Slack feature
+  - Reminder will appear in your Slackbot DM at scheduled times
+- 🔮 **Future (v3.1):** Agent will generate .ics calendar files and ready-to-use Slack commands
+- 🔮 **Future (v4.0):** Agent will proactively check in with you and auto-collect metrics from Jira/GitHub
+
 **Remaining Limitations:**
-- ⚠️ Single experiment at a time (multi-experiment tracking in Phase 2.5)
+- ⚠️ Single experiment at a time (multi-experiment tracking in v3.1+)
 - ⚠️ No drag-and-drop file upload UI (CLI file paths work fine)
 - ⚠️ Can't access private Google Docs without download (graceful fallback to PDF)
 - ⚠️ Can't display images inline in markdown reports (can describe them)
 - ⚠️ No real-time collaboration dashboard (file-based works but not live)
-- ⚠️ No automated reminders or proactive notifications (Phase 3)
+- ⚠️ Check-in reminders require manual setup (use Slack `/remind` - see "Check-In Workflow" section)
+- ⚠️ No auto-collection from external systems (manual logging only - see v4.0)
 
 ---
 
@@ -225,6 +240,305 @@ Agent: "I've read all 3. Here's what I synthesized:
 
 ---
 
+## Phase 3.0: Discovery Mode + Strategic Prioritization ✅ COMPLETE
+
+**Timeline:** Completed April 16, 2026
+**Goal:** Lower discovery barrier - AI suggests experiments based on codebase/strategy analysis
+**Build Time:** 2 days (agent definition + testing)
+
+### Features Completed in v3.0:
+
+**1. ✅ Discovery Mode**
+- Agent analyzes GitHub repos, strategy docs, roadmaps
+- Identifies pain points, strategic opportunities, proposed changes
+- Evaluates experiments (Impact, Risk, Feasibility, ROI, Strategic Alignment)
+- Prioritizes top 5 recommendations
+- Pre-populates experiment canvas based on analysis
+
+**2. ✅ Review + Approve UX Pattern**
+- Two-gate approval system (prevents "prescribed to" feeling)
+- **Gate 1:** Review pre-populated canvas → Approve or Edit → Loop until approved
+- **Gate 2:** Review complete design → Save or Edit
+- User feels in control throughout the process
+
+**3. ✅ Strategic Prioritization**
+- Evaluation framework: Impact/Risk/Feasibility/Strategic Alignment/ROI
+- Prioritization logic: HIGH = High Impact + (Low Risk OR Easy Feasibility) + Strategic Fit
+- Export evaluation reports to shareable documents
+
+**4. ✅ Setup Documentation**
+- SETUP_GUIDE.md for Full Send team and external users
+- Three setup options: auto-load (memory), repo-specific (CLAUDE.md), manual load
+- Updated README with "Using the Experiment Agent" section
+
+**Success Criteria:**
+- ✅ Agent identifies 3-5 high-value experiments from docs/repos
+- ✅ Prioritization aligns with user's strategic goals
+- ✅ Pre-populated canvas saves user 10-15 minutes
+- ✅ User picks and runs a suggested experiment
+- ✅ Agent catches "seems good but is bad" experiments (V6-style disaster prevention)
+
+**Testing:**
+- ✅ Tested with real P&D Agentic SDLC Strategy document (19-page PDF)
+- ✅ Successfully identified 5 strategic experiments with proper justifications
+- ✅ Successfully evaluated 3 architecture documents and prioritized based on strategic value
+- ✅ Review + Approve UX validated with user edits and re-approval
+
+**Impact:**
+- Solves "blank canvas problem" (users don't know what to test)
+- Lowers discovery barrier (no need to design experiment from scratch)
+- Surfaces experiments users might miss (AI finds patterns in docs)
+- Data-driven prioritization (not gut-feel)
+
+---
+
+## Phase 3.1: Smart Check-Ins & Data Collection Guidance (Planned)
+
+**Timeline:** TBD (4-6 weeks)
+**Goal:** Make multi-week experiments easier to maintain with better check-in UX and data collection guidance
+**Build Time:** 1-2 weeks (agent definition + documentation updates)
+
+### Features to Build:
+
+**1. Check-In Reminder Generation**
+```
+Agent: "✅ Experiment saved!
+
+       To stay on track, I recommend setting up check-in reminders.
+       
+       📅 Download calendar events (.ics files):
+       - Week 1-2: Daily check-ins (April 17-30)
+       - Week 3-6: Weekly check-ins (May 1-29)
+       
+       Or use Slack reminders:
+       /remind me to 'Update experiment: open Claude and say continue experiment' 
+       every Monday at 10am starting May 6 until May 29"
+```
+- Agent generates .ics files for calendar import (Google Calendar, Outlook, Apple)
+- Agent provides Slack `/remind` commands ready to copy/paste
+- Customizable check-in frequency based on experiment timeline
+- **Impact:** Reduces reliance on human memory for multi-week experiments
+
+**2. Smart Data Collection Guidance**
+```
+Agent: "I've identified these success metrics:
+       1. Response time reduced from 5 days to 3.5 days
+       2. Reopen rate stays below 10%
+       3. AI draft usage >70%
+       
+       I can guide you on collecting this data:
+       
+       Auto-collectable (v4.0):
+       ✅ Jira: ticket created/resolved dates, status transitions
+       ✅ Database: AI draft counts, feedback distribution
+       
+       Manual-collect (qualitative):
+       ❌ Team sentiment (you'll log at check-ins)
+       ❌ Hidden costs discovered (you'll log as observed)
+       
+       Sound good?"
+```
+- Agent analyzes success metrics and determines what CAN be auto-collected
+- Agent maps metrics to data sources (Jira, GitHub, database, etc.)
+- Agent creates collection plan (what to auto-collect vs manual-collect)
+- Agent provides guidance on manual collection at check-ins
+- **Impact:** Reduces noise (only collect relevant data), sets user expectations
+
+**3. Hybrid Collection Approach Documentation**
+- Update experiment design workflow to ask: "What data sources should I monitor?"
+- Guide user to provide: Jira project, GitHub repo, database access, etc.
+- Document what's auto-collectable vs manual (set expectations)
+- **Impact:** Clarity on data collection approach before experiment starts
+
+**4. Check-In Workflow Improvements**
+```
+[At check-in time]
+User: "continue experiment"
+
+Agent: "Week 2 check-in for AI Helpdesk Agent pilot.
+       
+       Auto-collected metrics (guidance - not yet implemented):
+       - Response time: [instructions to query Jira]
+       - AI draft usage: [instructions to query database]
+       
+       Manual observations needed:
+       - Team sentiment: How do technicians feel about AI drafts?
+       - Hidden costs: Any unexpected overhead discovered?
+       - Quality issues: Any customer complaints or errors?
+       
+       What observations do you have for Week 2?"
+```
+- Agent prompts for specific observations (not vague "any updates?")
+- Agent separates quantitative (future auto-collect) from qualitative (manual)
+- Agent guides user on what to look for
+- **Impact:** More complete data, less cognitive load at check-ins
+
+**Success Criteria:**
+- ✅ User sets up check-in reminders in <5 minutes (calendar or Slack)
+- ✅ User understands what data will be auto-collected (future) vs manual
+- ✅ User receives specific prompts at check-ins (not vague "any updates?")
+- ✅ 90%+ of users set up some form of check-in reminder
+
+**Build Time:** 1-2 weeks (mostly documentation + .ics generation logic)
+
+---
+
+## Phase 4.0: Automated Data Collection & Proactive Check-Ins (Planned)
+
+**Timeline:** TBD (8-16 weeks)
+**Goal:** Agent proactively collects data and initiates check-ins (minimal user effort)
+**Build Time:** 4-8 weeks (MCP integrations + agent enhancements)
+
+### Features to Build:
+
+**1. Smart Auto-Collection from External Systems**
+```
+[During experiment setup, after user approves canvas]
+
+Agent: "I've identified these success metrics:
+       1. Response time reduced from 5 days to 3.5 days
+       2. Reopen rate stays below 10%
+       3. AI draft usage >70%
+       
+       I can auto-collect some of this data from Jira and your database.
+       
+       What data sources should I monitor?
+       A) Jira project JIRACONFSD
+       B) ai-helpdesk-agent database (ai_draft_feedback table)
+       C) GitHub repo (if relevant)
+       D) None - I'll log everything manually
+       E) Custom (specify)
+       
+       Choose all that apply:"
+
+User: "A and B"
+
+Agent: "Got it! I'll auto-collect from Jira and the database.
+       
+       At each check-in, I'll fetch:
+       - Jira: ticket created/resolved dates, status transitions
+       - Database: AI draft counts, feedback emoji distribution
+       
+       You'll still need to provide qualitative observations 
+       (team sentiment, hidden costs, etc.) at check-ins.
+       
+       Sound good?"
+```
+- **Relevance-first collection:** Agent maps metrics → data sources (not grab-everything)
+- **Only collect what's needed:** Jira fields, GitHub metrics, database queries aligned to success criteria
+- **MCP integrations:** Jira MCP, GitHub MCP, database connectors
+- **Hybrid approach:** Auto-collect quantitative, manual-collect qualitative
+
+**2. Collection Plan Generation**
+```
+Agent builds collection plan internally:
+
+Success Metric 1: "Response time reduced from 5 days to 3.5 days"
+  └─ Needs: time_to_resolve calculation
+  └─ Data source: Jira API
+      └─ Fields needed: created, resolutiondate
+      └─ API call: GET /rest/api/3/search?jql=project=JIRACONFSD&fields=created,resolutiondate
+  └─ Calculation: resolutiondate - created = time_to_resolve
+
+Success Metric 2: "AI draft usage >70%"
+  └─ Needs: count of AI drafts / total eligible tickets
+  └─ Data source: ai-helpdesk-agent database
+      └─ Query: SELECT COUNT(*) FROM ai_draft_feedback WHERE timestamp BETWEEN start AND now()
+
+Collection plan:
+  ✅ Collect: Jira created/resolutiondate, database draft counts
+  ❌ Skip: Jira priority, labels, custom fields (not in success metrics)
+```
+- Agent parses success metrics to identify data needs
+- Agent maps metrics to available data sources (Jira, GitHub, database)
+- Agent builds minimal collection queries (only relevant fields)
+- **Impact:** Reduces noise, saves API calls, focuses on signal
+
+**3. Automated Check-In Execution**
+```
+[At check-in time - weekly, Monday 10am]
+
+Agent auto-executes collection plan:
+  1. Jira API call (only relevant fields)
+  2. Database query (only relevant tables)
+  3. Calculate metrics vs baseline/target
+  
+Agent presents update:
+  "Week 3 update for AI Helpdesk Agent pilot:
+   
+   Auto-collected metrics:
+   - Response time: 4.2 days (baseline: 5, target: 3.5) - improving but not at target
+   - Reopen rate: 8% (target: <10%) ✅ within target
+   - AI draft usage: 62% (target: >70%) ❌ below target - investigate why
+   
+   What qualitative observations do you have?
+   - Team sentiment about AI drafts?
+   - Any hidden costs discovered?
+   - Quality issues or customer feedback?"
+```
+- Agent fetches data automatically at check-in intervals
+- Agent calculates metrics and compares to baseline/target
+- Agent prompts user for qualitative observations (sentiment, hidden costs, etc.)
+- **Impact:** User only logs qualitative observations, quantitative is automatic
+
+**4. Proactive Check-In Initiation**
+```
+[Monday 10am - check-in time]
+
+Agent initiates (via Slack or notification):
+  "🔔 Time for your Week 3 check-in on AI Helpdesk Agent pilot!
+  
+  I've collected the latest metrics (see below). Ready to log observations?
+  
+  [Link to continue experiment in Claude]"
+
+User clicks link, agent shows auto-collected metrics + asks for qualitative updates
+```
+- Integration with Google Calendar API or Slack to send notifications
+- Agent initiates check-in (not just reminder for user to remember)
+- User clicks link, agent loads experiment context + latest metrics
+- **Impact:** True "push" check-ins, not just passive reminders
+
+**5. Google Calendar API Integration**
+```
+[When experiment is saved]
+
+Agent: "I'll add check-in events to your Google Calendar automatically.
+       
+       Authorize Google Calendar access? [Yes/No]"
+
+User: "Yes"
+
+Agent: [OAuth flow]
+       "✅ Calendar events created:
+       - Week 1-2: Daily 10am check-ins (April 17-30)
+       - Week 3-6: Weekly Monday 10am check-ins (May 1-29)
+       
+       I'll send you a notification at each check-in time."
+```
+- OAuth integration with Google Calendar
+- Agent creates recurring events automatically (no manual .ics import)
+- Agent sends notifications at check-in time
+- **Impact:** Zero manual setup, fully automated
+
+**6. MCP Integration Requirements**
+- **Jira MCP:** Read tickets, fields, changelogs (GitHub MCP server already exists)
+- **GitHub MCP:** Read PRs, commits, build status (GitHub MCP server already exists)
+- **Database connector MCP:** Query PostgreSQL, MySQL, SQLite for custom metrics
+- **Google Calendar MCP:** Create/update events, send notifications
+- **Slack MCP:** Send DMs, post check-in reminders (Slack MCP server already exists)
+
+**Success Criteria:**
+- ✅ Agent auto-collects 70%+ of quantitative metrics from external systems
+- ✅ User only logs qualitative observations (sentiment, hidden costs)
+- ✅ Check-ins take <10 minutes (vs 20-30 minutes with manual data collection)
+- ✅ 90%+ of metrics are accurate (auto-collection doesn't miss important data)
+- ✅ Agent catches data drift (missing data, API failures, access issues)
+
+**Build Time:** 4-8 weeks (MCP integrations + OAuth flows + agent logic)
+
+---
+
 ## Phase 2.5: Multi-Experiment Tracking (Future)
 
 **Timeline:** TBD (after validating v2.5-Lite with real usage)
@@ -286,38 +600,14 @@ Agent: "Comparing final results:
 
 ---
 
-## Phase 3: Advanced Collaboration & Automation (v3.0)
+## Phase 5: Advanced Collaboration & Team Features (v5.0)
 
-**Timeline:** 8-16 weeks (future)
-**Goal:** Proactive agent, minimal user effort, team collaboration
+**Timeline:** TBD (future - 16+ weeks)
+**Goal:** Team collaboration, shared experiment library, organizational learning
 
 ### Features to Build:
 
-**1. Automated Document Watching**
-```
-User: "Watch this Google Drive folder for experiment updates"
-Agent: [monitors folder]
-
-[New doc appears: "Team A Week 2 standup notes.pdf"]
-Agent: "I noticed new standup notes from Team A. I've read them and
-        updated Week 2 observations. Want to see what I found?"
-```
-- Connect to Google Drive / Notion
-- Monitor tagged folders/pages
-- Auto-ingest new docs
-- Proactive notifications
-
-**2. Automated Metric Extraction**
-```
-[Reads standup notes: "Spent 3 hours fixing broken CI pipeline this week"]
-Agent: "I detected a process work incident (3 hours on CI).
-        Should I count this toward Team A's baseline metrics?"
-```
-- NLP extraction of metric-relevant data from docs
-- Flag for human confirmation before counting
-- Reduces manual "here's the number" updates
-
-**3. Team Collaboration**
+**1. Team Collaboration**
 ```
 User: "Add Sarah (PM) as a collaborator on this experiment"
 Agent: [creates shared access]
@@ -329,7 +619,7 @@ Agent: "Hi Sarah! Jerry added you as collaborator. Here's the status..."
 - Role-based permissions (owner, collaborator, viewer)
 - Activity log (who added what docs, when)
 
-**4. Automated Weekly Summaries**
+**2. Automated Weekly Summaries**
 ```
 [Every Friday 5 PM]
 Agent: "Weekly summary for Process Improvement experiment:
@@ -344,7 +634,7 @@ Agent: "Weekly summary for Process Improvement experiment:
 - Proactive summaries
 - Async updates (user doesn't have to ask)
 
-**5. Slack / Email Integration**
+**3. Slack / Email Integration**
 ```
 [In Slack]
 User: "@experiment-agent status on Discovery pilot"
@@ -357,7 +647,7 @@ Agent: "Discovery Agent pilot - Week 3 of 6:
 - Quick status checks via Slack/email
 - Deep dive via full interface
 
-**6. Experiment Templates & Cloning**
+**4. Experiment Templates & Cloning**
 ```
 User: "I want to run the same experiment structure as Process Improvement
        pilot, but test Discovery Agent instead"
@@ -381,10 +671,42 @@ Agent: "Got it. Cloning experiment structure:
 
 ---
 
-## Phase 4: AI-Powered Insights (v4.0+)
+**5. Automated Document Watching**
+```
+User: "Watch this Google Drive folder for experiment updates"
+Agent: [monitors folder]
 
-**Timeline:** 16+ weeks (visionary)
-**Goal:** Agent doesn't just track — it provides strategic insights
+[New doc appears: "Team A Week 2 standup notes.pdf"]
+Agent: "I noticed new standup notes from Team A. I've read them and
+        updated Week 2 observations. Want to see what I found?"
+```
+- Connect to Google Drive / Notion
+- Monitor tagged folders/pages
+- Auto-ingest new docs
+- Proactive notifications
+
+**6. Automated Metric Extraction**
+```
+[Reads standup notes: "Spent 3 hours fixing broken CI pipeline this week"]
+Agent: "I detected a process work incident (3 hours on CI).
+        Should I count this toward Team A's baseline metrics?"
+```
+- NLP extraction of metric-relevant data from docs
+- Flag for human confirmation before counting
+- Reduces manual "here's the number" updates
+
+**Success Criteria:**
+- ✅ Agent proactively updates (not just reactive)
+- ✅ Minimal user effort (docs auto-ingested)
+- ✅ Team collaboration seamless
+- ✅ Integrated into existing workflows (Slack, Drive)
+
+---
+
+## Phase 6: AI-Powered Insights & Organizational Learning (v6.0+)
+
+**Timeline:** TBD (visionary - 20+ weeks)
+**Goal:** Agent doesn't just track — it provides strategic insights across experiment portfolio
 
 ### Moonshot Features:
 
@@ -687,21 +1009,22 @@ Based on Jerry's stated preferences:
 
 ## Next Steps
 
-**Immediate (This Week):**
-- ✅ Capture roadmap (this doc)
-- ⏭️ Continue usability testing with Jerry
-- ⏭️ Identify Phase 1 must-haves vs. nice-to-haves
-- ⏭️ Prototype improved welcome flow
+**Immediate (Week of April 16, 2026):**
+- ✅ v3.0 shipped (Discovery Mode + Review/Approve UX)
+- ✅ Roadmap updated with v3.1/v4.0 features
+- ⏭️ Test v3.0 Discovery Mode with real experiments
+- ⏭️ Validate smart data collection guidance approach
 
-**Near-Term (Next 2 Weeks):**
-- Build Phase 1 features (v2.1)
-- Test with Jerry on real or realistic experiment
-- Iterate based on feedback
+**Near-Term (Next 4-6 Weeks):**
+- Plan v3.1 features (check-in reminders, .ics generation, collection guidance)
+- Build v3.1 features (1-2 weeks development)
+- Test with Jerry on 6-week Experiment Agent pilot
 
-**Mid-Term (Next 1-2 Months):**
-- Jerry runs 2 real experiments with v2.1
-- Validate: Does it actually save time?
-- Plan Phase 2 based on learnings
+**Mid-Term (Next 2-3 Months):**
+- Jerry runs 2-3 real experiments with v3.0/v3.1
+- Validate: Does Discovery Mode surface valuable experiments?
+- Validate: Do check-in reminders improve adherence?
+- Plan v4.0 features (MCP integrations, auto-collection)
 
 ---
 
@@ -710,5 +1033,5 @@ Based on Jerry's stated preferences:
 ---
 
 **Maintained by:** Scotty (Engineering) + Jerry (Product)
-**Last Review:** April 9, 2026
-**Next Review:** After Jerry's first real experiment completes
+**Last Review:** April 16, 2026
+**Next Review:** After Jerry's Experiment Agent pilot completes (May 29, 2026)
