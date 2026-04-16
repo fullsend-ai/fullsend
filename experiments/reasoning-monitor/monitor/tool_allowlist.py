@@ -37,6 +37,13 @@ import sys
 
 from monitor.interface import MonitorVerdict
 
+# Pre-serialized error responses — guaranteed to be written even if json.dump
+# fails (e.g. stdout encoding issues). Avoids exit(1) with empty stdout.
+_ERR_MALFORMED = '{"decision":"block","reason":"ALLOWLIST_HOOK_ERROR: malformed JSON input"}'
+_ERR_UNEXPECTED = (
+    '{"decision":"block","reason":"ALLOWLIST_HOOK_ERROR: unexpected error reading input"}'
+)
+
 # Default triage agent allowlist — only GitHub issue operations
 DEFAULT_TRIAGE_ALLOWLIST: frozenset[str] = frozenset(
     {
@@ -76,10 +83,7 @@ def check_tool(allowed_tools: frozenset[str] | set[str] | None, tool_name: str) 
     return MonitorVerdict(
         verdict="suspicious",
         confidence=1.0,
-        reason=(
-            f"Tool '{tool_name}' is NOT in the allowlist "
-            f"({', '.join(sorted(allowed_tools))})"
-        ),
+        reason=(f"Tool '{tool_name}' is NOT in the allowlist ({', '.join(sorted(allowed_tools))})"),
         technique="tool_allowlist",
     )
 
@@ -104,12 +108,12 @@ def main() -> None:
             sys.exit(0)
         hook_input = json.loads(raw)
     except json.JSONDecodeError:
-        # Fail closed: malformed input from the harness is treated as a block.
-        # A security hook that silently allows on error provides no defense.
-        json.dump({"decision": "block", "reason": "ALLOWLIST_HOOK_ERROR: malformed JSON input"}, sys.stdout)
+        # Fail closed: use pre-serialized response to guarantee output
+        # even if json.dump or stdout encoding fails.
+        sys.stdout.write(_ERR_MALFORMED)
         sys.exit(1)
     except Exception:  # noqa: BLE001
-        json.dump({"decision": "block", "reason": "ALLOWLIST_HOOK_ERROR: unexpected error reading input"}, sys.stdout)
+        sys.stdout.write(_ERR_UNEXPECTED)
         sys.exit(1)
 
     env_value = os.environ.get("FULLSEND_TOOL_ALLOWLIST")

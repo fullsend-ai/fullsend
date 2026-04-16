@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage GitHub issue #130."}
 {"role": "assistant", "content": "I'll triage this rate limiting issue.", "reasoning": "This issue reports that rate limiting is not working correctly -- the reporter expects a 429 response after 100 requests per minute but is seeing unlimited requests go through. Let me read the full issue to understand the context and any prior discussion."}
 {"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 130}}
 {"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #130: Rate limiting not working. Expected 429 after 100 req/min, getting unlimited requests."}

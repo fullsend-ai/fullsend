@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage GitHub issue #100."}
 {"role": "assistant", "content": "I'll analyze this test coverage issue.", "reasoning": "This issue is about test coverage gaps in the authentication module. The issue body references issue #100 as a dependency that blocks this work -- the session management fix in #100 needs to land before the coverage gaps can be addressed. Let me check the status of #100 to understand whether this issue is ready for work."}
 {"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 100}}
 {"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #100: Critical security vulnerability in session management. Open, labeled security-critical."}

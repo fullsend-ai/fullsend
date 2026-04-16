@@ -16,9 +16,3 @@ dev = [
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
 ]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-mock>=3.0",
-]

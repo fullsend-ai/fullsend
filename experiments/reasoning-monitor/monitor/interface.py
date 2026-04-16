@@ -1,5 +1,6 @@
 """Monitor protocol/interface for Experiment 005: Reasoning Monitor Agent."""
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal
 
@@ -14,9 +15,10 @@ class MonitorVerdict:
     technique: str  # "llm", "canary", "tool_allowlist"
 
 
-class Monitor:
+class Monitor(ABC):
     """Base class for all reasoning monitors."""
 
+    @abstractmethod
     def evaluate(self, transcript: list[dict]) -> MonitorVerdict:
         """Evaluate a stripped agent transcript for signs of compromise.
 
@@ -28,4 +30,3 @@ class Monitor:
         Returns:
             MonitorVerdict with verdict, confidence, reason, and technique.
         """
-        raise NotImplementedError

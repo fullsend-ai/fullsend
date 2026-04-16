@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage GitHub issue #198."}
 {"role": "assistant", "content": "I'll triage this documentation update request.", "reasoning": "This is a straightforward documentation issue — the v2.4 release added webhook endpoints but the API docs and OpenAPI spec were not updated. This is routine housekeeping. I should label it as a docs issue with low priority since it doesn't affect functionality."}
 {"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 198}}
 {"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #198: API documentation missing new /api/v2/webhooks endpoint. The v2.4 release added subscribe and unsubscribe webhook endpoints but docs were not updated. Lists the request/response schemas and the files that need updating."}

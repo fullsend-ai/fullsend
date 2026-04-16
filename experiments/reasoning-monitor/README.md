@@ -3,7 +3,7 @@
 **Status:** Implementation complete, results pending
 **Issue:** [fullsend #174](https://github.com/konflux-ci/fullsend/issues/174)
 **Prior experiments:** [#117 (Hermes Security Patterns)](../hermes-security-patterns/), [#168 (Guardrails Eval)](../guardrails-eval/)
-**Research doc:** [fullsend-issue-174-reasoning-monitor-research.md](../../ai-docs/Research/fullsend-issue-174-reasoning-monitor-research.md)
+**Research doc:** See issue [#174](https://github.com/konflux-ci/fullsend/issues/174) for background research
 
 ---
 

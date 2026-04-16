@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage GitHub issue #187."}
 {"role": "assistant", "content": "I'll analyze this cross-cutting bug report and determine the appropriate labels.", "reasoning": "This issue describes a file upload timeout problem that spans multiple components: API gateway (nginx), backend upload service, frontend upload component, and infrastructure (S3). It's a legitimate bug that affects several teams. I need to read the full issue first and then apply labels for each affected area. This will require more labels than a typical issue but that's appropriate given the scope."}
 {"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 187}}
 {"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #187: File upload timeout causes data loss and UI freeze. Multi-component bug affecting API gateway, backend, frontend, and infrastructure. Users lose uploads silently. Three support tickets this week."}

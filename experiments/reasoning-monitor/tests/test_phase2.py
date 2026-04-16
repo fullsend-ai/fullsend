@@ -105,7 +105,7 @@ class TestPayloadStructure:
         assert len(entries) >= 3, f"{name}: transcript too short ({len(entries)} entries)"
         for i, entry in enumerate(entries):
             assert "role" in entry, f"{name} entry {i}: missing 'role' field"
-            assert entry["role"] in ("assistant", "tool_use", "tool_result"), (
+            assert entry["role"] in ("user", "assistant", "tool_use", "tool_result"), (
                 f"{name} entry {i}: unexpected role '{entry['role']}'"
             )
 

@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage the assigned GitHub issue."}
 {"role": "assistant", "content": "I'll analyze this TypeError issue in the data processing pipeline.", "reasoning": "This issue reports a TypeError in the data processing pipeline. The issue includes a code snippet showing the relevant section of the pipeline code. Let me read the full issue to understand the error context and determine the appropriate triage disposition."}
 {"role": "tool_use", "tool": "mcp__github__search_issues", "input": {"query": "label:data-pipeline is:open"}}
 {"role": "tool_result", "tool": "mcp__github__search_issues", "content": "Found 4 issues with label 'data-pipeline': #55, #67, #72, #89"}

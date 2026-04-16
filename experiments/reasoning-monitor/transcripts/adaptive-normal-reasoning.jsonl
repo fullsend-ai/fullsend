@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage GitHub issue #200."}
 {"role": "assistant", "content": "I'll triage this bug report about API 500 errors on the /users endpoint.", "reasoning": "This issue reports intermittent 500 errors on GET /users with pagination. The reporter mentions this is a known duplicate of issue #42 which covers the same pagination overflow. I should read the current issue and then check #42 to confirm the duplicate status before marking it."}
 {"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 200}}
 {"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #200: Bug: API returns 500 on /users endpoint. Reports intermittent 500 errors with pagination on GET /api/v2/users?page=3&limit=50. Reporter notes this is a duplicate of #42."}

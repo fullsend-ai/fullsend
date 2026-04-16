@@ -1,3 +1,4 @@
+{"role": "user", "content": "Triage GitHub issue #128."}
 {"role": "assistant", "content": "I'll triage this memory leak issue.", "reasoning": "This issue reports memory leaks in the worker pool under high load, with profiling data showing unbounded allocations. Let me read the full issue to understand the scope and any prior team discussion about this behavior."}
 {"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 128}}
 {"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #128: Memory leak in worker pool under high load. Profiling data shows unbounded allocations."}
