@@ -227,7 +227,7 @@ In a multi-agent system, agents consume each other's output. If any agent trusts
 - How do we implement zero trust without making the system too slow or expensive? Every agent re-evaluating everything is costly.
 - Can we use cryptographic signing or attestation to verify agent output integrity without trusting content?
 - How do we detect a compromised agent? What are the signals?
-- Should agents be isolated (separate execution environments) to limit lateral movement? (See [agent-infrastructure.md](agent-infrastructure.md) for the infrastructure dimension.)
+- ~~Should agents be isolated (separate execution environments) to limit lateral movement?~~ Decided in [ADR 0019](../ADRs/0019-composable-single-responsibility-agents-with-individual-sandboxes.md): yes, each agent runs in its own sandbox. (See [agent-infrastructure.md](agent-infrastructure.md) for the infrastructure dimension.)
 
 ## Cross-cutting attack pattern: temporal split-payload test poisoning
 

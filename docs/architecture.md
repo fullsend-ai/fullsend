@@ -64,7 +64,7 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
 - How granular is network regulation? Allowlist of endpoints, or coarser controls? (A **protocol gateway** toward approved model and MCP endpoints is one way to narrow egress without handing agents raw internet access; see [landscape.md](landscape.md#agent-gateway).)
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
-- Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?
+- ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0019](ADRs/0019-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 ## Agent Harness
 
