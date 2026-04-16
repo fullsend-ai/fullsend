@@ -11,6 +11,12 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience is any contributor community considering autonomous agents — keep language accessible, avoid presuming solutions.
 - Always run `make lint` before submitting changes and fix any failures.
+- **Recommended:** Install pre-commit hooks to automatically fix linting issues on every commit:
+  ```bash
+  brew install pre-commit  # or: pip install pre-commit
+  pre-commit install
+  ```
+  This auto-fixes trailing whitespace, end-of-file issues, and runs all linters before each commit.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 
 ## Go code
