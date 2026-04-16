@@ -16,6 +16,7 @@ func newRootCmd() *cobra.Command {
 		Version:       version,
 	}
 	cmd.AddCommand(newAdminCmd())
+	cmd.AddCommand(newEntrypointCmd())
 	return cmd
 }
 

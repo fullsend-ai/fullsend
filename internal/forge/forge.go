@@ -36,6 +36,8 @@ type ChangeProposal struct {
 	URL    string
 	Title  string
 	Number int
+	Head   string
+	Draft  bool
 }
 
 // WorkflowRun represents a CI/CD workflow execution.
@@ -83,9 +85,16 @@ type Client interface {
 	// Combines SHA-aware upsert with branch targeting.
 	CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 
+	// Issue operations
+	AddIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
+	RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
+	AddIssueComment(ctx context.Context, owner, repo string, number int, body string) error
+
 	// Change proposals (PRs/MRs)
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error)
 	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
+	FindOpenPRByHead(ctx context.Context, owner, repo, head string) (*ChangeProposal, error)
+	CreateDraftChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error)
 
 	// Authentication
 	GetAuthenticatedUser(ctx context.Context) (string, error)

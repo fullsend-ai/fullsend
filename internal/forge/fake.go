@@ -42,6 +42,13 @@ type VariableRecord struct {
 	Owner, Repo, Name, Value string
 }
 
+// CommentRecord records an issue comment creation call.
+type CommentRecord struct {
+	Owner, Repo string
+	Number      int
+	Body        string
+}
+
 // FakeClient is a thread-safe test double for forge.Client.
 // Pre-populate its fields to control return values, and inspect
 // recorder slices after the test to verify which calls were made.
@@ -76,6 +83,9 @@ type FakeClient struct {
 	Variables         []VariableRecord
 	DeletedOrgSecrets []string // "org/name"
 	CreatedOrgSecrets []OrgSecretRecord
+	AddedLabels       []string        // "owner/repo/number/label"
+	RemovedLabels     []string        // "owner/repo/number/label"
+	AddedComments     []CommentRecord
 
 	// internal counter for change proposal numbers
 	proposalCounter int
@@ -350,6 +360,86 @@ func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string)
 		}
 	}
 	return []ChangeProposal{}, nil
+}
+
+func (f *FakeClient) FindOpenPRByHead(_ context.Context, owner, repo, head string) (*ChangeProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("FindOpenPRByHead"); e != nil {
+		return nil, e
+	}
+
+	if f.PullRequests != nil {
+		for _, cp := range f.PullRequests[owner+"/"+repo] {
+			if cp.Head == head {
+				cp := cp
+				return &cp, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: no open PR with head %s in %s/%s", ErrNotFound, head, owner, repo)
+}
+
+func (f *FakeClient) CreateDraftChangeProposal(_ context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateDraftChangeProposal"); e != nil {
+		return nil, e
+	}
+
+	f.proposalCounter++
+	cp := ChangeProposal{
+		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", owner, repo, f.proposalCounter),
+		Title:  title,
+		Number: f.proposalCounter,
+		Head:   head,
+		Draft:  true,
+	}
+	f.CreatedProposals = append(f.CreatedProposals, cp)
+	return &cp, nil
+}
+
+func (f *FakeClient) AddIssueLabel(_ context.Context, owner, repo string, number int, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("AddIssueLabel"); e != nil {
+		return e
+	}
+
+	f.AddedLabels = append(f.AddedLabels, fmt.Sprintf("%s/%s/%d/%s", owner, repo, number, label))
+	return nil
+}
+
+func (f *FakeClient) RemoveIssueLabel(_ context.Context, owner, repo string, number int, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("RemoveIssueLabel"); e != nil {
+		return e
+	}
+
+	f.RemovedLabels = append(f.RemovedLabels, fmt.Sprintf("%s/%s/%d/%s", owner, repo, number, label))
+	return nil
+}
+
+func (f *FakeClient) AddIssueComment(_ context.Context, owner, repo string, number int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("AddIssueComment"); e != nil {
+		return e
+	}
+
+	f.AddedComments = append(f.AddedComments, CommentRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Number: number,
+		Body:   body,
+	})
+	return nil
 }
 
 func (f *FakeClient) GetAuthenticatedUser(_ context.Context) (string, error) {
