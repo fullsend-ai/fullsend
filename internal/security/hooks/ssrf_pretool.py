@@ -146,9 +146,14 @@ def main():
             sys.exit(0)
         tool_input = json.loads(raw)
     except json.JSONDecodeError:
-        sys.exit(0)
-    except Exception:
-        sys.exit(0)
+        # Unparseable input — fail closed (pre-tool hook must block).
+        json.dump(
+            {"decision": "block", "reason": "Unparseable hook input (fail-closed)"}, sys.stdout
+        )
+        sys.exit(1)
+    except Exception as e:
+        json.dump({"decision": "block", "reason": f"Hook error (fail-closed): {e}"}, sys.stdout)
+        sys.exit(1)
 
     reason = process_tool_call(tool_input)
 

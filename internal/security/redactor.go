@@ -115,10 +115,10 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 }
 
 func mask(value string) string {
-	if len(value) < 18 {
+	if len(value) < 10 {
 		return "***"
 	}
-	return value[:6] + "..." + value[len(value)-4:]
+	return value[:4] + "..."
 }
 
 func defaultPrefixPatterns() []secretPattern {

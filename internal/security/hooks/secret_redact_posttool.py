@@ -108,9 +108,9 @@ def log_finding(name: str, detail: str):
 
 
 def mask_token(token: str) -> str:
-    if len(token) < 18:
+    if len(token) < 10:
         return "***"
-    return f"{token[:6]}...{token[-4:]}"
+    return f"{token[:4]}..."
 
 
 def redact_text(text: str) -> tuple[str, list[dict]]:
@@ -150,8 +150,9 @@ def main():
     try:
         raw = sys.stdin.read(MAX_INPUT_BYTES + 1)
         if len(raw) > MAX_INPUT_BYTES:
-            # Oversized input — skip redaction (post-tool, never blocks).
-            sys.exit(0)
+            # Oversized input — truncate and scan what fits rather than
+            # skipping entirely (post-tool, never blocks).
+            raw = raw[:MAX_INPUT_BYTES]
         if not raw.strip():
             sys.exit(0)
         hook_input = json.loads(raw)
@@ -162,7 +163,12 @@ def main():
     if not tool_result or not isinstance(tool_result, str):
         sys.exit(0)
 
-    redacted, findings = redact_text(tool_result)
+    try:
+        redacted, findings = redact_text(tool_result)
+    except Exception as e:
+        # Redaction error — log and pass through original (post-tool, never blocks).
+        log_finding("redaction_error", f"Redaction failed (passing original): {e}")
+        sys.exit(0)
 
     if findings:
         for f in findings:

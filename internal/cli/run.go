@@ -789,8 +789,10 @@ func bootstrapSecurityHooks(sshConfigPath, sandboxName string, h *harness.Harnes
 
 		if tirithCfg.FailOn != "" {
 			// FailOn is validated by harness.validateSecurity() to be one of: critical, high, medium.
+			// Quote the value defensively in case validation is ever relaxed.
+			escapedFailOn := strings.ReplaceAll(tirithCfg.FailOn, "'", "'\\''")
 			envCmd := fmt.Sprintf("echo 'export TIRITH_FAIL_ON=%s' >> %s/.env",
-				tirithCfg.FailOn, sandbox.SandboxWorkspace)
+				escapedFailOn, sandbox.SandboxWorkspace)
 			if _, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, envCmd, 10*time.Second); err != nil {
 				return fmt.Errorf("setting TIRITH_FAIL_ON: %w", err)
 			}

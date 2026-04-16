@@ -83,9 +83,11 @@ def check_command(command: str) -> tuple[bool, str]:
     try:
         findings = json.loads(result.stdout)
     except (json.JSONDecodeError, Exception):
-        # Can't parse output, check exit code
-        if result.returncode == 1:
-            reason = f"Tirith blocked command (exit code 1): {result.stderr.strip()}"
+        # Can't parse output — treat any non-zero exit as a block.
+        if result.returncode != 0:
+            reason = (
+                f"Tirith blocked command (exit code {result.returncode}): {result.stderr.strip()}"
+            )
             log_finding("tirith_block", "high", reason, "block")
             return True, reason
         return False, ""
@@ -121,8 +123,14 @@ def main():
         if not raw.strip():
             sys.exit(0)
         tool_input = json.loads(raw)
-    except (json.JSONDecodeError, Exception):
-        sys.exit(0)
+    except json.JSONDecodeError:
+        json.dump(
+            {"decision": "block", "reason": "Unparseable hook input (fail-closed)"}, sys.stdout
+        )
+        sys.exit(1)
+    except Exception as e:
+        json.dump({"decision": "block", "reason": f"Hook error (fail-closed): {e}"}, sys.stdout)
+        sys.exit(1)
 
     tool_name = tool_input.get("tool_name", "")
     if tool_name != "Bash":

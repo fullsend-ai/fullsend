@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"time"
 )
 
 var reTraceID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$`)
@@ -17,8 +16,8 @@ var reTraceID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab]
 func GenerateTraceID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp-based ID if crypto/rand fails.
-		return fmt.Sprintf("trace-%d", time.Now().UnixNano())
+		// Fallback: use zero-filled UUID v4 so it passes IsValidTraceID().
+		return "00000000-0000-4000-8000-000000000000"
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 1

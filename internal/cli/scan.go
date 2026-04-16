@@ -1,12 +1,13 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -103,7 +104,7 @@ Critical findings exit non-zero. Non-critical findings are sanitized.`,
 			}
 
 			// LLM Guard ML scan (fail-open — skips if Python/llm-guard unavailable).
-			if os.Getenv("FULLSEND_SKIP_LLM_GUARD") == "" {
+			{
 				printer.StepStart("Running LLM Guard ML scan")
 				lgScanner := security.NewLLMGuardScanner(0, "") // use defaults
 				for name, text := range fields {
@@ -384,12 +385,19 @@ func writeSanitizedOutput(outputFile string, sanitized map[string]string) error 
 	// Use GitHub Actions multiline delimiter syntax to prevent injection
 	// via newlines in the JSON payload. A random delimiter ensures the
 	// payload cannot close the block prematurely.
-	delimiter := fmt.Sprintf("FULLSEND_EOF_%d", time.Now().UnixNano())
+	delimBytes := make([]byte, 16)
+	if _, err := rand.Read(delimBytes); err != nil {
+		return fmt.Errorf("generating delimiter: %w", err)
+	}
+	delimiter := fmt.Sprintf("FULLSEND_EOF_%s", hex.EncodeToString(delimBytes))
 	_, err = fmt.Fprintf(f, "sanitized_payload<<%s\n%s\n%s\n", delimiter, string(data), delimiter)
 	return err
 }
 
 func writeGitHubOutput(outputFile, key, value string) error {
+	if strings.ContainsAny(value, "\n\r") {
+		return fmt.Errorf("value for %q contains newlines — use writeSanitizedOutput for multiline values", key)
+	}
 	f, err := os.OpenFile(outputFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
