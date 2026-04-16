@@ -4,6 +4,8 @@
 #   - Claude Code (official installer)
 #   - rsync (for safe repo write-back)
 #   - tirith (Rust CLI for terminal security scanning hooks)
+#   - LLM Guard with ONNX runtime + pre-downloaded DeBERTa-v3 model
+#     for prompt injection detection without cold-start latency
 #
 # Must extend the OpenShell base image — the sandbox supervisor is
 # side-loaded at runtime.
@@ -29,6 +31,19 @@ RUN apt-get update \
 
 # Install Claude Code (official installer handles Node.js dependency).
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Install Python and LLM Guard with ONNX runtime for ML-based prompt
+# injection scanning. Pre-download the DeBERTa-v3 model so first scan
+# has no cold-start delay.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir "llm-guard[onnxruntime]" \
+    && python3 -c "\
+from llm_guard.input_scanners import PromptInjection; \
+from llm_guard.input_scanners.prompt_injection import MatchType; \
+PromptInjection(threshold=0.92, match_type=MatchType.SENTENCE, use_onnx=True)" \
+    && echo "LLM Guard model pre-downloaded successfully"
 
 # Install tirith — terminal security scanner for PreToolUse hooks.
 # Pinned version + sha256 checksum for supply chain safety.

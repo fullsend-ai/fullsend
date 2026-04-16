@@ -16,8 +16,9 @@ type LLMGuardResult struct {
 }
 
 // LLMGuardScanner wraps the Python llm-guard library for ML-based prompt
-// injection detection. Only used in Path A (GHA workflow pre-step) due to
-// Python/ONNX dependency size (~200MB).
+// injection detection. Runs in Path A (GHA workflow pre-step) and Path B
+// (sandbox pre-agent scan) when the base sandbox image includes Python,
+// llm-guard, and the pre-downloaded DeBERTa-v3 model.
 //
 // Fail-open: if Python or llm-guard is not installed, returns a clean result.
 type LLMGuardScanner struct {

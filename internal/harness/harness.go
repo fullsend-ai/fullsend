@@ -98,7 +98,8 @@ type HostScanners struct {
 }
 
 // LLMGuardConfig configures the LLM Guard ML-based prompt injection scanner.
-// Only runs in Path A (GHA workflow pre-step) due to Python/ONNX dependency size.
+// Runs in Path A (GHA workflow pre-step) and Path B (sandbox) when the base
+// sandbox image includes the pre-installed LLM Guard and DeBERTa-v3 model.
 type LLMGuardConfig struct {
 	Enabled   *bool   `yaml:"enabled,omitempty"`    // default: true
 	Threshold float64 `yaml:"threshold,omitempty"`  // default: 0.92
