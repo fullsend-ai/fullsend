@@ -1,8 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Run real-world evaluation: V5 vs V7 against real forked repo issues
-# Usage: run-realworld.sh [--results-dir <path>] [--trials N]
+# Run real-world evaluation against real forked repo issues
+# Usage: run-realworld.sh [TRIALS] [RESULTS_DIR]
+#   TRIALS      — number of trials per cell (default: 3)
+#   RESULTS_DIR — output directory (default: results/realworld-<timestamp>)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
@@ -15,8 +17,8 @@ if [[ -z "${RESULTS_DIR}" ]]; then
 fi
 mkdir -p "${RESULTS_DIR}"
 
-SCENARIOS="R01 R02"
-VARIANTS="V5 V7"
+SCENARIOS="${SCENARIOS:-R01 R02}"
+VARIANTS="${VARIANTS:-V5 V7}"
 
 log() {
     echo "[$(date -Iseconds)] $*" | tee -a "${RESULTS_DIR}/run.log"
@@ -34,7 +36,9 @@ for s in ${SCENARIOS}; do
     done
 done
 
-log "Starting real-world evaluation: ${total} trials (${TRIALS} trials × 2 scenarios × 2 variants)"
+SCENARIO_COUNT=$(echo ${SCENARIOS} | wc -w | tr -d '[:space:]')
+VARIANT_COUNT=$(echo ${VARIANTS} | wc -w | tr -d '[:space:]')
+log "Starting real-world evaluation: ${total} trials (${TRIALS} trials × ${SCENARIO_COUNT} scenarios × ${VARIANT_COUNT} variants)"
 log "Results: ${RESULTS_DIR}"
 
 for s in ${SCENARIOS}; do

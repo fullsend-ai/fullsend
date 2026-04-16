@@ -145,7 +145,7 @@ cat > "$OUTPUT" << EOF
     "scale": "0-5"
   },
   "formula": {
-    "description": "composite = (gate_score * 0.50) + (llm_weighted_score * 0.50) * 5",
+    "description": "composite = ((gate_score * 0.50) + (llm_weighted_score / 5 * 0.50)) * 5",
     "gate_component": $(echo "scale=4; $GATE_SCORE * 0.50" | bc -l),
     "judge_component": $(echo "scale=4; $LLM_WEIGHTED_SCORE * 0.50" | bc -l)
   }

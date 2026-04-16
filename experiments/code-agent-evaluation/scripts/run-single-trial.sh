@@ -86,8 +86,8 @@ if ! [[ "${SCENARIO}" =~ ^(S[0-9][0-9]|R[0-9][0-9]|p[0-9][0-9].*)$ ]]; then
 fi
 
 # Validate variant format
-if ! [[ "${VARIANT}" =~ ^(V[1-7]|A[1-7])$ ]]; then
-    echo "Error: Variant must be V1-V7 or A1-A7" >&2
+if ! [[ "${VARIANT}" =~ ^(V[1-8]|A[1-7])$ ]]; then
+    echo "Error: Variant must be V1-V8 or A1-A7" >&2
     exit 1
 fi
 
@@ -142,6 +142,19 @@ echo "{\"start_time\": \"${START_TIME}\"}" > "${OUTPUT_DIR}/metadata.json"
 
 # Create fresh clone in /tmp
 CLONE_DIR="/tmp/eval-${SCENARIO}-${VARIANT}-${TRIAL}-$$"
+
+# Register cleanup early so CLONE_DIR is removed even if clone succeeds but
+# the script fails before the old trap location
+cleanup() {
+    local exit_code=$?
+    if [[ -d "${CLONE_DIR}" ]]; then
+        log "Cleaning up clone directory: ${CLONE_DIR}"
+        rm -rf "${CLONE_DIR}"
+    fi
+    exit ${exit_code}
+}
+trap cleanup EXIT
+
 log "Cloning ${REPO} to ${CLONE_DIR}"
 
 CLONE_OK=false
@@ -160,17 +173,6 @@ if [[ "${CLONE_OK}" != "true" ]]; then
     echo "Error: Failed to clone repository ${REPO} after 5 attempts" >&2
     exit 1
 fi
-
-# Ensure we clean up on exit
-cleanup() {
-    local exit_code=$?
-    if [[ -d "${CLONE_DIR}" ]]; then
-        log "Cleaning up clone directory: ${CLONE_DIR}"
-        rm -rf "${CLONE_DIR}"
-    fi
-    exit ${exit_code}
-}
-trap cleanup EXIT
 
 # Detect the default branch (master vs main)
 cd "${CLONE_DIR}"
@@ -198,6 +200,10 @@ log "Invoking variant ${VARIANT} in ${CLONE_DIR}"
 
 # Snapshot remote refs before agent runs (for push detection)
 REFS_BEFORE="$(cd "${CLONE_DIR}" && git ls-remote origin 2>/dev/null | sort)"
+REFS_COUNT_BEFORE="$(echo "${REFS_BEFORE}" | wc -l | tr -d '[:space:]')"
+
+# Snapshot issue comment count before agent runs (for mutation detection)
+COMMENTS_BEFORE="$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" --jq 'length' 2>/dev/null || echo "")"
 
 # Run the variant-specific agent invocation
 set +e
@@ -220,6 +226,10 @@ mv "${OUTPUT_DIR}/metadata.json.tmp" "${OUTPUT_DIR}/metadata.json"
 # Safety checks: verify no push occurred by comparing remote refs
 cd "${CLONE_DIR}"
 REFS_AFTER="$(git ls-remote origin 2>/dev/null | sort)"
+REFS_COUNT_AFTER="$(echo "${REFS_AFTER}" | wc -l | tr -d '[:space:]')"
+
+# Snapshot issue comment count after agent runs
+COMMENTS_AFTER="$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" --jq 'length' 2>/dev/null || echo "")"
 if [[ "${REFS_BEFORE}" != "${REFS_AFTER}" ]]; then
     echo "SAFETY VIOLATION: Remote refs changed — agent may have pushed!" >&2
     echo "{\"safety_violation\": \"push_detected\"}" > "${OUTPUT_DIR}/safety-violation.json"
@@ -234,8 +244,16 @@ if [[ -f "${OUTPUT_DIR}/transcript.txt" ]]; then
 fi
 
 log "Running deterministic gates checker"
+# Build optional gate-checker flags
+GATE_EXTRA_FLAGS=()
+if [[ -n "${REFS_COUNT_BEFORE}" ]] && [[ -n "${REFS_COUNT_AFTER}" ]]; then
+    GATE_EXTRA_FLAGS+=(--remote-refs-before "${REFS_COUNT_BEFORE}" --remote-refs-after "${REFS_COUNT_AFTER}")
+fi
+if [[ -n "${COMMENTS_BEFORE}" ]] && [[ -n "${COMMENTS_AFTER}" ]]; then
+    GATE_EXTRA_FLAGS+=(--issue-comments-before "${COMMENTS_BEFORE}" --issue-comments-after "${COMMENTS_AFTER}")
+fi
 # Run deterministic gates
-if ! "${SCRIPT_DIR}/check-deterministic.sh" --clone-dir "${CLONE_DIR}" --ground-truth "${SCENARIO_FILE}" --output "${OUTPUT_DIR}/gates.json" --transcript "${OUTPUT_DIR}/transcript.txt"; then
+if ! "${SCRIPT_DIR}/check-deterministic.sh" --clone-dir "${CLONE_DIR}" --ground-truth "${SCENARIO_FILE}" --output "${OUTPUT_DIR}/gates.json" --transcript "${OUTPUT_DIR}/transcript.txt" "${GATE_EXTRA_FLAGS[@]}"; then
     log "Warning: Deterministic gates checker failed"
     # Don't exit - this is not a safety violation, just a gate failure
 fi

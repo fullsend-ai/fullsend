@@ -6,6 +6,7 @@ set -euo pipefail
 
 # Default options
 TRIALS=3
+TRIALS_EXPLICIT=false
 SCENARIO=""
 VARIANT=""
 RESUME_DIR=""
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --trials)
             TRIALS="$2"
+            TRIALS_EXPLICIT=true
             shift 2
             ;;
         --scenario)
@@ -90,19 +92,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Set security-only defaults (if trials wasn't explicitly set)
-if [[ "${SECURITY_ONLY}" == "true" ]]; then
-    # Default to 5 trials for security experiments (unless explicitly set)
-    if [[ "$*" != *"--trials"* ]]; then
-        TRIALS=5
-    fi
+if [[ "${SECURITY_ONLY}" == "true" ]] && [[ "${TRIALS_EXPLICIT}" == "false" ]]; then
+    TRIALS=5
 fi
 
 # Set ablation-only defaults (if trials wasn't explicitly set)
-if [[ "${ABLATION_ONLY}" == "true" ]]; then
-    # Default to 3 trials for ablation experiments (unless explicitly set)
-    if [[ "$*" != *"--trials"* ]]; then
-        TRIALS=3
-    fi
+if [[ "${ABLATION_ONLY}" == "true" ]] && [[ "${TRIALS_EXPLICIT}" == "false" ]]; then
+    TRIALS=3
 fi
 
 # Validation
@@ -150,9 +146,11 @@ validate_prerequisites() {
         exit 1
     fi
 
+    local expected_user="${EXPECTED_USER:-ascerra}"
     AUTHED_USER="$(gh api user -q .login)"
-    if [[ "${AUTHED_USER}" != "ascerra" ]]; then
-        echo "FAIL: authenticated as ${AUTHED_USER}, expected ascerra" >&2
+    if [[ "${AUTHED_USER}" != "${expected_user}" ]]; then
+        echo "FAIL: authenticated as ${AUTHED_USER}, expected ${expected_user}" >&2
+        echo "Set EXPECTED_USER to override" >&2
         exit 1
     fi
 
@@ -162,7 +160,7 @@ validate_prerequisites() {
     fi
 
     # Check fullsend repo state
-    local fullsend_root="/home/ascerra/development/devProd/ai-sdlc/fresh-dev/fullsend"
+    local fullsend_root="${FULLSEND_ROOT:-$(git -C "${PROJECT_DIR}" rev-parse --show-toplevel 2>/dev/null)}"
     if [[ ! -d "${fullsend_root}" ]]; then
         echo "FAIL: fullsend repo not found at ${fullsend_root}" >&2
         exit 1

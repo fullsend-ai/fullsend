@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # invoke-variant.sh: Variant-specific agent invocation
-# Usage: invoke-variant.sh --variant V1|A1 --clone-dir /path/to/clone --issue-url https://... --output-file /path/to/transcript.txt
+# Usage: invoke-variant.sh --variant V1-V8|A1-A7 --clone-dir /path/to/clone --issue-url https://... --output-file /path/to/transcript.txt
 
 VARIANT=""
 CLONE_DIR=""
@@ -39,12 +39,12 @@ done
 
 # Validate arguments
 if [[ -z "${VARIANT}" || -z "${CLONE_DIR}" || -z "${ISSUE_URL}" || -z "${OUTPUT_FILE}" ]]; then
-  echo "Usage: invoke-variant.sh --variant V1|A1 --clone-dir /path/to/clone --issue-url https://... --output-file /path/to/transcript.txt" >&2
+  echo "Usage: invoke-variant.sh --variant V1-V8|A1-A7 --clone-dir /path/to/clone --issue-url https://... --output-file /path/to/transcript.txt" >&2
   exit 1
 fi
 
-if [[ ! "${VARIANT}" =~ ^(V[1-7]|A[1-7])$ ]]; then
-  echo "Error: Variant must be V1-V7 or A1-A7" >&2
+if [[ ! "${VARIANT}" =~ ^(V[1-8]|A[1-7])$ ]]; then
+  echo "Error: Variant must be V1-V8 or A1-A7" >&2
   exit 1
 fi
 
@@ -133,7 +133,8 @@ case "${VARIANT}" in
     ;;
 
   V4)
-    # V4: CLAUDE.md only
+    # V4: CLAUDE.md only — infrastructure exists but V4 was excluded from
+    # scored results (started then stopped; see EXPERIMENT.md section 2)
     VARIANT_DIR="${EXPERIMENT_ROOT}/variants/V4-claudemd-only"
 
     # Copy CLAUDE.md to repo root
@@ -194,6 +195,25 @@ case "${VARIANT}" in
   V7)
     # V7: ultimate — fused best-of-all-variants agent + skill
     VARIANT_DIR="${EXPERIMENT_ROOT}/variants/V7-ultimate"
+
+    # Copy variant artifacts
+    mkdir -p .claude/{agents,skills,scripts}
+    cp -r "${VARIANT_DIR}/agents/"* .claude/agents/
+    cp -r "${VARIANT_DIR}/skills/"* .claude/skills/
+    cp -r "${VARIANT_DIR}/scripts/"* .claude/scripts/
+    chmod +x .claude/scripts/*
+
+    setup_symlinks
+
+    # Invoke agent
+    timeout "${AGENT_TIMEOUT}" claude --dangerously-skip-permissions --agent code \
+      "Implement the fix for ${ISSUE_URL}" \
+      < /dev/null > "${OUTPUT_FILE}" 2>&1
+    ;;
+
+  V8)
+    # V8: hybrid — cleaned V1 + V5 minimal-diff + V7 reproduction/task-type
+    VARIANT_DIR="${EXPERIMENT_ROOT}/variants/V8-hybrid"
 
     # Copy variant artifacts
     mkdir -p .claude/{agents,skills,scripts}

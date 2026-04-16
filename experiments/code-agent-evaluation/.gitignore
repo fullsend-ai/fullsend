@@ -5,3 +5,8 @@ eval-hostile-target/
 eval-python-cli/
 eval-ts-webapp/
 experiments/
+.eval-scenarios/
+scenarios/
+payloads/
+prompts/
+variants/V[1-7]-*/

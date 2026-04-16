@@ -187,6 +187,12 @@ loop built repos, created issues, wrote scripts, ran trials, and generated
 reports — 11 phases of work tracked via a checklist that the agent updates
 as it completes tasks.
 
+> **Note:** `ralph.sh` is not included in this PR. It is a personal automation
+> harness (essentially `while true; do claude --task …; done` with a task
+> registry) specific to the author's environment. The reusable experiment
+> infrastructure is the `scripts/` directory. The `.gitignore` entry for
+> `ralph-logs/` preserves the ability to run it locally without polluting git.
+
 ---
 
 ## 4. How We Judged Results
@@ -873,16 +879,41 @@ All per-trial artifacts are preserved in the results directories:
 - `composite-score.json` — Final blended score
 - `metadata.json` — Timing, variant, scenario info
 
+### Setup
+
+The scripts depend on scenario definitions, injection payloads, and the LLM
+judge prompt that live in a separate repo. Run the setup script to clone and
+symlink them:
+
+```bash
+# From experiments/code-agent-evaluation/
+./scripts/setup.sh
+```
+
+This clones
+[ascerra/code-agent-eval-scenarios](https://github.com/ascerra/code-agent-eval-scenarios)
+and creates symlinks for `scenarios/`, `payloads/`, `prompts/`, and V1–V7
+variant definitions. You also need:
+
+- `claude` CLI (authenticated)
+- `gh` CLI (authenticated — set `EXPECTED_USER` to override the default user check)
+- `gitleaks` (for secret scanning gates)
+- The synthetic eval repos (see [Evaluation Repositories](#evaluation-repositories))
+
 ### Reproducibility
 
-To reproduce the experiment:
+To reproduce the experiment (`--variant` accepts one variant per invocation):
 
 ```bash
 # Round 1 (V4 was started then stopped; not included here)
-./scripts/run-experiment.sh --trials 3 --variants V1,V2,V3,V5,V6
+for v in V1 V2 V3 V5 V6; do
+  ./scripts/run-experiment.sh --variant "$v" --trials 3
+done
 
 # Round 2 (head-to-head)
-./scripts/run-experiment.sh --trials 3 --variants V5,V7
+for v in V5 V7; do
+  ./scripts/run-experiment.sh --variant "$v" --trials 3
+done
 
 # Round 4 (V8 validation — synthetic)
 ./scripts/run-experiment.sh --variant V8 --trials 3
@@ -893,6 +924,3 @@ VARIANTS="V8" ./scripts/run-realworld.sh 3
 # Single trial (debugging)
 ./scripts/run-single-trial.sh --scenario S01 --variant V1 --trial 1
 ```
-
-Requires: `claude` CLI, `gh` CLI (authenticated), `gitleaks`, and the
-synthetic repos (see [Evaluation Repositories](#evaluation-repositories)).
