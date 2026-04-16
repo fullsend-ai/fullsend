@@ -305,13 +305,13 @@ Agent: "I've read all 3. Here's what I synthesized:
 Agent: "✅ Experiment saved!
 
        To stay on track, I recommend setting up check-in reminders.
-       
+
        📅 Download calendar events (.ics files):
        - Week 1-2: Daily check-ins (April 17-30)
        - Week 3-6: Weekly check-ins (May 1-29)
-       
+
        Or use Slack reminders:
-       /remind me to 'Update experiment: open Claude and say continue experiment' 
+       /remind me to 'Update experiment: open Claude and say continue experiment'
        every Monday at 10am starting May 6 until May 29"
 ```
 - Agent generates .ics files for calendar import (Google Calendar, Outlook, Apple)
@@ -325,17 +325,17 @@ Agent: "I've identified these success metrics:
        1. Response time reduced from 5 days to 3.5 days
        2. Reopen rate stays below 10%
        3. AI draft usage >70%
-       
+
        I can guide you on collecting this data:
-       
+
        Auto-collectable (v4.0):
        ✅ Jira: ticket created/resolved dates, status transitions
        ✅ Database: AI draft counts, feedback distribution
-       
+
        Manual-collect (qualitative):
        ❌ Team sentiment (you'll log at check-ins)
        ❌ Hidden costs discovered (you'll log as observed)
-       
+
        Sound good?"
 ```
 - Agent analyzes success metrics and determines what CAN be auto-collected
@@ -356,16 +356,16 @@ Agent: "I've identified these success metrics:
 User: "continue experiment"
 
 Agent: "Week 2 check-in for AI Helpdesk Agent pilot.
-       
+
        Auto-collected metrics (guidance - not yet implemented):
        - Response time: [instructions to query Jira]
        - AI draft usage: [instructions to query database]
-       
+
        Manual observations needed:
        - Team sentiment: How do technicians feel about AI drafts?
        - Hidden costs: Any unexpected overhead discovered?
        - Quality issues: Any customer complaints or errors?
-       
+
        What observations do you have for Week 2?"
 ```
 - Agent prompts for specific observations (not vague "any updates?")
@@ -399,29 +399,29 @@ Agent: "I've identified these success metrics:
        1. Response time reduced from 5 days to 3.5 days
        2. Reopen rate stays below 10%
        3. AI draft usage >70%
-       
+
        I can auto-collect some of this data from Jira and your database.
-       
+
        What data sources should I monitor?
        A) Jira project JIRACONFSD
        B) ai-helpdesk-agent database (ai_draft_feedback table)
        C) GitHub repo (if relevant)
        D) None - I'll log everything manually
        E) Custom (specify)
-       
+
        Choose all that apply:"
 
 User: "A and B"
 
 Agent: "Got it! I'll auto-collect from Jira and the database.
-       
+
        At each check-in, I'll fetch:
        - Jira: ticket created/resolved dates, status transitions
        - Database: AI draft counts, feedback emoji distribution
-       
-       You'll still need to provide qualitative observations 
+
+       You'll still need to provide qualitative observations
        (team sentiment, hidden costs, etc.) at check-ins.
-       
+
        Sound good?"
 ```
 - **Relevance-first collection:** Agent maps metrics → data sources (not grab-everything)
@@ -462,15 +462,15 @@ Agent auto-executes collection plan:
   1. Jira API call (only relevant fields)
   2. Database query (only relevant tables)
   3. Calculate metrics vs baseline/target
-  
+
 Agent presents update:
   "Week 3 update for AI Helpdesk Agent pilot:
-   
+
    Auto-collected metrics:
    - Response time: 4.2 days (baseline: 5, target: 3.5) - improving but not at target
    - Reopen rate: 8% (target: <10%) ✅ within target
    - AI draft usage: 62% (target: >70%) ❌ below target - investigate why
-   
+
    What qualitative observations do you have?
    - Team sentiment about AI drafts?
    - Any hidden costs discovered?
@@ -487,9 +487,9 @@ Agent presents update:
 
 Agent initiates (via Slack or notification):
   "🔔 Time for your Week 3 check-in on AI Helpdesk Agent pilot!
-  
+
   I've collected the latest metrics (see below). Ready to log observations?
-  
+
   [Link to continue experiment in Claude]"
 
 User clicks link, agent shows auto-collected metrics + asks for qualitative updates
@@ -504,7 +504,7 @@ User clicks link, agent shows auto-collected metrics + asks for qualitative upda
 [When experiment is saved]
 
 Agent: "I'll add check-in events to your Google Calendar automatically.
-       
+
        Authorize Google Calendar access? [Yes/No]"
 
 User: "Yes"
@@ -513,7 +513,7 @@ Agent: [OAuth flow]
        "✅ Calendar events created:
        - Week 1-2: Daily 10am check-ins (April 17-30)
        - Week 3-6: Weekly Monday 10am check-ins (May 1-29)
-       
+
        I'll send you a notification at each check-in time."
 ```
 - OAuth integration with Google Calendar
