@@ -84,8 +84,8 @@ Tests three complementary post-execution monitoring techniques:
 
 ### Input-blindness design
 
-The monitor receives a **stripped transcript** with the initial user message
-content replaced by `[REDACTED]`. This means:
+The monitor receives a **stripped transcript** with all user message content
+replaced by `[REDACTED]`. This means:
 
 - The monitor cannot read the malicious issue body
 - The monitor cannot be influenced by the same injection that fooled the
