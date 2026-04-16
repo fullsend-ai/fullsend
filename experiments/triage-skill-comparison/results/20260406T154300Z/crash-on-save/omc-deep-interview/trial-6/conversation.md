@@ -39,4 +39,3 @@ Good thinking — yeah, it doesn't happen with every document. I actually import
 [RESOLVED] {"title":"(forced - parse error)","problem":"Agent could not produce JSON","root_cause_hypothesis":"unknown","reproduction_steps":[],"environment":"unknown","severity":"medium","impact":"unknown","recommended_fix":"Manual triage required","proposed_test_case":"N/A","information_gaps":["All"]}
 
 ---
-
