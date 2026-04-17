@@ -4,6 +4,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -69,10 +70,10 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 	}
 
 	// 4. Delete any stale dispatch PATs from previous runs.
+	// Use bulk deletion to clean up all accumulated dispatch PATs — if too
+	// many accumulate, GitHub enforces a 50-token limit and blocks creation.
 	t.Log("[cleanup] Cleaning up stale dispatch PATs...")
-	if delErr := deleteDispatchPAT(page, testOrg, screenshotDir, t.Logf); delErr != nil {
-		t.Logf("[cleanup] Warning: could not delete stale dispatch PAT: %v", delErr)
-	}
+	deleteAllDispatchPATs(page, testOrg, screenshotDir, t.Logf)
 
 	// 5. Ensure test-repo exists (needed for enrollment testing).
 	_, err = client.GetRepo(ctx, testOrg, testRepo)
@@ -83,10 +84,14 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 5. Delete stale enrollment branch from test-repo.
+	// 6. Delete stale enrollment branch from test-repo.
 	deleteEnrollmentBranch(ctx, token, testOrg, testRepo, t)
 
-	// 6. Close any open enrollment PRs in test-repo (informational only).
+	// 7. Delete shim workflow from test-repo's default branch (left behind
+	// when a previous run merged the enrollment PR in Phase 2.5).
+	deleteShimWorkflow(ctx, token, testOrg, testRepo, t)
+
+	// 8. Close any open enrollment PRs in test-repo (informational only).
 	prs, err := client.ListRepoPullRequests(ctx, testOrg, testRepo)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list PRs: %v", err)
@@ -139,6 +144,81 @@ func deleteEnrollmentBranch(ctx context.Context, token, org, repo string, t *tes
 		// Branch doesn't exist, nothing to do.
 	} else {
 		t.Logf("[cleanup] Warning: unexpected status deleting enrollment branch: %d", resp.StatusCode)
+	}
+}
+
+// deleteShimWorkflow removes the fullsend shim workflow from a repo's default
+// branch. This cleans up after Phase 2.5 which merges the enrollment PR.
+func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing.T) {
+	t.Helper()
+	shimPath := ".github/workflows/fullsend.yaml"
+
+	// Get the file's SHA (required for deletion).
+	getURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", org, repo, shimPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not create request to check shim file: %v", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not check shim file: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return // File doesn't exist, nothing to do.
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Logf("[cleanup] Warning: unexpected status checking shim file: %d", resp.StatusCode)
+		return
+	}
+
+	var fileInfo struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&fileInfo); err != nil {
+		t.Logf("[cleanup] Warning: could not decode shim file info: %v", err)
+		return
+	}
+
+	// Delete the file.
+	deleteBody := struct {
+		Message string `json:"message"`
+		SHA     string `json:"sha"`
+	}{
+		Message: "chore: cleanup stale shim workflow",
+		SHA:     fileInfo.SHA,
+	}
+	deletePayload, err := json.Marshal(deleteBody)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not marshal delete payload: %v", err)
+		return
+	}
+	delReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, getURL, strings.NewReader(string(deletePayload)))
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not create delete request for shim: %v", err)
+		return
+	}
+	delReq.Header.Set("Authorization", "Bearer "+token)
+	delReq.Header.Set("Accept", "application/vnd.github+json")
+	delReq.Header.Set("Content-Type", "application/json")
+
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not delete shim file: %v", err)
+		return
+	}
+	defer delResp.Body.Close()
+
+	if delResp.StatusCode == http.StatusOK || delResp.StatusCode == http.StatusNoContent {
+		t.Logf("[cleanup] Deleted stale shim workflow from %s", repo)
+	} else {
+		t.Logf("[cleanup] Warning: unexpected status deleting shim file: %d", delResp.StatusCode)
 	}
 }
 

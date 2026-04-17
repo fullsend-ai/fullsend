@@ -151,6 +151,12 @@ func TestAdminInstallUninstall(t *testing.T) {
 	verifyInstalled(t, env, orgCfg, enabledRepos, agentCreds)
 
 	// =========================================
+	// Phase 2.5: Triage dispatch smoke test
+	// =========================================
+	t.Log("=== Phase 2.5: Triage Dispatch Smoke Test ===")
+	runTriageDispatchSmokeTest(t, env)
+
+	// =========================================
 	// Phase 3: First uninstall (deletes resources)
 	// =========================================
 	t.Log("=== Phase 3: First Uninstall ===")
@@ -224,10 +230,16 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 			// Try to extract project_id from the key JSON.
 			gcpProjectID = extractProjectID(t, vertexKey)
 		}
+		gcpRegion := os.Getenv("E2E_GCP_REGION")
+		if gcpRegion == "" {
+			gcpRegion = "us-east5"
+		}
 		inferenceProvider = vertex.New(vertex.Config{
 			ProjectID:      gcpProjectID,
+			Region:         gcpRegion,
 			CredentialJSON: []byte(vertexKey),
 		}, nil)
+		// Region is stored as a variable, not a secret.
 		inferenceProviderName = "vertex"
 		t.Logf("Inference provider: vertex (project: %s)", gcpProjectID)
 	} else {
@@ -338,10 +350,20 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 	assert.Equal(t, "1", parsedCfg.Version)
 	assert.Len(t, parsedCfg.Agents, len(defaultRoles))
 
-	// Workflow files exist.
+	// Agent runtime files exist (from scaffold).
 	for _, path := range []string{
-		".github/workflows/agent.yaml",
-		".github/workflows/repo-onboard.yaml",
+		".github/workflows/triage.yml",
+		".github/workflows/code.yml",
+		".github/workflows/review.yml",
+		".github/workflows/repo-maintenance.yml",
+		".github/actions/fullsend/action.yml",
+		".github/scripts/setup-agent-env.sh",
+		"agents/triage.md",
+		"harness/triage.yaml",
+		"policies/triage.yaml",
+		"env/triage.env",
+		"env/gcp-vertex.env",
+		"scripts/validate-triage.sh",
 		"CODEOWNERS",
 	} {
 		_, err := env.client.GetFileContent(ctx, testOrg, forge.ConfigRepoName, path)
@@ -449,6 +471,81 @@ func verifyNotInstalled(t *testing.T, env *e2eEnv) {
 			t.Logf("layer %s status: %s (accepted)", report.Name, report.Status)
 		}
 	}
+}
+
+func runTriageDispatchSmokeTest(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Find and merge the enrollment PR so the shim workflow becomes active.
+	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
+	require.NoError(t, err, "listing PRs for %s", testRepo)
+
+	var enrollmentPR *forge.ChangeProposal
+	for _, pr := range prs {
+		if strings.Contains(pr.Title, "fullsend") {
+			cp := pr // avoid loop variable capture
+			enrollmentPR = &cp
+			break
+		}
+	}
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+
+	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
+	err = env.client.MergeChangeProposal(ctx, testOrg, testRepo, enrollmentPR.Number)
+	require.NoError(t, err, "merging enrollment PR")
+
+	// Wait for GitHub to process the merge.
+	time.Sleep(5 * time.Second)
+
+	// File a test issue to trigger the shim workflow.
+	issueTitle := fmt.Sprintf("e2e-triage-test-%s", env.runID)
+	issueBody := "Automated e2e test issue to verify the triage dispatch pipeline."
+	issue, err := env.client.CreateIssue(ctx, testOrg, testRepo, issueTitle, issueBody)
+	require.NoError(t, err, "creating test issue")
+	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
+	t.Cleanup(func() {
+		t.Log("Closing test issue...")
+		if closeErr := env.client.CloseIssue(ctx, testOrg, testRepo, issue.Number); closeErr != nil {
+			t.Logf("warning: could not close test issue: %v", closeErr)
+		}
+	})
+
+	// Wait for the triage workflow to be dispatched in .fullsend.
+	// The shim fires on issues:opened and dispatches to triage.yml.
+	// The shim typically fires within ~5s of the issue being created,
+	// so 12 attempts at 5s intervals (60s total) is generous.
+	// Filter by CreatedAt to avoid false positives from previous runs.
+	issueCreatedAt := time.Now()
+	t.Log("Waiting for triage workflow to be dispatched...")
+	var triageRunFound bool
+	for attempt := 0; attempt < 12; attempt++ {
+		time.Sleep(5 * time.Second)
+		runs, listErr := env.client.ListWorkflowRuns(ctx, testOrg, forge.ConfigRepoName, "triage.yml")
+		if listErr != nil {
+			t.Logf("Attempt %d: error listing workflow runs: %v", attempt+1, listErr)
+			continue
+		}
+		for _, run := range runs {
+			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				t.Logf("Attempt %d: run %d has unparseable CreatedAt %q: %v", attempt+1, run.ID, run.CreatedAt, parseErr)
+				continue
+			}
+			if runTime.Before(issueCreatedAt) {
+				t.Logf("Attempt %d: run %d created at %s is from before our issue, skipping", attempt+1, run.ID, run.CreatedAt)
+				continue
+			}
+			t.Logf("Attempt %d: found run %d (status: %s, conclusion: %s, created: %s)", attempt+1, run.ID, run.Status, run.Conclusion, run.CreatedAt)
+			triageRunFound = true
+			break
+		}
+		if triageRunFound {
+			break
+		}
+		t.Logf("Attempt %d: no triage workflow runs found yet", attempt+1)
+	}
+	assert.True(t, triageRunFound, "triage workflow should have been dispatched in .fullsend repo")
 }
 
 // --- Utility functions ---

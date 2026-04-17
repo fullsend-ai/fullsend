@@ -100,7 +100,7 @@ e2e-test: e2e-playwright
 		$(MAKE) e2e-export-session; \
 		export E2E_GITHUB_SESSION_FILE="$(E2E_SESSION_FILE)"; \
 	fi; \
-	go test -tags e2e -v -count=1 -timeout 4m ./e2e/admin/
+	go test -tags e2e -v -count=1 -timeout 10m ./e2e/admin/
 
 e2e-export-session: e2e-playwright
 	@if [ -n "$$E2E_GITHUB_PASSWORD_FILE" ] && [ -z "$$E2E_GITHUB_PASSWORD" ]; then \
