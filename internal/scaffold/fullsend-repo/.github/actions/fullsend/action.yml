@@ -80,11 +80,13 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Install OpenShell
+      shell: bash
       run: |
         curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.0.30/install.sh | sh
         openshell --version
 
     - name: Run fullsend
+      if: inputs.agent != '__install_only__'
       shell: bash
       env:
         AGENT: ${{ inputs.agent }}
@@ -92,12 +94,13 @@ runs:
         set -euo pipefail
         mkdir -p "${GITHUB_WORKSPACE}/output"
         fullsend run "${AGENT}" \
-          --fullsend-dir "${GITHUB_WORKSPACE}/.fullsend" \
+          --fullsend-dir "${GITHUB_WORKSPACE}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${GITHUB_WORKSPACE}/target-repo"
 
     - name: Upload fullsend artifacts
-      uses: actions/upload-artifact@v7
+      if: inputs.agent != '__install_only__'
+      uses: actions/upload-artifact@v4
       with:
         name: fullsend-${{ inputs.agent }}
         path: ${{ github.workspace }}/output

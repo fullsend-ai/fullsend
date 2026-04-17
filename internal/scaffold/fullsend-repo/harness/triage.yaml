@@ -1,0 +1,22 @@
+agent: agents/triage.md
+model: opus
+image: quay.io/manonru/fullsend-exp:latest
+policy: policies/triage.yaml
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/workspace/.gcp-credentials.json
+  - src: env/triage.env
+    dest: /tmp/workspace/.env.d/triage.env
+    expand: true
+
+skills: []
+
+validation_loop:
+  script: scripts/validate-triage.sh
+  max_iterations: 3
+
+timeout_minutes: 10

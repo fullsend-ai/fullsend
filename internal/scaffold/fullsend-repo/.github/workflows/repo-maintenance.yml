@@ -1,0 +1,36 @@
+name: Repo Maintenance
+
+on:
+  push:
+    branches: [main]
+    paths: [config.yaml]
+  workflow_dispatch:
+
+concurrency:
+  group: repo-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Reconcile enrollment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout .fullsend
+        uses: actions/checkout@v4
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FULLSEND_FULLSEND_APP_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Reconcile target repos
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          WORKSPACE: ${{ github.workspace }}
+        run: bash scripts/enroll-repos.sh "$WORKSPACE"
