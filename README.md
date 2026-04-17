@@ -40,6 +40,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).
 - **[docs/landscape.md](docs/landscape.md)** — Survey of AI code review tools, orchestration patterns, and connectivity gateways; how they relate to our goals (time-sensitive — check the date)
 - **[experiments/](experiments/)** — Logs and results from trying things in practice
+- **[docs/secretarial-agent.md](docs/secretarial-agent.md)** — Secretarial agent: automated meeting notes → GitHub issue backlog
 
 ## How to contribute
 
