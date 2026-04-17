@@ -1,0 +1,22 @@
+{
+  "title": "Login redirect loop for users with plus-addressed or aliased emails after Okta→Entra ID SSO migration",
+  "problem": "After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop when logging into TaskFlow. They authenticate successfully with Entra ID but are immediately redirected back to the login flow upon returning to TaskFlow. The affected users share a common trait: their TaskFlow accounts are registered with plus-addressed emails (e.g., jane+taskflow@company.com) or previously aliased email addresses.",
+  "root_cause_hypothesis": "Entra ID strips the plus-addressing portion from email claims (returning jane@company.com instead of jane+taskflow@company.com), whereas Okta preserved the full address. When TaskFlow's OAuth callback handler looks up the user by the email claim returned from Entra ID, it fails to find a matching account. Instead of returning an authentication error, the lookup failure causes TaskFlow to restart the login flow, creating an infinite redirect loop. The same mechanism likely applies to users with aliased emails where Entra ID returns the canonical address rather than the alias stored in TaskFlow.",
+  "reproduction_steps": [
+    "Set up a TaskFlow user account with a plus-addressed email (e.g., testuser+taskflow@company.com)",
+    "Configure TaskFlow SSO to use Microsoft Entra ID",
+    "Attempt to log in as that user via SSO",
+    "Observe that Entra ID authenticates successfully and redirects back to TaskFlow",
+    "Observe that TaskFlow immediately redirects back to Entra ID, creating a loop"
+  ],
+  "environment": "Self-hosted TaskFlow instance, recently migrated from Okta to Microsoft Entra ID. Affects Chrome and Edge (not browser-specific). Users were logged out prior to the migration.",
+  "severity": "high",
+  "impact": "Approximately 30% of the team is completely unable to log into TaskFlow. No workaround has been identified. These users can access other SSO-integrated apps, so the issue is specific to TaskFlow's handling of the identity claims.",
+  "recommended_fix": "1. Investigate TaskFlow's OAuth callback handler to find where it matches the incoming email claim against stored user records. 2. Fix the immediate issue by normalizing emails during lookup (strip plus-addressing, resolve aliases) or by matching on a more stable claim such as the Entra ID object ID (oid) or UPN instead of email. 3. Consider adding a one-time migration script to update stored email addresses to match what Entra ID will return. 4. Ensure the auth flow returns a clear error (e.g., 'no matching account found') instead of silently restarting the login flow when user lookup fails, to prevent redirect loops from any future identity mismatches.",
+  "proposed_test_case": "Create user accounts with plus-addressed emails and aliased emails, perform SSO login via Entra ID, and verify that the OAuth callback correctly resolves these users to their accounts. Also verify that when a user truly does not exist, the auth flow returns an error page rather than entering a redirect loop.",
+  "information_gaps": [
+    "Exact location of TaskFlow's authentication logs in the self-hosted setup (could help verify the mismatch in production)",
+    "Whether Okta was configured to pass through plus-addressed emails or if TaskFlow had Okta-specific normalization logic",
+    "Which specific claim field TaskFlow uses for user matching (email, preferred_username, UPN, etc.)"
+  ]
+}

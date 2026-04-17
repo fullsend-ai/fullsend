@@ -1,0 +1,21 @@
+{
+  "title": "Non-deterministic test failures caused by task ordering PR producing unstable sort order",
+  "problem": "Since the task ordering PR was merged approximately 4 days ago, the CI test suite has been experiencing intermittent assertion failures. Tests pass locally but fail randomly in CI. The failures involve results coming back in an unexpected order, indicating the ordering change introduced non-determinism that some tests are sensitive to.",
+  "root_cause_hypothesis": "The task ordering PR likely changed how tasks are sorted or ordered, and the new ordering is non-deterministic (e.g., missing a tiebreaker field in the sort, or relying on database insertion order which varies). Tests that assert on a specific result order now fail when the non-deterministic sort produces a different but equally valid ordering. Local runs may pass consistently due to differences in database engine behavior, data volume, or timing.",
+  "reproduction_steps": [
+    "Identify the task ordering PR merged ~4 days ago from git history",
+    "Run the full test suite in CI (or run it locally with CI-equivalent configuration)",
+    "Observe that tests asserting on task order fail intermittently",
+    "Compare the sort/order-by logic introduced in the PR — look for missing tiebreaker columns or unstable sort criteria"
+  ],
+  "environment": "CI environment (specific platform not yet identified); failures do not reproduce locally, suggesting environment-dependent ordering behavior",
+  "severity": "high",
+  "impact": "Blocking releases for the team. All contributors are affected by unreliable CI, reducing confidence in the test suite and slowing development velocity.",
+  "recommended_fix": "Review the task ordering PR for sort stability. The sort likely needs a deterministic tiebreaker (e.g., adding a secondary sort on `id` or `created_at`). Alternatively, affected tests may need to be updated to sort results before asserting, or to assert on set membership rather than order when order is not semantically meaningful.",
+  "proposed_test_case": "Add a test that creates multiple tasks with identical values for the primary sort field and verifies that the returned order is consistent across repeated calls. This would catch unstable sort regressions.",
+  "information_gaps": [
+    "Exact name of the task ordering PR (discoverable from git history)",
+    "Specific failing test names (available in CI logs as reporter noted)",
+    "CI platform and database engine used in CI vs. local development"
+  ]
+}

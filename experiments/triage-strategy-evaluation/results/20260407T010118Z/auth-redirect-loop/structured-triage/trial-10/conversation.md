@@ -1,0 +1,60 @@
+# Conversation: auth-redirect-loop x structured-triage
+
+## Issue
+
+**Login redirect loop after SSO change**
+
+We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.
+
+We've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed write-up — the redirect loop behavior is clear, and it's helpful to know that only ~30% of users are affected.
+
+Could you share some environment details? Specifically:
+- What browser(s) are the affected users using? (And do the unaffected users happen to use a different browser?)
+- What version of TaskFlow are you running?
+- Is TaskFlow deployed on-prem or cloud-hosted, and what's the relevant stack (e.g., Node.js version, framework)?
+
+This will help narrow down whether the issue is client-side (e.g., cookie handling differences) or server-side.
+
+---
+
+### reporter
+
+We're on TaskFlow v2.3.1, self-hosted. The affected users are on a mix of browsers — Chrome, Edge, and Firefox. I don't think it's browser-specific because I've seen the same users fail on multiple browsers. The unaffected users also use the same browsers, so I don't think it's a browser thing.
+
+I'm not sure about the Node.js version or framework details off the top of my head — I'd have to check with our dev team on that. I'm the IT admin, not the developer who set it up originally.
+
+One thing I did notice is that the incognito/private window trick sometimes works for affected users, which is weird. Also clearing all cookies and trying again quickly sometimes lets them in. Not sure if that helps narrow it down.
+
+---
+
+### triage-agent
+
+Thanks — the incognito/cookie-clearing detail is really helpful and strongly suggests leftover session data from the old Okta setup is interfering with the new Entra ID flow.
+
+Could you check whether there are any relevant error messages in the TaskFlow server logs during a failed login attempt by an affected user? Specifically, anything logged around the time the redirect loop starts — authentication errors, token validation failures, or session-related warnings. If you're not sure where the logs live, the developer who set up TaskFlow should be able to point you to them.
+
+Alternatively, if an affected user opens browser DevTools (F12 → Network tab) and attempts to log in, do you see any HTTP responses with error status codes (like 401 or 403) during the redirect cycle?
+
+---
+
+### reporter
+
+I haven't dug into the server logs yet — I'll ask our dev to pull those. But I did have one of the affected users open DevTools while it was happening. I didn't see any 401 or 403 errors exactly — it looked like the responses were mostly 302 redirects bouncing back and forth. I did notice there was a Set-Cookie header in the response coming back from Microsoft's side, but I'm not sure the cookie was actually sticking? Like the next request didn't seem to have it. I'm not a web dev though so I might be reading that wrong.
+
+I'll try to get the server logs this week and follow up with whatever's in there.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"SSO login redirect loop after Okta-to-Entra ID migration due to stale session cookies","problem":"After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. They authenticate successfully at Microsoft but are immediately redirected back to the identity provider upon returning to TaskFlow. The remaining 70% of users are unaffected. Incognito mode and clearing cookies sometimes resolve the issue temporarily.","root_cause_hypothesis":"Stale session or authentication cookies from the old Okta SSO configuration are interfering with the new Entra ID flow. DevTools shows a Set-Cookie header in the response from Microsoft's side that does not persist to the next request, suggesting either (a) an existing cookie with the same name/domain from the Okta era is taking precedence, (b) a SameSite or Secure attribute mismatch is causing the browser to reject the new cookie, or (c) the cookie domain/path from the old configuration doesn't match the new one, so the old cookie is sent instead. The 30/70 split likely corresponds to users who had persistent Okta session cookies versus those who didn't (new devices, cleared cookies recently, etc.).","reproduction_steps":["Identify an affected user (one who has been using TaskFlow since before the Okta-to-Entra ID migration)","Have them navigate to the TaskFlow login page in a browser with existing cookies","Click the SSO login button","Observe: user authenticates at Microsoft Entra ID successfully","Observe: user is redirected back to TaskFlow but immediately redirected to Microsoft again, creating an infinite loop","Verify: the same user can log in via incognito/private window or after clearing all cookies"],"environment":"TaskFlow v2.3.1, self-hosted deployment. Multiple browsers affected (Chrome, Edge, Firefox). Not browser-specific — same users fail across browsers, and unaffected users succeed on the same browsers.","severity":"high","impact":"Approximately 30% of the team cannot log into TaskFlow reliably. Workarounds (incognito, clearing cookies) are temporary and disruptive. This blocks daily work for affected users.","recommended_fix":"1. Inspect the TaskFlow authentication cookie configuration — check cookie names, domain, path, SameSite, and Secure attributes. Compare against what the old Okta integration set. 2. Look for leftover Okta-related cookies (e.g., session cookies with the old issuer or nonce values) that may conflict with the Entra ID flow. 3. Consider adding a migration step that explicitly clears or invalidates old SSO session cookies on first login attempt post-migration. 4. Verify the session middleware is correctly processing the new Entra ID tokens and not rejecting them due to stale issuer/audience validation config. 5. Check server logs for token validation errors or session creation failures during the redirect cycle.","proposed_test_case":"Simulate the migration scenario: create a session cookie matching the old Okta SSO cookie format, then attempt to authenticate via the Entra ID flow. Verify that the new authentication completes successfully and the old cookie is replaced rather than causing a redirect loop.","information_gaps":["Server-side logs during a failed login attempt (reporter is working on obtaining these)","Exact Node.js version and authentication framework/library used by TaskFlow","Whether all affected users definitively predate the SSO migration (confirming the stale-cookie hypothesis)","Specific cookie names and domains set by the old Okta integration versus the new Entra ID integration"]}
+
+---

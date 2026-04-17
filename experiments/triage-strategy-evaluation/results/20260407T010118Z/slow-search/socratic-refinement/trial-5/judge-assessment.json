@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~5,000 tasks, title-fast/description-slow distinction, v2.2→v2.3 upgrade regression, ~2 weeks ago onset, 10-15 second delays, CPU spike (fan spinning, UI freeze), and long descriptions from pasted meeting notes. The summary also notes additional useful context like the impact on power users."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths simultaneously: the v2.2→v2.3 upgrade as the trigger AND the title-vs-description indexing difference. The root cause hypothesis specifically names 'removed or broke a full-text index on the description field, or switched from indexed search to a naive in-memory or unindexed scan' — which maps precisely to the actual cause (FTS5 index replaced by LIKE query). The CPU-bound reasoning is also correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen rounds of questions extracted all critical diagnostic signals. The agent correctly resolved after the title/description distinction emerged. Minor gaps: OS/hardware specs were not asked directly (noted as information gaps), and no question about whether the reporter had tried reindexing or cache clearing, which would have surfaced the workaround. These are minor misses given the strong diagnostic picture already established."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were efficient and non-redundant. The first combined timing, causation, and task count. The second probed UI behavior and search variation — each targeting a distinct diagnostic dimension. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was particularly insightful: asking whether search behavior varied 'depending on what you're searching for' drew out the title-vs-description distinction that the reporter explicitly said they 'hadn't paid super close attention to.' This is exactly the kind of question that surfaces latent information the reporter wouldn't have volunteered. The first question efficiently targeted version changes and dataset size in a single, well-framed prompt."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes specific reproduction steps, a precise fix recommendation (diff the search implementation, check for dropped FTS index), proposed performance and regression test cases, severity/impact assessment, and clearly listed information gaps. A developer could begin investigation immediately and would know exactly where to look in the codebase."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question elicited the title-vs-description distinction — a critical diagnostic clue the reporter hadn't consciously noticed — through targeted questioning about search variation",
+    "Root cause hypothesis closely matches the actual cause, correctly naming a likely FTS index regression and CPU-bound behavior as supporting evidence",
+    "All seven expected information extracts captured in two efficient turns",
+    "Triage summary is immediately actionable with specific fix direction, test cases, and reproduction steps"
+  ],
+  "notable_weaknesses": [
+    "OS and hardware specs were not asked and ended up listed as information gaps — a quick follow-up would have completed the environment picture",
+    "Did not ask whether the reporter had tried reindexing or clearing cache, which would have surfaced the known workaround",
+    "Exact patch version (2.3.0 vs 2.3.1) was not asked, relevant for determining if a point-release fix already exists"
+  ],
+  "most_insightful_question": "Is it slow for every search you do, or have you noticed it depends on what you're searching for — like short terms vs. longer ones, or searching in a specific project vs. across everything?",
+  "missed_opportunities": [
+    "Ask about OS and hardware specs directly rather than leaving them as information gaps",
+    "Ask whether the reporter had tried any workarounds such as reindexing or clearing the app cache",
+    "Ask for the exact TaskFlow patch version (2.3.0, 2.3.1, etc.)"
+  ]
+}

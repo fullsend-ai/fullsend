@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts were captured: affected record count (~50-100/2,000), truncated nature of corruption, ~2-week timeline, nightly batch import connection, 3+ digit country code pattern, and US/UK numbers being unaffected. The seventh — a confirmed recent change to the phone number normalizer — was not drawn out through questioning and appears only as an information gap in the summary. The agent recognized it was missing but didn't ask the question that would have surfaced it."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — 'the sync job's parsing logic uses a regex or substring that assumes country codes are at most 2 digits' — is essentially the actual cause (a regex with \\d{1,2} for country codes). The triage also correctly identifies the nightly import as the corruption source and connects the ~2-week timeline to a likely recent change. Both acceptable diagnostic paths are satisfied, and the hypothesis maps closely to the canonical root cause without contradiction."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-sequenced questions that progressively isolated the problem: data source → corruption location → corruption shape. This was sufficient to reach a strong hypothesis. However, the agent resolved without asking about recent changes to the sync job or phone normalization logic — a question that would have directly surfaced the normalizer update and been straightforward to ask after confirming the two-week timeline. The agent recognized this gap but stopped short of filling it."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, each non-redundant and building directly on the previous answer. No turns were wasted on low-value or overlapping queries. The conversation moved efficiently from broad scoping to precise diagnosis."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated genuine diagnostic reasoning. Q1 (how did numbers enter TaskFlow?) correctly identified data ingestion as the first fork. Q2 (are numbers correct in Salesforce?) efficiently isolated the corruption to the sync layer. Q3 (what does a corrupted number look like, with specific options?) was the standout — framing the question around the 'shape' of corruption and offering structured options prompted the reporter to share the concrete Ireland (+353→+35) and Antigua (+1268→+12) examples, which directly revealed the 3+ digit country code pattern the reporter wouldn't have volunteered spontaneously."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: inspect the sync job's phone parsing for a 2-character limit on country codes, look for changes ~2 weeks ago, fix the constraint to support up to 4-digit country codes (ITU-T maximum), re-sync from Salesforce, and add a regression test. Concrete reproduction steps and a proposed test case are included. A developer could open the sync job codebase and begin searching for the constraint with no additional context."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q3's framing around the 'shape' of corruption was diagnostically sharp and directly elicited the country code length pattern from the reporter",
+    "The root cause hypothesis ('regex or substring that assumes country codes are at most 2 digits') maps almost exactly to the actual defect without overclaiming",
+    "The summary includes reproduction steps, a proposed test case, and a concrete fix recommendation — unusually complete and immediately actionable",
+    "Q2 cleanly isolated the corruption to the sync layer by checking the source system, avoiding wasted investigation in Salesforce"
+  ],
+  "notable_weaknesses": [
+    "The agent did not ask about recent changes to the sync job or phone processing logic, leaving the normalizer update — a key expected extract — unconfirmed and noted only as a gap",
+    "The ~2-week timeline was volunteered by the reporter but never followed up with 'was anything deployed or changed around that time?', which would have been the natural next question"
+  ],
+  "most_insightful_question": "Can you share an example or two of what a corrupted number looks like? Specifically: truncated to a fixed length, country code stripped, non-digit characters removed and then truncated, or something else entirely?",
+  "missed_opportunities": [
+    "After the reporter mentioned the problem started ~2 weeks ago, asking 'Were any changes made to the sync job, phone number validation, or database schema around that time?' would have surfaced the normalizer update and fulfilled the final expected extract",
+    "Asking whether previously corrupted records get overwritten on each subsequent sync (which the ground truth confirms they do) would have clarified urgency and informed the recommended fix"
+  ]
+}

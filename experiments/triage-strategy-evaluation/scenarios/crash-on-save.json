@@ -1,0 +1,24 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "quality": "very_poor",
+  "reporter_profile": "difficult",
+  "ground_truth": {
+    "description": "The reporter is using TaskFlow v2.3.1 on macOS 14.2. They are editing a task list with about 200 tasks. The crash happens specifically when they click 'Save' in the toolbar (not when auto-save triggers). The crash started after they imported a CSV file with special characters (em-dashes, curly quotes) in task names. The error they see is a brief flash of a dialog that says something about 'encoding' before the app closes. Smaller task lists (under 50 tasks) save fine even with the imported data. The crash does NOT happen if they remove the imported tasks.",
+    "actual_cause": "The save serializer chokes on non-ASCII characters in task names when the total serialized payload exceeds 64KB. The CSV import doesn't sanitize special characters, and the save path doesn't handle encoding errors gracefully — it panics instead of falling back to UTF-8 normalization.",
+    "acceptable_paths": [
+      "Identifying the CSV import as the trigger and encoding as the mechanism, even without discovering the 64KB size threshold",
+      "Identifying the size-dependent nature of the crash without pinpointing the encoding issue, as long as the CSV import connection is made"
+    ],
+    "environment": "macOS 14.2, TaskFlow v2.3.1, 16GB RAM, ~200 tasks in the list",
+    "workaround": "Remove the imported tasks or manually replace special characters with ASCII equivalents"
+  },
+  "expected_triage_extracts": [
+    "crash happens on manual save, not auto-save",
+    "related to imported CSV data with special characters",
+    "only happens with large task lists (200+ tasks)",
+    "started after CSV import",
+    "encoding-related error message",
+    "macOS 14.2, TaskFlow v2.3.1"
+  ]
+}

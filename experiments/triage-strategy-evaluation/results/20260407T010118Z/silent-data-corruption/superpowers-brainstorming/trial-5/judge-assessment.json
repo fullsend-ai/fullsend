@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are captured: ~50-100 of 2,000 affected records, truncation pattern, ~2-week timeline, nightly batch import as the source, 3+ digit country code pattern, US/UK numbers unaffected, and a strong hypothesis pointing at a recent normalizer/parsing change. The summary also adds useful extras: reproduction steps, a proposed test case, and identified information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage aligns with both acceptable diagnostic paths and comes extremely close to the canonical root cause. The root cause hypothesis explicitly names 'a regex that assumes ≤2 digit country codes' — essentially the exact bug. The nightly import, 2-week timeline, and country code length pattern are all correctly identified. No meaningful inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The two questions asked were exactly the right ones and sufficient to reach a strong hypothesis. One obvious follow-up was skipped: explicitly asking whether anything changed in the sync job or TaskFlow around 2 weeks ago. The agent did flag this as an information gap in the summary, showing awareness, but asking it directly could have elicited the normalizer change from the reporter."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, and both were essential. No redundancy, no low-value turns. The first established the data entry mechanism and temporal pattern; the second extracted specific examples. Nothing wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions were well-framed with structured multiple-choice options that guided the reporter without leading them. The second question was particularly effective: asking for concrete before/after examples with categorized corruption types prompted the reporter to notice the country code length pattern themselves ('Now that I think about it, our US and UK customers seem fine'). The reporter discovered the key diagnostic signal independently as a result of the question's structure."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis naming the likely mechanism (regex with ≤2 digit assumption), numbered fix steps, a concrete reproduction procedure, a proposed test case covering 1-, 2-, 3-, and 4-digit country codes, and clearly identified information gaps with notes on how to resolve them. A developer could open the sync job codebase and start looking at phone normalization logic immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question's multiple-choice corruption taxonomy prompted the reporter to independently notice the country code length pattern — a genuine diagnostic breakthrough driven by question design.",
+    "The root cause hypothesis named a regex with a ≤2-digit country code assumption, which matches the actual bug almost exactly despite never asking directly about recent code changes.",
+    "Exceptional actionability: reproduction steps, a proposed test case with all four country code lengths, and tiered fix recommendations give a developer everything needed to begin work immediately."
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly ask whether anything changed in the sync pipeline or TaskFlow around 2 weeks ago — the one question that could have surfaced the normalizer update directly from the reporter.",
+    "TaskFlow version (v2.3.1) and whether the sync integration is custom-built or provided were not established in conversation, though the agent correctly flagged the latter as an information gap."
+  ],
+  "most_insightful_question": "Can you share what the corrupted phone numbers actually look like compared to the correct ones in Salesforce? — The structured multiple-choice format and request for concrete examples led the reporter to notice the country code length pattern themselves, yielding the key diagnostic insight without the agent having to hypothesize it first.",
+  "missed_opportunities": [
+    "Were there any changes deployed to the sync job or TaskFlow in the past 2-3 weeks? This would have directly surfaced the normalizer update and potentially pinpointed the exact commit."
+  ]
+}

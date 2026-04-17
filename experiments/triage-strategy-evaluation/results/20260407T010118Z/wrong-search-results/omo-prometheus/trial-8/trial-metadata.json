@@ -1,0 +1,7 @@
+{
+  "scenario": "wrong-search-results",
+  "strategy": "omo-prometheus",
+  "reporter_profile": "cooperative",
+  "turns": 3,
+  "parse_failures": 0
+}

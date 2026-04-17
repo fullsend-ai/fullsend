@@ -1,0 +1,7 @@
+{
+  "scenario": "silent-data-corruption",
+  "strategy": "socratic-refinement",
+  "reporter_profile": "typical",
+  "turns": 3,
+  "parse_failures": 0
+}

@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Flaky task ordering tests in CI: non-deterministic sort order causes ~50% failure rate
+
+## Problem
+Tests introduced in the recent task ordering PR fail approximately 50% of the time in CI (GitHub Actions, Ubuntu 22.04) while passing consistently on the developer's local macOS machine. The failures show expected vs actual ordering mismatches.
+
+## Root Cause Hypothesis
+The task ordering tests assert a specific element order that is non-deterministic — most likely due to iterating over a Go map, using unstable sort on equal elements, or relying on goroutine scheduling order. The consistent local passes on macOS are coincidental (different memory layout, scheduler behavior, or hash seed) while the Linux CI runner exposes the non-determinism. The fact that it's exactly the tests from the ordering PR and the failures show order mismatches strongly points to a missing or unstable sort key.
+
+## Reproduction Steps
+  1. Check out the branch or main after the task ordering PR was merged
+  2. Run the task ordering test suite repeatedly (e.g., `go test -count=20 ./...` filtering to the relevant package)
+  3. On Linux (or with `-race`), failures should appear within ~20 runs showing order mismatches
+  4. Alternatively, trigger the GitHub Actions CI workflow multiple times and observe ~50% failure rate
+
+## Environment
+CI: GitHub Actions, Ubuntu 22.04, Go 1.22. Local (passing): macOS, Go 1.22.
+
+## Severity: high
+
+## Impact
+Blocking releases for the team. Every CI run has a ~50% chance of spurious failure, requiring re-runs and eroding trust in the test suite.
+
+## Recommended Fix
+Examine the task ordering code from the recent PR. Look for: (1) map iteration used to build ordered results without an explicit sort, (2) sort.Slice on equal elements without a tiebreaker key (Go's sort is not stable), (3) concurrent goroutines writing to a shared slice without synchronization. Add a deterministic tiebreaker to the sort (e.g., by ID or creation timestamp), or if order doesn't matter semantically, change the test assertions to be order-independent (e.g., sort both slices before comparing, or use element-set comparison).
+
+## Proposed Test Case
+Run `go test -count=100` on the ordering test package and verify 100% pass rate. Additionally, add a test that explicitly constructs tasks with identical sort keys to confirm the tiebreaker produces stable ordering.
+
+## Information Gaps
+- Exact test names and failure output (reporter described the shape but did not paste logs)
+- Whether the ordering code uses map iteration, unstable sort, or concurrency internally
+- Whether the PR introduced new sort logic or changed existing ordering behavior

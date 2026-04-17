@@ -1,0 +1,34 @@
+{
+  "title": "Email notifications arriving hours late",
+  "body": "Task assignment notifications used to arrive within a minute or two. For the past week, they've been arriving 2-4 hours late. This is causing people to miss deadlines because they don't know they've been assigned a task until hours later. It seems to be worse in the morning — notifications sent around 9-10am take the longest to arrive. Afternoon notifications are usually faster but still delayed.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for the detailed report — the time-of-day pattern is a really useful clue. To help us narrow down the cause: did anything change about a week ago when this started? For example, a deployment, a configuration change, or a change to your email provider or mail server? Also, are the delays happening only with email notifications, or are in-app notifications (if you use them) also delayed?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm not sure about specific deployments — I don't usually track that stuff. But now that you mention it, I think there was some new marketing email feature that started around the same time? We started getting these daily digest summary emails. Not sure if that's related or just a coincidence. As for in-app notifications, I mostly rely on email so I haven't really paid attention to those honestly. I can check next time if that helps."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That daily digest feature is a really interesting lead — the timing lines up well. It would help a lot if you could check whether in-app notifications are arriving on time when the emails are delayed. Next time you get a late email notification, could you look at whether the same notification showed up in the app earlier? That would tell us whether the delay is in the email system specifically or in the notification pipeline as a whole."
+    },
+    {
+      "author": "reporter",
+      "body": "Sure, I just checked actually. I had a task assigned to me this morning around 9:15 and the in-app notification showed up right away — I can see it was there when I looked at the dashboard. But the email for that same assignment didn't come through until almost noon. So yeah, it looks like it's just the email side that's slow."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — since in-app notifications are instant, we can be pretty confident the delay is isolated to the email sending path.\n\nThe daily digest feature is a strong suspect given the timing. Do you happen to know roughly when those digest emails go out? Specifically, are they sent in the morning — say around 8-9am? I'm wondering if a batch of digest emails might be clogging the email queue right before your 9-10am task notifications hit, which would explain why mornings are worse and afternoons improve as the queue drains.\n\nAlso, roughly how many people are on your team or org? That would help us gauge whether the digest volume could realistically cause this kind of backup."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah the digest emails come in around 9am, that sounds about right. And we have about 200 people in the org, so that's probably a decent number of digest emails going out. I didn't really think about it being related but the timing does match up pretty well now that you lay it out like that."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Email notifications delayed 2-4 hours, likely caused by daily digest feature saturating email queue\",\"problem\":\"Task assignment email notifications that previously arrived within 1-2 minutes are now delayed 2-4 hours. The delay is isolated to the email sending path — in-app notifications arrive instantly. The problem is worst in the morning (9-10am sends take the longest) and improves through the afternoon.\",\"root_cause_hypothesis\":\"The daily digest email feature, introduced approximately one week ago (coinciding with the start of the problem), sends bulk emails to ~200 org members around 9am. This likely saturates the email queue or hits rate limits on the mail provider, causing transactional notification emails to back up behind the digest batch. As the digest queue drains through the day, afternoon transactional emails experience shorter delays.\",\"reproduction_steps\":[\"Ensure the daily digest feature is active for an org with ~200 users\",\"Assign a task to a user around 9:15-9:30am (shortly after digest emails begin sending at ~9am)\",\"Observe that the in-app notification appears immediately\",\"Observe that the email notification arrives 2-3 hours later (around noon)\",\"Repeat the assignment in the afternoon and observe a shorter (but still present) delay\"],\"environment\":\"Organization with ~200 users, daily digest feature enabled, digest send time ~9am\",\"severity\":\"high\",\"impact\":\"Org-wide (200 users). Team members are missing task deadlines because they rely on email notifications for assignment awareness and those notifications arrive hours late.\",\"recommended_fix\":\"1. Investigate the email sending infrastructure — check whether digest emails and transactional emails share the same queue/worker pool. 2. Separate transactional emails (task assignments, etc.) into a higher-priority queue distinct from bulk/digest emails. 3. Consider rate-limiting or staggering digest sends to avoid saturating the mail provider. 4. Review mail provider rate limits and sending quotas to ensure the digest volume (~200 emails at 9am) isn't triggering throttling.\",\"proposed_test_case\":\"With the fix applied, assign a task at 9:15am (peak digest window) and verify the email notification arrives within the expected SLA (e.g., under 2 minutes), matching the in-app notification timing. Run this across multiple mornings to confirm consistency.\",\"information_gaps\":[\"Exact email infrastructure setup (shared queue vs. separate queues, mail provider identity and rate limits)\",\"Whether other transactional emails (password resets, comment notifications) are also delayed or only task assignments\",\"Server-side email queue metrics and logs from the past week to confirm the queue backup hypothesis\"]}"
+    }
+  ]
+}

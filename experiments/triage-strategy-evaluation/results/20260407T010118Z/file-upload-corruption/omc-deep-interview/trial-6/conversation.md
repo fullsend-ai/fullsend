@@ -1,0 +1,69 @@
+# Conversation: file-upload-corruption x omc-deep-interview
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — corrupted uploads are definitely something we want to get to the bottom of quickly.
+
+To start narrowing this down: when you download one of these corrupted PDFs and compare it to the original, is the file size roughly the same, or is it noticeably smaller (or even 0 bytes)? Also, does this happen with every PDF you upload, or only certain ones (e.g., larger files, files from a specific source)?
+
+---
+
+### reporter
+
+I don't know about file sizes, I haven't compared them byte by byte. I just know they're broken. My team uploads PDFs all day long and they keep coming back corrupted. Actually now that you mention it, I think some of the smaller ones might be okay? But honestly I'm not sure, it's hard to tell because we deal with so many files. All I know is this was working fine like a week or two ago and now it's a mess.
+
+---
+
+### triage-agent
+
+That detail about smaller files possibly being okay is really helpful — it gives us something concrete to test. Could you try a quick experiment for me? Upload a small PDF (say, under 1 MB) and a larger one (over 5 MB), then check whether both come back corrupted or just the larger one. That would help us narrow this down significantly.
+
+Also, you mentioned this started about a week or two ago. Did anything change around that time — a new browser, a different network, or did your team notice any update to the TaskFlow interface? Even a rough date of when it was last working would help us check what changed on our end.
+
+---
+
+### reporter
+
+Look, I don't have time to run experiments for you. I'm a support manager, not QA. I've got a team of 15 people who can't do their jobs because of this. But fine — I can tell you that yeah, the small PDFs do seem to work. I just had someone on my team upload a little one-pager and it was fine. The bigger reports and contracts though? Broken every time. As for what changed — nothing on our end. Same browsers, same everything. This is something on your side that broke. Can you just fix it?
+
+---
+
+### triage-agent
+
+Completely understand — and I appreciate the info, it's genuinely narrowing things down. One more thing that would help us zero in on the fix: does your team upload other file types besides PDFs (Word docs, images, spreadsheets)? If so, are those larger files also coming through corrupted, or is it only PDFs that break? That distinction will tell us whether this is a general upload issue or something specific to how we handle PDFs.
+
+---
+
+### reporter
+
+Honestly I'm not sure, we mostly deal with PDFs. I think someone mentioned a big spreadsheet looking weird the other day but I didn't look into it. PDFs are what's killing us right now. Can we focus on fixing that?
+
+---
+
+### triage-agent
+
+Totally — PDFs are the priority, and we're close to having enough to hand this to engineering. One last detail that'll really speed up the fix: roughly how big are the PDFs that come through broken? Are we talking 5 MB range, 20 MB, 50 MB+? Even a ballpark helps — it tells us exactly where in the upload pipeline to look. That hint about the spreadsheet is useful too, it suggests this isn't PDF-specific which actually narrows things down on our side.
+
+---
+
+### reporter
+
+I don't know exactly, I'm not checking file sizes. They're like multi-page contracts and reports, so probably a few megs? The little one-pagers work fine. Look, you've been asking me questions for a while now — can someone actually look at the upload system? Something clearly broke on your end about a week ago.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Large file uploads corrupted during upload — regression introduced ~1–2 weeks ago","problem":"PDF files (and possibly other large file types) are silently corrupted during upload. Uploaded files cannot be opened and are reported as damaged by PDF viewers. Small files (e.g., single-page PDFs under ~1 MB) upload successfully. The issue affects multiple users and began approximately 1–2 weeks ago with no client-side changes.","root_cause_hypothesis":"A server-side change approximately 1–2 weeks ago likely broke the upload pipeline for files exceeding a certain size threshold. Probable causes include: (1) a misconfigured or newly introduced request body size limit (e.g., nginx/reverse proxy max body size, or application-level multipart limit) that silently truncates large uploads, (2) a broken chunked transfer or multipart reassembly that loses data beyond a certain offset, or (3) a change to file storage or encoding (e.g., base64 encoding applied where binary stream was expected) that corrupts content proportionally to size. The fact that small files survive suggests truncation rather than total encoding failure.","reproduction_steps":["Upload a small PDF (single page, under 1 MB) to a task — verify it downloads and opens correctly","Upload a larger PDF (multi-page contract/report, likely 2–5 MB+) to a task","Download the larger PDF and attempt to open it — expect corruption/damage error","Compare uploaded and downloaded file sizes to check for truncation","Check server/deployment logs for changes made in the last 1–2 weeks to the upload pipeline, reverse proxy config, or file storage layer"],"environment":"Multiple users (team of 15), role is support/account management. Standard browsers, no recent client-side changes. Exact browser/OS not specified but issue is consistent across the team, ruling out client-specific causes.","severity":"high","impact":"A team of 15 people who rely heavily on file attachments for daily workflow is blocked from using large-file uploads. This affects core business operations (contracts, reports). Workaround is limited to sharing files outside TaskFlow, which defeats the purpose of the tool.","recommended_fix":"1. Review all deployment/config changes from the past two weeks, focusing on upload path: reverse proxy settings (max_body_size, timeout), application upload handlers, file storage service, and any middleware changes. 2. Test uploads at various file sizes (1 MB, 2 MB, 5 MB, 10 MB, 20 MB) to identify the exact corruption threshold. 3. Compare byte-level content of uploaded vs. downloaded files to determine whether the corruption is truncation, encoding error, or data mangling. 4. Check if the issue also affects non-PDF large files (spreadsheets, images) to confirm it is file-type-agnostic. 5. If truncation, check for recently changed size limits; if encoding, check for changes in content-type handling or binary/text mode processing.","proposed_test_case":"Upload files at various sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB, 20 MB) across multiple file types (PDF, XLSX, PNG). Download each and verify byte-for-byte integrity against the original using checksum comparison. Assert that all files round-trip without corruption. Add this as a regression test against the upload/download pipeline.","information_gaps":["Exact file size threshold where corruption begins (determinable via controlled upload testing)","Whether non-PDF large files are also affected (reporter hinted yes for spreadsheets but was uncertain)","Precise date the regression was introduced (determinable from deployment logs)","Whether corruption is truncation, encoding error, or something else (determinable by comparing original and downloaded byte content)"]}
+
+---

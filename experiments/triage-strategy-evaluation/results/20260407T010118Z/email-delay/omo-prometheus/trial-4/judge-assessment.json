@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: 2-4 hour delay, started ~1 week ago, worse at 9-10am and better in afternoon, digest batch email identified as cause, queue congestion identified, transactional and bulk emails sharing the same pipeline, and prior 1-2 minute baseline captured. The summary also adds useful information not in the expected list (20-30 minute afternoon delay, email header evidence, user abandoning email for dashboard)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest email feature as the cause and queue congestion as the mechanism, matching acceptable path 2. The recommended fix explicitly includes 'move digest emails to a separate, lower-priority queue' — which is precisely the canonical fix — even though the agent didn't have visibility into the priority queue internals. No inaccuracies are present; the hypothesis is directionally correct and consistent with ground truth."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about scope, notification channel isolation, recent changes, server-side vs. client-side delay (via headers), and digest email arrival timing. These questions systematically narrowed the cause. The only obvious gap is not asking about the size/volume of the digest batch, which would have further confirmed the queue saturation theory and is listed as an information gap in the summary."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three agent turns, each targeted: scoping + channel isolation + recent changes bundled efficiently in turn 1; a precise diagnostic step (email headers) in turn 2; a single confirmation question (digest email arrival time) in turn 3. No questions were redundant or low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The email header request was technically sophisticated and definitively localized the delay to TaskFlow's infrastructure rather than the email provider — information the reporter would not have volunteered. The digest email arrival time question was an elegant confirmation that the reporter would not have thought to offer. The channel isolation question (in-app vs. email) efficiently ruled out a broader notification system problem."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis, concrete reproduction steps (with timing), three specific remediation options ranked by approach, a proposed test case with measurable SLA criteria, clearly scoped information gaps, severity and impact assessment, and environment context. A developer could begin coding a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The email header diagnostic (turn 2) was technically precise and produced definitive evidence that the delay originated in TaskFlow's sending pipeline, not the email provider — a key fact that locked down the root cause location",
+    "The agent immediately recognized the reporter's offhand mention of digest emails as a 'promising lead' and pivoted the investigation around it, rather than pursuing a more generic checklist",
+    "The final summary is unusually complete: it includes reproduction steps, a test case with an SLA, three fix options, and explicit information gaps — immediately actionable by an on-call developer"
+  ],
+  "notable_weaknesses": [
+    "The digest batch volume (number of recipients) was never established during the conversation; knowing '~10K emails' would have strongly confirmed the queue saturation hypothesis and is flagged as an information gap",
+    "The agent did not confirm when the digest feature was introduced relative to when delays started — the reporter implied correlation but the agent accepted this without explicit confirmation"
+  ],
+  "most_insightful_question": "Could you check the email headers on one of the delayed notification emails — specifically the Date header versus when it landed in your inbox?",
+  "missed_opportunities": [
+    "Ask approximately how many recipients receive the daily digest email — volume is the key variable in confirming queue saturation",
+    "Explicitly confirm the digest feature launch date against the start of delays, rather than relying on the reporter's implicit correlation"
+  ]
+}

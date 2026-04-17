@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items clearly: delay magnitude (2-4 hours), onset (~1 week ago), morning/afternoon pattern, digest email connection, queue congestion, and original SLA (1-2 minutes). The priority queue mechanism specifically was not identified, but that's acknowledged as an information gap and is not required per the acceptable diagnostic paths."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — digest email job running at 9am saturating the shared queue and pushing transactional notifications behind the batch — aligns precisely with the second acceptable diagnostic path ('identifying the digest email feature as the cause and the queue congestion, even without understanding the priority system'). The afternoon-improvement explanation is also mechanically correct. No factual errors introduced."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions covered scope, change history, and the critical timing correlation. The agent correctly recognized that remaining unknowns (queue architecture, digest volume) are internal questions answerable from code and metrics, not from the reporter, and flagged them as information gaps. At most one follow-up was skipped: asking roughly how many digest emails go out could have further strengthened the hypothesis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, and both were load-bearing. The first combined scope and change-history in one turn. The second was precisely targeted at the key diagnostic variable (timing alignment). No wasted turns, no redundancy."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first efficiently eliminated user-specific causes. The second was particularly sharp: it framed the hypothesis explicitly ('help us determine whether the digest sending job is likely saturating the email queue') and used numbered options to make answering easy — prompting the reporter to make a connection they hadn't made themselves. This is exactly the kind of question that extracts information a reporter wouldn't volunteer."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally developer-ready: a clear root cause hypothesis, step-by-step reproduction steps keyed to the timing pattern, three ranked fix options (separate priority queue, rate-limit, reschedule), a concrete test case, and specific information gaps mapped to investigation methods (code inspection, production metrics, provider logs). A developer could begin investigating the queue implementation immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Immediately recognized the 9-10am timing pattern as a diagnostic signal and built the entire investigation around it",
+    "Connected the reporter's offhand mention of a new digest feature to the queue saturation hypothesis in a single turn",
+    "Explicitly acknowledged remaining unknowns as information gaps rather than guessing, and mapped each gap to a concrete investigation method",
+    "Produced an unusually complete structured summary — reproduction steps, ranked fixes, and a proposed test case — in only two question turns"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about the approximate volume of digest emails, which would have further strengthened the queue-saturation hypothesis",
+    "The priority queue mechanism was not surfaced, though this is acceptable per the diagnostic paths and is correctly flagged as an internal information gap"
+  ],
+  "most_insightful_question": "Do you know roughly what time the daily digest emails arrive? Specifically, I'm wondering if the delay window (9–10am) lines up with when digests are being sent out.",
+  "missed_opportunities": [
+    "Asking approximately how many users receive the daily digest (to estimate volume and plausibility of queue saturation)",
+    "Asking whether the reporter noticed the digest feature launch announcement or knew when exactly it went live, to tighten the onset date"
+  ]
+}

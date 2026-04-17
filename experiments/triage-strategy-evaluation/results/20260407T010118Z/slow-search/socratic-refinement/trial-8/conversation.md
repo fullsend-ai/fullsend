@@ -1,0 +1,45 @@
+# Conversation: slow-search x socratic-refinement
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! I'd like to understand a bit more about how you're using search so we can track this down.
+
+Can you walk me through what you were doing when you noticed the slowdown — what were you searching for, and what does a typical search look like for you? For example, are you searching by keyword across all your tasks, filtering by tags or dates, or something else? And when you say it 'used to be fast,' do you have a sense of roughly when things changed — was it after an update, after your task list grew past a certain point, or did it seem to happen suddenly?
+
+---
+
+### reporter
+
+Yeah, so I mostly search by typing keywords into the search bar and it searches across all my tasks. I've been using TaskFlow for about 2 years now so I have maybe 5,000 tasks in there. It used to be really snappy, like under a second. I think the slowdown started maybe 2 weeks ago? I'm not 100% sure but I think it was around when I updated to v2.3. I hadn't really thought about it until now but the timing lines up. I mainly notice it when I'm searching for stuff in task descriptions — like I'll search for a keyword I know is in a task's description and it just hangs for a while.
+
+---
+
+### triage-agent
+
+That's really helpful — the timing lining up with v2.3 is a strong clue.
+
+I'm curious about the variability you mentioned. You said it *sometimes* takes 10-15 seconds — are there times when it's faster than that, and if so, have you noticed any pattern? For instance, is the first search after opening TaskFlow the slowest one, or does it not matter? And is it just search that feels slow, or have you noticed any sluggishness elsewhere in the app — like when opening tasks, scrolling through lists, or loading the app itself?
+
+---
+
+### reporter
+
+Hmm, good question. Now that I think about it, it's pretty consistently slow when I search descriptions — I don't think the first search is notably worse than later ones. It's just always slow. But actually, I just realized something — when I search by task title it's still pretty fast. It's specifically when I'm searching through the description content that it bogs down. The rest of the app seems fine though, opening tasks and scrolling around is normal speed.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description search regression in v2.3: 10-15s latency on keyword search across task descriptions","problem":"Searching by keyword across task descriptions takes 10-15 seconds consistently, whereas title search remains fast (sub-second). The reporter has ~5,000 tasks and has been using TaskFlow for 2 years. The slowdown began approximately 2 weeks ago, likely coinciding with the v2.3 update.","root_cause_hypothesis":"v2.3 likely introduced a regression in the description search code path — most probably a dropped or broken database index on the description field, a switch from indexed/optimized search to a naive full-text scan, or a query change that bypasses an existing index. The fact that title search is unaffected and the rest of the app performs normally isolates the problem to the description search query specifically.","reproduction_steps":["Create or use an account with a large number of tasks (~5,000)","Search using a keyword known to appear in a task description","Observe response time (expected: 10-15 seconds)","Search using the same or different keyword that appears in a task title","Observe response time (expected: sub-second)","Compare the two query paths and their execution plans"],"environment":"TaskFlow v2.3 (likely), work laptop, ~5,000 tasks accumulated over 2 years","severity":"high","impact":"All users with non-trivial task counts are likely affected when searching description content. This is a core workflow — searching tasks by description keywords — and 10-15s latency makes it effectively unusable for iterative searching.","recommended_fix":"1. Diff the description search query/code path between v2.2 and v2.3 to identify what changed. 2. Run EXPLAIN/ANALYZE on the description search query against a dataset of ~5,000 tasks — look for sequential scans where an index scan is expected. 3. Check whether a full-text search index on the description field exists and is being used. 4. If an index was dropped or a query refactored to bypass it, restore indexed search for descriptions.","proposed_test_case":"Performance test: execute a keyword search against task descriptions with a dataset of 5,000+ tasks and assert response time is under 2 seconds. Include a regression test comparing title search and description search latency to ensure parity.","information_gaps":["Exact TaskFlow version not confirmed with certainty (reporter said 'I think' it was v2.3)","Database engine and configuration unknown (SQLite, PostgreSQL, etc.)","Whether this is a local/desktop app or connects to a hosted backend"]}
+
+---

@@ -1,0 +1,29 @@
+# Conversation: wrong-search-results x omc-deep-interview
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — that sounds really frustrating. To help us pin down what's going on, could you walk me through exactly what you see when you search for 'Q2 planning'? Specifically: where are you searching (the main search bar, a filtered view, the API?), are the archived tasks showing up *instead of* active ones or *in addition to* them, and do you have any filters or sort options applied when you search?
+
+---
+
+### reporter
+
+I'm using the main search bar at the top of the dashboard. The default filter is set to 'Active tasks only,' which is what I always use. When I search for 'Q2 planning,' I'm seeing archived tasks instead of active ones — it's not that they show up in addition, it's more like the results are flipped. The archived 'Q2 planning' task from last year shows up, but the active one I created yesterday doesn't. If I switch the filter to 'Archived tasks,' I actually see my active tasks there instead. It's like the filter is backwards. I haven't changed any sort options — everything is on the default settings.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search filter predicate is inverted — 'Active tasks only' returns archived tasks and vice versa","problem":"The search filter on the main dashboard search bar is applying the opposite filter logic. When set to 'Active tasks only' (the default), results contain archived tasks and exclude active ones. When switched to 'Archived tasks', active tasks appear instead. This affects all searches, not just specific queries.","root_cause_hypothesis":"The filter predicate for task status is inverted — most likely a boolean negation error or swapped enum/flag values in the search query builder. The 'active' filter value is being mapped to the 'archived' status (or vice versa), causing the WHERE clause or equivalent filter to select the wrong set of tasks.","reproduction_steps":["Log into TaskFlow and navigate to the main dashboard","Ensure the search filter is set to 'Active tasks only' (the default)","Create a new task with a distinctive name (e.g., 'filter-test-active')","Archive an older task or confirm one exists in archived state","Search for the distinctive name in the main search bar","Observe that the active task does NOT appear in results","Switch the filter to 'Archived tasks'","Observe that the active task now appears in the archived filter results"],"environment":"Main dashboard search bar with default settings. No custom sort or filter modifications. Affects multiple users (reporter and at least one teammate).","severity":"high","impact":"All users relying on the default search experience see incorrect results. Active tasks are effectively hidden from search unless users manually switch to the 'Archived' filter, which is counterintuitive. This undermines core search functionality and could cause users to miss important active tasks or act on stale archived ones.","recommended_fix":"Inspect the search query builder or filter mapping layer where the 'Active tasks only' and 'Archived tasks' filter values are translated into the underlying query predicate. Look for an inverted boolean (e.g., `is_archived` used where `!is_archived` was intended), swapped enum mappings, or a recent commit that flipped the filter logic. Check the filter-to-query mapping for all status filter options.","proposed_test_case":"Create both an active and an archived task with the same keyword. Search with 'Active tasks only' filter and assert only the active task is returned. Search with 'Archived tasks' filter and assert only the archived task is returned. Add this as a regression test for the search filter pipeline.","information_gaps":["Exact date or deployment when the behavior started (useful for git bisect but not required to find the bug)","Whether the issue affects API-based search or only the dashboard UI","Whether other filter options beyond Active/Archived are also inverted"]}
+
+---

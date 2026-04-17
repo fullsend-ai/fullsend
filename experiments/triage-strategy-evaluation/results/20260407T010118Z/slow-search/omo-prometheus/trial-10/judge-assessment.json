@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items were captured: ~5,000 tasks, description slow/title fast distinction, v2.2→v2.3 regression, ~2 weeks ago onset, 10-15 second latency, CPU spike during search, and long descriptions. The agent also surfaced additional signal (single-core saturation, spinner behavior, consistent not just cold-start) beyond what was strictly expected."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The agent identified both acceptable diagnostic paths simultaneously: the v2.2→v2.3 upgrade as the trigger and the title-vs-description performance split pointing to an indexing issue. The root cause hypothesis explicitly names 'full-text indexing dropped or not rebuilt during migration' and 'sequential scan,' which is precisely what happened (FTS5 replaced by a LIKE full table scan). The recommended fix even calls out SQLite FTS and EXPLAIN output. This is as close to the actual cause as one could get without access to the codebase."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered all high-value diagnostic axes: timing/trigger, data scale, query type differentiation, and CPU/UI behavior. OS and hardware specs were not collected but were correctly deprioritized and flagged as information gaps unlikely to affect root cause. The migration path question (automatic vs manual) was also skipped but noted. No important diagnostic signal was left uncollected that would have changed the hypothesis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three well-structured turns. The first two questions in turn 1 were efficiently combined and both essential. Turn 3's sub-question about whether the first search is slower than subsequent ones was marginally low-value (the answer was predictable and didn't change the diagnosis), but it was bundled with the more important CPU/UI question and didn't waste a turn. No redundancy otherwise."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 2's question about whether every search is slow or only certain query types was the diagnostic pivot of the entire conversation — the reporter would not have volunteered the title-vs-description distinction unprompted. Turn 3's CPU/UI behavior question showed clear reasoning: distinguishing a query execution bottleneck from a rendering bottleneck. Questions demonstrated genuine diagnostic thinking, not generic checklists."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate, concrete starting point: diff the search implementation between v2.2 and v2.3, check whether the FTS index on descriptions was dropped during migration, run EXPLAIN on the query, and reproduce with a 5,000-task dataset. Reproduction steps are precise. A proposed test case with pass/fail criteria is included. A developer could open the codebase and start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Elicited the title-vs-description performance distinction — the single most diagnostic data point — through a well-targeted question the reporter would not have volunteered",
+    "Connected the timing to the v2.2→v2.3 upgrade immediately in turn 1, establishing the regression frame early",
+    "The CPU spike question distinguished query-time bottleneck from render-time bottleneck with clear diagnostic intent",
+    "The final summary is exceptionally actionable: it names SQLite FTS specifically, recommends EXPLAIN output, includes precise reproduction steps and a proposed test case with a performance SLA"
+  ],
+  "notable_weaknesses": [
+    "The 'is the first search slower than subsequent ones' sub-question in turn 2 was marginally low-value — cold-start vs warm behavior is less relevant once a consistent full-scan bottleneck is suspected",
+    "OS and hardware details were not collected during the conversation, though this was appropriately flagged as low-priority in the information gaps"
+  ],
+  "most_insightful_question": "Is every search slow, or only certain queries? For example, does searching for a single common word take the same 10-15 seconds as searching for something very specific?",
+  "missed_opportunities": [
+    "Asking whether the upgrade was automatic or required running a migration script — this would directly inform whether the FTS index migration was expected to run and potentially didn't",
+    "Asking what platform/OS the work laptop runs — Ubuntu vs macOS vs Windows could affect SQLite build flags and FTS5 availability, though this was correctly deprioritized"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 6 of 8 expected items: the 30% affected rate, plus-address and email alias pattern, incognito/cookie-clearing workaround, redirect URI verification, and cross-app SSO working. Notably missing: the SameSite=Strict cookie drop on cross-origin redirect (the primary cause), and the browser dev tools observation showing the cookie being set then dropped. The email claim mismatch was partially captured as a hypothesis but not confirmed."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the email claim mismatch hypothesis, which is one of the acceptable diagnostic paths. The interpretation of incognito/cookie clearing as 'stale Okta session cookies interfering' is somewhat off — the actual mechanism is SameSite=Strict dropping the new session cookie on cross-domain redirect — but the overall direction is valid and would lead to productive investigation. Identifies an acceptable path even though it misses the primary SameSite cause."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about user patterns, deployment details, and server logs — all reasonable. However, the incognito-window clue is a near-classic SameSite signal and was not followed up. The agent noted it without asking why incognito helps or suggesting the reporter check the browser network tab for Set-Cookie headers. Resolving without pursuing that angle left the primary cause undiscovered."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three rounds, each adding meaningful information. The second question bundle (protocol, version, logs) was efficient. No questions were repeated or redundant. At most one question could have been reprioritized to focus on browser-side behavior earlier."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was genuinely diagnostic — asking about provisioning, groups, browsers, and pre-existing cookies showed real reasoning and directly surfaced the plus-address pattern. The second question efficiently gathered deployment context. The agent did not follow through on the incognito clue with a targeted question about cookie behavior in browser dev tools, which would have been the highest-value follow-up."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer can start investigating email claim normalization and user-record matching immediately from this summary. The recommended fix steps are specific and reasonable for the email mismatch angle. However, the primary cause — SameSite=Strict dropping the session cookie on cross-origin redirect — is absent. A developer following this summary would fix some users but likely not resolve the core issue for the majority of affected users without additional investigation."
+    }
+  },
+  "weighted_total": 3.50,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The first question immediately targeted the right diagnostic angle (user pattern, provisioning, pre-existing cookies) and directly elicited the plus-address and changed-email observations",
+    "Environment details were captured efficiently in a single turn",
+    "The triage summary is well-structured with reproduction steps, test cases, and specific actionable fix recommendations",
+    "Correctly flagged the email claim mismatch as the hypothesis and framed it precisely around claim comparison between providers"
+  ],
+  "notable_weaknesses": [
+    "The incognito-window clue — a near-classic SameSite=Strict signal — was noted but not pursued with a follow-up question about browser dev tools or cookie behavior",
+    "The SameSite=Strict cookie drop on cross-domain redirect, the primary cause, is entirely absent from the root cause hypothesis",
+    "The interpretation of the cookie-clearing fix as 'stale Okta session cookies' is plausible but misdirected; probing why incognito helped would likely have surfaced the real mechanism",
+    "No suggestion to examine the browser network tab for Set-Cookie headers on the redirect response, which would have been the most direct path to the SameSite discovery"
+  ],
+  "most_insightful_question": "Have you noticed any pattern that distinguishes the ~30% of affected users from those who can log in successfully? (first question — directly surfaced the plus-address and changed-email pattern)",
+  "missed_opportunities": [
+    "Ask why incognito mode sometimes works — this is a specific, diagnostic clue pointing to cross-origin cookie handling or SameSite restrictions",
+    "Ask the reporter to open browser dev tools (Network tab) and observe the Set-Cookie header on the redirect response from Entra back to TaskFlow",
+    "Ask whether the affected users see any specific error page or are they silently looped back to the login prompt — this could distinguish between a failed session creation and a cookie drop",
+    "Ask what claims Entra ID is configured to return (e.g., email vs. preferred_username vs. UPN) — this would directly illuminate the claim mismatch angle the agent correctly suspected"
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured nearly all expected information: linear memory growth (500MB→4GB+), v2.3 upgrade as trigger with notification system changes, ~200 active users, consistent daily pattern, restart as workaround. Missing one expected item: server specs (8GB RAM VM) were never asked about and not captured in the summary."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified v2.3 as the trigger and the notification system as the likely source, which matches an acceptable diagnostic path. It correctly named event listeners as a probable mechanism. The main inaccuracy is framing the leak as per-user-session rather than per-API-request — the ground truth is that every request registers a listener, not just every connection. This is a meaningful distinction but the overall hypothesis is directionally correct and well within the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The two questions asked were productive and sufficient to reach a solid hypothesis. However, some obvious follow-ups were left on the table: server specs were never asked (expected info), and rollback to v2.2 was not suggested as a quick verification step. The agent noted in information_gaps that rollback confirmation was missing, but didn't ask for it. Resolving without confirming the version hypothesis is a modest gap."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, both were directly productive. Question 1 elicited the v2.3/notification system lead. Question 2 confirmed persistent (non-session-scoped) retention. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question was genuinely insightful — asking whether memory drops on user disconnect directly probed teardown lifecycle behavior and is exactly the right diagnostic test for distinguishing session leaks from cumulative leaks. The first question was well-structured but somewhat broad; the multiple-choice format was helpful but the options weren't particularly surgical. Overall quality is strong."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The recommended fix is highly specific: examine the v2.3 diff, look for listeners registered on connect without removeListener on disconnect, subscription maps growing without pruning. The proposed test case is concrete and executable. A developer could start working from this summary immediately without needing additional context gathering."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Recognized the v2.3/notification timing correlation from the reporter's first response and immediately pivoted to a strong working hypothesis",
+    "Second question about memory persistence on disconnect was precisely the right diagnostic probe — it distinguished session-scoped from request-scoped leaks and confirmed no teardown is occurring",
+    "Recommended fix includes specific code patterns to search for (listeners without removeListener, maps without pruning), making it immediately actionable",
+    "Proposed integration test case is concrete and would directly validate the fix"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM VM) were never asked about and are absent from the summary — a developer sizing a hotfix or assessing risk needs this",
+    "Framed the leak as per-user-session rather than per-API-request, which is the more precise ground truth — could lead a developer to look in connection handlers rather than request middleware",
+    "Did not suggest rollback to v2.2 as a quick verification step, which would be low-effort confirmation of the version hypothesis"
+  ],
+  "most_insightful_question": "When a user logs out or closes their browser, does the server-side memory stay elevated, or does it drop slightly?",
+  "missed_opportunities": [
+    "Ask about server hardware/specs to complete the environment picture",
+    "Ask whether they had attempted or could attempt a rollback to v2.2 to confirm the version as the trigger",
+    "Ask about approximate request rate per user to estimate leak accumulation rate — would have strengthened the per-request vs per-session framing"
+  ]
+}

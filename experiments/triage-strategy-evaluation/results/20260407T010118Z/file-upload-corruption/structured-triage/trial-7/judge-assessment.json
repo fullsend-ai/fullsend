@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent captured: small PDFs work fine, large PDFs are corrupted, multiple customers affected. Missing: when the issue started (never asked — would have surfaced the 1-week timeline and recent proxy update), whether other large file types are affected (never asked), binary mangling vs. truncation distinction, and the exact size threshold. Four of seven expected extracts are present."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified the size-dependent behavior and hypothesized different upload paths / chunked transfer encoding issues, which aligns with acceptable path 1. The recommended fix even calls out checking Content-Type headers, which is exactly the actual cause. The hypothesis leans toward truncation rather than encoding corruption, which is slightly off the actual mechanism, but the diagnostic direction is squarely on an acceptable path."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after only two exchanges. It never asked when the problem started (critical — would have surfaced the 1-week-old proxy update), never asked whether other large file types are affected (would have pointed to an upload-path-level issue rather than PDF-specific handling), and never requested a sample file or size data. These are obvious follow-ups that were left on the table."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "Only two questions were asked. The first was productive and yielded the size correlation. The second (browser and OS) was low-value for what is clearly a server-side corruption issue; the reporter correctly pushed back. One wasted turn out of two is notable, though the overall turn count is low."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was well-structured and included a targeted size-probe ('large files, scanned documents') that successfully elicited the key diagnostic clue. The second question was generic and client-focused for a server-side issue. Both questions could apply to many bugs and don't demonstrate deep knowledge of upload pipeline architecture. No question probed timing or other file types."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is well-structured and highly actionable: reproduction steps are concrete, the recommended fix lists specific components to inspect (nginx config, upload handler, headers including Content-Type), and the proposed test case includes a checksum-based file size ladder. A developer could begin investigation immediately. Minor gap: no mention of checking recent proxy change history."
+    }
+  },
+  "weighted_total": 3.20,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly recognized and highlighted the size correlation as the key diagnostic signal after the reporter volunteered it",
+    "Recommended fix explicitly calls out checking Content-Type headers on upload/download paths, which directly targets the actual root cause",
+    "Proposed test case with SHA-256 checksums and a file size ladder is methodologically sound and immediately executable",
+    "Appropriately escalated severity to high given multi-customer impact"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the issue started — this single question would likely have surfaced the 1-week-old proxy update and pointed directly at a recent change as the trigger",
+    "Never asked whether other large file types (images, spreadsheets) are affected — a yes answer would have ruled out PDF-specific handling and focused suspicion on the upload path itself",
+    "Second question (browser and OS) was low-value for a server-side binary corruption issue and consumed a turn that could have probed timing or file type breadth",
+    "Resolved without any server-side context (logs, recent deployments, infrastructure changes)"
+  ],
+  "most_insightful_question": "Does this happen with all PDFs or only certain ones (e.g., large files, scanned documents)?",
+  "missed_opportunities": [
+    "When did this start? Have there been any recent changes or updates to the system in the past few weeks?",
+    "Do other large file types — images, Excel files, ZIP archives — also come through corrupted, or is this specific to PDFs?",
+    "Can you check the file size of a corrupted PDF versus what it should be? Does the downloaded file appear smaller, larger, or the same size as the original?"
+  ]
+}

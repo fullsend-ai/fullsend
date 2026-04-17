@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Memory leak in v2.3 real-time notifications: per-event allocation grows unbounded during active usage
+
+## Problem
+After upgrading to TaskFlow v2.3, the server's memory climbs linearly from ~500MB to 4GB+ over the course of a workday, directly correlated with user activity. This causes page loads to exceed 10 seconds and API timeouts by late afternoon, requiring a daily restart. The pattern is consistent day-over-day, growth stops outside business hours, and started exactly when v2.3 was deployed.
+
+## Root Cause Hypothesis
+The 'improved real-time notifications' feature in v2.3 is allocating memory per notification event (e.g., storing notification payloads, registering event listeners, or buffering broadcast messages) that is never freed. WebSocket connections themselves are properly managed (~1 per active user), so the leak is in the per-event processing path rather than the connection lifecycle. At ~200 users × ~25 requests/hour, that is roughly 5,000 events/hour, each likely retaining a small allocation that accumulates to gigabytes over a full workday.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 with real-time notifications enabled
+  2. Connect ~150-200 concurrent users (or simulate equivalent load generating ~25 API requests/user/hour)
+  3. Monitor memory via Grafana or `ps` over several hours
+  4. Observe steady linear memory growth (~400-500MB/hour during active usage) that stops when user activity stops
+
+## Environment
+TaskFlow v2.3 (upgraded from v2.2), self-hosted on Ubuntu 22.04 VM with 8GB RAM, ~200 active users, real-time notifications (WebSocket push) and email notifications enabled, built-in task scheduler running
+
+## Severity: high
+
+## Impact
+All 200 active users experience degraded performance daily, with the application becoming effectively unusable by late afternoon. The team has been performing daily manual restarts for a week. No data loss, but significant productivity impact.
+
+## Recommended Fix
+Investigate the v2.3 diff for the real-time notifications subsystem. Look for: (1) per-notification objects appended to in-memory collections (e.g., notification history, broadcast queues) that are never pruned or capped, (2) event listeners or callbacks registered per-event that are never removed, (3) notification payloads retained in memory after delivery rather than being garbage collected. Compare the notification broadcast/dispatch path between v2.2 and v2.3 to identify what 'improved' means and what new allocations were introduced. A heap dump taken mid-afternoon on a busy day would pinpoint the leaking object type.
+
+## Proposed Test Case
+Create a load test that simulates 200 concurrent WebSocket-connected users generating task updates at ~25 requests/user/hour for 4 simulated hours. Assert that server RSS memory does not exceed startup memory + a reasonable bounded threshold (e.g., 200MB). This test should pass on v2.2 and fail on v2.3 to confirm the regression, then pass again after the fix.
+
+## Information Gaps
+- No heap dump or profiler output to identify the specific leaking object type
+- v2.2 rollback not yet tested to definitively confirm the regression
+- The reporter planned to disable real-time notifications on Wednesday — that result would further confirm the hypothesis but is not needed to begin investigation

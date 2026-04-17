@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Memory leak causes progressive server slowdown after upgrading to TaskFlow v2.3
+
+## Problem
+Self-hosted TaskFlow instance experiences a consistent daily memory leak, with RAM usage climbing from ~500MB at startup to 4GB+ by end of day. This causes page loads to exceed 10 seconds and API timeouts, requiring a daily server restart. The problem affects approximately 200 active users.
+
+## Root Cause Hypothesis
+A memory leak was introduced in TaskFlow v2.3. The reporter noted the problem started approximately one week ago, coinciding with their upgrade from a prior version to v2.3. The consistent daily pattern and linear memory growth strongly suggest a per-request or per-session resource that is not being properly released (e.g., unclosed database connections, accumulated caches, event listener leaks, or unreleased session data).
+
+## Reproduction Steps
+  1. Install or upgrade to TaskFlow v2.3 on a server with PostgreSQL on a separate host and Nginx as a reverse proxy
+  2. Start the TaskFlow server and note baseline memory usage (~500MB)
+  3. Allow normal usage by multiple users throughout the day
+  4. Monitor memory usage over several hours — expect consistent climb toward 4GB+
+  5. Observe progressive degradation in page load times and API response times as memory grows
+
+## Environment
+TaskFlow v2.3, Ubuntu 22.04, 8GB RAM VM, PostgreSQL (separate host), Nginx reverse proxy, ~200 active users, standard install from docs
+
+## Severity: high
+
+## Impact
+All ~200 active users experience degraded performance daily, with the application becoming effectively unusable by late afternoon. Requires manual daily restart as a workaround, causing downtime and operational burden.
+
+## Recommended Fix
+Investigate changes introduced in v2.3 for memory management regressions. Focus on: (1) database connection pooling — verify connections to PostgreSQL are being properly returned to the pool; (2) in-memory caches or session stores that may grow unboundedly; (3) event listeners or timers that accumulate over time; (4) any new middleware or background processes added in v2.3. A heap snapshot comparison between startup and after several hours of usage would pinpoint the leaking objects.
+
+## Proposed Test Case
+Run a load test simulating 200 concurrent users performing typical operations over a sustained period (e.g., 4-8 hours or accelerated via rapid request cycling). Monitor memory usage and assert that it remains within a bounded range (e.g., does not exceed 2x baseline) and does not show a monotonic upward trend. Compare results between v2.2.x and v2.3 to confirm the regression.
+
+## Information Gaps
+- No server-side logs or error messages available — may reveal specific warnings, OOM events, or connection pool exhaustion messages
+- Exact prior version before the v2.3 upgrade is unknown (needed to diff changelogs)
+- Runtime details unclear — reporter used 'standard install from docs' but specific Node.js/runtime version not confirmed
+- Whether the memory leak occurs under idle conditions or only under active user load is not yet known

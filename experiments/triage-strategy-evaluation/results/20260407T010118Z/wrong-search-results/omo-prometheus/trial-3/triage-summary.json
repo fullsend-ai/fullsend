@@ -1,0 +1,22 @@
+{
+  "title": "Search filter for active/archived tasks is inverted since v2.3.1 migration",
+  "problem": "After the v2.3.1 update and its associated migration, the search filter that controls active vs. archived task visibility is completely inverted. Selecting 'Active tasks only' returns archived tasks, and selecting 'Archived only' returns active tasks. The underlying task statuses are correct — this is purely a search/filter-layer issue.",
+  "root_cause_hypothesis": "The v2.3.1 migration likely swapped the flag values or enum mappings that the search index uses to distinguish active from archived tasks. The task records themselves retain the correct status (confirmed by viewing task detail), so the corruption is isolated to either the search index entries or the filter predicate logic. Most likely the migration inverted a boolean flag (e.g., `is_archived` written as `true` for active tasks and `false` for archived) or swapped enum values when re-indexing.",
+  "reproduction_steps": [
+    "Apply the v2.3.1 update/migration to a TaskFlow instance with both active and archived tasks",
+    "Open TaskFlow web and use the search feature to search for any term matching both active and archived tasks (e.g., 'Q2 planning')",
+    "Observe that with the default 'Active tasks only' filter, archived tasks appear instead of active ones",
+    "Toggle the filter to 'Archived only' and observe that active tasks appear instead",
+    "Toggle to 'All tasks' and observe both are present but the status labels on individual tasks are correct"
+  ],
+  "environment": "TaskFlow web client, v2.3.1 (post-migration). Confirmed on at least two user accounts.",
+  "severity": "high",
+  "impact": "All users on the web client who use search are affected. Search is functionally broken for anyone relying on the default 'Active tasks only' filter, which is the default experience. Users with many archived tasks (reporter has ~300 archived vs 150 active) see mostly irrelevant results. Workaround exists — users can manually invert the filter or use 'All tasks' — but it is confusing and error-prone.",
+  "recommended_fix": "Investigate the v2.3.1 migration script for changes to the search index schema or re-indexing logic. Look for an inverted boolean or swapped enum values in the active/archived flag written to the search index. Fix the migration (or write a corrective migration) to re-index tasks with the correct flag values. Also audit the search filter predicate itself in case the inversion is in the query layer rather than the data layer.",
+  "proposed_test_case": "Create a test with a mix of active and archived tasks. Run the v2.3.1 migration. Assert that a search query with the 'Active tasks only' filter returns only tasks with status=active, and 'Archived only' returns only tasks with status=archived. Additionally, add a regression test to the search filter logic that verifies the filter predicate maps 'Active tasks only' to the correct index value.",
+  "information_gaps": [
+    "Exact contents of the v2.3.1 migration script (requires codebase inspection)",
+    "Whether the search index is a separate data store (e.g., Elasticsearch) or queries the primary database directly",
+    "Whether other filter dimensions (e.g., by project, by assignee) are also affected or only the active/archived flag"
+  ]
+}

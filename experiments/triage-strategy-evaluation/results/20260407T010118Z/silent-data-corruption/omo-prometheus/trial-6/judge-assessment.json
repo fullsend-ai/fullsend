@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: affected record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US numbers unaffected, and v2.3.1 as the change vector. The summary adds substantial bonus value with reproduction steps, a proposed test case, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage not only satisfies both acceptable diagnostic paths (import as source + 2-week timeline tied to a recent change) but goes further: it correctly hypothesizes the exact regex form `\\+(\\d{1,2})` as the likely culprit, which matches the actual bug almost exactly. The root cause hypothesis is essentially correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the three most important questions and resolved with a strong evidential basis. One notable gap: it never asked whether manually corrected numbers are being re-corrupted on subsequent nightly syncs — a practically urgent question for the customer. This was listed as an information gap rather than asked directly, which is a slight miss given the ongoing nature of the corruption."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each with a distinct and essential diagnostic goal: establish the corruption pattern, identify the data entry pathway, and narrow the change that caused it. No redundancy, no low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question reflected genuine diagnostic reasoning. Turn 1 requested concrete before/after examples to surface the pattern. Turn 3 separated the hypothesis space cleanly — manual entry vs. automated import — a pivotal question that the reporter would not have volunteered. Turn 5 drilled into the import mechanism and change history with appropriate specificity."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it names the likely code artifact (the normalizer regex), provides a four-step fix plan, includes reproduction steps with specific test phone numbers, proposes a concrete unit and integration test, and identifies remaining unknowns so a developer knows exactly what to confirm first."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Identified the exact corruption pattern (+353 → +35, +1268 → +12) from the first reporter response and correctly inferred a 2-digit ceiling immediately",
+    "The pivot question in turn 3 — asking whether numbers came from a bulk import vs. manual entry — was maximally efficient and unlocked the rest of the investigation",
+    "Root cause hypothesis named the likely regex form almost exactly matching the actual bug, giving developers a precise starting point",
+    "Proposed test case covers country codes of 1, 2, 3, and 4 digits — directly targeting the failure mode"
+  ],
+  "notable_weaknesses": [
+    "Never explicitly asked whether manually corrected phone numbers get re-corrupted on the next nightly sync — an urgent operational question for the customer's support team",
+    "Did not confirm whether UK (+44) numbers are also unaffected, which would have further validated the 2-digit boundary hypothesis (mentioned in expected extracts)"
+  ],
+  "most_insightful_question": "Were these phone numbers recently touched by anything — a bulk import, a CSV upload, a data migration, or a software update to TaskFlow? Or are these numbers that were entered manually through the UI and later found to be corrupted without anyone editing them?",
+  "missed_opportunities": [
+    "Ask whether manually corrected numbers revert to the corrupted form after the next nightly sync — this determines urgency of disabling the import",
+    "Ask whether UK (+44, 2-digit code) numbers are also unaffected, which would sharpen the boundary condition from '1-digit codes OK' to '1-2 digit codes OK'"
+  ]
+}

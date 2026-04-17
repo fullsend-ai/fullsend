@@ -1,0 +1,61 @@
+# Conversation: flaky-ci x omc-deep-interview
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it's blocking releases.
+
+To start narrowing this down: could you share the error output from one of the recent failing CI runs? Specifically, which tests are failing and what the failure messages look like? Even a couple of examples would help — I'm trying to understand whether these are timeouts, assertion errors, connection failures, or something else entirely.
+
+---
+
+### reporter
+
+I don't have the logs in front of me right now but they're assertion errors, not timeouts or anything like that. It's the task ordering tests that fail — the ones from that PR we merged last week. They expect tasks to come back in a certain order and sometimes they don't. Look, I've already spent way too long on this. They pass every single time on my machine. Can someone just look at the CI config?
+
+---
+
+### triage-agent
+
+Totally understand — I don't want to keep you going in circles on this. One thing that would really help me point the right person at the right thing: does your CI use a different database than your local setup? For example, SQLite locally but PostgreSQL in CI, or anything like that? And do your CI tests run in parallel while your local runs might be sequential?
+
+That pairing — task ordering assertions plus "passes locally, not in CI" — is almost always an environment difference in how the database returns rows when there's no explicit sort. Knowing this will let a developer go straight to the fix rather than spelunking through CI config.
+
+---
+
+### reporter
+
+No, it's not a database thing. We're not even using a database for these tests — it's all in-memory data structures. And I don't think parallelism is the issue either, I've run them with -parallel 1 locally and they still pass. Look, I already told you — the tests that fail are the new ones from the PR we merged like 4 days ago. The old tests never had this problem. Can someone just look at what's different between our local dev config and the CI environment? That's where the problem is going to be.
+
+---
+
+### triage-agent
+
+I hear you — I think we're actually close to pointing a developer at the right thing, and it may turn out to be a quick fix in the test code rather than a CI config issue.
+
+One thing that would clinch it: in those new task ordering tests, how is the ordered list being built before the assertion? For example, are the tasks being collected from a map or set, or sorted with a comparator? And is the test asserting on the exact position of every task, or just that certain tasks come before others?
+
+I'm asking because with in-memory data structures, intermittent ordering differences almost always come down to either iterating a hash map (whose order isn't guaranteed across runs) or using a sort that doesn't break ties deterministically. If that's what's happening, it would explain why it passes locally every time — some runtimes stabilize these in certain environments but not others.
+
+---
+
+### reporter
+
+I mean yeah, I think they pull tasks out of a map before checking the order. I didn't write those tests myself but that sounds about right from what I saw in the PR. They check exact ordering. But like I said, they pass every time locally so I don't see how that's the problem. Can we just get someone to diff the local dev config against the CI config? I'm pretty sure that's where the answer is.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky CI: task ordering tests fail intermittently due to non-deterministic map iteration","problem":"Task ordering tests introduced in a PR merged approximately 4 days ago fail intermittently in CI with assertion errors, while passing consistently on the developer's local machine. The failures are blocking releases.","root_cause_hypothesis":"The new tests collect tasks from a map (hash map) and then assert exact ordering. Map iteration order is not guaranteed and varies across runs and environments. The local development runtime likely stabilizes map iteration order (e.g., due to consistent memory layout, Go map seed, or JVM internals), while the CI environment does not, causing intermittent assertion failures when tasks come back in a different order.","reproduction_steps":["Identify the PR merged ~4 days ago that introduced the task ordering tests","Locate the test(s) that pull tasks from a map and assert exact ordering","Run the test suite repeatedly (e.g., 50-100 iterations) — the failure should eventually appear, especially with different random seeds or in a CI-like environment","Alternatively, inspect the test code for map iteration without explicit sorting before order assertions"],"environment":"CI environment (specific runner not confirmed). Failure does not reproduce locally. Tests use in-memory data structures, no database involved. Parallelism is not the cause (verified with -parallel 1 locally).","severity":"high","impact":"Blocking releases for the team. Failures are intermittent, eroding CI trust and causing developer frustration. All team members shipping through this pipeline are affected.","recommended_fix":"In the test code from the recent PR, add an explicit deterministic sort (e.g., by task ID, name, or creation timestamp) after collecting tasks from the map and before asserting ordering. Alternatively, if the product behavior itself should guarantee an order, the fix belongs in the production code — ensure the task retrieval method returns a sorted collection rather than raw map values. If exact order is not part of the contract, switch assertions to order-independent checks (e.g., assert set equality instead of sequence equality).","proposed_test_case":"Run the corrected ordering tests 100 times in a loop (or use a test repetition flag like `go test -count=100` or equivalent). All runs should pass consistently. Additionally, verify that the test correctly fails when the ordering is actually wrong (not just non-deterministic).","information_gaps":["Exact test file and test function names (discoverable from the PR merged ~4 days ago)","Specific map type and language runtime (Go, Java, Python, etc.) — affects exact fix syntax but not fix direction","Whether the ordering is a product requirement or just a test artifact — determines whether the fix goes in test code or production code"]}
+
+---

@@ -1,0 +1,23 @@
+{
+  "title": "Task assignment email notifications delayed 2-4 hours, correlating with new daily digest feature",
+  "problem": "Transactional email notifications for task assignments, which previously arrived within 1-2 minutes, are now delayed by 2-4 hours. The issue is team-wide, started approximately one week ago, and is worst in the morning (9-10am). The onset coincides with the introduction of a new daily digest/marketing summary email feature.",
+  "root_cause_hypothesis": "The new daily digest emails (introduced ~1 week ago) are likely sharing a queue or worker pool with transactional task-assignment notifications. Digest emails are probably batched and sent in the morning, saturating the email sending capacity and causing transactional notifications to back up behind them. Afternoon notifications are less delayed because the digest backlog has cleared by then.",
+  "reproduction_steps": [
+    "Assign a task to a user in the morning (9-10am)",
+    "Note the timestamp of the assignment",
+    "Check when the email notification is received",
+    "Compare with the same test in the afternoon (2-3pm)",
+    "Observe that morning notifications are delayed 2-4 hours while afternoon delays are shorter"
+  ],
+  "environment": "Affects all users on the team; all on the same company email domain. Standard TaskFlow deployment with recently added daily digest email feature.",
+  "severity": "high",
+  "impact": "Team-wide. Users are missing task assignment deadlines because they don't learn about assignments for hours. Directly impacts team productivity and deadline compliance.",
+  "recommended_fix": "1. Check whether daily digest emails and transactional notifications share the same email queue/worker pool. 2. If so, separate them — use a dedicated high-priority queue for transactional notifications and a lower-priority queue for bulk digests. 3. Review the scheduling of digest emails — if they're all enqueued at once in the morning, implement rate limiting or stagger their delivery. 4. Consider checking email provider rate limits to ensure the digest volume isn't triggering throttling.",
+  "proposed_test_case": "Send a task assignment notification while a batch of digest emails is being processed. Verify the assignment notification is delivered within 2 minutes regardless of digest queue depth. Also verify under load: enqueue 1000 digest emails, then send a transactional notification, and confirm the transactional notification is not blocked behind the digest batch.",
+  "information_gaps": [
+    "Exact email sending infrastructure (self-hosted SMTP, SendGrid, SES, etc.)",
+    "Whether digest emails and transactional emails actually share a queue (needs code/infra verification)",
+    "Exact time the daily digest job runs",
+    "Email provider rate limits and whether they're being hit"
+  ]
+}

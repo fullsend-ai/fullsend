@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, ~1 week onset, morning/afternoon pattern, digest email correlation, queue congestion hypothesis, transactional/bulk competition, and original 1-2 minute baseline. The summary also adds team size (~200 users), severity classification, and a proposed test case beyond what was strictly required."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest email feature as the cause and queue congestion as the mechanism — matching both acceptable diagnostic paths. The root cause hypothesis is essentially correct: same queue, morning batch, backlog draining by afternoon. The agent even suggests prioritizing real-time over digest emails, which maps directly to the actual fix (priority inversion correction). No inaccuracies introduced."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after one question round, which is defensible because the reporter's first reply contained the smoking gun (digest email timing correlation). The agent noted remaining information gaps (queue metrics, digest schedule, rate limiting) and included a validation test case. One skipped opportunity: explicitly asking the reporter to confirm whether the digest sends at 9am specifically, which would have further strengthened the hypothesis before resolving."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "A single compound question gathered version, notification channel, affected scope, and recent changes — all four sub-questions were necessary and non-redundant. No wasted turns. Resolution was appropriately swift once the reporter surfaced the digest email connection."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The 'Has anything changed recently' sub-question — especially paired with specific examples like email provider or TaskFlow updates — was the pivotal diagnostic move. It directly elicited the digest email detail the reporter had not volunteered. The other sub-questions (version, channel, scope) were all diagnostic rather than generic boilerplate. The framing acknowledged the reporter's timing observation upfront, building rapport and setting context for the questions."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin investigating immediately: the summary identifies the specific subsystem (email queue), the likely contention source (digest batch vs. transactional), three concrete fix options (separate queues, rate-limit investigation, scheduling review), a validation test case (disable digest, measure latency), and reproduction steps. Information gaps are explicitly enumerated so nothing is left ambiguous."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "The 'recent changes' question directly surfaced the digest email as a suspect without the agent needing to guess at it — excellent diagnostic framing",
+    "Root cause hypothesis precisely matches both acceptable paths and the actual mechanism, reached in a single question round",
+    "Triage summary is highly actionable: three concrete fix options, a validation test (disable digest), and explicit information gaps for developers",
+    "Correctly identifies the morning/afternoon asymmetry as a queue drain pattern rather than a time-of-day load issue"
+  ],
+  "notable_weaknesses": [
+    "Did not confirm the exact digest send time (9am) before resolving — the reporter only said 'about a week ago' started the digest, not when it fires daily",
+    "No explicit workaround offered to the reporter (e.g., check the TaskFlow dashboard for assignments), though the proposed test case implies disabling the digest"
+  ],
+  "most_insightful_question": "Has anything changed recently in your setup (e.g., email provider, TaskFlow update, new mail filtering rules)?",
+  "missed_opportunities": [
+    "Confirm the exact scheduled send time of the digest email (is it 9am?) to directly correlate with the peak delay window",
+    "Ask whether other notification types (due date reminders, comments) are also delayed, to confirm the issue is queue-wide rather than assignment-specific",
+    "Offer an immediate workaround (check TaskFlow dashboard) to mitigate impact while the root cause is investigated"
+  ]
+}

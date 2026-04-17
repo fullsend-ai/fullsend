@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items: task count (~5,000), title-vs-description performance split, v2.2→v2.3 regression, ~2 weeks ago onset, 10-15 second latency, and long descriptions. The one gap is CPU spiking to 100% on one core during searches — this was never asked and would have been additional confirmatory evidence of a full-table scan."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is strikingly accurate. The agent explicitly named 'switch from indexed search to naive full-table scan' as the likely cause, which is precisely what happened (FTS5 index abandoned for LIKE queries). It also correctly identified title search as unaffected and attributed the regression to the 2.3 upgrade. This satisfies both the canonical root cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the highest-value questions and reached a well-grounded hypothesis. The one notable omission is CPU behavior during search — asking whether the machine slows down or fans spin up would have confirmed a computation-bound full scan. OS/hardware details were documented in ground truth but aren't critical for diagnosis. Resolving after 3 rounds was appropriate given the quality of information gathered."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each pulling distinct and essential information. No question was redundant or low-value. The final turn efficiently combined a summary confirmation with the task-count question, avoiding an extra round."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question was the standout: framing around 'common word vs specific' and 'partial vs all-at-once' results was clever and drew out the title-vs-description distinction without leading the reporter — information they wouldn't have volunteered. The first question was a solid open-ended trigger probe. Minor deduction: the 'common vs specific word' framing was a near-miss (the real axis was title vs description, not query specificity), though it still worked. No question demonstrated confusion or poor targeting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate next step: diff the search implementation between 2.2 and 2.3, specifically looking for FTS-to-LIKE changes or dropped indexes on the description field. Reproduction steps are specific and realistic. The proposed test case is concrete and would catch future regressions. The information_gaps section flags remaining uncertainties without overstating them."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The root cause hypothesis independently arrived at the FTS-vs-LIKE framing without any hints, which is the actual cause",
+    "The title-vs-description distinction was surfaced in just the second question through clever indirect framing",
+    "The final summary is developer-ready: it includes a proposed test case, specific fix directions, and clearly scoped information gaps",
+    "Exceptional economy — 3 turns with no wasted questions and no missed consolidation opportunities"
+  ],
+  "notable_weaknesses": [
+    "CPU behavior during search was never asked — a 100% single-core spike would have strongly confirmed a sequential full-table scan hypothesis",
+    "OS/environment details (Ubuntu 22.04, ThinkPad T14) were not captured, though these are lower priority for this kind of regression",
+    "The version numbers were flagged as uncertain in information_gaps but the agent never followed up to ask the reporter to confirm their exact version"
+  ],
+  "most_insightful_question": "When you search, is it slow every time regardless of what you type, or are there certain kinds of searches that are worse than others? For instance, does searching for a single common word feel different from searching for something very specific? And does it feel like the delay is before any results start appearing, or do partial results show up quickly and then it hangs while loading more?",
+  "missed_opportunities": [
+    "Ask whether the machine slows down visibly (fans, lag) during the search hang — would confirm CPU-bound full scan",
+    "Ask whether the reporter has tried reindexing or clearing any app cache",
+    "Ask the reporter to confirm their exact TaskFlow version (e.g., check About screen) rather than accepting 'I think 2.3'"
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured 5 of 7 expected items clearly: archived tasks appearing in active filter, active tasks missing, issue tied to recent v2.3.1 update, affects all users, and filter behavior is inverted. Missing: whether individual task pages show correct archive status (a key diagnostic clue), and the search index hypothesis was not reached — the agent pointed toward application logic rather than index infrastructure."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified v2.3.1 as the trigger and the archive filter as the broken component, which matches an acceptable diagnostic path. The root cause hypothesis includes 'a migration that swapped the status flag values,' which is directionally close to the actual cause (inverted index field mapping during migration rebuild). The agent pointed toward application code rather than the search index, which is off, but the migration angle and filter inversion characterization are accurate enough to qualify as an acceptable path."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two rounds of questions. The critical unanswered question is whether individual task pages show correct archive status — this would have clearly pointed to the search index rather than application logic. The agent also did not explicitly ask when the issue started, though the reporter volunteered the v2.3.1 timing. The agent had a reasonable basis to resolve but left an obvious differentiating question unasked."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Two rounds of well-focused questions. The first round was productive and led directly to the reporter revealing the filter inversion. The second round (browser/OS/version) was reasonable but the browser/OS turned out to be irrelevant, as the cross-browser nature was confirmed in the same response. No significant redundancy."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question set was well-targeted: asking about filters applied drew out the crucial insight that the active/archived filter behavior is reversed, which the reporter likely would not have volunteered unprompted in that form. The second round was competent but generic. The agent correctly spotlighted the filter inversion in the follow-up framing, demonstrating active diagnostic reasoning from the reporter's answer."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is detailed and well-structured: clear reproduction steps, severity rating, workaround noted in impact, recommended fix (check v2.3.1 diff for filter logic), a proposed test case, and explicit information gaps. A developer could start investigating with minimal additional context. The main gap is that the recommendation points to application query code rather than the search index, which could delay discovery of the actual fix location."
+    }
+  },
+  "weighted_total": 3.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized and highlighted the filter inversion pattern from the reporter's first detailed response, reframing it as a diagnostic clue rather than just acknowledging the complaint",
+    "Produced a comprehensive triage summary with reproduction steps, severity, workaround, proposed test case, and information gaps — well above average output quality",
+    "Correctly and quickly attributed the issue to the v2.3.1 update, establishing a clear timeline for developer investigation",
+    "Confirmed cross-browser/platform scope, ruling out client-side causes early"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether individual task pages display the correct archive status — this is the most important differentiating question, as it would immediately point to the search index rather than application logic",
+    "Root cause hypothesis focuses entirely on application code (flipped condition, enum values, query builder) and misses the search index layer entirely, which could send a developer looking in the wrong place first",
+    "Did not ask about the migration specifically — the reporter mentioned 'we just got updated' but the agent did not probe whether a schema migration or data migration ran as part of the update"
+  ],
+  "most_insightful_question": "The sub-question 'Do you have any filters applied (e.g., date range, assignee, status) when you search?' — this prompted the reporter to describe the full inversion behavior (switching to archived filter shows active tasks), which became the central diagnostic finding of the entire triage.",
+  "missed_opportunities": [
+    "Ask whether individual task pages show the correct archive/active status for tasks that appear in the wrong search results — this would distinguish a UI rendering bug from a search index bug",
+    "Ask whether a schema migration or data migration ran as part of the v2.3.1 update, not just a code deployment",
+    "Ask whether searching without any archive filter (showing all tasks) returns results correctly, to determine if the issue is specifically in the filter predicate or in the base query"
+  ]
+}

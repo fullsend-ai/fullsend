@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items were captured: ~5,000 tasks, slow on description/fast on title, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 second latency, CPU spike (reporter volunteered fan noise, agent correctly interpreted as CPU-bound), and long descriptions with pasted meeting notes. The summary also surfaced additional useful signals: no caching improvement on repeated searches, and the constant-time behavior regardless of result count."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches both acceptable diagnostic paths simultaneously: it correctly identifies the v2.2→v2.3 upgrade as the trigger and correctly identifies the title-vs-description split as evidence of an indexing regression. The agent explicitly named LIKE '%term%' as a candidate implementation — which is exactly what happened. The reasoning chain (constant time regardless of match count → full table scan; CPU spike → row-by-row computation; no caching benefit → not a warm-cache path) is technically sound and leads directly to the actual cause without any material inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the high-value diagnostic questions and even designed an active test to confirm the full-scan hypothesis. The main gaps — exact OS/hardware specs, whether the reporter checked v2.3 release notes, and whether they tried reindexing or cache clearing — were all noted as information gaps in the summary rather than surfaced through questioning. These are secondary, but leaving them unasked is a minor shortcoming."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three agent turns, each extracting distinct and non-overlapping information. Turn 1 established timeline and scale. Turn 2 differentiated search types and tested for caching. Turn 3 ran a targeted diagnostic test. No question was repeated or redundant. The conversation reached resolution with minimal overhead."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions show genuine diagnostic reasoning rather than generic checklists. Turn 2's question about 'consistent vs faster on a second search' probed the caching hypothesis — information the reporter would never have volunteered. Turn 3 designed a controlled experiment (rare term vs common term) to distinguish between a result-processing bottleneck and a full-table-scan bottleneck. This is the kind of question that separates a skilled diagnostician from a form-filler."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate path: diff the description search implementation between v2.2 and v2.3, run EXPLAIN/query plan to verify index usage, restore the index or revert the implementation if changed. The proposed test case is specific and verifiable. Reproduction steps are concrete. A developer could open the v2.2 and v2.3 diffs and know exactly what to look for."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The controlled diagnostic test in turn 3 (rare term vs common term, both taking the same time) was a high-signal move that transformed a plausible hypothesis into a near-confirmed finding before resolution",
+    "The reasoning chain in the root cause hypothesis is rigorous: four independent evidence points each independently point to full-table-scan, and the agent articulated why each one rules out alternative explanations",
+    "The agent correctly identified both acceptable diagnostic paths simultaneously rather than choosing one, which makes the summary robust to the actual implementation details"
+  ],
+  "notable_weaknesses": [
+    "OS and hardware specs were left as an information gap rather than asked directly — minor, but the environment section is incomplete as a result",
+    "The agent did not ask whether the reporter had tried any workarounds (reindexing, title-only search) or checked v2.3 release notes, both of which could have added useful context"
+  ],
+  "most_insightful_question": "Search for a unique term appearing in only 1-2 tasks vs a common term appearing in hundreds — if both take the same time, that confirms the bottleneck is scanning all rows rather than processing results, pointing squarely at a missing index.",
+  "missed_opportunities": [
+    "Ask the reporter to check the v2.3 changelog or release notes for any mention of search changes",
+    "Ask whether they had tried reindexing or any other workaround",
+    "Ask for exact OS and hardware specs (ThinkPad T14, Ubuntu 22.04 were known but not captured)"
+  ]
+}

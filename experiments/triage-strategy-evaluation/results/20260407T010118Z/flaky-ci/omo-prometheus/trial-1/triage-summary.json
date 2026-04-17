@@ -1,0 +1,22 @@
+{
+  "title": "Intermittent CI failures in task ordering tests due to likely non-deterministic map iteration order",
+  "problem": "Recently added tests in the task ordering module (TestTaskOrderAfterSort, TestInsertionOrderPreserved) fail intermittently in CI with order-mismatch assertion errors, but pass consistently on the reporter's local machine. The failures are blocking releases.",
+  "root_cause_hypothesis": "Tasks are collected into a map (hash map) before being sorted and compared in test assertions. Map iteration order is non-deterministic by language spec (e.g., Go randomizes it deliberately). The tests assert a specific output order that happens to be stable on the reporter's local environment (same Go version, same hash seed) but varies in CI. If the sort is not stable (i.e., does not break ties deterministically for equal-priority tasks), the final order depends on the input order from the map, producing intermittent failures.",
+  "reproduction_steps": [
+    "Identify the tests: TestTaskOrderAfterSort, TestInsertionOrderPreserved in the task_ordering module",
+    "Run the tests in a loop (e.g., 100 iterations) — failures should appear within a few dozen runs",
+    "Inspect the test code: look for where tasks are collected from a map or unordered source before being sorted and asserted against an expected order",
+    "Check whether the sort comparator fully determines order (i.e., breaks all ties) or leaves equal elements in arbitrary order"
+  ],
+  "environment": "CI pipeline (specific runner details not provided). Failures are environment-sensitive — consistent locally on reporter's machine, intermittent in CI. Likely related to hash seed randomization or runtime version differences between local and CI.",
+  "severity": "high",
+  "impact": "Blocking releases for the team. Every CI run is a coin flip, eroding trust in the test suite and slowing development velocity.",
+  "recommended_fix": "1. Examine the task_ordering module for map-to-slice conversions before sorting. 2. Ensure the sort comparator is total — it must break all ties deterministically (e.g., by task ID or creation timestamp as a secondary sort key). 3. Alternatively, fix the test assertions: if the code doesn't guarantee a specific order among equal-priority tasks, the tests should not assert one — use an order-independent comparison or sort both actual and expected by a stable key before comparing. 4. If using Go, consider running tests with -count=100 to verify the fix under hash seed randomization.",
+  "proposed_test_case": "Run TestTaskOrderAfterSort and TestInsertionOrderPreserved with -count=1000 (or equivalent loop). All runs must pass. Additionally, add a test that explicitly inserts tasks with identical sort keys and verifies the output is stable regardless of insertion order.",
+  "information_gaps": [
+    "Exact programming language and test framework (Go was assumed based on test naming conventions and reporter did not correct)",
+    "Exact CI runner configuration and language/runtime version vs. local",
+    "Whether the sort is stable and what the full comparator chain looks like",
+    "Whether any other tests in the module are also affected but not yet noticed"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 2,
+      "rationale": "The agent captured only surface-level environment info (macOS, v2.3.x) and the crash symptom description. It missed five of the six expected extracts: manual-save vs. auto-save distinction, CSV import as trigger, large task list size as a factor, that the crash started after a specific event, and the encoding-related content of the error flash. The reporter mentioned the crash started 'days ago' and the agent never probed what changed."
+    },
+    "accuracy": {
+      "score": 2,
+      "rationale": "The hypothesis — 'unhandled exception in save/serialization path' — is technically not false, but it is so generic as to be uninformative. Neither acceptable diagnostic path was reached: the CSV import connection was never established, and neither encoding nor task-list size was identified. The hypothesis would not steer a developer toward the actual cause."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after only two Q&A exchanges. It never asked what changed before the crashes started, whether auto-save also crashes, how large the task list is, or whether recently imported data is involved. The reporter volunteered that the issue had been happening 'for days' — a clear signal that something triggered it — and the agent did not follow up."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "No questions were repeated, and the crash-description and environment questions are standard reasonable steps. One notable waste: asking about browser version for what turned out to be a desktop app, though the reporter corrected this quickly. The questions were not redundant among themselves, just insufficiently targeted."
+    },
+    "question_quality": {
+      "score": 2,
+      "rationale": "Both rounds of questions were generic ('what OS, what version, does it always happen?') and could apply to any crash report. The agent did not leverage the 'days' temporal cue to ask about triggering events, did not ask about content-specific factors (data volume, special characters, imports), and asked about browser version for a desktop app. No question surfaced information that the reporter wouldn't have volunteered anyway."
+    },
+    "actionability": {
+      "score": 2,
+      "rationale": "The recommended actions (check Console crash logs, review save path for unhandled exceptions) are generically correct but give a developer no targeted starting point. Without identifying the CSV import or encoding angle, a developer would need to investigate the entire save path from scratch. The 'information gaps' section actually acknowledges several crucial unknown items that should have been asked before closing."
+    }
+  },
+  "weighted_total": 2.1,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Correctly identified the flashing error dialog as a meaningful diagnostic clue and documented it in the summary",
+    "Captured the environment basics (macOS, v2.3.x) even if imprecisely",
+    "Triage summary is well-structured and the 'information gaps' section honestly lists what was not learned"
+  ],
+  "notable_weaknesses": [
+    "Resolved without asking what changed before the crash started, despite the reporter's 'days' cue",
+    "Never asked about task list contents, size, or recent data imports — the core factors driving the actual bug",
+    "Never asked whether auto-save also crashes, missing the manual-save-only distinction",
+    "Root cause hypothesis is too generic to guide a developer toward the real issue",
+    "Asked about browser version for a desktop app, wasting a turn"
+  ],
+  "most_insightful_question": "The first question asking whether the app freezes, closes suddenly, or shows an error message — it drew out the key detail about the flashing error dialog, which is the only concrete diagnostic signal in the conversation.",
+  "missed_opportunities": [
+    "Did anything change around the time the crashes started — for example, a software update, or importing data from another app or file?",
+    "Does the crash also happen when auto-save triggers, or only when you manually click Save?",
+    "Roughly how many tasks are in the list you're editing?",
+    "Can you try saving a smaller or brand-new task list to see if the crash still occurs?",
+    "If you can slow-motion the error flash (e.g., screen recording), what does the error message say — does it mention anything like 'encoding', 'file', or a specific field name?"
+  ]
+}

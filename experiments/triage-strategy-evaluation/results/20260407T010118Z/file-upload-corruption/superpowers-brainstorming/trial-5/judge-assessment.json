@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured most expected items: size-dependent behavior, small PDFs fine, ~1 week regression, multiple customers, binary mangling vs truncation, upload path hypothesis. Missed asking about other large file types (images, spreadsheets) also being affected, which is explicitly in the expected extracts. The 1MB threshold was hypothesized but not confirmed from the reporter."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage closely matches acceptable path 1 (size-dependent behavior + different upload paths) and goes further — the root cause hypothesis explicitly calls out 'encoding or content-type issue,' 'binary data being processed as UTF-8 text,' and 'incorrect Content-Type handling,' which is essentially the actual root cause. The regression timeline (~1 week) is correctly noted. No inaccuracies introduced."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after 2 rounds of questions. Both were productive, but obvious follow-ups were skipped: whether other file types over 1MB are also affected, whether previously uploaded large PDFs are now retroactively corrupted (upload-time vs download-time), and whether any deploys or changes were made around the 1-week mark. The reporter's impatience was handled gracefully, but the agent could have bundled one more targeted question."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions asked, both high-value and non-redundant. No information was asked twice. Given the reporter's stated time pressure, resolving in two turns was appropriate."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated strong diagnostic reasoning. The first surfaced the size dimension proactively with structured options. The second — asking whether the file is damaged vs. truncated vs. garbled vs. suspiciously small — is particularly sharp: this directly distinguishes binary mangling from a size-limit cutoff or transmission truncation, leading to the key insight about data corruption. These are not generic bug questions; they reflect genuine understanding of upload failure modes."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes specific reproduction steps with file sizes, a prioritized investigation checklist (deploy history → binary diff → chunked upload path → encoding/Content-Type), a proposed automated test (SHA-256 byte comparison across size brackets), and explicit information gaps labeled as developer tasks. A developer could begin coding a fix or targeted investigation immediately."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The root cause hypothesis independently surfaced 'encoding or content-type issue' and 'binary data being processed as UTF-8 text' — essentially the actual bug — through reasoning alone, without it being stated by the reporter.",
+    "The second question (damaged vs. truncated vs. garbled vs. tiny) was a precise diagnostic tool that directly distinguished binary mangling from truncation, enabling the strong hypothesis in just two turns.",
+    "The triage summary is exceptionally actionable, with a SHA-256 hash comparison test proposal and a structured fix checklist that maps directly onto the actual root cause."
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other large file types (images, spreadsheets) are also affected — a key expected extract that would have broadened the developer's scope of investigation.",
+    "Did not explicitly probe for a recent deployment or configuration change, even though the reporter volunteered a ~1 week timeframe that strongly implied a regression trigger.",
+    "Did not ask whether previously uploaded large PDFs (pre-regression) are now also corrupted when downloaded, which would have helped distinguish upload-time corruption from a storage or download-path issue."
+  ],
+  "most_insightful_question": "When you download one of these broken PDFs and try to open it, what do you see? [options: damaged/can't open; opens but truncated; opens but garbled; file is tiny]",
+  "missed_opportunities": [
+    "Are other large file types — images, spreadsheets, Word documents — also coming through corrupted, or is it specifically PDFs?",
+    "Was there any deployment, update, or configuration change made to the system around the time this started ~1 week ago?",
+    "If you download a large PDF that was successfully uploaded before the issue started, does it still open correctly — or is it now corrupted too?"
+  ]
+}

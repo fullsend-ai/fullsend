@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks returned for active filter, active tasks missing, started ~3 days ago with v2.3.1, affects all users (team-wide), individual task pages show correct status, filter behavior is inverted, and the problem is isolated to the search/filter layer rather than the data model. The reporter's volunteered detail about task detail views was captured and leveraged."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the archive filter inversion as the core symptom and v2.3.1 as the trigger — matching acceptable diagnostic path #2 (schema migration as trigger, archive filter as broken component). The root cause hypothesis points to query builder logic or 'inverted boolean flag in the search index query builder,' which is adjacent to the actual cause (index field mapping configuration, not query code). The fix recommendation ('diff filter logic between v2.3.0 and v2.3.1') would still lead developers to the right area. Not a perfect match to the canonical cause, but solidly within acceptable paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three rounds of questioning covered: reproduction method and filters, onset timing and version correlation, scope/impact and workarounds. The workaround question was particularly productive. The agent correctly flagged API vs. UI scope and other filter behavior as open gaps. One missed follow-up: whether a search reindex had been run or whether the search backend (e.g., Elasticsearch) was involved — this could have pointed more directly to the index layer."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns, each targeting a distinct diagnostic dimension: reproduction setup, timeline/cause, and impact/workaround. No questions were redundant. Turn 1 combined two related sub-questions efficiently. The only marginal efficiency argument is that turns 2 and 3 could have been merged, but keeping them separate allowed the agent to process the v2.3.1 revelation before asking about scope."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 2's timing question was the key diagnostic pivot and directly surfaced the v2.3.1 correlation. Turn 3's workaround question was particularly insightful — it prompted the reporter to discover and articulate the filter inversion symmetry ('flip to Archived only and I see my active tasks'), which provided the strongest single diagnostic signal. Turn 1 was more generic (standard reproduction framing) but appropriate for opening."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes a clear problem statement, a specific root cause hypothesis with example code patterns to look for, step-by-step reproduction instructions, environment details, severity/impact assessment, a recommended fix with version-diff guidance, a proposed regression test, and enumerated information gaps. A developer could begin investigating by diffing the filter logic between v2.3.0 and v2.3.1 immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The workaround question in turn 3 was strategically valuable — it elicited the reporter's discovery that flipping the archive filter reveals active tasks, providing definitive confirmation of filter inversion symmetry",
+    "The triage summary is unusually thorough: reproduction steps, proposed test case, specific code patterns to inspect, and enumerated information gaps make it immediately useful to an engineering team",
+    "Correctly identified individual task detail views showing the right status as a key clue that isolates the bug to the search/filter layer, ruling out data corruption"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis focuses on query builder code rather than index mapping configuration — a developer following the recommended fix might look in the wrong layer before finding the actual problem",
+    "Did not probe the search infrastructure layer (e.g., whether Elasticsearch or another index is involved, whether a reindex occurred during the migration), which could have more directly pointed to the index mapping as the culprit",
+    "First question was relatively generic (UI vs. API, filters applied) and could have been more targeted given the archived-vs-active symptom described in the original report"
+  ],
+  "most_insightful_question": "Have you found any workaround — like using advanced search or filtering explicitly by status — that gets you the right results in the meantime?",
+  "missed_opportunities": [
+    "Asking whether the search backend uses a dedicated index (Elasticsearch, Solr, etc.) and whether an index rebuild or migration ran alongside the v2.3.1 patch",
+    "Asking whether the issue appeared immediately after the update or took some time to manifest (would help distinguish a deployment-time index rebuild from an application code change)",
+    "Asking whether searches without any archive filter (showing all tasks) return correct results — this would have confirmed whether the inversion is purely in filter evaluation vs. broader index corruption"
+  ]
+}

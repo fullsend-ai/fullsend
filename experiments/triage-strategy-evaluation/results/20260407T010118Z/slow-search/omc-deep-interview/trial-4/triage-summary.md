@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Description search regression in v2.3: CPU-bound full-text scan causes 10-15s delays on large task sets
+
+## Problem
+After upgrading from v2.2 to v2.3, searching by task description via the main search bar takes 10-15 seconds (previously sub-second). Title search remains fast. During the search, a single CPU core pins at 100%, indicating a CPU-bound local computation bottleneck rather than a network or UI rendering issue.
+
+## Root Cause Hypothesis
+The v2.3 upgrade likely introduced a regression in the description search code path — possibly replacing an indexed or optimized search with a naive full-text scan over all task description content. The fact that title search is unaffected suggests the two search paths diverged in v2.3. The CPU saturation on a single core also suggests the search may not be leveraging any indexing or is performing expensive operations (e.g., regex over raw text) synchronously on the main thread.
+
+## Reproduction Steps
+  1. Install TaskFlow v2.3 desktop app
+  2. Create or import ~5,000 tasks, with some containing long descriptions (e.g., pasted meeting notes)
+  3. Use the main search bar to search for a term that appears in task descriptions but not titles
+  4. Observe 10-15 second delay with high CPU usage on one core
+  5. Repeat on v2.2 to confirm the search returns in under 1 second with the same dataset
+
+## Environment
+TaskFlow v2.3 desktop app, work laptop (OS not specified), ~5,000 tasks with long descriptions
+
+## Severity: high
+
+## Impact
+Any user with a large task set is effectively unable to use description search. The 10-15 second delay on every search makes the feature impractical. Title search still works as a partial workaround but limits search capability significantly.
+
+## Recommended Fix
+Compare the description search implementation between v2.2 and v2.3 — look for changes to indexing, query execution, or full-text search logic in the desktop app's local search path. Likely candidates: removal of a search index, switch from indexed lookup to sequential scan, or a new preprocessing step (e.g., parsing/rendering description content before matching). Consider profiling the search with a ~5,000 task dataset to pinpoint the hot path. If the desktop app uses a local database (e.g., SQLite), check whether description search queries changed or an index was dropped.
+
+## Proposed Test Case
+Performance test: with 5,000 tasks (including tasks with 2,000+ character descriptions), a description search must return results in under 2 seconds. This test should run against both the current and previous versions to catch regressions.
+
+## Information Gaps
+- Exact operating system and hardware specs (unlikely to change diagnosis but could affect benchmarking)
+- Whether other v2.3 users with large task sets experience the same issue (would confirm it's not environment-specific)
+- v2.3 changelog — what specifically changed in the search subsystem

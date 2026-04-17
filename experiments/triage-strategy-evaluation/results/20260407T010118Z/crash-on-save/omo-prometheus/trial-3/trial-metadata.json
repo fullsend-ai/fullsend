@@ -1,0 +1,7 @@
+{
+  "scenario": "crash-on-save",
+  "strategy": "omo-prometheus",
+  "reporter_profile": "difficult",
+  "turns": 6,
+  "parse_failures": 2
+}

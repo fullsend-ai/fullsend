@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "6 of 7 expected items captured: memory growth pattern, v2.3 upgrade timing, 200 active users, consistent day-to-day pattern, restarts as workaround, and the notification system changelog entry are all present. Server specs (8GB RAM VM) were never extracted — the agent didn't ask and the reporter didn't volunteer."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis correctly identifies the notification system introduced in v2.3 and specifically calls out event listeners registered per-connection that are never removed — this is essentially the actual cause. It satisfies the first acceptable path and exceeds it by naming the specific mechanism."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after a single Q&A round. The acknowledged information gaps (off-hours behavior, deployment mode, correlation with concurrent user count) were real and worth asking before resolving. In particular, 'does memory grow when no users are active?' would have usefully distinguished per-request from timer-based leaks. The agent had a reasonable basis to resolve given the clear version-upgrade trigger, but left meaningful questions on the table."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked and it was precisely the right one. No redundancy, no low-value turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The single question systematically covered all plausible change vectors (version upgrade, workload change, infrastructure change) in a structured multi-part form. It directly surfaced the version upgrade and the changelog note about notifications — information the reporter wouldn't have thought to connect without the prompt. Exactly the kind of question that demonstrates genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The recommended fix section is specific and prioritized: diff v2.2→v2.3 in the notifications subsystem, look for four concrete leak patterns, then run a heap profile to confirm. A developer could open the diff immediately and know exactly what to look for."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Single well-structured question that efficiently surfaced the version upgrade and the changelog mention of notifications — both were crucial to the diagnosis",
+    "Root cause hypothesis correctly named event listeners registered per-connection and never removed, closely matching the actual bug",
+    "Recommended fix is specific and prioritized, giving a developer a concrete starting point without additional research",
+    "Transparently listed remaining information gaps rather than presenting the summary as complete"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM VM) were never captured, a standard environment detail that could matter for reproduction or fix validation",
+    "Resolved after a single round without asking whether memory grows during off-hours, which would have usefully distinguished per-request from timer-based leaks",
+    "Deployment mode (single process, clustered, containerized) not asked — relevant to where a heap profile should be captured"
+  ],
+  "most_insightful_question": "Did anything change around the time this started about a week ago? (covering version upgrade, user workload, and infrastructure in one structured prompt)",
+  "missed_opportunities": [
+    "Does memory grow when no users are logged in overnight, or does it level off — would distinguish per-request from timer/background-task leak",
+    "What are your server specs (RAM, CPU, OS)?",
+    "How is TaskFlow deployed — single process, clustered, or containerized?"
+  ]
+}

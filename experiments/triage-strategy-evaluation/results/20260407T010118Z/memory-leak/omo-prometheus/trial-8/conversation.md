@@ -1,0 +1,104 @@
+# Conversation: memory-leak x omo-prometheus
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana dashboard — the consistent daily memory climb pattern is very helpful.
+
+To start narrowing this down: which TaskFlow component is consuming the memory? Specifically:
+
+1. **Which process** is growing to 4GB+ — is it the main TaskFlow application server (e.g., the Node/Java/Python process), a background worker/job runner, or the database?
+2. **What version** of TaskFlow are you running, and **did this start after a specific upgrade**, or did it appear gradually?
+
+This will help me determine whether we're looking at an application-level memory leak, a known regression, or something environmental.
+
+---
+
+### reporter
+
+It's the main TaskFlow application server process that's growing — I can see it clearly in `htop`, the TaskFlow process itself climbs steadily while the database (PostgreSQL) stays stable around 400MB.
+
+We're running **v2.3**, and this started immediately after we upgraded from v2.2 about a week ago. We never had this issue on v2.2 — the server would run for weeks without needing a restart. So it's definitely a regression introduced in the v2.3 release.
+
+---
+
+### triage-agent
+
+That confirms it's a v2.3 regression — very helpful for narrowing this down.
+
+Next I need to understand whether the leak is driven by **user activity** or by **time alone**. Two quick things:
+
+1. **Does the memory still climb on weekends or low-traffic periods** at the same rate, or does it slow down when fewer users are active?
+2. **Did you enable any new features that came with v2.3** (e.g., real-time notifications, new integrations, webhook listeners, a new search/indexing system)? Or was it a straightforward version bump with your existing configuration?
+
+This will tell me whether we're chasing a hot code path triggered by user requests or a background process that's accumulating state over time.
+
+---
+
+### reporter
+
+Good questions. On weekends the memory growth is definitely slower — we have maybe 20-30 users active on weekends compared to ~200 on weekdays, and the memory climbs much more gradually. So it's clearly tied to user activity, not just time passing.
+
+As for new features — we did a straightforward version bump, didn't change our configuration. But I did notice the v2.3 changelog mentioned **"improved real-time notifications"** as a new feature. We do use the notification system, and our users get push notifications for task updates. I didn't explicitly enable anything new, but if that feature was turned on by default in v2.3, that could be relevant.
+
+---
+
+### triage-agent
+
+Thanks — the correlation with user activity plus the v2.3 real-time notifications change is a strong signal. I have a working theory that the new notification system is leaking connections or in-memory subscription state as users connect and disconnect throughout the day.
+
+Could you check one thing for me? On the TaskFlow server, can you look at the number of **active WebSocket or HTTP connections** over the course of the day? Specifically:
+
+- Run `ss -s` or `netstat -an | grep ESTABLISHED | wc -l` a few times during the day and note whether the connection count grows steadily (even as users leave), or
+- Check if your Grafana dashboard has a metric for active connections or open file descriptors (`process_open_fds` if TaskFlow exposes Prometheus metrics)
+
+If the connection count keeps climbing even though your active user count is stable at ~200, that would confirm connections aren't being cleaned up when users close their tabs — which would explain the memory growth perfectly.
+
+---
+
+### reporter
+
+I just checked this. Interestingly, the established connection count looks pretty stable — I ran `ss -s` a few times today and it hovers around 200-250 established connections, which lines up with our active user count. It doesn't seem to be climbing the way the memory is. I also checked `process_open_fds` in Grafana (we do have Prometheus metrics exposed) and the file descriptor count is fairly stable too.
+
+So it doesn't look like connections are piling up — but the memory definitely is. It's almost like something is being allocated per request and never freed, rather than per connection. Our users are pretty active — I'd estimate around 25 requests per user per hour across the 200 users, so that's a lot of requests over the course of a day. Could it be that the notification system is registering something for every API request rather than just per connection?
+
+---
+
+### triage-agent
+
+Great detective work — the stable connection count rules out a connection leak, and your per-request theory makes a lot of sense given the traffic volume (~5,000 requests/hour × 8 hours = a lot of accumulated state).
+
+To pin down exactly *what* is being accumulated, could you grab a **heap snapshot** or memory profile from the TaskFlow process? Depending on what runtime TaskFlow uses:
+
+- **Node.js:** You can send `kill -USR2 <pid>` if the `--heapsnapshot-signal` flag is set, or use `node --inspect` and take a snapshot from Chrome DevTools
+- **Java:** `jmap -histo:live <pid>` will show you which object types are consuming the most memory
+- **Python:** If TaskFlow exposes a debug endpoint, check for something like `/debug/memory`
+
+Even a quick `jmap -histo` or equivalent showing the top 10 object types by instance count would tell us whether we're looking at accumulated notification payloads, event listeners, cached request contexts, or something else entirely. That would give the dev team a very specific place to start in the v2.3 diff.
+
+---
+
+### reporter
+
+I'm a sysadmin, not really a developer, so I haven't done heap profiling before — but I'm happy to try if you walk me through it. I'm not actually sure what runtime TaskFlow uses under the hood. Let me check... it looks like it's a Go binary based on the process info. I don't think any of those Node/Java/Python options apply directly. Is there a Go equivalent I should try?
+
+That said, your per-request theory really resonates with me. The math lines up — if something small is being leaked on every request, at ~5,000 requests/hour over an 8-hour workday, that would add up fast. And given that the changelog specifically called out 'improved real-time notifications,' I'd bet the notification system is doing something on every API request (maybe registering for push notification delivery?) that isn't getting cleaned up when the request finishes. The memory growth pattern is very linear during working hours, which is consistent with a fixed-size-per-request leak.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in v2.3: per-request allocation in notification system not freed, causes linear memory growth","problem":"The TaskFlow application server process leaks memory at a rate proportional to request volume. Memory grows from ~500MB at startup to 4GB+ over an 8-hour workday with ~200 active users (~5,000 requests/hour), causing page loads >10s and API timeouts by late afternoon. Requires daily server restarts. Started immediately after upgrading from v2.2 to v2.3.","root_cause_hypothesis":"The v2.3 'improved real-time notifications' feature is allocating state (likely goroutines, channel subscriptions, or notification payload objects) on every inbound API request that is not released when the request completes. Given the Go runtime and linear growth pattern, the most probable causes are: (1) a goroutine spawned per-request for notification delivery that blocks or never exits, (2) notification event objects appended to an in-memory structure (slice/map) without eviction, or (3) per-request listener/callback registrations on a shared notification bus that are never deregistered.","reproduction_steps":["Deploy TaskFlow v2.3 with default configuration (no special feature flags needed)","Connect ~200 concurrent users with notification features active (default)","Generate sustained API traffic (~25 requests/user/hour is the production pattern)","Monitor process RSS via htop or Prometheus process_resident_memory_bytes","Observe linear memory growth; compare to v2.2 under identical load where memory remains stable"],"environment":"Self-hosted TaskFlow v2.3 (Go binary), PostgreSQL database (stable at ~400MB), ~200 active weekday users, Prometheus metrics and Grafana monitoring in place, previously stable on v2.2 for weeks without restarts","severity":"high","impact":"All ~200 users experience progressive performance degradation daily, with the application becoming effectively unusable (10s+ page loads, API timeouts) by late afternoon. Requires manual daily restart as a workaround. No data loss but significant productivity impact.","recommended_fix":"1. Diff the notification system code between v2.2 and v2.3 — focus on any new per-request code paths (middleware, event emission, subscriber registration). 2. Run a load test against v2.3 with Go pprof heap profiling enabled (`/debug/pprof/heap`) and check `go_goroutines` metric for goroutine leaks. 3. Look specifically for: goroutines spawned per-request that block on channel reads, notification payloads accumulated in unbounded slices/maps, or event listener registrations that lack corresponding deregistration on request completion. 4. Verify the fix by confirming stable memory under sustained load over multiple hours, and compare against v2.2 baseline.","proposed_test_case":"Load test that simulates 200 concurrent users making 25 requests/hour each over a simulated 8-hour period against v2.3. Assert that process RSS stays below a threshold (e.g., 1GB) and that goroutine count remains proportional to active connections rather than cumulative request count. Run the same test against v2.2 as a baseline to confirm the regression.","information_gaps":["Exact Go object types consuming memory (obtainable via pprof heap profile on a running instance)","Whether goroutine count is also climbing (check go_goroutines Prometheus metric in existing Grafana)","Which specific code change in v2.3 introduced the leak (requires v2.2↔v2.3 diff review)","Whether disabling notifications (if configurable) stops the leak — would confirm the component but reporter didn't indicate this is configurable"]}
+
+---

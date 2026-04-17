@@ -1,0 +1,57 @@
+# Conversation: intermittent-403 x omc-deep-interview
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s are frustrating, especially when permissions haven't changed.
+
+Do you know if there were any deployments, infrastructure changes, or configuration updates to TaskFlow around the time this started? Even something like a load balancer change, a new auth provider rollout, or a backend service update could be relevant. If you're not sure, could you check with your team or ops whether anything shipped in that window?
+
+---
+
+### reporter
+
+Yeah, actually I think there was a deployment a couple days ago — around the time this started. I remember hearing something about a new role being added to the system. I was recently given the 'analyst' role, not sure if that's related. I don't know the details of the deployment though, I'm not on the ops side. You might want to check with them about whether everything went smoothly.
+
+---
+
+### triage-agent
+
+That's really helpful — the timing with the deployment and the new 'analyst' role is suspicious. Quick question: do the other team members who are also seeing the 403 errors happen to have the 'analyst' role as well? And conversely, do you know if anyone on your team who does *not* have the analyst role is experiencing the same issue? That would help us narrow down whether this is tied to that specific role or something broader.
+
+---
+
+### reporter
+
+Hmm, good question. Now that I think about it, I think the people on my team who mentioned having the same problem were also recently given the analyst role. My manager has the admin role and she said she hasn't had any issues. So yeah, it might be related to the analyst role specifically. I hadn't put that together until you asked.
+
+---
+
+### triage-agent
+
+That's a really useful connection — the analyst role correlation is a strong lead.
+
+One thing that's puzzling: if the analyst role were simply missing dashboard permissions, you'd expect the 403 to happen *every* time, not intermittently. So I'd like to understand the pattern a bit more. When you hit a 403, does refreshing the page fix it, or do you have to log out and back in? And does the 403 happen on the main dashboard landing page, or does it sometimes let you in but then block you when you navigate to a specific section? Any pattern you've noticed — even if it seems minor — would help us figure out why it comes and goes.
+
+---
+
+### reporter
+
+Yeah, refreshing usually fixes it. Like if I get a 403, I just hit refresh once or twice and it loads fine. I don't need to log out or anything. It happens on the main dashboard page itself — if I get past that, everything seems to work fine until my next visit. I'd say it works maybe 2 out of 3 times and fails the other third? I figured it was some kind of network issue on our end but maybe not.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on dashboard for users with 'analyst' role since recent deployment","problem":"Users with the recently-introduced 'analyst' role receive 403 Forbidden errors approximately one-third of the time when accessing the main dashboard. Refreshing the page resolves the error without requiring re-authentication. Users with other roles (e.g., admin) are unaffected. The issue began coinciding with a deployment that introduced the analyst role.","root_cause_hypothesis":"The recent deployment that added the 'analyst' role was not applied consistently across all backend instances behind the load balancer. Some instances recognize the analyst role's dashboard permissions and some do not (or have stale permission/RBAC configuration). Requests routed to updated instances succeed; requests routed to un-updated instances return 403. This explains both the role correlation and the intermittent, refresh-fixable pattern.","reproduction_steps":["Log in as a user with the 'analyst' role","Navigate to the main dashboard page","If the page loads successfully, refresh or revisit repeatedly (expect ~1 in 3 attempts to fail)","Observe 403 Forbidden error on failed attempts","Refresh the page — it should load on retry","Compare behavior with a user who has a different role (e.g., admin) — they should never see the 403"],"environment":"Production TaskFlow instance, post-deployment that introduced the 'analyst' role (approximately 2 days before report). Multiple team members affected. Likely load-balanced backend infrastructure.","severity":"high","impact":"All users with the 'analyst' role are affected. Dashboard access is unreliable (~33% failure rate), degrading usability. Workaround exists (refresh the page), preventing this from being critical, but the issue erodes trust and productivity for the analyst user population.","recommended_fix":"1. Check whether the deployment that introduced the analyst role was fully rolled out across all backend instances/pods. Look for instances running a stale version or with stale RBAC/permission caches. 2. Verify the analyst role's permission mapping includes dashboard access in the authorization configuration. 3. If using permission caching, check whether stale caches on some instances are missing the new role. 4. Restart or redeploy any lagging instances and confirm the role-permission mapping is consistent across all nodes.","proposed_test_case":"Automated test: authenticate as an analyst-role user and request the dashboard endpoint N times (e.g., 20) in succession. Assert that every request returns 200. Run this against each backend instance individually (bypassing the load balancer) to verify consistency.","information_gaps":["Exact deployment details and whether a rolling deploy completed successfully across all instances","Backend architecture specifics (number of instances, load balancer configuration, permission caching strategy)","Whether server-side logs show which instance serves the 403 responses"]}
+
+---

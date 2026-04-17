@@ -1,0 +1,103 @@
+# Conversation: memory-leak x omo-prometheus
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana data — that consistent linear memory climb is a strong signal for a memory leak.
+
+A couple of quick scoping questions to narrow this down:
+
+1. **Is this a regression?** Was this working fine before, and if so, do you know roughly when it started or what changed (TaskFlow version upgrade, config change, increase in users, new integrations)?
+2. **What TaskFlow version are you running, and how is it deployed?** (e.g., Docker, bare metal, Kubernetes — and which process manager, if any?)
+
+This will help determine whether we're looking at a known issue in a specific version or something environment-specific.
+
+---
+
+### reporter
+
+Yes, this is definitely a regression. It started exactly when we upgraded from v2.2 to v2.3 about a week ago. Everything was rock solid on v2.2 — we never had to restart the server. The v2.3 upgrade was the only change we made, no config changes or new integrations.
+
+We're running TaskFlow v2.3 on a bare metal install on an Ubuntu 22.04 VM with 8GB of RAM. No containers or Kubernetes, just running the server process directly.
+
+---
+
+### triage-agent
+
+Thanks — knowing this started exactly with the v2.3 upgrade is very helpful. That strongly narrows the scope.
+
+Next, I'd like to drill into the failure mode itself. When you see memory climbing to 4GB+:
+
+- **Is it a single TaskFlow process consuming all that memory, or multiple?** (e.g., can you share the output of `ps aux | grep taskflow` or `top` filtered to TaskFlow processes during the afternoon when it's bloated?)
+- **Does the memory growth correlate with any specific activity?** For example, does it climb faster during heavy usage periods, or does it grow at a steady rate even during quiet times (like overnight if you left the server running)?
+
+This will help determine whether we're looking at a request-driven leak (e.g., something not being freed per-request) versus a time-driven leak (e.g., a background job or cache that grows without bounds).
+
+---
+
+### reporter
+
+It's a single TaskFlow process — there's only one running. When I check `top` in the afternoon it's just that one process eating up 3-4GB of RAM.
+
+As for the correlation, it definitely tracks with usage. The memory climbs faster during business hours when everyone's actively using it, and it slows down in the evenings and weekends when fewer people are on. We actually left it running overnight once by accident and the memory barely budged — it was maybe 100MB higher in the morning. So it's clearly tied to user activity and requests, not some background process running on a timer.
+
+---
+
+### triage-agent
+
+Great, so we're clearly looking at a per-request memory leak introduced in v2.3. That narrows things down a lot.
+
+To zero in further: **do you know what changed in v2.3?** Specifically, did the release notes mention any new features, changed libraries, or reworked subsystems (e.g., caching, session handling, file uploads, real-time updates)?
+
+Alternatively, if you're not sure what changed under the hood — have you noticed whether certain *types* of activity seem to accelerate the leak more than others? For example, does heavy use of a particular feature (dashboards, file attachments, search, notifications) seem to correlate with faster memory growth compared to basic task creation and updates?
+
+Either angle will help us form a working theory about which component is leaking.
+
+---
+
+### reporter
+
+I did look at the changelog before upgrading. The main thing that stood out in v2.3 was 'improved real-time notifications' — I think they reworked the push notification system so users get live updates without refreshing. There were some minor bug fixes too but the notification system was the headline feature.
+
+As for specific activity, I haven't been able to isolate it to one feature honestly — it just seems like general usage across the board causes it to climb. But now that you mention it, the notification system change is interesting because that would be touching every request if it's hooking into the API for real-time updates, right? That lines up with the fact that the leak correlates with overall request volume rather than any one specific feature being used.
+
+---
+
+### triage-agent
+
+This is really lining up. Here's my working theory:
+
+**The v2.3 real-time notification system is likely creating per-request resources (event listeners, WebSocket subscriptions, or in-memory notification queues) that aren't being properly cleaned up when requests finish.** This would explain why memory grows proportionally to request volume and why it started exactly with v2.3.
+
+To validate this — is there a way to **disable the real-time notification feature** in your TaskFlow config? Many systems have a flag like `ENABLE_REALTIME_NOTIFICATIONS=false` or similar. If you could run with it disabled for a few hours and see whether the memory stays flat, that would confirm the leak is in that subsystem.
+
+Alternatively, if disabling isn't an option: when the server is in its bloated afternoon state, could you check whether there's an abnormal number of **open WebSocket connections or event subscriptions**? For example, `ss -s` or `netstat -an | grep ESTABLISHED | wc -l` would tell us if connections are piling up rather than closing.
+
+---
+
+### reporter
+
+That theory makes a lot of sense to me. I'll check if there's a config flag to disable real-time notifications — I haven't looked for one yet but I can dig through the config file.
+
+In the meantime, I actually did run `ss -s` yesterday afternoon when things were getting sluggish, and the number of established TCP connections looked normal — it wasn't like there were thousands of dangling WebSocket connections open. So I don't think it's connections themselves piling up, it's more like something *inside* the process is accumulating per-request. That lines up with what you're saying about event listeners or subscriptions being registered and never cleaned up.
+
+I'll try to find a way to disable the real-time notifications and report back. If that flattens the memory curve, we'll know for sure it's that subsystem.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in v2.3 real-time notification subsystem causes progressive server degradation","problem":"TaskFlow v2.3 leaks memory proportionally to request volume. A single server process climbs from ~500MB at startup to 4GB+ over a business day, causing 10+ second page loads and API timeouts. The server requires daily restarts. The issue began immediately upon upgrading from v2.2 to v2.3 and was not present in v2.2.","root_cause_hypothesis":"The v2.3 real-time notification system (the headline feature of that release) is allocating per-request resources — most likely event listeners, notification subscriptions, or in-memory queue entries — that are never released when the request completes. Because the notification system hooks into the request lifecycle globally, every API request contributes to the leak regardless of which feature is being used. The leak is internal to the process (established TCP/WebSocket connection counts are normal), pointing to in-process object accumulation rather than connection exhaustion.","reproduction_steps":["Deploy TaskFlow v2.3 on a server with memory monitoring (e.g., Grafana + node_exporter or equivalent)","Start the server and note baseline memory (~500MB)","Drive normal user traffic with ~200 active users performing typical task management operations","Observe memory climbing steadily throughout the day, proportional to request volume","After 8+ hours of business-hours usage, memory will reach 4GB+, page loads exceed 10 seconds, API begins timing out","Contrast: leaving the server idle overnight shows negligible memory growth (~100MB), confirming the leak is request-driven"],"environment":"TaskFlow v2.3, bare metal install on Ubuntu 22.04 VM, 8GB RAM, single server process (no containers/Kubernetes), ~200 active users","severity":"high","impact":"All 200 users on the instance experience progressively degrading performance throughout each business day, culminating in near-unusability by late afternoon. The team has been forced into daily server restarts as a workaround for the past week. No data loss reported, but productivity impact is significant.","recommended_fix":"Diff the notification subsystem between v2.2 and v2.3. Look for per-request allocations that lack corresponding cleanup — likely event listener registrations (addEventListener/on without removeEventListener/off), subscription objects appended to an in-memory collection without eviction, or notification queue entries that are created per-request but never drained or garbage collected. A heap snapshot comparison (before/after handling 1000 requests) should quickly reveal which object type is accumulating. If a config flag exists to disable real-time notifications, confirming the leak disappears with it disabled would further isolate the subsystem before diving into code.","proposed_test_case":"Start a TaskFlow v2.3 instance, take a heap snapshot at baseline, run a load test simulating 1000 API requests with typical user operations, take a second heap snapshot, and assert that retained memory growth is within an acceptable bound (e.g., <50MB). The same test on v2.2 should show flat memory as the control. Additionally, add a unit/integration test for the notification subsystem verifying that per-request resources are released after the request lifecycle completes.","information_gaps":["Exact object type accumulating in the heap (requires heap profiling to confirm)","Whether a configuration flag exists to disable real-time notifications (reporter is checking)","Specific v2.3 code changes in the notification subsystem (requires access to the codebase diff)"]}
+
+---

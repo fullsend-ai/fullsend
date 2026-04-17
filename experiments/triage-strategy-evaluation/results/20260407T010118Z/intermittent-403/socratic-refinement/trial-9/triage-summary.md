@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden errors for users with the new 'analyst' role across all pages
+
+## Problem
+Users assigned the recently introduced 'analyst' role experience 403 Forbidden errors on approximately 1 in 3 page loads across the entire TaskFlow application (dashboard, projects, reports). The errors are non-deterministic — refreshing may succeed or fail with no pattern. Users with admin or editor roles are unaffected. The issue began immediately after a deployment that introduced the analyst role.
+
+## Root Cause Hypothesis
+The deployment that introduced the analyst role likely did not propagate consistently across all application instances behind a load balancer, or there is a permission/session caching layer that intermittently serves stale authorization data that does not recognize the analyst role's grants. The coin-flip pattern (~33% failure, no sticky success periods) is characteristic of requests being round-robin distributed across multiple backends where some have correct role-permission mappings and at least one does not.
+
+## Reproduction Steps
+  1. Assign a test user the 'analyst' role (and no other roles like admin or editor)
+  2. Log in as that user and navigate to the dashboard
+  3. Refresh the page repeatedly (10-15 times) and observe that some loads return 403 while others succeed
+  4. Confirm the same behavior occurs on project pages and reports
+  5. Confirm that a user with admin or editor role does not experience any 403 errors under the same conditions
+
+## Environment
+TaskFlow web application, post-deployment from approximately 2 days ago that introduced the 'analyst' role. Affects Chrome and Firefox. Multiple team members affected. Likely multi-instance deployment behind a load balancer.
+
+## Severity: high
+
+## Impact
+All users with the analyst role are unable to use TaskFlow reliably — roughly a third of their page loads fail. This effectively makes the application unusable for the analyst user class, as any navigation or refresh may produce a 403.
+
+## Recommended Fix
+1. Check whether all application instances/pods have the same version of the role-permission configuration — look for any instance still running the pre-deployment config that doesn't recognize the analyst role. 2. Inspect any permission caching layer (Redis, in-memory cache, CDN) for stale authorization data that predates the analyst role introduction. 3. Verify the analyst role's permission grants in the database/config are complete and cover all application routes (dashboard, projects, reports, etc.). 4. If using rolling deployments, confirm the rollout completed fully and no old replicas are still serving traffic.
+
+## Proposed Test Case
+Integration test: create a user with only the analyst role, issue 50 sequential authenticated requests to the dashboard endpoint, and assert that all return 200. Run this against each individual backend instance to identify any instance returning 403.
+
+## Information Gaps
+- Exact deployment infrastructure (number of instances, load balancer type, deployment strategy) — this is a server-side detail the reporter would not know
+- Whether any permission caching layer exists and its TTL configuration
+- The exact error page content and any request IDs or trace headers that could pinpoint which backend served the 403

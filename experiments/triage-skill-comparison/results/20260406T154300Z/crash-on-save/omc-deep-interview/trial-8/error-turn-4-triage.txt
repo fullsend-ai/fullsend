@@ -1,0 +1,36 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "After scoring clarity dimensions: symptom=0.9 (app closes, 'encoding' dialog flash), cause=0.85 (special characters from CSV import trigger encoding error on save, removing them fixes it), reproduction=0.75 (import CSV with em-dashes/curly quotes, edit task list, save), impact=0.8 (blocks saving, causes data loss, workaround exists). Overall ambiguity = 0.16, which is below the 0.20 threshold. Sufficient to resolve.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains non-ASCII characters imported from CSV",
+    "problem": "The application terminates abruptly when saving a task list that contains tasks imported from a CSV file with special Unicode characters (em-dashes, curly quotes). A dialog box briefly flashes with the word 'encoding' before the app closes. The user loses unsaved work each time this occurs.",
+    "root_cause_hypothesis": "The save/serialization routine does not handle non-ASCII characters (specifically Unicode punctuation like em-dashes and curly quotes) and throws an unhandled encoding exception. The crash dialog suggests the app attempts to encode task data using a codec that cannot represent these characters (likely ASCII or a narrow encoding instead of UTF-8), and the uncaught exception tears down the process.",
+    "reproduction_steps": [
+      "Create or open a task list in TaskFlow",
+      "Import tasks from a CSV file where task names contain Unicode punctuation (em-dashes '—', curly/smart quotes '"' '"')",
+      "Ensure the task list now contains ~200 tasks including the imported ones",
+      "Edit any task in the list",
+      "Click Save",
+      "Observe: a dialog flashes briefly showing an 'encoding' error, then the app closes"
+    ],
+    "environment": "Not specified; likely reproducible on any platform since the issue is data-dependent rather than OS-dependent. Task list contains approximately 200 tasks.",
+    "severity": "high",
+    "impact": "Any user who imports tasks containing non-ASCII characters from CSV files will be unable to save their task list, resulting in repeated data loss. Workaround exists: remove the imported tasks with special characters before saving.",
+    "recommended_fix": "Investigate the save/serialization path for task data. Ensure the encoding used when writing task data supports full Unicode (UTF-8). Check for any ASCII-only encoding assumptions in the save routine, CSV import pipeline, or underlying storage layer. Add proper error handling so encoding failures surface a readable error dialog rather than crashing the app.",
+    "proposed_test_case": "Create a task list containing tasks with various Unicode characters (em-dashes, curly quotes, accented letters, emoji). Verify that saving and reloading the list preserves all characters without errors or crashes. Additionally, test importing a CSV file with these characters and immediately saving.",
+    "information_gaps": [
+      "Exact OS and app version not provided (unlikely to change the fix approach since the issue is data-driven)",
+      "Exact error message in the flash dialog is unreadable — server-side logs or crash reports would confirm the specific exception",
+      "Whether the issue occurs with other Unicode characters beyond em-dashes and curly quotes"
+    ],
+    "clarity_scores": {
+      "symptom": 0.9,
+      "cause": 0.85,
+      "reproduction": 0.75,
+      "impact": 0.8,
+      "overall_ambiguity": 0.16
+    }
+  }
+}
+```

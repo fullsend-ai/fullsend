@@ -1,0 +1,34 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this. A few things to help narrow this down:\n\nWhen did you first notice the slowdown? Can you pinpoint roughly when search was last fast — was it after an update, after importing a large batch of tasks, or did it degrade gradually?\n\nAlso, when you say 'a lot of tasks,' can you give me a rough number? Are we talking hundreds, thousands, or tens of thousands?"
+    },
+    {
+      "author": "reporter",
+      "body": "I think it started maybe 2 weeks ago? I'm pretty sure I updated TaskFlow around that time — went from 2.2 to 2.3 I believe. I have around 5,000 tasks, I've been using it for a couple years now. It was always snappy before the update."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — a regression from 2.2 to 2.3 with ~5,000 tasks is a solid lead.\n\nTo dig deeper: is the slowness consistent across all searches, or does it depend on what you're searching for? For example, is searching for a single keyword just as slow as a more complex query? And does the very first search after opening TaskFlow feel slower than subsequent ones, or is it uniformly ~10-15 seconds every time?"
+    },
+    {
+      "author": "reporter",
+      "body": "Now that you mention it, I think it might depend on what kind of search I'm doing. When I search for something in the task titles it seems pretty quick still. But when I'm searching through the full task descriptions, that's when it gets really slow. It doesn't seem to matter if it's one word or multiple words — if it's searching descriptions it's slow every time. And it's pretty much the same speed whether it's my first search or my fifth, always around 10-15 seconds."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's a very helpful distinction — title search fast, description search slow is a strong signal.\n\nOne more thing before I share my working theory: when the description search is running those 10-15 seconds, what do you see in the UI? Is there a loading spinner the whole time, does the app freeze/become unresponsive, or does it stay interactive while you wait? And are you running TaskFlow as a desktop app, in the browser, or via the CLI?"
+    },
+    {
+      "author": "reporter",
+      "body": "The app kind of freezes up while it's searching — like I can see the UI but it's not really responsive until the results come back. I notice my laptop fan kicks up too, feels like it's working hard. I'm running it as a desktop app. Oh and my tasks have pretty long descriptions if that matters — I paste meeting notes into a lot of them so some are pretty lengthy."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Search on task descriptions regressed to ~10-15s with UI freeze after v2.3 update (~5K tasks)\",\"problem\":\"After upgrading from TaskFlow 2.2 to 2.3, searching task descriptions takes 10-15 seconds and freezes the UI. Title-only search remains fast. The user has ~5,000 tasks with lengthy descriptions (meeting notes). The slowdown is consistent regardless of query complexity or whether it is the first or subsequent search.\",\"root_cause_hypothesis\":\"v2.3 likely introduced a change to description search that either (a) removed or broke a full-text index on the description field, falling back to a sequential scan, or (b) moved description search from an async/worker-thread operation to a synchronous main-thread operation. The UI freeze and CPU spike confirm the work is blocking the main thread. The large average description size (meeting notes) amplifies the cost of any unindexed scan.\",\"reproduction_steps\":[\"Install TaskFlow v2.3 as a desktop app\",\"Have or import ~5,000 tasks, ideally with lengthy descriptions (several paragraphs each)\",\"Perform a search that targets task descriptions (not title-only)\",\"Observe ~10-15 second delay with UI freeze and elevated CPU usage\",\"Repeat with a title-only search to confirm it remains fast\"],\"environment\":\"TaskFlow v2.3 desktop app, work laptop (specific OS not provided), ~5,000 tasks with long descriptions, upgraded from v2.2\",\"severity\":\"high\",\"impact\":\"Any user with a large task database and description-heavy tasks is affected. The UI freeze makes the app appear hung during search, degrading usability significantly. No known workaround other than limiting searches to titles.\",\"recommended_fix\":\"Diff the search implementation between v2.2 and v2.3. Specifically check: (1) whether a full-text index on the description column was dropped or altered in a migration, (2) whether description search was moved from a background/worker thread to the main/UI thread, (3) whether query execution changed (e.g., LIKE scan replacing an FTS query). Restore indexed full-text search on descriptions and ensure the search operation runs off the main thread to prevent UI blocking.\",\"proposed_test_case\":\"Create a dataset of 5,000+ tasks with descriptions averaging 500+ words. Run a description search and assert it completes in under 2 seconds without blocking the UI thread (main thread should remain responsive to input events during search execution).\",\"information_gaps\":[\"Exact OS and hardware specs of the reporter's laptop\",\"Exact TaskFlow 2.3 patch version (2.3.0 vs 2.3.x)\",\"Whether the v2.3 release notes mention any search or database migration changes\",\"Whether other users on v2.3 with smaller datasets also experience slowness (threshold analysis)\"]}"
+    }
+  ]
+}

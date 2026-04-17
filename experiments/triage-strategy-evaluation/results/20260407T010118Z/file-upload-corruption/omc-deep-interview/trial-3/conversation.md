@@ -1,0 +1,81 @@
+# Conversation: file-upload-corruption x omc-deep-interview
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how disruptive this would be given your reliance on file attachments.
+
+To help us narrow this down: can you walk me through the exact steps you're taking when uploading a PDF? Specifically, I'd like to know:
+
+- Where in TaskFlow are you uploading (e.g., task detail view, a specific form)?
+- Roughly how large are the files that come through corrupted?
+- Does this happen with *every* PDF, or only some? If only some, is there anything those files have in common (size, source application, etc.)?
+
+Also, if you're able to compare the file size of the original PDF to the uploaded version, that would be very helpful in pointing us toward the root cause.
+
+---
+
+### reporter
+
+Look, I don't have time to write you a whole essay. We upload from the task detail view, drag and drop usually. It happens with a lot of PDFs but honestly now that you mention it, I think some smaller ones might be okay? I'm not sure. The ones that are broken tend to be the bigger reports we get from clients — multi-page stuff. I haven't compared file sizes, I just know they're broken and our customers are complaining. This started maybe a week ago I think.
+
+---
+
+### triage-agent
+
+Totally understand — I'll keep this quick. One important question: when you upload other types of files (images, Word docs, spreadsheets, etc.) to tasks, do those come through fine, or are you seeing corruption there too? This will help us figure out whether the issue is specific to how we handle PDFs or something broader with uploads in general.
+
+---
+
+### reporter
+
+Honestly I mostly deal with PDFs so that's what I've noticed. I think one of my team mentioned an image looking weird the other day but I didn't really look into it. Can you guys just fix the PDF thing? That's what's blocking us.
+
+---
+
+### triage-agent
+
+Completely hear you — we want to get this fixed fast.
+
+One last thing that would really speed up the investigation: do you have a rough sense of how large the PDFs are that come through corrupted? Even a ballpark is helpful (e.g., 'a few MB' vs. '20+ MB'). And you mentioned this started about a week ago — was that sudden (worked one day, broken the next) or more gradual?
+
+That'll give our developers what they need to start digging in.
+
+---
+
+### reporter
+
+The broken ones are usually a few MB I'd say — the client reports and contracts we get are like 2-5 MB typically. And yeah it was pretty sudden, like one day everything was fine and then stuff started coming through corrupted. Can you please prioritize this? We're having to email files around as a workaround and it's a mess.
+
+---
+
+### triage-agent
+
+Totally — this is top priority for us.
+
+One quick thing that would really focus the fix: if you go to a task where you uploaded a corrupted PDF, and you download it again and check the file size — is it noticeably different from the original (smaller, larger, or about the same)? Even a rough eyeball helps. This tells our devs whether the file is getting damaged on the way *in* or on the way *out*, which saves a lot of investigation time.
+
+If that's too much hassle, no worries — we can also check on our end in storage. Just trying to get you unblocked as fast as possible.
+
+---
+
+### reporter
+
+I don't know, I haven't checked that. I just know the file is broken when we download it. Can you check on your end? I really need this fixed, not to be doing QA for you guys.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"PDF attachments (2-5 MB) corrupted after upload via drag-and-drop in task detail view","problem":"PDF files uploaded to tasks via drag-and-drop in the task detail view are corrupted and cannot be opened. The issue primarily affects larger files (2-5 MB multi-page documents) while smaller PDFs may be unaffected. There is also an unconfirmed report of image corruption, suggesting the issue may not be PDF-specific. The problem appeared suddenly approximately one week ago.","root_cause_hypothesis":"The sudden onset (~1 week ago) and size-dependent behavior suggest a recent deployment or configuration change in the file upload pipeline. Most likely candidates: (1) a change to chunked upload handling that corrupts files above a certain size threshold, (2) a misconfigured upload size limit or timeout causing truncation, (3) an encoding or content-type handling change (e.g., binary vs. base64) that damages larger payloads. The possible image corruption report leans toward a general upload/storage issue rather than PDF-specific processing.","reproduction_steps":["Prepare a multi-page PDF file in the 2-5 MB range","Open a task in the task detail view","Drag and drop the PDF into the file attachment area","Wait for upload to complete","Download the uploaded file","Attempt to open the downloaded PDF — it should be reported as damaged/corrupted","Repeat with a small PDF (<1 MB) to confirm size-dependent behavior"],"environment":"TaskFlow web application, task detail view, drag-and-drop upload. Issue is not browser-specific as far as reported (multiple customers affected). Started approximately one week ago (late March / early April 2026).","severity":"high","impact":"Multiple customers affected. Teams that rely on PDF attachments for client reports and contracts are blocked. Current workaround is emailing files outside of TaskFlow, which breaks workflow and defeats the purpose of the attachment feature.","recommended_fix":"1. Check deployment/config changes from ~1 week ago affecting the upload pipeline, storage layer, or any file-processing middleware. 2. Compare the byte size and content of a corrupted file in storage against the original to determine whether corruption occurs on upload or download. 3. Test uploads at various sizes to identify the threshold where corruption begins. 4. Check whether non-PDF file types (images, docs) are also affected in storage to confirm whether this is file-type-specific or general. 5. Review chunked upload logic, content-type headers, and any encoding transformations for recent changes.","proposed_test_case":"Upload PDF files of varying sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB) via drag-and-drop in task detail view. Download each and perform a byte-for-byte comparison against the original using a checksum (SHA-256). All checksums must match. Additionally, verify the uploaded files open correctly in a PDF viewer.","information_gaps":["Exact file size comparison between original and stored/downloaded file (team can check in storage directly)","Whether the corruption occurs during upload, storage, or download (dev team can instrument to determine)","Whether non-PDF file types are also affected (unconfirmed image report — team should test internally)","Exact date of onset and correlation with specific deployments (check deployment logs for the past 1-2 weeks)","Whether the issue is browser-specific (not reported, but worth checking)"]}
+
+---

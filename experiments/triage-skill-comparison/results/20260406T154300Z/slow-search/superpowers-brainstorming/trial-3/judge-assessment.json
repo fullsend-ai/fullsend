@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Extracted 5 of 7 expected items: task count (~5,000), description vs title search differential, v2.2→v2.3 regression, ~2 week timeline, and 10-15s timing. Missing CPU spike during search and long descriptions in some tasks — both relevant to understanding the full picture. The agent resolved after just one reporter reply without probing for system-level symptoms or task data characteristics."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The summary specifically calls out 'a switch from indexed/full-text search to a naive LIKE/ILIKE scan' and 'a full table scan on descriptions,' which is essentially exactly what happened (FTS5 index replaced by LIKE query). The recommended fix to diff search code and migration scripts between versions and check for sequential scans is precisely the right investigation path."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Resolved in a single well-crafted question that extracted four key pieces of information simultaneously (sudden vs gradual, version correlation, query-dependent behavior, task volume). Every element of the question was essential and produced actionable signal. Hard to imagine a more efficient path to a useful triage."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The multi-pronged question was expertly designed. Offering 'came on gradually vs happened suddenly' directly surfaced the version upgrade correlation. The 'depends on the query' option elicited the critical title-vs-description differential that the reporter hadn't mentioned in the original issue. The task count question was well-calibrated with concrete ranges. This question genuinely drew out information the reporter wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "A developer could immediately start investigating: diff v2.2 vs v2.3 search code, check migration scripts, run EXPLAIN on the description search query. The reproduction steps are concrete. The proposed test case is practical. Docked one point because missing the database engine (SQLite) and task description characteristics (long descriptions) means a developer might not immediately reproduce the worst-case scenario."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Exceptionally efficient — extracted most critical information in a single, well-structured question",
+    "Root cause hypothesis is nearly identical to the actual cause, demonstrating strong diagnostic reasoning",
+    "The multi-choice question format lowered cognitive burden on the reporter while maximizing information yield",
+    "Recommended fix is specific and actionable, pointing to exact investigation steps"
+  ],
+  "notable_weaknesses": [
+    "Resolved too quickly — one more question about system behavior during search (CPU/memory) and task data characteristics would have completed the picture",
+    "Did not identify the database engine (SQLite) which is relevant to the FTS5 diagnosis",
+    "Missed that some tasks have very long descriptions, which is a contributing factor to the severity of the regression"
+  ],
+  "most_insightful_question": "The combined question asking whether the slowdown was gradual vs sudden, query-dependent, and requesting task count — particularly the 'depends on the query' option, which surfaced the critical title-vs-description differential the reporter hadn't mentioned",
+  "missed_opportunities": [
+    "Ask about system resource usage during search (would have revealed CPU spike to 100% on one core, confirming single-threaded full scan)",
+    "Ask about the nature of task descriptions — length, complexity — which would have revealed the long meeting-notes descriptions exacerbating the problem",
+    "Ask whether the reporter had tried any workarounds or observed any other behavioral changes after the v2.3 upgrade"
+  ]
+}

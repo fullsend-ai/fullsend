@@ -1,0 +1,72 @@
+# Conversation: intermittent-403 x omo-prometheus
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this. Intermittent 403s are tricky — let me help narrow this down.
+
+When you hit the 403, is it the entire dashboard page that returns a 403, or does the page partially load and then specific API calls fail with 403? If you can, open your browser's Network tab (DevTools → Network), reproduce the error, and tell me:
+
+1. Which specific URL(s) are returning 403?
+2. Were there any deployments, infrastructure changes, or config updates around the time this started "a couple days ago"?
+
+This will help us figure out whether the issue is at the authentication/session layer, an authorization policy, or something like a load balancer or CDN rule.
+
+---
+
+### reporter
+
+It's the whole page — I just get a 403 Forbidden screen, not a partial load. I haven't really dug into the Network tab, sorry. As for changes, I know I was recently assigned a new 'analyst' role — that happened around the same time, maybe a day or two before the issues started. I'm not sure about any deployments though, I'm not on the infrastructure side. My coworkers who also have the analyst role seem to be hitting the same thing. I kind of assumed it was network issues on my end since it's so intermittent.
+
+---
+
+### triage-agent
+
+That's a really useful detail — the timing of the new 'analyst' role lines up well with when this started, and the fact that your coworkers with the same role are also affected strongly suggests this is a permissions issue rather than a network problem.
+
+Here's what I'm trying to understand: if it were simply a missing permission on the analyst role, you'd expect it to fail *every* time, not intermittently. So something else is going on that makes it come and go.
+
+Can you tell me:
+
+Do you still have your previous role as well, or did the 'analyst' role *replace* your old role? And when you hit the 403, does refreshing the page (or logging out and back in) fix it, or does it stay broken for a while before randomly working again?
+
+---
+
+### reporter
+
+The analyst role replaced my old role — I used to be a viewer but got upgraded to analyst. When I hit the 403, refreshing usually fixes it, though sometimes I have to refresh a couple times. It doesn't stay broken for a long stretch or anything, it's more like... I'd say roughly 1 out of every 3 page loads fails? I haven't timed it exactly but that's what it feels like. I don't need to log out and back in, just refreshing eventually works.
+
+---
+
+### triage-agent
+
+Thanks — this is painting a clear picture. Here's my working theory:
+
+When your role was changed from 'viewer' to 'analyst,' not all backend servers picked up the updated permissions. So depending on which server handles your request (likely round-robin behind a load balancer), you either hit one that knows about your analyst permissions (200 OK) or one with a stale cache that still sees you as transitioning between roles (403).
+
+The ~1-in-3 failure rate and the fact that refreshing eventually works both fit this pattern well.
+
+Could you do one quick test to help confirm this? Next time you hit the 403, open DevTools (F12) → Network tab → click the failed request → look at the **Response Headers**. I'm looking for any header like `X-Served-By`, `X-Backend-Server`, `Server`, or similar that identifies which server handled the request. Then refresh until it works and check the same header on the successful request. If the server names differ, that confirms the theory. Even a screenshot of the response headers from a failed request would be very helpful.
+
+---
+
+### reporter
+
+Okay, I'll try that next time it happens. Give me a sec... alright I just reproduced it. I see a header that says `X-Served-By: app-server-3` on the failed request. When I refreshed and it worked, that header said `X-Served-By: app-server-1`. So yeah, looks like it's a different server. Does that mean one of the servers is messed up?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 errors on dashboard caused by stale permissions cache on app-server-3 after role migration to 'analyst'","problem":"Users who were migrated from the 'viewer' role to the 'analyst' role are receiving intermittent 403 Forbidden errors when loading the dashboard. Approximately 1 in 3 page loads fail. The issue affects multiple users who share the analyst role and began shortly after the role change was applied.","root_cause_hypothesis":"When user roles were updated from 'viewer' to 'analyst', not all backend application servers invalidated or refreshed their permissions cache. Specifically, app-server-3 appears to be serving stale authorization data (either a cached role mapping or a cached authorization decision), causing it to reject requests from users whose roles were updated. App-server-1 has the correct permissions and serves requests successfully. The load balancer distributes requests across servers via round-robin, producing the intermittent pattern.","reproduction_steps":["Log in as a user whose role was recently changed from 'viewer' to 'analyst'","Navigate to the TaskFlow dashboard","Observe that ~1 in 3 page loads return a 403 Forbidden error","On a 403 response, check the X-Served-By response header — it will show app-server-3","Refresh the page until it succeeds — the X-Served-By header will show a different server (e.g., app-server-1)"],"environment":"Production environment. Multiple backend application servers behind a load balancer (at least app-server-1 and app-server-3 identified). Users affected have the 'analyst' role that was recently assigned to replace the 'viewer' role.","severity":"high","impact":"All users with the 'analyst' role are affected. ~1 in 3 dashboard page loads fail with 403, disrupting normal workflow. Multiple team members confirmed affected. Workaround exists (refresh the page) but is disruptive.","recommended_fix":"1. Investigate the permissions/role cache on app-server-3 — compare its cached role data with app-server-1's. 2. Force a cache invalidation or restart on app-server-3 as an immediate fix. 3. Audit all backend servers (not just these two) for the same stale cache issue. 4. Investigate the role-update pipeline: when a role change is written to the database, how are individual app servers notified to invalidate their caches? Fix the cache invalidation mechanism so future role changes propagate reliably to all servers (e.g., pub/sub cache invalidation, shorter TTLs, or event-driven cache busting).","proposed_test_case":"After applying the fix, send 50 sequential dashboard requests for an analyst-role user and verify all return 200. Additionally, change a test user's role and confirm that all backend servers reflect the new role within the expected propagation window (verify via the X-Served-By header on each server).","information_gaps":["Total number of backend servers in the pool (only app-server-1 and app-server-3 observed so far)","Whether app-server-2 or other servers also have stale caches","The specific caching mechanism used for permissions (in-memory, Redis, etc.) and its TTL configuration","Whether any recent deployments were rolled out unevenly across servers"]}
+
+---

@@ -1,0 +1,7 @@
+{
+  "scenario": "email-delay",
+  "strategy": "structured-triage",
+  "reporter_profile": "typical",
+  "turns": 3,
+  "parse_failures": 0
+}

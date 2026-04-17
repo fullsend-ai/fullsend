@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** PDF attachments corrupted on upload/download — size-dependent regression (~1 week)
+
+## Problem
+PDF files uploaded to tasks via the web interface are returned corrupted when downloaded. The PDF viewer reports the file as damaged and will not open it at all (no partial rendering). The issue is size-dependent: small single-page PDFs appear unaffected, while larger multi-page documents (contracts, reports) are consistently broken. The corruption is immediate — uploading and immediately re-downloading reproduces it.
+
+## Root Cause Hypothesis
+A deployment or configuration change approximately one week ago likely introduced a bug in the file upload/storage pipeline that affects files above a certain size threshold. Probable causes include: (1) a chunked upload or multipart reassembly bug that drops or misordering chunks for files exceeding a buffer/chunk boundary, (2) a misconfigured reverse proxy, CDN, or middleware that truncates or re-encodes request bodies beyond a size limit, (3) a binary-vs-text encoding regression (e.g., base64 or transfer-encoding change) that only manifests when the payload crosses a certain size, or (4) a streaming/buffering change in the storage layer that silently corrupts larger writes.
+
+## Reproduction Steps
+  1. Prepare two PDF files: one small (~1 page, under 500KB) and one larger (multi-page contract or report, likely several MB)
+  2. Upload the small PDF to a task via the TaskFlow web interface
+  3. Immediately download the small PDF and verify it opens correctly
+  4. Upload the larger PDF to a task via the TaskFlow web interface
+  5. Immediately download the larger PDF — expect it to be reported as damaged/corrupted by a PDF viewer
+  6. Compare the byte sizes of the original and downloaded larger PDF to confirm truncation or modification
+
+## Environment
+TaskFlow web interface. Multiple customers affected. No specific browser or OS identified, but the immediate corruption on re-download indicates a server-side issue independent of client environment.
+
+## Severity: high
+
+## Impact
+Multiple customers are unable to use the file attachment feature for standard business documents (contracts, reports). This blocks workflows that depend on sharing PDFs through TaskFlow. The reporter describes it as heavily impacting their workflow with customers waiting on files.
+
+## Recommended Fix
+1. Review all deployments and configuration changes from approximately one week ago, focusing on the file upload endpoint, storage service, reverse proxy/load balancer, and any middleware in the upload path. 2. Binary-diff an uploaded-then-downloaded large PDF against its original to determine the nature of the corruption (truncation, encoding change, chunk misordering, or byte modification). 3. Identify the exact size threshold by testing uploads at various sizes (e.g., 500KB, 1MB, 2MB, 5MB, 10MB). 4. Check for recent changes to multipart upload handling, request body size limits, streaming/buffering configuration, or content-type handling.
+
+## Proposed Test Case
+Upload PDF files at a range of sizes (100KB, 500KB, 1MB, 5MB, 10MB, 25MB) via the web interface, immediately download each, and assert byte-for-byte equality between the original and downloaded file. This should be an automated integration test against the upload/download pipeline.
+
+## Information Gaps
+- Exact file size threshold where corruption begins (developer can determine empirically)
+- Nature of the corruption — truncation vs. encoding vs. byte modification (developer can determine by binary diff)
+- Specific deployment or config change from ~1 week ago that triggered the regression (requires internal deploy history review)

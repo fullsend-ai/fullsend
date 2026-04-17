@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Memory leak in v2.3: per-request resource accumulation causes progressive slowdown requiring daily restart
+
+## Problem
+After upgrading from v2.2 to v2.3, the TaskFlow server process leaks memory on every API request. Memory grows from ~500MB at startup to 4GB+ over a workday (~5,000 requests/hour with 200 users), causing page loads >10s and API timeouts by late afternoon. The server requires a daily restart to recover.
+
+## Root Cause Hypothesis
+The v2.3 'improved real-time notifications' feature likely introduced middleware or a per-request hook that allocates resources (event listeners, notification context objects, or subscription tracking structures) on every API request without releasing them. This is supported by: (1) the leak started exactly with the v2.3 upgrade, (2) it correlates with total API request volume regardless of endpoint, (3) WebSocket connection counts are stable and proportional to active users, and (4) the database is not affected. The leak is in the application process, not in connections or the DB layer.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 on a clean VM with default PostgreSQL setup
+  2. Start the server and record baseline memory (~500MB expected)
+  3. Generate sustained API traffic against any common endpoints (list tasks, update status, load boards) at ~5,000 requests/hour
+  4. Monitor process memory over 1-2 hours — expect steady linear growth
+  5. Compare by repeating the same test with TaskFlow v2.2 to confirm no leak
+
+## Environment
+TaskFlow v2.3 (upgraded from v2.2), single-process deployment on Ubuntu 22.04 VM with 8GB RAM, default PostgreSQL, real-time notifications enabled, ~200 active users
+
+## Severity: high
+
+## Impact
+All 200 users experience progressive degradation daily. By afternoon, the application is effectively unusable (10s+ loads, API timeouts). Requires manual daily restart as a workaround, which disrupts evening/off-hours users.
+
+## Recommended Fix
+Diff the v2.3 changes against v2.2, focusing on the real-time notifications overhaul and any new middleware or request hooks. Look for per-request allocations that are never freed: event listener registrations, notification context objects appended to a growing collection, subscription maps keyed by request/session that are never evicted, or closures capturing request-scoped data in a long-lived scope. A heap snapshot comparison between startup and after ~10,000 requests should pinpoint the leaking object type. As an immediate mitigation, the reporter can downgrade to v2.2.
+
+## Proposed Test Case
+Run a load test sending 50,000 API requests to a fresh v2.3 instance and assert that process RSS memory stays below a defined ceiling (e.g., startup + 200MB). The same test against v2.2 should pass, confirming the regression. After the fix, the v2.3 test should also pass.
+
+## Information Gaps
+- Exact object type accumulating in memory (requires heap profiling by a developer)
+- Whether the leak is in notification middleware specifically or a broader request-lifecycle change in v2.3
+- Whether disabling real-time notifications for all users would stop the leak (viable workaround if so)

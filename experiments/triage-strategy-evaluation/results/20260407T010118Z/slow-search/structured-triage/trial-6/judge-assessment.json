@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description distinction, v2.2→v2.3 regression, timing (~2-3 weeks), and 10-15s latency. Missing: CPU spikes during search and long descriptions in tasks (some 2000+ words). Both omissions are relevant to understanding why the regression is so severe."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is essentially correct and matches both acceptable diagnostic paths simultaneously — it identifies the v2.3 upgrade as the trigger AND the title-vs-description indexing difference. Crucially, it explicitly names 'a change from indexed full-text search to unindexed LIKE/ILIKE queries' as the likely cause, which is the actual cause. This is a remarkably accurate hypothesis from limited information."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after 2 rounds of questioning. Had a reasonable basis to resolve, but missed obvious follow-ups: CPU behavior during search (would have revealed the single-core spike), description length/content (relevant to why LIKE is so expensive), and whether any cache clearing or reindexing had been attempted. These were not obscure questions — CPU behavior is a natural next step when investigating a performance regression."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both rounds of questions were well-targeted and non-redundant. First round covered reproduction context and scale; second covered environment and version. No wasted turns, no repeated asks."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question's framing ('does it happen with every search query or only certain ones') was open enough to surface the title-vs-description distinction that the reporter wouldn't have volunteered. The agent then explicitly flagged that distinction as a diagnostic clue and pivoted to version information — demonstrating real reasoning. Questions were professional and well-sequenced. Slight deduction because the second round was fairly standard environmental gathering."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes reproduction steps seeded with the right dataset size, a specific recommended fix (compare query paths, run EXPLAIN ANALYZE, check migration scripts), a proposed regression test, and clear information gaps. A developer could begin investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly identified the title-vs-description performance asymmetry as the key diagnostic clue and called it out explicitly",
+    "Root cause hypothesis named 'indexed full-text search to unindexed LIKE/ILIKE queries' — essentially the actual cause — from only two rounds of questioning",
+    "Exceptionally detailed, developer-ready summary with reproduction steps, recommended fix approach, and a proposed regression test case"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU behavior during searches — a natural performance question that would have confirmed the single-core spike",
+    "Never asked about the nature or length of task descriptions — relevant to why a LIKE scan is so costly at 5,000 rows",
+    "Acknowledged uncertainty about upgrade timing in information_gaps but did not press the reporter to check upgrade logs or app version history to confirm"
+  ],
+  "most_insightful_question": "The first question's inclusion of 'does it happen with every search query or only certain ones (e.g., longer queries, specific filters)' — this open framing prompted the reporter to volunteer the title-vs-description distinction, which became the central diagnostic clue.",
+  "missed_opportunities": [
+    "Ask whether CPU usage spikes during slow searches (would reveal the single-core saturation pattern)",
+    "Ask whether task descriptions tend to be long or contain large amounts of text (would surface the meeting-notes detail relevant to LIKE scan cost)",
+    "Ask whether the reporter had tried any workarounds such as cache clearing or reindexing"
+  ]
+}

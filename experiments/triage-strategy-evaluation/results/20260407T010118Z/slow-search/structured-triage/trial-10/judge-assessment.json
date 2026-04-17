@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description distinction, v2.2→v2.3 regression, ~2 weeks ago, and 10-15 second latency. Missing: CPU spike behavior during search, and the presence of unusually long descriptions (copy-pasted meeting notes, 2000+ words). The long descriptions are particularly relevant because they explain why a full table scan is so expensive — omitting this leaves a gap in the reproduction fidelity."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names 'a switch from indexed full-text search to unindexed LIKE/ILIKE queries' as a possibility — this is essentially the actual cause (FTS5 index replaced with naive LIKE query). The triage also correctly identifies the v2.3 upgrade as the trigger and the title/description split as the diagnostic signal. This satisfies both acceptable diagnostic paths simultaneously."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two rounds of questioning with a strong hypothesis. However, it left obvious follow-ups on the table: CPU behavior during search (a key signal for database vs. client bottleneck), description length or content patterns, and whether a reindex had been attempted. The agent's own information_gaps section acknowledges the uncertainty about whether the v2.3 upgrade is definitively causal — a direct question could have resolved this."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were mostly well-targeted. The browser version question was low-value — the agent itself later noted it was 'unlikely to matter if this is a server-side/database issue.' That slot could have been used for CPU behavior or description length. Otherwise, both question sets extracted useful information efficiently."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question's structure (what are you searching for, how many tasks, is it consistent) was well-designed and directly prompted the reporter to volunteer the critical title-vs-description distinction unprompted. The second question efficiently gathered environment and version details. Questions were professional and diagnostic rather than generic. Asking about browser version slightly undermines an otherwise strong showing."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it includes specific reproduction steps scaled to the right task count, a ranked fix checklist (diff v2.2→v2.3 query logic, EXPLAIN ANALYZE, check FTS), and a concrete proposed regression test case comparing both schema versions. A developer could open the v2.3 changelog and run EXPLAIN ANALYZE immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The first question's open-ended framing ('what are you searching for') prompted the reporter to independently discover and articulate the title-vs-description distinction — the single most diagnostic signal in this bug",
+    "The root cause hypothesis is remarkably precise, explicitly naming the FTS→LIKE regression as a candidate, which matches the actual cause",
+    "The recommended fix and proposed test case are specific, executable, and well-calibrated to the confirmed environment"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU behavior during search, which would have confirmed server-side database bottleneck and strengthened the hypothesis",
+    "Never asked about description content length or nature, missing context that explains why the full table scan is so costly with this particular dataset",
+    "Spent a question slot on Firefox version, which the agent itself later acknowledged was unlikely to be relevant"
+  ],
+  "most_insightful_question": "What are you searching for (a keyword, a tag, a filter combination)? — This open-ended framing led the reporter to independently surface the title-vs-description performance split, which is the key diagnostic signal and directly supports the most actionable root cause hypothesis.",
+  "missed_opportunities": [
+    "Did your CPU spike or fan spin up noticeably while waiting for search results? (would confirm database-side bottleneck)",
+    "Do any of your tasks have very long descriptions — for example, pasted documents or meeting notes? (explains why a full scan is especially expensive)",
+    "Have you noticed whether the slowness is consistent regardless of the search term, or worse for terms that appear frequently in descriptions?",
+    "Have you tried any workarounds like clearing cache or reindexing?"
+  ]
+}

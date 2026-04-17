@@ -1,0 +1,55 @@
+# Conversation: flaky-ci x structured-triage
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI failures are frustrating, especially when they block releases.
+
+To help narrow this down: when the tests fail in CI, what does the failure output look like? Specifically:
+- Which tests are failing? Are they concentrated in a particular area (e.g., database tests, API tests, UI tests), or spread across the suite?
+- What error messages or assertion failures do you see in the CI logs?
+
+Even a snippet from a recent failed CI run would be very helpful.
+
+---
+
+### reporter
+
+They're in the task ordering module. The test names show up in the logs when they fail, it's the new ones that were added in that PR last week. They check that tasks come back in the right order after sorting. Look, I've run these tests like 50 times locally and they pass every single time. Can someone just look at the CI config or something?
+
+---
+
+### triage-agent
+
+I understand the frustration — I definitely want to help get this unblocked.
+
+I can see the failures are in the task ordering tests added last week, and that they pass locally every time. That local-vs-CI difference is a strong clue, so it would help to understand the environment difference:
+
+- What CI platform are you using (e.g., GitHub Actions, Jenkins, GitLab CI)?
+- What OS and runtime versions does CI use (e.g., Node 18 on Ubuntu 22.04)?
+- Does CI run tests in parallel or with any configuration that differs from your local setup (e.g., different database, different test runner flags)?
+
+Even just a link to the CI config file (e.g., `.github/workflows/test.yml`) would be great — I can take it from there.
+
+---
+
+### reporter
+
+It's GitHub Actions, Ubuntu 22.04 with Go 1.22. I don't know the details of the CI config off the top of my head, I didn't set it up. Locally I'm on macOS with the same Go version and everything passes. I don't really want to dig through config files right now — can't someone on the team just look at why these tests are flaky? They worked fine before they were merged.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky task ordering tests in CI — pass locally on macOS, fail intermittently on GitHub Actions (Ubuntu)","problem":"Tests in the task ordering module, added in a recent PR last week, fail intermittently in the CI pipeline (GitHub Actions, Ubuntu 22.04, Go 1.22) but pass consistently when run locally on macOS with the same Go version. The failures are non-deterministic — sometimes all tests pass, sometimes a handful fail. This is blocking releases.","root_cause_hypothesis":"The task ordering tests likely depend on non-deterministic sort stability. Go's sort.Slice is not stable, and the behavior can differ across runs and platforms. If tasks with equal sort keys are expected in a specific order, the tests will pass when the underlying sort happens to preserve insertion order (common locally with smaller datasets or specific memory layouts) and fail when it doesn't. An alternative hypothesis is a race condition if tests run in parallel in CI but sequentially locally, or a map iteration order dependency (Go randomizes map iteration).","reproduction_steps":["Identify the task ordering tests added in last week's PR","Run the test suite on Ubuntu 22.04 with Go 1.22 (or in the GitHub Actions environment)","Run the tests repeatedly (e.g., `go test -count=100 ./path/to/task/ordering/...`) to reproduce the intermittent failures","Alternatively, run with `-race` flag to check for race conditions"],"environment":"CI: GitHub Actions, Ubuntu 22.04, Go 1.22. Local (reporter): macOS, Go 1.22. Tests pass 100% locally, fail intermittently in CI.","severity":"high","impact":"Blocking releases for the team. All CI runs are unreliable, requiring reruns and eroding confidence in the test suite.","recommended_fix":"1. Examine the task ordering tests from last week's PR for sort stability assumptions — if using sort.Slice, switch to sort.SliceStable or add a tiebreaker key to ensure deterministic ordering. 2. Check for map iteration order dependencies in the task ordering logic. 3. Run `go test -race` to rule out data races. 4. Run `go test -count=100` locally to see if the flakiness can be reproduced outside CI. 5. Review whether CI runs tests in parallel (`-parallel` flag or multiple packages concurrently) which might expose shared state issues.","proposed_test_case":"Add a test that explicitly verifies sort stability by creating multiple tasks with identical sort keys and asserting that a secondary ordering criterion (e.g., creation time or ID) produces a deterministic result. Additionally, run the existing ordering tests with `-count=100` to confirm the fix eliminates flakiness.","information_gaps":["Exact error messages and assertion failure output from CI logs","CI configuration details (parallel test execution, environment variables, test runner flags)","Whether the task ordering code uses sort.Slice, maps, or concurrent operations internally","The specific PR that introduced these tests"]}
+
+---

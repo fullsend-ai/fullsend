@@ -1,0 +1,63 @@
+# Conversation: file-upload-corruption x omo-prometheus
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — corrupted file uploads are definitely something we want to get to the bottom of quickly.
+
+To start narrowing this down: **was PDF upload working correctly before, and if so, when did you first notice the corruption?** For example, did it break after a recent update, or has it never worked reliably? And can you confirm whether *every* PDF you upload comes through corrupted, or only some of them (e.g., larger files, files from a specific source)?
+
+---
+
+### reporter
+
+It was working fine before, started maybe a week ago? And no, not every PDF is broken. Some of them come through fine which makes it even more confusing. I haven't figured out the pattern. The small ones seem okay I think? But I'm not sure what's different about the ones that break. All I know is our customers are complaining and we need this fixed ASAP.
+
+---
+
+### triage-agent
+
+Thanks for that detail — the fact that it started about a week ago and seems size-related is a strong lead.
+
+I want to pin down the size threshold more precisely: **could you upload a PDF that you know gets corrupted, then tell me its exact file size?** And critically — **if you upload that same file a second time, does it come through corrupted again, or does it sometimes work?**
+
+This will tell us whether the corruption is deterministic (always breaks above a certain size) or intermittent (same file sometimes works, sometimes doesn't), which points to very different root causes.
+
+---
+
+### reporter
+
+Look, I don't have time to run experiments for you. I'm dealing with angry customers all day. I know the broken ones are bigger files — like full reports and contracts, multi-page stuff. The little one-pagers seem fine. I don't know the exact file size, I'm not sitting here checking megabytes. And yes, when a file is broken it's broken every time, it's not random. Can someone just fix this?
+
+---
+
+### triage-agent
+
+Totally understand — I don't need you to run any experiments. You've already given us strong leads (regression from ~1 week ago, larger files only, deterministic). One last thing that'll help the developers zero in on the fix fast:
+
+**When you look at a corrupted PDF, does the file appear to be *cut short* (e.g., only the first few pages render, or the file size is noticeably smaller than the original), or does the *entire file* come through garbled/unreadable?**
+
+If you're not sure, that's fine too — even knowing what the PDF viewer's error message says (e.g., "unexpected end of file" vs. "invalid format") would help. This tells us whether the upload is getting truncated or mangled, which are very different fixes.
+
+---
+
+### reporter
+
+The whole file is there, it's not cut short or anything. It's just completely garbled — the viewer says something like "invalid format" or "not a valid PDF." The file size looks about the same as what was uploaded, it's just... broken. Like something scrambled the contents. Can you please just escalate this to whoever handles the upload stuff? This has been going on for a week already.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Large PDF uploads are silently corrupted (content garbled, not truncated) — regression from ~1 week ago","problem":"PDF files uploaded to tasks are corrupted for multiple customers. The corruption affects larger multi-page PDFs (reports, contracts) while single-page PDFs upload correctly. The uploaded file retains its original size but the content is garbled, producing 'invalid format' / 'not a valid PDF' errors in viewers. The corruption is deterministic — the same file fails every time.","root_cause_hypothesis":"A change deployed approximately one week ago introduced a bug in how larger file uploads are processed. Since the file size is preserved but content is garbled (not truncated), this is likely a character encoding or binary data handling issue — for example, a middleware or proxy treating the binary upload stream as text (applying UTF-8 encoding/decoding to binary data), or a base64/multipart encoding regression that activates only on chunked uploads (i.e., files above the chunking threshold). The size-dependent behavior strongly suggests a different code path is used above a certain file size.","reproduction_steps":["Upload a small single-page PDF (e.g., <1MB) to a task — confirm it uploads and opens correctly","Upload a larger multi-page PDF (e.g., a 5+ page report or contract) to a task","Download the uploaded file and attempt to open it","Observe that the viewer reports 'invalid format' or 'not a valid PDF'","Compare the uploaded and downloaded file sizes — they should be approximately equal","Run a binary diff or hex dump to identify how the content was mangled (look for encoding artifacts like UTF-8 replacement characters 0xEFBFBD, or base64 double-encoding)"],"environment":"Production environment, multiple customers affected, file attachment feature. No specific browser/OS constraints reported — appears to be a server-side issue.","severity":"high","impact":"Multiple customers are unable to use file attachments for larger PDFs, which is a core workflow. The feature has been broken for approximately one week. Customers are actively complaining. Small files still work, providing a partial workaround.","recommended_fix":"1. Review all changes deployed ~1 week ago that touch the file upload pipeline, file storage, or any middleware/proxy in the upload path. 2. Check whether uploads above a certain size take a different code path (e.g., chunked/multipart uploads vs. single-request uploads). 3. Binary-diff a corrupted download against its original to identify the corruption pattern (encoding mangling, double-encoding, etc.). 4. Check if a reverse proxy, CDN, or API gateway was updated and is now modifying binary request bodies. 5. Test with other binary file types (images, DOCX) to determine if the issue is PDF-specific or affects all binary uploads above the threshold.","proposed_test_case":"Upload PDFs of increasing size (500KB, 1MB, 2MB, 5MB, 10MB) and verify each downloaded file is byte-identical to the original. This identifies the exact size threshold. Additionally, perform a byte-level comparison of a corrupted file against its source to confirm the corruption pattern and regression-test the fix.","information_gaps":["Exact file size threshold where corruption begins","Whether non-PDF binary files (images, DOCX, ZIP) are also affected","Exact deployment or infrastructure change made ~1 week ago","Specific browser and upload method used (drag-and-drop vs. file picker, though likely irrelevant given server-side symptoms)"]}
+
+---

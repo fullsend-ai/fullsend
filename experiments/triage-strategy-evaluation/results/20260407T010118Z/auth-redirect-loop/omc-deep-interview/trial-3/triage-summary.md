@@ -1,0 +1,39 @@
+# Triage Summary
+
+**Title:** Login redirect loop for users with plus-addressed or aliased emails after Okta-to-Entra ID SSO migration
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop: they authenticate successfully at Microsoft, get redirected back to TaskFlow, but the session cookie does not persist, causing TaskFlow to immediately redirect them back to Microsoft. Affected users correlate strongly with those who have plus-addressed emails (e.g. jane+taskflow@company.com) or emails that were changed/aliased during onboarding.
+
+## Root Cause Hypothesis
+Two interacting factors are likely at play. First, the session cookie is set with SameSite=Strict, which causes browsers to not send the cookie on the initial cross-site navigation back from Microsoft's IdP — this may affect all users on first redirect but is recoverable for most. Second, for users with plus-addressed or aliased emails, TaskFlow's user lookup or session creation likely fails because the email claim in the Entra ID token (containing a '+' or a different email variant) doesn't match the stored user record. This could be due to (a) the '+' being URL-decoded or stripped during claim parsing ('+' → space is a common encoding issue), (b) a case-sensitive or exact-match email comparison failing for aliased users, or (c) the cookie value itself being corrupted by the '+' character if the email is embedded in the session token before encoding. The combination of SameSite=Strict preventing session persistence on cross-site redirect AND a failed user lookup preventing session creation produces the persistent loop.
+
+## Reproduction Steps
+  1. Set up a user in Entra ID with a plus-addressed email (e.g. testuser+taskflow@company.com) and grant them access to the TaskFlow app registration
+  2. Ensure no existing TaskFlow session cookies exist (clear cookies or use incognito)
+  3. Navigate to TaskFlow login and initiate SSO login
+  4. Authenticate successfully at Microsoft Entra ID
+  5. Observe the redirect back to TaskFlow — check for Set-Cookie header with taskflow_session/tf_session
+  6. Observe that the browser does not send the cookie on the subsequent request, and TaskFlow redirects back to Microsoft
+  7. Repeat with a plain email user (no plus-addressing, never changed) to confirm they do not experience the loop
+
+## Environment
+TaskFlow with Microsoft Entra ID SSO (recently migrated from Okta). Session cookie uses SameSite=Strict, Path=/. Cookie name is taskflow_session or tf_session. Affects users with plus-addressed emails and users whose emails were changed/aliased post-onboarding.
+
+## Severity: high
+
+## Impact
+Approximately 30% of users are completely unable to log into TaskFlow. No workaround is currently known. Affected users can authenticate to other SSO apps fine, so the problem is TaskFlow-specific.
+
+## Recommended Fix
+Investigate in this order: (1) Check how TaskFlow parses the email/UPN claim from the Entra ID token — log the raw claim value for a plus-address user and compare it against the user lookup query. Look for URL encoding issues where '+' becomes a space. (2) Change the session cookie from SameSite=Strict to SameSite=Lax — Strict is incompatible with IdP-initiated cross-site redirects and Lax is the standard setting for SSO callback flows. (3) If the user lookup uses exact email matching, normalize both sides (lowercase, handle plus-addressing) or match on a more stable identifier like the Entra ID object ID (oid claim) rather than email. (4) For aliased users, ensure TaskFlow checks all known email aliases or uses the primary UPN from the token rather than a cached email from the old Okta setup.
+
+## Proposed Test Case
+Create integration tests for the SSO callback handler that exercise: (a) a token with a plus-addressed email claim — verify user lookup succeeds and session is created, (b) a token where the email claim differs from the stored email by case or alias — verify matching still works, (c) verify the Set-Cookie header on the callback response uses SameSite=Lax (not Strict).
+
+## Information Gaps
+- Exact server-side logs showing what happens during the callback — whether user lookup fails or session creation fails
+- Result of the alias test (giving a plus-address user a plain email to confirm the plus sign is causal)
+- Whether the few ambiguous affected users (not clearly plus-addressed or aliased) represent a third pattern or are actually aliased users the reporter hasn't confirmed yet
+- Whether any users who successfully log in also have plus-addresses (which would weaken the hypothesis)
+- Exact cookie name (taskflow_session vs tf_session) — reporter was unsure

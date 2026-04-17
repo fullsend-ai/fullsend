@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: ~5,000 tasks, title-fast/description-slow split, v2.2→v2.3 regression, ~2 weeks ago onset, 10-15 second latency, CPU spike (fan kicking up), and long descriptions (meeting notes/detailed context). The long-description detail wasn't quantified (no '2000+ words') but the substance was captured. Additional useful detail was added: uniform latency regardless of term rarity, and the workaround confirmation."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The hypothesis ('removed, broke, or failed to migrate a full-text index ... or switched the search implementation to a non-indexed path such as a LIKE/regex scan') maps directly onto the actual cause and satisfies both acceptable diagnostic paths simultaneously. The agent correctly identified the v2.3 upgrade as the trigger, correctly inferred a sequential scan from the uniform latency pattern, and specifically named LIKE/regex scan as the candidate — which is the actual mechanism. No factual inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent gathered all critical diagnostic signals: search type, title vs. description split, version upgrade timing, task count, CPU behavior, and latency uniformity across rare/common terms. It did not ask about description length (though the reporter volunteered the meeting-notes detail), nor did it ask whether cache clearing or reindexing had been attempted. These are minor gaps; the agent had a sound basis for resolution."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns before resolution. Turn 5 — asking about workflow frequency and workarounds — was more severity assessment than diagnosis, and the workaround question only re-confirmed the already-known title-search speed. It wasn't wasted (informed the severity and impact section), but could have been folded into another turn or skipped in favor of a more diagnostic question. All other turns were well-targeted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The standout question in turn 6 — asking whether common vs. rare search terms differ in speed — is a textbook diagnostic technique for distinguishing indexed lookup (rare terms return faster) from full sequential scan (uniform latency regardless of selectivity). This is exactly the question needed to confirm the scan hypothesis and would not have been volunteered unprompted. The other questions were well-framed and progressively narrowed the problem space."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: diff the v2.2→v2.3 search layer, check for the FTS index in upgrade vs. fresh-install schemas, run EXPLAIN on the description search query, and compare against v2.2 behavior. A concrete regression test is proposed. The information gaps section correctly flags what the dev team can self-serve (DB engine, schema) without blocking investigation."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The term-rarity question in turn 6 is a sophisticated, genuinely insightful diagnostic move that directly confirmed sequential-scan behavior from user testimony alone",
+    "Root cause hypothesis explicitly named LIKE/regex scan as the candidate mechanism — matching the actual cause without access to the codebase",
+    "Triage summary is unusually complete: reproduction steps, recommended fix, proposed regression test, and clearly scoped information gaps all in one pass",
+    "Identified the title-vs-description split in the first exchange and kept that thread throughout"
+  ],
+  "notable_weaknesses": [
+    "Turn 5 spent a full round on workflow impact and workaround confirmation rather than advancing the root cause investigation",
+    "Description length (a factor in scan cost) was never directly asked about — the reporter volunteered the meeting-notes detail, but the agent didn't probe the size of those descriptions",
+    "Did not ask whether the reporter had tried any remediation steps (cache clear, reindex) that could have provided additional signal or offered an immediate workaround"
+  ],
+  "most_insightful_question": "Is searching for a very common word just as slow as searching for something rare that might only be in one or two tasks?",
+  "missed_opportunities": [
+    "Ask about typical or maximum description length to quantify the data volume being scanned per query",
+    "Ask whether the reporter had tried any cache-clearing or reindexing steps — both as a workaround signal and to rule out a corrupted index rather than a dropped one",
+    "Ask whether the v2.3 release notes or changelog mentioned any search or database schema changes — would have accelerated the developer's investigation"
+  ]
+}

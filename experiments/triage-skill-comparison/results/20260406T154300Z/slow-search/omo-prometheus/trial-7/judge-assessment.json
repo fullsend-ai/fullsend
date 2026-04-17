@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "The triage extracted all expected information: ~5,000 tasks, slow on description search vs fast on title search, regression after v2.2 to v2.3 upgrade, started ~2 weeks ago, 10-15 seconds for description searches, and long descriptions in some tasks. The only item not explicitly mentioned is CPU spikes during search, but this was never surfaced in the conversation (the reporter didn't mention it). The triage also discovered additional useful information like consistency across query types and session timing."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The triage correctly hypothesized that v2.3 dropped or failed to migrate the full-text search index on descriptions, or switched to a LIKE query or application-level filtering — which is exactly what happened (switched from FTS5 to naive LIKE query, migration didn't preserve the FTS index). The distinction between title search (indexed) and description search (full scan) is correctly identified."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "The conversation took only 2 agent turns (plus the summary) to extract nearly all critical information. The first question efficiently bundled timing, correlation, task count, and search context. The second question probed query-type sensitivity and caching behavior, which directly led the reporter to volunteer the crucial title-vs-description distinction. No questions were wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions showed genuine diagnostic reasoning. The first question asked about temporal correlation with upgrades or imports — directly relevant. The second question about common vs rare terms and first-search-vs-subsequent was a sophisticated probe designed to distinguish between index corruption, missing indexes, and caching issues. This line of questioning prompted the reporter to think more carefully and volunteer the title-vs-description distinction, which was the single most important diagnostic fact."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, specific path for a developer: diff the schema migrations between v2.2 and v2.3, check the query execution plan for description search, look for FTS index changes, and restore the indexed approach. The reproduction steps are concrete and testable. The proposed test case includes specific numbers (5,000+ tasks, 500+ word descriptions, <2s threshold). A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional diagnostic reasoning — the root cause hypothesis almost perfectly matches the actual cause without any code access",
+    "Highly efficient: only 2 turns to extract nearly all critical information",
+    "The second question's framing (common vs rare terms, first vs subsequent) was designed to differentiate between multiple possible causes and indirectly prompted the reporter to reveal the title-vs-description distinction",
+    "The summary is immediately actionable with specific investigation steps, reproduction steps, and a proposed regression test"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have further confirmed the full-table-scan hypothesis",
+    "Did not ask about the database backend (SQLite vs PostgreSQL), though this was correctly noted as an information gap",
+    "Environment details (OS, hardware) were not collected, though the triage correctly assessed these as likely irrelevant given the version correlation"
+  ],
+  "most_insightful_question": "Is every search slow, or only certain queries? For example, is searching for a single word just as slow as a longer phrase? And does searching for a very common term behave differently than a rare one?",
+  "missed_opportunities": [
+    "Could have asked about CPU or memory usage during slow searches to confirm the full-scan hypothesis",
+    "Could have asked whether the reporter had tried reindexing or if there were any database maintenance options available"
+  ]
+}

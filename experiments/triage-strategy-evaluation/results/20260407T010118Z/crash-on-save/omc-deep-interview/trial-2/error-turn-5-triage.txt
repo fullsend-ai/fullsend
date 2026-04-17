@@ -1,0 +1,28 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "Applying OMC Deep Interview clarity scoring after 3 exchanges:\n- Symptom: 0.80 — app fully closes on Save, brief encoding error dialog flashes\n- Cause: 0.75 — CSV import introduced non-ASCII characters (smart quotes, em-dashes); encoding error during serialization is strong hypothesis\n- Reproduction: 0.70 — import CSV with special characters into task list, hit Save; manually-created lists save fine, confirming imported data is the trigger\n- Impact: 0.70 — at least one user blocked, 200 tasks at risk of loss, no workaround besides avoiding imported data\n\nAll four dimensions are individually >= 0.70, meeting the second sufficiency criterion. Remaining gaps (exact app version, exact characters, macOS version) would not change the fix direction — the developer needs to investigate encoding handling in the save/serialization path for non-ASCII characters introduced via CSV import. The reporter is non-technical and increasingly frustrated; further questions would extract diminishing returns.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains non-ASCII characters from CSV import",
+    "problem": "The desktop Mac app crashes immediately (full process exit) when the user saves a task list that was populated via CSV import. A brief error dialog referencing 'encoding' flashes before the app closes. The crash does not occur when saving manually-created task lists, isolating the issue to imported data.",
+    "root_cause_hypothesis": "The CSV import ingested text containing non-ASCII characters (smart/curly quotes, em-dashes, and similar Unicode characters). The save/serialization path likely assumes ASCII or a specific encoding and fails when it encounters these characters, causing an unhandled encoding exception that crashes the app.",
+    "reproduction_steps": [
+      "Create a CSV file containing task data with non-ASCII characters (e.g., curly quotes "", em-dashes —, or other Unicode punctuation)",
+      "Import the CSV into TaskFlow to create a task list with ~200 tasks",
+      "Click Save",
+      "Observe: app crashes with a brief encoding-related error dialog"
+    ],
+    "environment": "macOS (version unknown), TaskFlow desktop app (version unknown)",
+    "severity": "high",
+    "impact": "Users who import CSV data containing non-ASCII characters cannot save their task lists. The app crashes on every save attempt, causing repeated data loss. The user has 200 imported tasks they cannot persist.",
+    "recommended_fix": "Investigate the serialization/save code path for encoding assumptions. Likely the save routine needs to handle UTF-8 encoding explicitly rather than assuming ASCII. Check for: (1) file write encoding parameter, (2) JSON/data serialization encoding, (3) any string encoding conversion during save. Also consider adding a try/catch around the save operation so encoding errors surface as a user-facing error message rather than crashing the app. The CSV import path should also be audited to either normalize or safely preserve Unicode characters on ingest.",
+    "proposed_test_case": "Import a CSV containing tasks with smart quotes (\\u201c, \\u201d), em-dashes (\\u2014), and other common Unicode punctuation. Verify that saving the resulting task list succeeds without error. Additionally, test with a large list (~200+ tasks) to rule out size-related issues.",
+    "information_gaps": [
+      "Exact macOS version and TaskFlow app version",
+      "Full error message from the crash dialog (reporter could not read it in time)",
+      "Exact characters in the imported data that trigger the issue",
+      "Whether the crash occurs with a smaller subset of the imported tasks (isolating a specific record vs. general encoding issue)"
+    ]
+  }
+}
+```

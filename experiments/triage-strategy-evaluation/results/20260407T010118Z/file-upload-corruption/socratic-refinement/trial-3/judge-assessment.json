@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured most expected extracts: size-dependent behavior (2-5MB breaks, under 1MB fine), ~1 week regression, multiple customers affected, server-side nature, binary mangling hypothesis (encoding/content-type mentioned). Missing: never asked whether other large file types (images, spreadsheets) are also affected, which is a meaningful gap given the ground truth."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage accurately follows acceptable path #1 — identifying size-dependent behavior and suspecting different upload paths. The root cause hypothesis explicitly names proxy/gateway layer, chunked transfer encoding, and encoding/content-type handling as candidates. The actual cause (proxy stripping Content-Type on chunked uploads) is directly listed as a candidate in the recommended fix step 4. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Three substantive exchanges covering timing, corruption appearance, file sizes, and log correlation. However, the agent never asked whether other large file types (images, Word docs, spreadsheets) also exhibit corruption — a natural follow-up that could have corroborated the size/path hypothesis and is directly relevant per ground truth. Also didn't ask whether upload method (web UI vs API) varied across affected vs unaffected users."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three tightly focused turns. The second question's file-size-comparison request was slightly burdensome for an impatient reporter and could have been deferred to engineering investigation, but it was diagnostically motivated. No redundant or repeated questions."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "First question smartly bundled file type, size, timing, and change context in one ask. The corruption-mode question (blank vs partial vs completely refused) showed genuine diagnostic reasoning — distinguishing truncation from encoding corruption. Third question's task-ID request was practical for log correlation. The file-size comparison ask in turn 2 was insightful but misjudged the reporter's patience and willingness."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: clear reproduction steps with size variants, a 5-point recommended fix sequence that directly names the right layers (proxy, chunked transfer, content-type handling), a proposed automated test case with checksum verification, and explicitly flagged information gaps. A developer could begin a targeted investigation immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Quickly extracted the size-dependent pattern from the reporter's casual mention of 'big ones break, small ones are fine' and built the hypothesis around it",
+    "Root cause hypothesis explicitly names content-type handling and chunked transfer encoding as candidates — essentially pointing at the actual bug",
+    "Triage summary is production-quality: specific reproduction steps, layered fix recommendations, proposed regression test, and honest information gaps"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether other large file types (images, spreadsheets, Word docs) are also affected — a key corroborating signal that would have strengthened the size/path hypothesis",
+    "The file-size-before-vs-after comparison request in turn 2 was too forensic for an impatient support manager and consumed goodwill without yielding data",
+    "Did not ask whether uploads via API (vs web UI) are affected, which would have pointed at or ruled out the proxy layer specifically"
+  ],
+  "most_insightful_question": "Does the PDF viewer show a blank page, a partial document, or does it refuse to open entirely? — This distinguished complete binary corruption (encoding/content-type mangling) from truncation, directly informing the root cause hypothesis.",
+  "missed_opportunities": [
+    "Are other large file types — images, spreadsheets, Word documents — also coming through corrupted, or is it specifically PDFs?",
+    "Do customers uploading via the API (rather than the web interface) experience the same corruption?",
+    "Has the reporter tried re-uploading the same large PDF to see if the corruption is consistent or intermittent?"
+  ]
+}

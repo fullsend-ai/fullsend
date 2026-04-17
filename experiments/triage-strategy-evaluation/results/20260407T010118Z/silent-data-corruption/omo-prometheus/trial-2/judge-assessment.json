@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: affected record count (~50-100 of 2,000), truncation pattern (not random corruption), 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK numbers unaffected, and recent normalizer change. The summary also surfaces additional valuable information not in the expected list: ongoing re-corruption on each nightly sync, recovery path via Salesforce source data, and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: the nightly import as the corruption source with the country code length pattern, and the 2-week timeline connected to a recent code change in the import pipeline. The root cause hypothesis ('logic likely assumes all country codes are 1-2 digits') closely matches the actual regex bug without having code access. The observation that US (+1) and UK (+44) are fine while 3-4 digit codes fail is precisely correct. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent confirmed the pattern, the timeline, the ongoing nature of re-corruption, and the likely cause. One notable omission: the agent never explicitly asked about access to sync logs or record-level timestamps that could pinpoint the exact start date, nor asked whether the CRM backup was accessible for recovery (though the recommended fix infers this). These are minor gaps; the core diagnostic work is complete."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three agent turns, each well-targeted. Turn 1 gathered concrete examples and established timeline. Turn 2 synthesized the pattern and probed for the proximate cause (recent change). Turn 3 confirmed ongoing impact and sought the specific change reference. No redundant questions; no information was requested twice."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning rather than generic checklists. After the reporter's first response, the agent synthesized the country code length pattern unprompted and immediately asked the right structural question ('did anything change with the sync ~2 weeks ago?'). The follow-up in turn 3 probing whether the corruption is ongoing was particularly sharp — it correctly anticipated that nightly re-corruption would block manual remediation, which the reporter confirmed. This is information the reporter had not volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it names the likely code author (Dave), gives a 2-3 week window for the git bisect, specifies the exact parsing logic to fix (country codes capped at 2 digits vs. E.164 variable length), recommends a specific library (libphonenumber), provides concrete reproduction steps, defines a unit test with exact phone numbers to use, and outlines a recovery path (re-sync from Salesforce). A developer could open the git log and start working within minutes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Pattern recognition from examples was immediate and precise — the agent identified the country code length hypothesis after a single reporter response and never wavered from it",
+    "Confirmed the ongoing re-corruption dynamic, which is the key severity escalator and blocker for manual remediation — this was not volunteered by the reporter",
+    "Summary quality is exceptional: reproduction steps, proposed test case with concrete phone numbers, multi-step fix recommendation, and acknowledged information gaps are all present"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether sync logs or record-level audit timestamps exist, which would pinpoint the exact corruption start date (noted as an information gap but not pursued)",
+    "Did not explicitly confirm that the Salesforce source data is still intact before recommending a re-sync as the recovery path — the reporter implied it but the agent did not verify"
+  ],
+  "most_insightful_question": "Is this still happening? Since the sync runs nightly, are records that were previously correct getting re-corrupted each night, or did this only affect records that were synced during a specific window?",
+  "missed_opportunities": [
+    "Ask whether sync execution logs are retained and accessible, which could surface the exact first night the corruption appeared",
+    "Ask whether the reporter or dev team has access to the CRM backup to confirm source data is intact before recommending restore-from-source as a recovery path",
+    "Ask whether any automated monitoring or alerting exists on the sync job that might have captured anomalies around the time of the change"
+  ]
+}

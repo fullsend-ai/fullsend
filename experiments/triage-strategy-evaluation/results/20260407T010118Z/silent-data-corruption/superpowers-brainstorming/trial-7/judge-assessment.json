@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were captured: ~50-100 affected records out of 2,000, truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK numbers unaffected, and a plausible recent change hypothesis (regex pattern). The agent also added useful extras: proposed test cases, reproduction steps, and information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage matches acceptable diagnostic path 1 precisely — it identified the nightly import as the corruption source and the 3+ digit country code pattern. The agent explicitly hypothesized 'a regex pattern that assumes country codes are 1-2 digits' which is essentially the actual root cause (the regex \\d{1,2} capture group). This is as close as a triage agent could get without code access."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions and resolved after getting clear, specific answers from both. The 2-week timeline, nightly import, and country code pattern together formed a solid basis for resolution. One omission: it could have asked whether CRM backups existed for data recovery, which is noted in the ground truth as the workaround. Otherwise the basis for resolution was sound."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. The first established timing and mechanism; the second established the nature and pattern of corruption. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — asking for concrete before/after examples with structured options — was diagnostically excellent. It directly elicited the key insight that country codes specifically were being truncated, and that US/UK numbers were unaffected. This is information the reporter likely would not have volunteered as clearly without the prompt. The first question's structured options (recent import, recent update, gradual accumulation, unsure) also efficiently narrowed the onset mechanism."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes specific reproduction steps (with a concrete example), a prioritized fix list (git history → field constraints → fix → re-sync), a proposed test case covering 1-, 2-, and 3-digit country codes, and clearly acknowledged information gaps. A developer could start investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question about before/after examples directly unlocked the country code truncation pattern — a textbook diagnostic move",
+    "The agent synthesized the country code hypothesis (including the specific regex pattern hypothesis) from just two data points: Ireland +353 → +35 and US/UK numbers being fine",
+    "The recommended fix is specific and correctly ordered: check git history first, then look for the constraint, then remediate data",
+    "The proposed test case (+1, +44, +353, +598) correctly covers the 1/2/3-digit country code boundary conditions"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CRM backup availability, which is the primary recovery path for already-corrupted records",
+    "Did not ask whether the nightly sync could be paused to stop ongoing corruption — an immediate mitigation step"
+  ],
+  "most_insightful_question": "Can you share what the corrupted numbers actually look like compared to what they should be? — this directly surfaced the country code truncation pattern and the US/UK vs. international split, which together form the core diagnostic insight.",
+  "missed_opportunities": [
+    "Are backups of the original phone numbers available (in Salesforce or elsewhere) to restore corrupted records?",
+    "Can the nightly sync be paused or rolled back to stop further corruption while the fix is developed?",
+    "Is there a way to query TaskFlow for all records whose phone numbers no longer match what Salesforce has, to get an accurate count of affected records?"
+  ]
+}

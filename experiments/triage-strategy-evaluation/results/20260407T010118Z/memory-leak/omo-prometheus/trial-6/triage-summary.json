@@ -1,0 +1,23 @@
+{
+  "title": "Memory leak in v2.3 real-time notification system causes linear memory growth (~500MB → 4GB+/day)",
+  "problem": "Self-hosted TaskFlow v2.3 instances experience steady, usage-correlated memory growth from ~500MB at startup to 4GB+ over a full workday with 200 active users. Page loads degrade to 10+ seconds and API requests time out, requiring daily restarts. The issue is a regression introduced in the v2.2 → v2.3 upgrade.",
+  "root_cause_hypothesis": "The 'improved real-time notifications' feature introduced in v2.3 is allocating per-request resources (likely event listener registrations, notification queue entries, or subscriber records) that are never released. This is not a connection leak — active TCP connections and file descriptors are normal — but rather an internal data structure that grows with every API request. At ~200 users × ~25 requests/user/hour, approximately 5,000 objects/hour accumulate without cleanup, producing the observed linear memory climb.",
+  "reproduction_steps": [
+    "Deploy TaskFlow v2.3 on a server with monitoring (Grafana or equivalent)",
+    "Start the server and note baseline memory (~500MB)",
+    "Simulate normal usage with ~200 concurrent users performing standard task CRUD and commenting",
+    "Observe memory growth over 6-8 hours — expect ~300-400MB/hour growth under full load",
+    "Verify TCP connection count remains proportional to active users (not accumulating)",
+    "Compare with TaskFlow v2.2 under identical load — expect flat memory usage"
+  ],
+  "environment": "Self-hosted TaskFlow v2.3 (upgraded from v2.2), Go runtime, ~200 active users on weekdays. Server details not specified but memory behavior is consistent and reproducible day-over-day per Grafana dashboards.",
+  "severity": "high",
+  "impact": "All 200 users on the instance experience progressively degrading performance throughout the day. By late afternoon, the application is effectively unusable (10+ second page loads, API timeouts). Requires daily manual restarts as a workaround. Any self-hosted v2.3 deployment with moderate user counts is likely affected.",
+  "recommended_fix": "1. Diff the v2.3 real-time notification code against v2.2 and identify per-request allocations — look for event registrations, subscriber maps, notification queues, or goroutine spawns tied to HTTP request handling that lack corresponding cleanup/deregistration. 2. Take a pprof heap profile (`go tool pprof http://host:port/debug/pprof/heap`) early in the day and again after several hours — compare to identify which object types are accumulating. 3. Ensure all per-request notification resources are released when the request completes (e.g., deregister listeners, close channels, remove map entries). 4. Consider whether a config flag like `TASKFLOW_REALTIME_ENABLED=false` should be exposed to allow operators to disable the feature as a mitigation.",
+  "proposed_test_case": "Start a TaskFlow v2.3 instance, simulate 200 concurrent users making 25 requests/hour each for 8 hours, and assert that heap allocations (measured via pprof) remain bounded — total memory should not exceed baseline + a reasonable per-connection overhead (e.g., stay under 1GB). Compare against the same test on v2.2 as a regression baseline.",
+  "information_gaps": [
+    "Exact pprof heap profile data showing which object types are accumulating (developer can gather this)",
+    "Whether a TASKFLOW_REALTIME_ENABLED config flag exists to disable the feature for confirmation (reporter is investigating but developer can check source)",
+    "Whether the leak is in the notification publisher side, subscriber side, or both"
+  ]
+}

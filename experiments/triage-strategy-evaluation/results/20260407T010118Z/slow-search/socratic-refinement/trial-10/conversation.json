@@ -1,0 +1,34 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this! I'd like to understand the context a bit better.\n\nYou mentioned search used to be fast — can you tell me roughly when you first noticed it slowing down? Did anything change around that time, like a TaskFlow update, a big increase in the number of tasks, or changes to your work setup? I'm trying to get a sense of what the transition from \"fast\" to \"slow\" looked like — was it gradual or did it feel like it happened all at once?"
+    },
+    {
+      "author": "reporter",
+      "body": "It was pretty sudden, not gradual. I think it started maybe 2 weeks ago? I'm pretty sure I updated TaskFlow around that time — went from 2.2 to 2.3 if I'm remembering right. I don't think I added a ton of new tasks recently so I don't think that's it. My laptop hasn't changed either."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — a sudden slowdown coinciding with the 2.2 → 2.3 update is a strong clue.\n\nCan you tell me more about what a typical search looks like for you? For example, what kinds of things are you searching for (task titles, descriptions, tags?), and does the slowness happen with every search, or only certain ones — like longer queries, or searches in specific projects? Also, roughly how many tasks do you have in your workspace? I'm trying to get a picture of whether this is broad or something that shows up in specific patterns."
+    },
+    {
+      "author": "reporter",
+      "body": "I have around 5,000 tasks — I've been using TaskFlow for about 2 years now. As for what I search, it's mostly searching through task descriptions. Actually now that you mention it, I think searching by title is still pretty quick. It's when I'm doing a full search across descriptions that it gets really slow. It happens pretty consistently with those searches, not just specific projects or long queries. A lot of my tasks have pretty lengthy descriptions — I tend to paste meeting notes and stuff into them, so some of them are quite long."
+    },
+    {
+      "author": "triage-agent",
+      "body": "This is really clicking into focus — let me play back what I'm hearing to make sure I have it right:\n\nYou've got about 5,000 tasks built up over 2 years, many with substantial descriptions (meeting notes, etc.). After updating from TaskFlow 2.2 to 2.3 roughly two weeks ago, searching across task descriptions went from fast to consistently 10–15 seconds, while title-only searches are still quick.\n\nDoes that capture it accurately? And one more thing I'm curious about — when those slow description searches do finally return, are the results what you'd expect? Or have you noticed anything off about the results themselves, like missing matches or results that seem wrong?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah, that summary is spot on. And hmm, the results seem mostly fine when they do come back — I haven't noticed anything obviously missing, but honestly I'm not sure I'd notice if a few were missing since I have so many tasks. The main issue is just how long it takes. Oh, one thing I forgot to mention — I've noticed my laptop's fan kicks up pretty hard when I do those description searches, like it's really working the CPU. Not sure if that's relevant."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Full-text description search regression in v2.3: 10-15s response time with high CPU on large workspaces\",\"problem\":\"After updating from TaskFlow 2.2 to 2.3, searching across task descriptions takes 10-15 seconds and causes high CPU usage. Title-only searches remain fast. The issue is consistent across all description searches, not limited to specific projects or query patterns.\",\"root_cause_hypothesis\":\"The 2.2 → 2.3 update likely introduced a regression in the description search path — possibly removing or bypassing a full-text index, switching to unoptimized string matching, or disabling a query cache. The fact that title search is still fast while description search is slow (with high CPU) suggests the description search is now doing brute-force scanning across all description text rather than using an index. With ~5,000 tasks containing lengthy descriptions (meeting notes, etc.), this would explain both the latency and CPU spike.\",\"reproduction_steps\":[\"Set up a TaskFlow 2.3 workspace with ~5,000 tasks, many with lengthy descriptions (paragraphs of text)\",\"Perform a search that targets task descriptions (full-text search, not title-only)\",\"Observe response time of 10-15 seconds and elevated CPU usage\",\"Compare: perform a title-only search and observe it completes quickly\",\"Optionally: repeat on TaskFlow 2.2 with the same dataset to confirm the regression\"],\"environment\":\"TaskFlow 2.3 (upgraded from 2.2), work laptop (specific OS not confirmed), workspace with ~5,000 tasks accumulated over 2 years, many tasks contain lengthy descriptions with pasted meeting notes\",\"severity\":\"high\",\"impact\":\"Users with large workspaces (thousands of tasks with substantial descriptions) experience unusable description search performance after upgrading to 2.3. This likely affects any long-term TaskFlow user who relies on full-text search. Title-only search users are unaffected.\",\"recommended_fix\":\"Diff the search implementation between 2.2 and 2.3, focusing on the description search code path. Look for: (1) removed or broken full-text index on the descriptions column/field, (2) changes to the search query that bypass indexing, (3) migration steps that may have failed to rebuild an index on upgrade, (4) any new feature (e.g., fuzzy matching, new tokenizer) that replaced an indexed lookup with a scan. Verify that the description search path uses an appropriate index and is not doing in-memory or row-by-row string matching.\",\"proposed_test_case\":\"Create a performance regression test: populate a test workspace with 5,000+ tasks with multi-paragraph descriptions, execute a description search, and assert response time is under 1 second (or an acceptable threshold). Include this in CI to prevent future regressions. Also add a comparison assertion that description search time scales sublinearly with task count.\",\"information_gaps\":[\"Exact OS and hardware specs of the reporter's laptop (unlikely to matter given this is a clear version regression)\",\"Whether the issue reproduces on other machines or is environment-specific (likely reproduces given the version correlation)\",\"Whether the 2.2→2.3 upgrade ran any database migrations that might have affected indexes\"]}"
+    }
+  ]
+}

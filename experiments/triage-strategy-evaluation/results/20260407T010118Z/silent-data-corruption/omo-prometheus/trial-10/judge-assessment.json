@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are captured: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK unaffected, and recent normalizer change. The summary also adds value with proposed test cases, reproduction steps, and enumerated information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the acceptable diagnostic paths: nightly import identified as corruption source, country code truncation pattern correctly characterized as affecting 3+ digit codes. The fix guidance even anticipates the exact type of defect (regex capturing only 1-2 digits, substring slice, hard-coded length limit of 2) — consistent with the actual `/^\\+(\\d{1,2})(\\d+)$/` regex. Data corruption at write time (not display) was confirmed. No material inaccuracies."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked all necessary questions before resolving: concrete examples to surface the pattern, import source and timeline, and DB-vs-display distinction to confirm actual corruption. Unresolved items (specific commit, full affected country list) were explicitly surfaced as information gaps rather than left invisible. No obvious follow-up was skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, each non-redundant and load-bearing: examples revealed the exact truncation pattern; import/timeline question established the pipeline and change window; DB-vs-display question confirmed corruption scope. No question could have been omitted or combined without losing important signal."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question used a concrete formatted example to prime the reporter, yielding precise before/after comparisons the reporter wouldn't have volunteered unprompted. The second correctly hypothesized import vs manual entry as the branching diagnostic. The third — distinguishing database corruption from display bug — is genuinely insightful and materially changed the severity and fix strategy."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin coding a fix immediately: the summary names the import pipeline, specifies the code pattern to search for (regex capturing \\d{1,2}, slice/substring to 2 chars), provides E.164-aware fix guidance, proposes concrete unit and integration tests, and gives a recovery plan (re-sync from Salesforce). Information gaps are enumerated so nothing falls through the cracks."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "First question used a concrete example format to prime richer reporter responses, immediately surfacing the exact truncation pattern",
+    "DB-vs-display distinction question was genuinely diagnostic and confirmed corruption at write time rather than rendering — materially affecting fix priority and recovery scope",
+    "Root cause hypothesis correctly anticipated the type of code defect (regex or slice limited to 2 digits) without access to the codebase, giving developers a precise starting point",
+    "Information gaps section is unusually thorough — surfacing the missing commit reference and the unknown full set of affected country codes as explicit open items"
+  ],
+  "notable_weaknesses": [
+    "Reproduction steps contain a minor inconsistency: India (+91) is cited as '2 digits should be fine but +91x would not be', which is slightly confusing phrasing",
+    "The agent did not ask whether affected records had ever been manually corrected in TaskFlow (which would be re-corrupted each night) — though this was implicitly addressed in the impact section"
+  ],
+  "most_insightful_question": "Is the data actually wrong in TaskFlow's database, or could it just be displaying incorrectly? — This question cleanly separated two very different bug classes (data corruption vs rendering bug), changed the severity assessment, and confirmed that recovery requires a re-sync rather than a simple display fix.",
+  "missed_opportunities": [
+    "Could have asked whether the dev team had a staging or pre-prod environment where the normalizer change could be tested/reverted in isolation before touching production data",
+    "Could have asked whether any affected records had been manually corrected in TaskFlow, which would confirm the nightly sync is actively re-corrupting attempted fixes"
+  ]
+}

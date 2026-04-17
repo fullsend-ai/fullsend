@@ -1,0 +1,54 @@
+# Conversation: slow-search x structured-triage
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help us investigate, could you walk us through the steps to reproduce the slow search? Specifically:
+
+- What search query or term are you entering when it's slow?
+- Are you searching across all tasks, or within a specific project/filter?
+- Does it happen with every search, or only with certain queries?
+
+This will help us narrow down where the bottleneck might be.
+
+---
+
+### reporter
+
+It happens when I search for words that would be in the task descriptions — like searching for a project name or keyword from meeting notes I've pasted in. I'm searching across all my tasks, no specific filter. It's pretty consistently slow whenever I search for something in the description text. Though now that I think about it, when I search for something that's in a task title it seems to come back pretty quick. Not sure if that's relevant or just coincidence.
+
+---
+
+### triage-agent
+
+Thanks for that detail — the distinction between title searches being fast and description searches being slow is really helpful and likely significant.
+
+Could you share a few environment details so we can try to reproduce this on our end?
+
+- What OS is your work laptop running (e.g., Windows 11, macOS Sonoma)?
+- Which browser and version are you using?
+- What version of TaskFlow are you on? (You can usually find this under Settings → About.)
+- Roughly how many tasks do you have in your account? (Ballpark is fine — hundreds, thousands?)
+
+---
+
+### reporter
+
+I'm on Ubuntu 22.04, it's a ThinkPad T14. I'm not sure about the browser — I use the desktop app actually. Version is 2.3, I upgraded maybe two weeks ago? And I have a lot of tasks, probably around 5,000 or so — I've been using TaskFlow for a couple years now.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text search on task descriptions is extremely slow (~10-15s) with large task counts","problem":"Searching for keywords that appear in task descriptions takes 10-15 seconds to return results, whereas searching for keywords in task titles returns quickly. The reporter has approximately 5,000 tasks and recently upgraded to version 2.3. The issue affects searches across all tasks with no project or filter scoping.","root_cause_hypothesis":"The description field likely lacks a proper full-text search index, or an existing index was dropped or not migrated during the 2.3 upgrade. Title searches are fast because the title field is indexed. With ~5,000 tasks, an unindexed full-text scan of description content would explain the 10-15 second latency.","reproduction_steps":["Create or use an account with a large number of tasks (~5,000) that have text content in their descriptions","Open the search feature with no project or filter selected","Search for a keyword that appears in task descriptions but not in titles","Observe that results take 10-15 seconds to return","Search for a keyword that appears in a task title and observe it returns quickly"],"environment":"Ubuntu 22.04, ThinkPad T14, TaskFlow desktop app version 2.3 (upgraded approximately two weeks ago)","severity":"medium","impact":"Users with large task counts experience unusable search latency when searching description content. Power users who have accumulated thousands of tasks over time are most affected. Core search functionality is degraded but not broken.","recommended_fix":"Investigate whether a full-text index exists on the task description field in v2.3. Compare the database schema or query plan against v2.2. If the index is missing, add it. If it exists, check the query planner to confirm it is being used. Also check whether the v2.3 upgrade migration dropped or failed to create the index.","proposed_test_case":"With a dataset of 5,000+ tasks with populated descriptions, run a search for a keyword found only in descriptions and assert the query completes within an acceptable threshold (e.g., under 1 second). Verify the query plan uses an index scan rather than a sequential scan.","information_gaps":["Whether the slowness began exactly with the v2.3 upgrade or was already present before","Desktop app log output during a slow search (could confirm whether latency is server-side or client-side)","Whether the issue reproduces on the web version or is desktop-app specific"]}
+
+---

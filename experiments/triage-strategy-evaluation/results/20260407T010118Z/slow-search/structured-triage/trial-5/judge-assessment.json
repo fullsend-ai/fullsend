@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected extracts: task count (~5,000), title-vs-description distinction, v2.2-to-v2.3 regression, ~2 weeks ago timing, and 10-15s latency. Missing: CPU spike behavior during searches, and long/large task descriptions — both of which are relevant to diagnosing the full-table-scan bottleneck."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names 'switching from indexed search to unindexed LIKE/scan' as a candidate — which is precisely what happened. It also correctly identifies the version upgrade as the trigger and the title-vs-description split as the key symptom. Matches both acceptable diagnostic paths and closely approximates the canonical cause without being told."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Two rounds of questions established the key diagnostics (title/description split, version, OS), giving a reasonable basis to resolve. However, the agent never asked about CPU behavior during searches or whether descriptions tend to be long — both are directly relevant to diagnosing a full-table-scan. Closing without those leaves the gap acknowledged only in 'information_gaps' rather than filled."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were mostly well-targeted. The one misstep was asking about browser and browser version in turn 2 — the original issue said 'work laptop,' and no indication pointed to a web app. This was a low-value question corrected by the reporter. Otherwise each turn was purposeful."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 1's question about whether slowness varies by query type was a genuinely insightful diagnostic probe that directly surfaced the title-vs-description split — information the reporter hadn't volunteered. Turn 2 was competent but included the browser question, which was off-target for a desktop app context. Overall strong diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: clear reproduction steps, a well-reasoned root cause hypothesis pointing to index regression or query-path change, an explicit recommended fix (compare v2.2 vs v2.3 description query paths, check for dropped FTS index), and a concrete proposed regression test. A developer could begin investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The question about whether slowness varies by query type was a high-value diagnostic probe that directly elicited the title-vs-description split — the single most important clue in the issue.",
+    "Root cause hypothesis independently arrived at 'indexed search vs unindexed LIKE/scan' without being told — closely matching the actual cause.",
+    "Triage summary is structured, developer-ready, and includes reproduction steps, recommended fix, and a proposed regression test case."
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU or system resource behavior during slow searches — a direct diagnostic signal that would have confirmed a CPU-bound full-table scan.",
+    "Never asked about the nature of task descriptions (length, content type) — relevant to understanding why description search is so much slower than title search at this scale.",
+    "Asked about browser and browser version in turn 2, which was off-target for a desktop application and wasted part of that turn."
+  ],
+  "most_insightful_question": "Does it happen with every search query, or only certain ones (e.g., longer queries, specific filters)?",
+  "missed_opportunities": [
+    "Ask whether CPU usage spikes noticeably during slow searches (would confirm CPU-bound full scan)",
+    "Ask whether task descriptions tend to be long or contain large blocks of text (relevant to scan cost per row)",
+    "Ask whether the reporter had noticed the slowness before the v2.3 upgrade, or could test on v2.2 to confirm the regression"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "title": "Login redirect loop after SSO change",
+  "body": "We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.\n\nWe've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.",
+  "quality": "good_but_ambiguous",
+  "reporter_profile": "typical",
+  "ground_truth": {
+    "description": "The reporter is an IT admin at a 50-person company. They migrated from Okta to Microsoft Entra ID two days ago. The redirect loop affects users whose email addresses contain a '+' character (plus addressing, e.g., 'jane+taskflow@company.com') or users who had existing TaskFlow accounts under a different email that was later aliased in Entra ID. The redirect loop happens because TaskFlow's session cookie validation checks the email claim from the SSO token against the stored user email. For '+' users, Entra ID normalizes the email differently than Okta did (Entra sends the primary email without the plus alias). For aliased users, the SSO email doesn't match any stored account, so TaskFlow creates a new session, which immediately fails the 'existing account' check and redirects back. The browser's dev tools show a Set-Cookie header on the redirect response, but the cookie is being set with SameSite=Strict, and since the redirect crosses from Entra's domain back to TaskFlow's domain, the cookie is dropped by the browser on the initial redirect back. Users who work fine either don't use plus addressing or their primary emails match between Okta and Entra.",
+    "actual_cause": "Two compounding issues: (1) SameSite=Strict cookie setting prevents the session cookie from being set on cross-origin redirects from the SSO provider, and (2) email claim mismatch between Okta and Entra ID for users with plus-addressed or aliased emails. The SameSite issue is the primary cause — changing to SameSite=Lax would fix most cases. The email normalization is a secondary issue that would cause 'account not found' errors once the cookie issue is resolved.",
+    "acceptable_paths": [
+      "Identifying the email claim mismatch as a root cause, even without discovering the SameSite cookie issue — this would still lead to a productive fix for some users",
+      "Identifying the SameSite cookie issue without the email mismatch — this would fix the primary cause",
+      "Identifying both issues but with the causal hierarchy inverted (email as primary, cookie as secondary)"
+    ],
+    "environment": "TaskFlow v2.3.1 (self-hosted), Microsoft Entra ID, various browsers (Chrome, Edge, Firefox), affects ~30% of users",
+    "workaround": "Affected users can sometimes get in by clearing all cookies and trying again quickly, or by using an incognito/private window (which sometimes works because of different cookie handling)"
+  },
+  "expected_triage_extracts": [
+    "affects ~30% of users, not all",
+    "pattern among affected users (plus addressing or email aliases)",
+    "SameSite cookie issue on cross-origin redirect",
+    "email claim mismatch between Okta and Entra",
+    "browser dev tools show cookie being set then dropped",
+    "incognito/clearing cookies sometimes helps",
+    "redirect URIs are correctly configured",
+    "other SSO apps work fine for affected users"
+  ]
+}

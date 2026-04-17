@@ -1,0 +1,41 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were extracted: ~50-100 affected records, truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK numbers unaffected, and the recent changelog change to phone number formatting. The summary also added valuable extras: reproduction steps, proposed test cases, and the critical insight that nightly syncs would overwrite any manual corrections."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identified the nightly import as the corruption source, the country code truncation pattern (specifically 3+ digit codes affected, 1-2 digit codes fine), the 2-week timeline tied to a recent TaskFlow update, and correctly confirmed the source data in Salesforce is clean. This matches both the canonical root cause and the acceptable diagnostic paths. The root cause hypothesis correctly points to regex/parsing logic with limited digit captures, which aligns with the actual `/^\\+(\\d{1,2})(\\d+)$/` regex."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked exactly the right questions in sequence: (1) were numbers ever correct and what do they look like, (2) what changed around the time the issue started, (3) is the source data in Salesforce still clean. Each question built logically on the previous answer. The Salesforce spot-check confirmation was a particularly important verification step that definitively isolated the corruption to TaskFlow's import process."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns, each targeted and non-redundant. The first established the baseline (corruption vs. never-correct, and an example). The second connected timing to recent changes. The third confirmed the data source was clean. No questions were repeated or low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Questions demonstrated genuine diagnostic reasoning. The first question probing whether numbers were ever correct vs. never-stored-correctly shows systematic thinking. The second question specifically asked about TaskFlow updates, Salesforce config changes, and Salesforce-side changes separately — showing the agent was reasoning about all possible failure points. The third question asking to spot-check Salesforce directly was the key diagnostic step that definitively isolated the issue, and the reporter would not have thought to do this without prompting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin coding a fix immediately: look at the phone number normalizer changed ~2 weeks ago in the Salesforce import pipeline, find the regex or substring logic limiting country codes to 2 digits, fix it to handle 1-3 digit country codes, and re-import from Salesforce backup. The summary also includes specific reproduction steps, a proposed test case with concrete examples (+1, +44, +353, +1268, +86), and a backfill recommendation."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the diagnostic significance of the +353→+35 and +1268→+12 truncation pattern after the first reporter response, correctly inferring a fixed-width country code limit",
+    "Proactively confirmed source data integrity in Salesforce before closing, definitively isolating the bug to TaskFlow's import pipeline",
+    "Triage summary includes proposed test cases with specific country code examples of varying lengths, making it immediately actionable for a developer writing a regression test",
+    "Identified the critical compounding issue that nightly syncs overwrite manual corrections, raising severity"
+  ],
+  "notable_weaknesses": [
+    "None significant — this was a high-quality triage across all dimensions"
+  ],
+  "most_insightful_question": "Can you spot-check a few of the affected records directly in Salesforce (not through TaskFlow) and tell me whether the phone numbers are still correct there? — This definitively isolated the corruption to the import pipeline and would not have been volunteered by the reporter.",
+  "missed_opportunities": []
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured several key items: encoding-related error message, CSV import as trigger, special characters, ~200 tasks, and TaskFlow v2.3.1. However, the macOS version was never explicitly captured (just 'macOS', missing '14.2'). The manual save vs auto-save distinction was never explicitly probed — the reporter said 'when I hit Save' but this wasn't confirmed as distinct from auto-save. Most importantly, the size-dependency of the crash (smaller lists save fine even with imported data) was never established."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis squarely matches acceptable path 1: identifying the CSV import as the trigger and encoding as the mechanism. The summary correctly pinpoints the serialization path, the CSV import as the origin of non-ASCII characters, and the crash-instead-of-graceful-error behavior. No meaningful inaccuracies relative to either the canonical cause or the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about crash behavior, version/platform, task content (leading to CSV discovery), plain-text task isolation, and crash logs. However, it never explicitly asked whether auto-save also crashes (a key diagnostic question given that the ground truth shows only manual save is affected). It also never probed whether the crash is size-dependent — asking 'does a small subset save OK?' would have been a natural follow-up once the CSV import was identified. These are meaningful gaps."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns, all reasonably targeted. The crash log request was a good attempt that didn't pan out but was worth trying. The plain-text task isolation question was diagnostically sound even though the reporter declined. No obviously redundant questions. At most, the crash log question and the plain-text isolation question could have been combined into a single turn."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The question about task content — specifically calling out emoji, accented characters, and pasted content — was diagnostically insightful and directly surfaced the CSV import. The plain-text task isolation question showed genuine reasoning about isolating the variable. The crash log request was practical. Questions were professional and targeted rather than generic. Missed the opportunity to ask about auto-save behavior, which would have been a more pointed diagnostic question."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it includes a clear root cause hypothesis, step-by-step reproduction instructions, a specific multi-point recommended fix targeting both the CSV import path and the save serializer, a proposed unit and integration test case, and an explicit list of information gaps. A developer could begin investigating the serialization code path and CSV import sanitization immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The question about task content (emoji, accented chars, pasted content) was diagnostically sharp and directly drew out the CSV import disclosure",
+    "The final triage summary is exceptionally actionable — reproduction steps, fix recommendations, and proposed test cases are all specific and developer-ready",
+    "Correctly identified the acceptable diagnostic path (CSV import + encoding mechanism) despite not recovering a crash log"
+  ],
+  "notable_weaknesses": [
+    "Never asked about auto-save vs manual save — a critical distinction given that only toolbar Save triggers the crash",
+    "Never probed the size-dependency of the crash (e.g., 'does saving a smaller list work?'), which would have been a natural follow-up once CSV import was identified",
+    "macOS version was never explicitly asked for; the summary notes it as a gap but it could have been captured with a single follow-up"
+  ],
+  "most_insightful_question": "Could you tell me a bit about the task you're saving when it crashes? Specifically, does the task content include anything like emoji, accented characters, text pasted from another app (like Word or a webpage), or any unusual formatting?",
+  "missed_opportunities": [
+    "Asking whether auto-save (if the app has it) also causes crashes — this would have pinpointed the manual Save path as the specific trigger",
+    "Asking whether saving a smaller or newly-created task list (without the imported tasks) works fine — this would have established the size/data dependency",
+    "Asking for the exact macOS version (e.g., 'Are you on Sonoma, Ventura, or an earlier version?')"
+  ]
+}

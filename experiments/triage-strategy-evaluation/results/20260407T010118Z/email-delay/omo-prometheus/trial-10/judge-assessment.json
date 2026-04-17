@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, started ~1 week ago, morning-worst/afternoon-better pattern, digest as the batch email cause, queue congestion hypothesis, transactional/bulk competing on shared pipeline, and the original sub-2-minute baseline. The summary also adds useful details like scope (all team members, 4-5 confirmed), severity classification, and reproduction steps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — digest flooding a shared queue causing transactional backlog — matches the second acceptable diagnostic path exactly. The agent even explicitly recommended priority queuing as the fix, which is precisely the canonical fix. The priority-inversion mechanism wasn't surfaced (the reporter didn't have that info), but the diagnosis is correct and actionable."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-sequenced question rounds covered scope, timing confirmation, and notification-type breadth. The agent couldn't reasonably extract infrastructure details from a non-technical reporter. One minor gap: the agent could have asked how many users receive the digest, which would have helped quantify the queue volume and strengthen the hypothesis — but this is a small omission."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Each of the three question rounds was distinct and well-targeted. Round 1 established breadth and change history. Round 2 followed the digest lead directly. Round 3 confirmed pipeline scope. No redundancy, no low-value questions, and the agent resolved as soon as it had a coherent picture."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning at each step. Asking about scope vs. individual experience (round 1) distinguishes infrastructure from client-side issues. Asking whether all emails share a single system (round 2) is precisely the right infrastructure framing for a reporter who volunteered the digest as a clue. Asking whether other notification types are slow (round 3) was the correct test to confirm it's a shared pipeline problem, not a notification-category bug."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a clear hypothesis (shared queue, digest causing backlog), specific investigation steps (check queue architecture, confirm shared worker pool), reproduction steps tied to the 9am timing, prioritized fix recommendations (priority queuing explicitly named, rate limiting, queue separation), and an immediate mitigation (shift digest time). The information gaps are honest and scoped to what a developer would check in logs/code, not things blocking investigation."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the digest timing correlation as a strong lead and pursued it efficiently without detours",
+    "Recommended priority queuing explicitly in the fix — matching the actual canonical fix — despite the reporter having no backend knowledge",
+    "The information gaps section honestly scopes what's missing to server-side details, not to things the reporter could have provided",
+    "Reproduction steps are specific and tied to the time-of-day pattern, making them immediately useful"
+  ],
+  "notable_weaknesses": [
+    "Did not ask how many users receive the daily digest — knowing ~200 users get it would have strongly quantified the queue flood hypothesis and made the summary more precise",
+    "The workaround section only identifies manual dashboard checking; the agent could have suggested disabling the digest as an immediate mitigation (it did mention shifting send time, but disabling entirely is faster)"
+  ],
+  "most_insightful_question": "What time does the daily digest email arrive? Specifically, is it sent around 9-10am — right when you see the worst delays? Also, do you happen to know if TaskFlow sends all its emails through a single system, or if different email types go through different channels?",
+  "missed_opportunities": [
+    "Asking how many users are on the team / receive the digest — this would have quantified the queue flood and strengthened the hypothesis considerably",
+    "Asking whether the digest could be temporarily disabled as an immediate workaround to confirm the diagnosis and unblock the team"
+  ]
+}

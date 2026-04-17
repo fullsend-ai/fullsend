@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are clearly present: search returns archived tasks when filtering active, active tasks missing from default results, started ~3 days ago after v2.3.1, affects multiple users, individual task pages show correct status, and filter behavior is inverted. The seventh item — that the issue is search-index-related rather than application logic — was appropriately flagged as an open uncertainty in information_gaps rather than definitively confirmed, which is honest given the conversation didn't surface enough to distinguish index mapping from query-layer inversion."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly follows acceptable diagnostic path #2: v2.3.1 is identified as the trigger and the archive filter is identified as the broken component. The root cause hypothesis explicitly includes 'inverted index mapping introduced during the update' as a candidate, which aligns with the actual cause. The information_gaps section shows the agent was aware of the index-vs-query-predicate ambiguity. The recommended fix (diff v2.3.1 vs v2.3.0 for inverted boolean handling in the search filter path) would surface the actual bug. Minor deduction because the hypothesis leans toward application code rather than index configuration, slightly off from the actual cause."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen question turns and received sufficiently rich answers to resolve. One obvious follow-up was not asked: whether other filter types (priority, assignee, date) are also broken — though this was self-identified as an information gap. The schema migration as a distinct event (vs. the broader v2.3.1 update) was not probed, but the v2.3.1 trigger was established firmly. Resolution timing was appropriate given the high-quality information received."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two question turns before resolution, with no redundancy. The first question targeted timing/trigger; the second asked two complementary sub-questions (filter behavior inversion and direct task accessibility) that were both essential and non-overlapping. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question set was particularly insightful: asking whether the filter was inverted (not just broken) and whether direct task access worked correctly are exactly the right questions to distinguish index-layer vs. data-layer vs. UI-layer causes. The reporter's detailed answer in response — confirming the full inversion behavior and that tasks are accessible directly — was drawn out by the precise framing. These questions would not have been volunteered without prompting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it includes clear reproduction steps, explicit candidates for the bug location (flipped is_archived flag, swapped enum values, inverted index mapping), a proposed regression test case with both baseline and regression assertions, and a recommended starting point (diff search filter logic between v2.3.0 and v2.3.1). A developer could open the diff immediately and know exactly what pattern to look for."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question turn precisely targeted filter inversion behavior, which drew out the reporter's critical observation that flipping the filter produced the opposite of expected results — the key diagnostic finding.",
+    "The triage summary is unusually complete: reproduction steps, proposed test case, severity assessment, workaround, and explicit information gaps all included.",
+    "The agent correctly identified the v2.3.1 update as the trigger on the first turn and pursued it effectively rather than chasing user-side explanations."
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis weighted toward application code (query predicate, negated condition) rather than index configuration, which is where the actual bug lives — though the index was mentioned as a candidate.",
+    "The schema migration as a discrete event within v2.3.1 was not probed; asking whether a database migration or index rebuild ran as part of the update could have surfaced the actual mechanism sooner.",
+    "Whether other filter dimensions (priority, assignee) are also broken was left as a gap — this would help distinguish a broad indexing failure from a narrowly scoped filter bug."
+  ],
+  "most_insightful_question": "For #1: Does the archived task show up even if you have a filter set to show only active tasks, or is it that the default search is no longer filtering out archived tasks at all?",
+  "missed_opportunities": [
+    "Did the v2.3.1 update include a database schema migration or search index rebuild? (Would have surfaced the migration-triggered reindex as the proximate cause)",
+    "Are other search filters — by priority, assignee, or date — also behaving unexpectedly, or is it only the active/archived status filter?"
+  ]
+}

@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden on dashboard for users with the new 'analyst' role
+
+## Problem
+Users assigned the newly created 'analyst' role receive intermittent 403 Forbidden errors when accessing the TaskFlow dashboard. The errors began shortly after the role was created and assigned. Non-analyst roles (admin, editor) are unaffected. Refreshing typically succeeds within 2-3 attempts.
+
+## Root Cause Hypothesis
+The new 'analyst' role is not consistently recognized across all application instances or authorization evaluation paths. Most likely causes: (1) a permissions cache that some instances have refreshed and others haven't, (2) a multi-server deployment where the role definition or dashboard access grant wasn't propagated to all nodes, or (3) an eventually-consistent authorization store where the new role's permission entries are intermittently unavailable.
+
+## Reproduction Steps
+  1. Create or use an account assigned only the 'analyst' role
+  2. Log in and navigate to the dashboard
+  3. Observe that some requests return 403 while others succeed
+  4. Repeat 5-10 times to confirm the ~1-in-3 failure pattern
+  5. Compare with an admin or editor account on the same dashboard — no 403s expected
+
+## Environment
+Affects all users with the 'analyst' role. Role was recently created. Multiple team members affected. No client-side or network cause identified. Production environment, likely multi-instance deployment.
+
+## Severity: high
+
+## Impact
+All users with the new 'analyst' role are intermittently locked out of the dashboard. This blocks the analyst team from reliably using TaskFlow and erodes trust in the permissions system.
+
+## Recommended Fix
+1. Check the role/permission definition for 'analyst' — verify it includes dashboard access grants. 2. Inspect whether the authorization system uses caching and whether new roles require cache invalidation across all instances. 3. Check server logs correlating 403 responses with the requesting instance/node to confirm inconsistency across instances. 4. If using a distributed permission store, verify replication status for the analyst role entries. 5. As an immediate mitigation, restart or force-refresh permission caches across all application instances.
+
+## Proposed Test Case
+Create an integration test that: (1) creates a new role with dashboard access, (2) assigns it to a test user, (3) makes N sequential dashboard requests across all application instances (or via round-robin), and (4) asserts that 100% of requests succeed with no 403s. This validates that new role propagation is consistent.
+
+## Information Gaps
+- Exact authorization architecture (caching layer, number of instances, permission store type)
+- Whether a deployment occurred around the same time the role was created
+- Server-side logs showing which instances return 403 vs 200 for analyst users

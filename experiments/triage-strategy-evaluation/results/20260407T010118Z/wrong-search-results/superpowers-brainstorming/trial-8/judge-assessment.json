@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Five of seven expected extracts are present: search returns archived tasks when filtering active, active tasks missing from default results, affects all users, individual task pages show correct status, and search filter behavior is inverted. Two important items are absent: when the issue started (noted only as an information gap rather than something to investigate) and that the issue is related to the search index rather than application logic — the agent concluded the opposite."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly characterized the observable symptom (the active/archived filter predicate is inverted) and correctly noted that individual task pages show accurate data. However, the root cause hypothesis points to application-layer logic (a boolean negation or swapped enum in the search filter code), whereas the actual cause is an inverted field mapping in the search index configuration created during a migration rebuild. Neither acceptable diagnostic path was reached — the agent neither flagged the search index as out of sync nor identified the migration as the trigger. The direction is partially correct but the proposed fix location is wrong, which would mislead the developer."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single exchange. Several high-value questions were never asked: when the behavior started (which would have immediately surfaced the v2.3.1 migration three days ago), whether any recent deployments or maintenance had occurred, what version of the software is running, and whether searching without any archive filter also returns mixed results. Timing is explicitly listed as an information gap in the summary, which means the agent recognized its value but still chose to close without asking — a clear premature resolution."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked before resolution, and it was well-structured and essential. No turns were wasted, and the single question efficiently extracted the key behavioral detail (the inverted filter confirmed by the reporter's option 3 response)."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The structured multiple-choice question was genuinely insightful — it partitioned the problem space cleanly (never show archived vs. ranked lower vs. filter is inverted vs. other) and prompted the reporter to reveal the bidirectional inversion and the individual-task-page correctness without being directly asked. That is a meaningful diagnostic contribution. The only weakness is that it is the only question; a follow-up about timing or recent system changes would have substantially advanced the diagnosis."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer receives clear reproduction steps, a well-described symptom, and a severity/impact assessment. However, the recommended fix directs them to look for a boolean negation or swapped enum in application code, when the actual fix is correcting the field mapping in the search index configuration and rebuilding the index. The developer would have a good starting point for understanding the symptom but would likely waste time in the wrong layer before discovering the index configuration is the source."
+    }
+  },
+  "weighted_total": 3.20,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The single question was expertly structured — presenting concrete, mutually exclusive options efficiently surfaced the bidirectional inversion and the individual-task correctness, information the reporter might not have framed clearly without prompting.",
+    "The triage summary is well-organized and detailed: clear reproduction steps, severity rating, impact statement, and a proposed test case make it immediately useful to a developer once they locate the right layer.",
+    "The agent correctly noted timing as an information gap, showing awareness of what was missing — it just stopped short of asking."
+  ],
+  "notable_weaknesses": [
+    "Resolved after a single exchange without asking when the issue started, which would have immediately surfaced the migration as the trigger and pointed toward the search index.",
+    "Root cause hypothesis incorrectly targets application-layer code (boolean negation or swapped enum) rather than the search index field mapping, which is where the actual inversion lives. This is not covered by either acceptable diagnostic path.",
+    "The fix recommendation would send a developer to the wrong part of the codebase, adding investigation overhead before they discover the index configuration is the real problem."
+  ],
+  "most_insightful_question": "The structured multiple-choice question distinguishing 'archived tasks never appear' vs. 'ranked lower' vs. 'filter is inverted' — it directly and efficiently caused the reporter to reveal both the bidirectional inversion and that individual task pages display correct status, two of the most diagnostically significant facts in the conversation.",
+  "missed_opportunities": [
+    "When did this behavior start? (Would have surfaced the v2.3.1 patch three days ago and immediately pointed toward a migration-related regression.)",
+    "Were there any recent deployments, updates, or maintenance windows? (Directly corroborates migration timing.)",
+    "If you remove all filters and search broadly, do results still mix active and archived tasks, or does the problem only appear when the status filter is active? (Would distinguish a full-index corruption from a filter-predicate issue and help narrow the search index hypothesis.)",
+    "What version of the software are you running? (Would confirm v2.3.1 and anchor the timeline.)"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: delay duration (2-4 hours), onset (~1 week ago), time-of-day pattern (worse 9-10am, better afternoon), connection to the digest batch feature, queue congestion hypothesis, transactional vs. bulk email competition, and original baseline (<1-2 minutes). The summary also adds severity classification, reproduction steps, and a proposed test case beyond what was strictly required."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the digest email feature as the cause and queue saturation as the mechanism — matching acceptable diagnostic path #2. The recommended fix explicitly calls out prioritizing transactional emails over digest emails in the send queue, which is essentially the correct fix even though the agent didn't know the specific priority queue architecture. The hypothesis stops short of identifying the priority-inversion root cause, but it is squarely within an acceptable diagnostic path and would not mislead a developer."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions were sufficient to surface the digest feature. The agent correctly noted remaining unknowns (queue architecture, email volume, rate limits, error logs) as explicit information gaps rather than leaving them unaddressed. One obvious follow-up was skipped: asking approximately how many users receive the digest and whether the digest volume is new (which would have helped quantify the queue pressure), but this is a minor omission given the information gaps section."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. Q1 established systemic vs. individual scope; Q2 uncovered the triggering change. No questions were wasted or repeated."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 efficiently ruled out account-level causes. Q2 was particularly well-constructed: it offered structured options that prompted the reporter to recall the digest feature rollout — information they almost certainly would not have volunteered unprompted. The framing ('did anything change around that time?') is a classic and effective differential diagnostic move that demonstrated genuine causal reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start: a clear root cause hypothesis, specific reproduction steps timed to the 9am window, a ranked investigation checklist (queue depth, rate limits, priority separation), a concrete test case to validate the fix, and explicitly scoped information gaps. A developer could open the queue worker code and the digest job scheduler immediately."
+    }
+  },
+  "weighted_total": 4.65,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Q2's structured prompt directly elicited the key causal clue (digest feature rollout) that the reporter had not connected to the problem on their own",
+    "The recommended fix correctly identifies queue prioritization as the solution even without explicit knowledge of the internal priority queue architecture",
+    "Information gaps are explicitly enumerated rather than left implicit, giving developers a clear investigation checklist",
+    "Resolved in just two turns with no wasted questions while still capturing all expected information"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about the volume of digest emails being sent, which would have strengthened the queue-saturation hypothesis and helped estimate the fix urgency",
+    "Did not ask whether the digest emails could be temporarily disabled as a workaround — this would have provided immediate relief for users missing deadlines"
+  ],
+  "most_insightful_question": "Do you know if any of the following happened roughly a week ago? [structured options including platform update, usage change, email setup change]",
+  "missed_opportunities": [
+    "How many users receive the daily digest, and is that a new volume of email for the platform?",
+    "Can the digest feature be temporarily disabled while the issue is investigated, to restore timely notifications for task assignments?",
+    "Are there any error logs or bounce notifications associated with the delayed emails, or do they simply arrive late with no error?"
+  ]
+}

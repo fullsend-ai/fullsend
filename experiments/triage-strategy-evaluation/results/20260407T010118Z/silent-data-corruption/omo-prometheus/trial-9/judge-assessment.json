@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected information items were captured: ~50-100 affected records out of 2,000, truncation pattern (not random), 2-week timeline, nightly batch import source, 3+ digit country codes affected, US/UK unaffected, and recent phone number formatting change. The summary also surfaced additional useful detail: that Salesforce data is intact (establishing recovery path), and that the sync likely overwrites all records each run."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the nightly import as the corruption source, the 2-week timeline tied to a code change, and the country-code-length pattern — satisfying the acceptable diagnostic path of 'identifying the nightly import as the corruption source and the country code pattern among affected numbers.' The hypothesis of 'fixed 2-character substring or similar truncation' is slightly off (the actual mechanism is a regex capture group limited to 1-2 digits, not a fixed substring), but the functional characterization of the bug's behavior is accurate and directionally correct. No misleading information was introduced."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked all questions necessary to establish the corruption pattern, the data flow, the triggering change, and the recovery path. It confirmed source data integrity in Salesforce before resolving, which was essential for recommending re-sync as a remediation. No obvious follow-ups were skipped given the information available in the conversation."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each with a distinct and necessary purpose: (1) establish corruption pattern and timeline, (2) establish data pipeline and what changed, (3) confirm source integrity and recovery feasibility. No redundant questions; no information was asked for twice."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated genuine diagnostic reasoning. Asking for concrete before/after examples immediately revealed the 2-digit truncation pattern. Asking specifically about sync vs. manual entry (rather than generic 'how does data get in?') was precise. The third question — confirming whether Salesforce numbers were still intact — was particularly insightful: it simultaneously verified the corruption source and established whether self-healing via re-sync was viable, two critical unknowns addressed in one turn."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: look for the commit ~2 weeks ago touching phone number formatting in the sync pipeline, find the truncation logic (correctly hypothesized as fixed-width or regex), fix for variable-length E.164 country codes, and re-run the sync to restore data. A concrete unit test case with four country-code lengths is provided. Known unknowns are explicitly flagged so a developer knows what to verify before acting on recovery assumptions."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the 2-digit truncation pattern from the reporter's examples and articulated it precisely before asking the next question, demonstrating active synthesis rather than passive data collection",
+    "Third-turn question served double duty: confirming the corruption point AND establishing the recovery path (re-sync feasibility), extracting maximum value from a single turn",
+    "The recommended fix includes a specific test matrix covering 1-, 2-, 3-, and 4-digit country codes — directly targeting the boundary conditions the bug exploits",
+    "Information gaps are honestly documented rather than glossed over, so the developer knows what to verify before relying on re-sync for data recovery"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis says 'fixed 2-character substring' when the actual mechanism is a regex capture group limited to 1-2 digits — a minor but real inaccuracy in the mechanism description (though the effect is correctly characterized)",
+    "Did not ask whether TaskFlow itself maintains any history or audit log of phone number changes, which would affect whether data could be recovered from within TaskFlow rather than relying solely on the CRM"
+  ],
+  "most_insightful_question": "Are the phone numbers still correct in Salesforce right now? Can you spot-check those same 3 customers in Salesforce and confirm their numbers are intact there? — This question simultaneously confirmed the corruption point (import pipeline, not source data), ruled out upstream data loss, and established that a corrected re-sync could restore all affected records without manual intervention.",
+  "missed_opportunities": [
+    "Ask whether TaskFlow maintains any history or changelog for customer record fields — would clarify whether point-in-time recovery from within TaskFlow is possible or whether the CRM is the only backup source",
+    "Ask for the TaskFlow version number to help developers narrow down the relevant code branch or deployment"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "scenario": "flaky-ci",
+  "strategy": "superpowers-brainstorming",
+  "reporter_profile": "difficult",
+  "turns": 5,
+  "parse_failures": 0
+}

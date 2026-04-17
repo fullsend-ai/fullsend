@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected information was extracted: ~50-100 affected records out of 2,000, truncated (not random) numbers, ~2 weeks ago timeline, nightly batch import connection, pattern of 3+ digit country codes affected, US/UK numbers fine, and the recent normalizer change. The summary also adds valuable extras: reproduction steps, proposed test cases, information gaps, and the silent compounding nature of the corruption."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the actual cause — a normalizer change 2 weeks ago that truncates country codes to 1-2 digits, while 1-2 digit codes (US, UK) are unaffected. The agent correctly identified the import as the corruption source and the country code length pattern. This satisfies both the canonical cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked about number format/examples, entry method, timing, recent changes, version info, and the specific change. All key diagnostic angles were covered in a logical progression. The remaining gaps (exact commit, import logs, re-corruption behavior) are correctly identified as open questions rather than things left unasked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three focused question turns, each targeting distinct diagnostic dimensions: format/source, timing/changes, version/specifics. No redundancy, no padding. Each question built meaningfully on the previous answer."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking for before/after examples immediately surfaced the country code truncation pattern. Following up on timing and recent changes directly uncovered the normalizer update. Asking for version confirmed the exact release. The second question in particular ('has anything changed recently') was the pivotal question that led the reporter to volunteer the normalizer change."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin investigating immediately: the summary names the component (phone number normalizer), the version (v2.3.1), the trigger (nightly Salesforce import), the exact failure pattern (3+ digit country codes truncated), the approximate timeframe of the change, and provides reproduction steps and a proposed unit test. The recommended fix and backfill strategy are concrete and correct."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately asked for concrete examples, which surfaced the country code length pattern in the very first reporter response",
+    "The pivot to timing and recent changes in turn 2 was well-timed and directly elicited the key causal lead (normalizer update)",
+    "The final summary is exceptionally actionable: it includes reproduction steps, a proposed test case, severity, impact, and a backfill recommendation — going well beyond what was strictly necessary"
+  ],
+  "notable_weaknesses": [
+    "None significant — this is a near-ideal triage conversation"
+  ],
+  "most_insightful_question": "Has anything changed recently on either side — a TaskFlow update, a change to the Salesforce export/field format, or a new import configuration?",
+  "missed_opportunities": [
+    "Could have asked whether the import process produces any logs or error output for the affected records, which would have been useful for diagnosing silent corruption — though this was correctly noted as an information gap in the summary"
+  ]
+}

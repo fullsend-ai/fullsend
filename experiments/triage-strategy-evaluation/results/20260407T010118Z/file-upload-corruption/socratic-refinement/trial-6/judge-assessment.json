@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: small PDFs work fine, issue started ~1 week ago, multiple customers affected, other large file types possibly affected, size-dependent behavior. Missing: precise 1MB threshold, explicit identification that binary content is being mangled vs. truncated (though noted as an open gap). The size-dependent nature was captured but not quantified."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the size-dependent behavior and suspects different upload paths (chunked/multipart), matching acceptable diagnostic path #1. It specifically mentions checking proxy config and chunk reassembly logic, which is directionally correct toward the actual cause. The hypothesis of 'truncation' rather than 'encoding corruption' is slightly off, but the agent correctly flags this as an open question ('truncation vs. encoding damage'). Does not identify the Content-Type header stripping specifically, but the investigation path points there."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about upload process, timing/changes, which PDFs work, other file types, and file size comparison — a comprehensive set given the reporter's limited technical knowledge. The reporter was uncooperative, which constrained extraction. One missed opportunity: suggesting looping in an IT/technical contact when the reporter said 'I'm not the IT person here.' Otherwise the agent pushed appropriately against a resistant reporter."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three substantive question turns before resolution. The first question (upload process walkthrough) was fairly generic and yielded little useful information — the reporter just described clicking the attach button. Questions 2 and 3 were highly targeted and productive. Overall economy is good; one turn was somewhat low-yield."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Question 2 ('are some PDFs working? anything different about the ones that don't?') was genuinely insightful and led to the key size-dependent finding that the reporter wouldn't have volunteered. Question 3 (other file types + file size comparison) showed good diagnostic reasoning about isolating the failure scope. Question 1 was generic process documentation that didn't advance the diagnosis. Overall the questions show solid diagnostic thinking."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: specific reproduction steps with file size guidance, a concrete recommended fix list pointing to nginx config, proxy body-size limits, and chunk reassembly, a proposed test case with specific file sizes and checksum verification, and clearly enumerated information gaps. A developer could begin investigating immediately and knows exactly what to look at first."
+    }
+  },
+  "weighted_total": 4.1,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Extracted the size-dependent finding from a resistant, non-technical reporter who hadn't made the connection themselves",
+    "Correctly hypothesized chunked/multipart upload path as the likely failure vector, pointing investigation in the right direction",
+    "Exceptionally detailed and actionable triage summary with specific investigation steps, test case design, and information gaps",
+    "Identified that other large file types (images) may be affected, broadening the scope appropriately"
+  ],
+  "notable_weaknesses": [
+    "First question was generic process documentation that yielded almost no diagnostic value — the upload process answer was 'click the attach button'",
+    "Hypothesized 'truncation' as the mechanism rather than encoding corruption, though correctly flagged this as an open question",
+    "Did not suggest escalating to an IT or technical contact when the reporter explicitly said they weren't the IT person — this was a natural opening to get a more technically capable respondent"
+  ],
+  "most_insightful_question": "Are some PDFs making it through okay? If some work, anything you've noticed that's different about the ones that don't (file size, where they came from, how they were created)?",
+  "missed_opportunities": [
+    "Suggesting the reporter loop in an IT or technical contact after they said 'I'm not the IT person here' — this could have unlocked deployment history and infrastructure details",
+    "Asking whether they could share one of the broken files for server-side inspection or checksum comparison",
+    "Asking if they could try uploading the same large PDF via a different method (e.g., API or a different network) to help isolate whether the issue is client-side, network-side, or server-side"
+  ]
+}

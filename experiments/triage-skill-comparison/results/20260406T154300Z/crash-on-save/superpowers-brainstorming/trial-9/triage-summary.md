@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Manual save crashes with encoding error on large task lists containing Word smart-quotes/em-dashes imported via CSV
+
+## Problem
+When a user edits a task list that contains special typographic characters (curly/smart quotes, em-dashes) originally pasted from Microsoft Word into a CSV and then imported, clicking the manual 'Save' button in the toolbar causes the application to crash. A brief error dialog referencing 'encoding' flashes before the app closes. Auto-save does not trigger the crash. The issue only manifests when the task list contains roughly 50 or more tasks; smaller lists with the same characters save successfully.
+
+## Root Cause Hypothesis
+The manual save code path likely uses a different serialization or encoding routine than auto-save — probably one that does not handle Windows-1252/CP1252 characters (U+2018, U+2019 curly quotes; U+2013/U+2014 em-dashes) correctly, or attempts a strict ASCII/Latin-1 encoding. The size threshold suggests the encoder may process data in chunks/buffers, and the encoding failure is triggered when a multi-byte or extended character falls at or near a chunk boundary, which only occurs in larger payloads.
+
+## Reproduction Steps
+  1. Create a CSV file with task names containing Word-style curly quotes (‘ ’ “ ”) and em-dashes (—) — paste from a Word document to reproduce the exact byte sequences.
+  2. Import the CSV into TaskFlow to create a task list with 50+ tasks.
+  3. Open the imported task list and edit any task (e.g., change a due date).
+  4. Click the 'Save' button in the toolbar.
+  5. Observe the app crash with a brief 'encoding' error dialog.
+
+## Environment
+Not yet confirmed — reporter did not specify OS, app version, or platform (desktop vs. web). Likely desktop app given the 'app just dies' description.
+
+## Severity: high
+
+## Impact
+Any user who imports CSV data originating from Word (or similar rich-text sources) into large task lists will lose unsaved work on every manual save attempt. Auto-save mitigates data loss but the crash disrupts workflow and erodes trust. CSV import from productivity tools is a common onboarding path.
+
+## Recommended Fix
+1. Compare the manual save serialization path against the auto-save path — identify where encoding is handled differently. 2. Ensure the manual save path uses UTF-8 encoding throughout (reading task data from the model, serializing, and writing to storage). 3. Investigate chunked/buffered writes in the manual save path — if data is split into fixed-size byte buffers, ensure splits do not occur mid-character. 4. Add a targeted try/catch around the save serialization to surface the full encoding error to the user instead of crashing. 5. Consider normalizing imported CSV data to UTF-8 NFC at import time to prevent problematic characters from persisting.
+
+## Proposed Test Case
+Create a task list with 100+ tasks whose names contain Windows-1252 typographic characters (curly single/double quotes, em-dashes, ellipses). Perform a manual save and verify it completes without error. Additionally, test with task names containing emoji, CJK characters, and mixed scripts to confirm the fix generalizes.
+
+## Information Gaps
+- Exact OS and app version (desktop vs. web) — does not change the fix approach but useful for reproduction.
+- Whether the CSV import step itself should normalize encoding, or whether that's a separate improvement.
+- Exact error message text — only 'encoding' was partially visible; full stack trace from logs would confirm the root cause.

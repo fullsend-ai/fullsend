@@ -1,0 +1,21 @@
+{
+  "title": "Intermittent 403 Forbidden on dashboard for users with new 'analyst' role — likely inconsistent deployment across load-balanced instances",
+  "problem": "Users assigned to the newly introduced 'analyst' role receive intermittent full-page 403 Forbidden errors when accessing the TaskFlow dashboard. Refreshing sometimes resolves the issue. Multiple users on the same team are affected. Users on older roles (editor, admin) do not appear to be affected. The issue began shortly after a deployment that introduced the analyst role.",
+  "root_cause_hypothesis": "The deployment that added the 'analyst' role was not applied consistently across all backend instances behind the load balancer (reportedly ~3 servers). Requests routed to an unpatched instance fail with 403 because that instance does not recognize the 'analyst' role in its authorization logic. Requests hitting a patched instance succeed normally, producing the intermittent pattern.",
+  "reproduction_steps": [
+    "Log in as a user assigned the 'analyst' role",
+    "Navigate to the TaskFlow dashboard",
+    "If the page loads successfully, refresh repeatedly (the 403 appears intermittently depending on which backend instance serves the request)",
+    "Observe that the 403 is a full-page failure, not a partial API error"
+  ],
+  "environment": "TaskFlow deployment behind a load balancer with approximately 3 backend instances. A recent deployment added a new 'analyst' role type.",
+  "severity": "high",
+  "impact": "All users assigned the new 'analyst' role experience intermittent complete loss of dashboard access. Workaround is refreshing until a working instance is hit, but this is disruptive to productivity. Admins and editors appear unaffected.",
+  "recommended_fix": "1. Verify deployment status across all load-balanced instances — check whether the analyst role authorization configuration is present on every instance. 2. Redeploy or sync the role/permission configuration to any lagging instances. 3. Review the deployment process to ensure future deployments are applied atomically across all instances (rolling deploy verification). 4. Check the authorization middleware/RBAC config to confirm the analyst role is correctly mapped to dashboard access permissions.",
+  "proposed_test_case": "With all instances confirmed updated: authenticate as an analyst-role user and make 50+ sequential requests to the dashboard endpoint. Verify 0 responses return 403. Additionally, add an integration test that asserts all defined roles (including analyst) are authorized for the dashboard route.",
+  "information_gaps": [
+    "No dev-tools network capture confirming which URL returns the 403 or which backend instance serves the error (reporter is not technical enough to easily provide this)",
+    "No confirmation yet from a role-switchback test (reporter offered to try but hasn't done so yet)",
+    "Exact number and deployment state of backend instances not confirmed by IT/ops"
+  ]
+}

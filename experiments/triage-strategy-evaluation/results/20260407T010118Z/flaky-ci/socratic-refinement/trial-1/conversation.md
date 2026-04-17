@@ -1,0 +1,73 @@
+# Conversation: flaky-ci x socratic-refinement
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it's blocking releases.
+
+To help me understand the bigger picture: can you walk me through what's been happening in the project over the past few days, around when this started? For example, were there any recent changes to dependencies, the test suite itself, CI configuration, or the codebase that might coincide with when you first noticed the failures? Even changes that seem unrelated could be helpful here.
+
+---
+
+### reporter
+
+Look, I don't remember every single thing that changed. We merged a PR a few days ago that added some new tests for task ordering, but those tests pass fine on my machine so I don't see how that's the problem. Can you just look at the CI logs? The failing test names are right there.
+
+---
+
+### triage-agent
+
+You're right, the CI logs are the best place to start — I should have asked about that first. Since you've already looked at them, could you share the names of the tests that have been failing? And when they do fail, is there anything in common between them — for example, do they tend to involve shared state, database access, timing, or task ordering? Even a rough pattern like "it's always the same 3-4 tests" vs. "it's a completely different set each time" would really help narrow this down.
+
+---
+
+### reporter
+
+They're the new tests from that PR I mentioned — the task ordering ones. I don't have the exact names in front of me but they're obvious in the CI output, they all have 'ordering' or 'sort' in the name. It's like 5 tests and it's always some subset of those that fail. The old tests never fail. But again, they all pass on my machine every single time, so I really don't think the tests themselves are wrong.
+
+---
+
+### triage-agent
+
+That's really helpful — the fact that it's always a subset of those same 5 ordering/sort tests, and never the old tests, is a strong signal. It sounds like something about *how* those tests run in CI is different from your local setup.
+
+Can you tell me a bit about how you run the tests locally versus how CI runs them? For instance, do you run the full suite or just those tests? Does CI run tests in parallel or in a different order? And do the task ordering tests create or modify shared data — like tasks in a database — that other tests might also be touching?
+
+---
+
+### reporter
+
+I just run `go test ./...` locally, same as CI does. I don't think there's anything fancy about the CI config, it's just running the tests on Ubuntu. I'm on macOS locally but that shouldn't matter, it's all Go. The tests don't touch a database or anything like that, they're just testing that tasks come back in the right order after sorting. I don't see why that would behave differently anywhere.
+
+---
+
+### triage-agent
+
+That's a really useful detail — pure sorting logic with no external dependencies narrows things down a lot.
+
+Here's something worth exploring: when the task ordering tests check that tasks come back in the right order, is it possible that some of the tasks being sorted have the **same value** for whatever field you're sorting by — for example, two tasks with the same priority, or the same due date? And if so, do the tests check the **exact position** of every task in the result, or just that the overall ordering is correct by the sort key?
+
+The reason I ask is that Go's `sort.Slice` is not a stable sort, meaning items with equal sort keys can come back in any order, and that order can vary between runs or platforms. That could explain exactly the pattern you're seeing — the same tests, failing randomly, only in CI.
+
+---
+
+### reporter
+
+I mean... yeah, maybe? I didn't write the tests, someone else on the team did. They're checking that tasks come back in a specific order after sorting. I don't know the exact implementation details off the top of my head. But look, if the sort was broken wouldn't it fail every time? It passes most of the time even in CI. And it passes 100% of the time on my machine. Every. Single. Time. So something is different about the CI environment, not the code.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky CI: task ordering tests fail intermittently due to likely unstable sort with duplicate keys","problem":"Five new task-ordering tests added in a recent PR fail intermittently in CI (Ubuntu) but pass 100% of the time locally (macOS). Failures are always a subset of these same tests; old tests are unaffected. The tests assert that tasks come back in a specific order after sorting.","root_cause_hypothesis":"The task ordering tests likely sort tasks that share equal values for the sort key (e.g., same priority or due date). Go's sort.Slice uses an unstable sort (pattern-defeating quicksort), meaning elements with equal keys can appear in any order, and that order can vary across runs and platforms. The tests appear to assert exact positional ordering of all elements, so when equal-key items land in a different arrangement, the assertion fails. The reason it passes consistently on macOS but not on Linux is likely due to differences in memory layout, allocation patterns, or initial element ordering between platforms, which influence the unstable sort's tie-breaking behavior.","reproduction_steps":["Identify the 5 ordering/sort tests from CI logs (names contain 'ordering' or 'sort')","Inspect the test data for tasks with duplicate values in the field being sorted","Run `go test -count=100 ./path/to/ordering/tests` on Linux to reproduce the flakiness","Observe that failures occur when equal-key items are ordered differently than the assertion expects"],"environment":"CI: Ubuntu (Go version unspecified). Local: macOS. Test runner: `go test ./...`. No database or external dependencies involved — pure in-memory sorting logic.","severity":"high","impact":"Blocking releases for the team. Every CI run has a chance of spurious failure, requiring manual re-runs and eroding confidence in the test suite.","recommended_fix":"1. Inspect the sort implementation — if using `sort.Slice`, switch to `sort.SliceStable` if a stable order is desired, or add a secondary sort key (e.g., task ID) to guarantee deterministic ordering for equal primary keys. 2. Fix the test assertions — either relax them to only verify ordering by the sort key (allowing any order among equal-key items), or ensure test data has unique sort keys. Option 1 (fixing the sort) is preferred since the application likely also wants deterministic ordering for users.","proposed_test_case":"Create a test with multiple tasks sharing the same sort key value. Sort them and assert only that equal-key items are grouped correctly and that the overall sort-key ordering is correct, without asserting the relative order of equal-key items. Run with `-count=100` to verify no flakiness. Alternatively, if a tiebreaker is added, assert the full deterministic order and run with `-count=100` on both macOS and Linux.","information_gaps":["Exact test names and test file paths (obtainable from CI logs)","Whether sort.Slice or sort.SliceStable is used (obtainable from source code)","Which sort key(s) are used and whether test data contains duplicates (obtainable from source code)","Go version used in CI vs locally (could contribute but unlikely to be primary cause)"]}
+
+---

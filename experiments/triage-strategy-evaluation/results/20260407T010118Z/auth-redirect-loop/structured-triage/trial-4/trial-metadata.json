@@ -1,0 +1,7 @@
+{
+  "scenario": "auth-redirect-loop",
+  "strategy": "structured-triage",
+  "reporter_profile": "typical",
+  "turns": 2,
+  "parse_failures": 0
+}

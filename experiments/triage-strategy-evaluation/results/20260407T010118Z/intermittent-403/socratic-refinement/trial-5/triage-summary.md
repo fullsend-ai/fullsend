@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden errors for users with the new 'analyst' role
+
+## Problem
+Users assigned the recently-created 'analyst' role are experiencing intermittent 403 Forbidden errors across the application. The errors occur on initial page loads and during active navigation, with roughly a 1-in-3 failure rate. Users on established roles (editor, admin) are unaffected. The issue began around the same time the analyst role was introduced.
+
+## Root Cause Hypothesis
+The new 'analyst' role's permissions are not consistently available across all application server instances or cache nodes. This is likely caused by one of: (1) a stale or inconsistently-replicated permission/role cache across multiple app servers behind a load balancer, (2) the role definition or its permission grants not being fully propagated to all instances after creation, or (3) a race condition in the authorization check where the role lookup intermittently fails to find the new role's grants and defaults to deny.
+
+## Reproduction Steps
+  1. Assign a user the 'analyst' role
+  2. Attempt to load the TaskFlow dashboard repeatedly (10-15 times)
+  3. Observe that approximately 1 in 3 requests returns a 403 Forbidden
+  4. Note that refreshing after a 403 often succeeds, and subsequent navigation can produce another 403
+
+## Environment
+Affects multiple users with the 'analyst' role. No specific browser, OS, or network dependency identified — the issue appears server-side. Likely a multi-instance deployment behind a load balancer.
+
+## Severity: high
+
+## Impact
+All users assigned the new 'analyst' role are intermittently locked out of the dashboard and other pages. This blocks their workflow roughly one-third of the time and affects the entire analyst user group.
+
+## Recommended Fix
+1. Inspect the authorization/permission layer for how role grants are cached and distributed across app server instances. 2. Check whether the 'analyst' role's permission entries were fully committed and replicated (e.g., database replication lag, in-memory cache not invalidated on all nodes). 3. Compare the permission resolution path for the 'analyst' role vs established roles like 'editor' — look for missing cache warm-up or a fallback-to-deny when a role lookup misses. 4. If a distributed cache (Redis, Memcached) is used for permissions, verify that the analyst role's grants are present in all cache nodes.
+
+## Proposed Test Case
+Write an integration test that creates a new role with dashboard permissions, assigns it to a test user, then makes 50 sequential authenticated requests to the dashboard endpoint across multiple app instances (or with cache clearing between requests). Assert that all 50 requests return 200, not 403. This validates that new roles are immediately and consistently authorized.
+
+## Information Gaps
+- Exact deployment topology (number of app server instances, load balancer type)
+- Which caching layer is used for authorization (in-memory, Redis, database query cache)
+- Whether the analyst role was added via migration, admin UI, or API — and whether a cache flush or deployment accompanied it
+- Server-side logs showing which authorization check is returning 403

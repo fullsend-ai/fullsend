@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** App crashes on every task save after CSV import
+
+## Problem
+After importing tasks via CSV, the application crashes every time the user attempts to save an edited task. The import itself completes successfully and tasks are visible, but the app becomes effectively unusable because no task edits can be saved.
+
+## Root Cause Hypothesis
+The CSV import likely introduces task data that bypasses input validation (e.g., special characters, unexpected encoding, overly long fields, or null/empty values in required fields). The save logic then encounters this malformed data during serialization or validation and crashes instead of handling the error gracefully.
+
+## Reproduction Steps
+  1. Import a CSV file containing multiple tasks
+  2. Verify the imported tasks appear in the task list
+  3. Open any existing task for editing
+  4. Make a change and click Save
+  5. Observe the app crash
+
+## Environment
+Not specified — reproduce on any supported platform. Reporter did not mention platform or version.
+
+## Severity: critical
+
+## Impact
+Any user who imports tasks via CSV may be completely unable to save edits afterward, resulting in data loss and an unusable application.
+
+## Recommended Fix
+1. Compare the data model of CSV-imported tasks vs natively-created tasks — look for fields with unexpected types, encoding, or null values. 2. Add a try-catch or error boundary around the save path to prevent hard crashes. 3. Add validation/sanitization to the CSV import pipeline so imported data conforms to the same constraints as manually-created tasks. 4. Test whether saving a brand-new (non-imported) task also crashes — if so, the import may have corrupted shared state (e.g., a project-level index).
+
+## Proposed Test Case
+Import a CSV with varied data (special characters, unicode, empty fields, very long strings) and verify that each imported task can be opened, edited, and saved without crashing.
+
+## Information Gaps
+- Exact error message or crash log
+- Whether brand-new (non-imported) tasks also crash on save, or only imported ones
+- App version and platform (web, desktop, mobile)
+- Contents/structure of the imported CSV file

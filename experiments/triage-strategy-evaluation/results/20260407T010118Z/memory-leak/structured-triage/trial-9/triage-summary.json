@@ -1,0 +1,24 @@
+{
+  "title": "Memory leak in v2.3 causes progressive server degradation requiring daily restart",
+  "problem": "After upgrading from v2.2 to v2.3, the TaskFlow server exhibits a memory leak that causes memory usage to climb from ~500MB at startup to 4GB+ over the course of a business day. This results in page loads exceeding 10 seconds and API timeouts by late afternoon, requiring a daily server restart. The growth rate correlates with active user count (~200 weekday users vs. 20-30 weekend users).",
+  "root_cause_hypothesis": "The 'improved real-time notifications' feature introduced in v2.3 is the most likely source of the memory leak. Given that every page in TaskFlow uses the notification system and the leak correlates with active user count, the probable cause is that WebSocket connections or notification event listeners/subscriptions are not being properly cleaned up when users navigate between pages or disconnect. Each active user session likely accumulates orphaned listeners or cached notification state that is never garbage collected.",
+  "reproduction_steps": [
+    "Deploy TaskFlow v2.3 on a single server (Ubuntu 22.04, 8GB RAM)",
+    "Allow ~200 users to perform normal daily workflows (creating tasks, updating tasks, commenting, viewing dashboards)",
+    "Monitor server memory usage over 6-8 hours via Grafana or similar",
+    "Observe memory climbing steadily from ~500MB toward 4GB+",
+    "Confirm page load times degrade to 10+ seconds and API begins timing out"
+  ],
+  "environment": "Ubuntu 22.04, single VM with 8GB RAM, self-hosted single-server deployment (no load balancer), TaskFlow v2.3, approximately 200 active weekday users",
+  "severity": "high",
+  "impact": "All 200 active users experience progressively degraded performance throughout the day, with the application becoming effectively unusable by late afternoon. Requires daily manual server restarts as a workaround, which causes downtime.",
+  "recommended_fix": "Investigate the real-time notifications system introduced in v2.3. Specifically: (1) Check whether WebSocket connections or SSE streams are properly closed when clients disconnect or navigate away. (2) Look for event listener or subscription accumulation — verify that per-user notification handlers are removed on disconnect. (3) Review any in-memory caching or state stores added for the notification feature (e.g., notification queues, unread counts) for unbounded growth. (4) Compare the notification module's connection lifecycle management between v2.2 and v2.3. A heap snapshot comparison between a fresh server and one running for several hours under load should confirm the source of retained objects.",
+  "proposed_test_case": "Write a load test that simulates 200 concurrent users connecting, performing typical actions (page navigations, task CRUD), and disconnecting/reconnecting over a simulated 8-hour period. Assert that server memory usage remains within a bounded range (e.g., does not exceed 2x baseline) and that no WebSocket connections or event listeners accumulate beyond the active user count. Additionally, a unit test should verify that notification subscriptions are cleaned up when a user session ends.",
+  "information_gaps": [
+    "Exact Node.js runtime version (reporter indicated same setup as v2.2 which worked fine)",
+    "Database type and version",
+    "Server-side error logs or warnings that may accompany the memory growth",
+    "Whether the Grafana dashboard shows any other correlated metrics (e.g., open connection count, event loop lag)",
+    "Whether disabling the real-time notifications feature (if possible) prevents the memory leak"
+  ]
+}

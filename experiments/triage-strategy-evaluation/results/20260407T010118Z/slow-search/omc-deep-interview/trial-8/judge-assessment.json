@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 5 of 7 expected items cleanly: task count (~5,000), title-vs-description performance split, v2.2-to-v2.3 regression, ~2 weeks ago onset, and 10-15s latency. Meeting notes mention implicitly surfaced long descriptions. CPU spikes during search were never asked about and are absent from the summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary correctly identifies both acceptable diagnostic paths simultaneously: it flags the v2.3 upgrade as the trigger AND pinpoints the title-vs-description split as evidence of an indexing regression. The specific hypothesis — 'dropped or altered full-text index on the task description column' with 'EXPLAIN ANALYZE' as the next step — maps directly onto the actual FTS5 migration failure. No factual inaccuracies."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent closed out after 3 question rounds without asking about CPU behavior during search, OS/hardware specifics, or description length. These were available signals — the reporter mentioned 'work laptop' and 'pasted meeting notes' — that could have strengthened the indexing hypothesis. The teammate question in turn 3 used a slot that could have gone to one of these diagnostic queries."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns, two of which were well-targeted. The first turn (search bar vs filter, search term type) was necessary to establish the failure mode. The second drew out the title/description split and the version upgrade. The third turn's teammate question was operationally useful but diagnostically weak — that slot could have been CPU behavior or OS details. One question was suboptimal but not harmful."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 2 was genuinely insightful — pairing 'when did it start' with 'how many tasks' in one prompt efficiently surfaced the version upgrade and confirmed scale. Turn 1 asking for a concrete example search term was smart framing that led the reporter to volunteer the title-vs-description distinction unprompted. The teammate question in turn 3 was the weak link — it's low-diagnostic-value and the agent didn't follow up the description-length signal from 'pasted meeting notes'."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is developer-ready: it includes specific reproduction steps with dataset size, a precise fix checklist (diff search path, EXPLAIN ANALYZE on 5K+ dataset, check migration scripts), and a proposed regression test with a pass criterion (under 2 seconds with index-backed query plan). A developer could open the v2.3 migration diff and run EXPLAIN ANALYZE immediately."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Turn 2 efficiently combined timing and scale questions, drawing out both the version upgrade connection and the task count in a single exchange",
+    "The root cause hypothesis specifically names 'dropped or altered full-text index' and recommends EXPLAIN ANALYZE — unusually precise for a conversational triage",
+    "Reproduction steps include the critical title-vs-description contrast case, making the regression immediately verifiable"
+  ],
+  "notable_weaknesses": [
+    "CPU spike behavior was never asked about — a key diagnostic signal that would have further confirmed the full-table-scan hypothesis",
+    "OS and hardware details (Ubuntu 22.04, ThinkPad T14) were not captured despite the reporter mentioning 'work laptop'",
+    "The teammate question consumed a turn without yielding diagnostic value; description length or reindex history would have been more useful"
+  ],
+  "most_insightful_question": "That timing lines up — v2.3 is a good lead for us to investigate. One more thing that would really help: do any of your teammates also use TaskFlow... [preceded by] can you roughly pin down when it started getting slow? ...roughly how many tasks are in your workspace — hundreds, thousands, more? — the second turn, which paired onset timing with task scale and drew out both the version upgrade and the 5,000-task count in one exchange.",
+  "missed_opportunities": [
+    "Ask whether CPU or fan activity noticeably spikes during a slow search — would confirm full-table-scan behavior",
+    "Ask about typical description length or whether tasks contain large pastes — the meeting notes hint was available but not followed up",
+    "Ask whether clearing app cache or reindexing had been attempted",
+    "Ask for the exact OS and TaskFlow client type (web, desktop, mobile) to scope the environment"
+  ]
+}

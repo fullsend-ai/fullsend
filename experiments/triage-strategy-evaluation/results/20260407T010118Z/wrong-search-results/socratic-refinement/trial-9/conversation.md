@@ -1,0 +1,47 @@
+# Conversation: wrong-search-results x socratic-refinement
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — that sounds really frustrating, especially when you know the task exists but search won't surface it.
+
+Can you walk me through what you were doing when you noticed this? Specifically, had search been working correctly for you before, and if so, when did you first notice it returning these wrong results? I'm trying to understand whether something changed recently — a new feature, an update, a change in how you or your team organize tasks — or whether this might have been happening for a while and you're just now catching it.
+
+---
+
+### reporter
+
+Yes, search was working perfectly fine until about three days ago. That's when our team did the v2.3.1 update — I remember because there was a short maintenance window for a database migration. Ever since that update, search has been giving me these wrong results. Before the update, I never had any issues finding my tasks. I have about 150 active tasks and around 300 archived ones, so it's pretty obvious when search is pulling up the wrong set — I'm seeing way more results than I should when I'm looking at active tasks, and most of them are old archived ones.
+
+---
+
+### triage-agent
+
+That's really helpful — the v2.3.1 update with the database migration gives us a clear starting point.
+
+Here's what I'm trying to figure out: when you browse your tasks directly (not through search — just looking at your task list or opening a specific task), do the active and archived tasks still appear in the right places? For instance, that 'Q2 planning' task you created yesterday — does it show up correctly in your active task list, and is the old archived one still marked as archived when you view it directly?
+
+I'm asking because it'll help us understand whether the migration affected the task data itself or just how search finds and filters things.
+
+---
+
+### reporter
+
+Great question — yes, when I look at my task list directly without using search, everything looks correct. The 'Q2 planning' task I created yesterday shows up as active in my task list, and the old archived ones are still properly marked as archived. So the tasks themselves seem fine. It's specifically when I use search that things go wrong. It's like the search filter is flipped — when I search with the default 'active tasks only' filter, I get my archived tasks, and if I switch the filter to show archived tasks, I actually see my active ones. It's really confusing.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search filter for active/archived status is inverted since v2.3.1 database migration","problem":"After the v2.3.1 update (which included a database migration ~3 days ago), the search feature returns archived tasks when filtering for active tasks, and active tasks when filtering for archived tasks. The task data itself is correct — browsing and direct task views show the right status. The issue is isolated to search filtering.","root_cause_hypothesis":"The v2.3.1 database migration likely inverted the boolean or enum value representing archived/active status in the search index. For example, if the migration changed the schema from an 'active' flag to an 'archived' flag (or vice versa) but the search query logic was not updated to match, or if the migration re-indexed tasks with the flag value flipped, the search filter would return exactly the opposite of what's requested — which matches the reported behavior perfectly.","reproduction_steps":["Log in as any user with both active and archived tasks","Use the search feature with the default 'active tasks only' filter","Search for a term that matches both an active and an archived task (e.g., 'Q2 planning')","Observe that archived tasks appear in results and the active task is missing","Switch the search filter to 'archived tasks' and observe that active tasks now appear"],"environment":"v2.3.1 (post-database migration), affects multiple users, user has ~150 active and ~300 archived tasks","severity":"high","impact":"All users are affected. Search is effectively unusable for finding tasks since results are inverted. Users must manually browse task lists instead of searching, which does not scale.","recommended_fix":"Examine the v2.3.1 database migration for changes to the archived/active status field. Check whether the search index (or search query logic) interprets the status value with the correct polarity. Likely fix is either: (a) correct the search query to match the new schema, or (b) run a re-indexing operation to align the search index with the migrated data. Also verify that any status-based filtering in the search layer matches the post-migration column semantics.","proposed_test_case":"Create a user with known active and archived tasks. Search with the 'active only' filter and assert that only active tasks are returned. Search with the 'archived' filter and assert that only archived tasks are returned. Run this test against both pre-migration and post-migration schema to catch polarity inversions.","information_gaps":["Which specific search technology is used (database query, Elasticsearch, etc.) — a developer would know this from the codebase","Exact migration SQL/script content — a developer can inspect the v2.3.1 migration files directly"]}
+
+---

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Nearly all expected extracts are present: memory growth pattern (500MB to 4GB+), v2.3 upgrade as trigger, 200 active users, consistent day-to-day pattern, restart as workaround, and notification system changelog mention. The one missing item is server specs (8GB RAM VM), which the agent never asked about and the reporter did not volunteer in the conversation."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the v2.3 upgrade as the trigger, the notification system as the source, and the per-request/per-connection listener registration without cleanup as the mechanism. This matches the canonical root cause and exceeds the bar set by the acceptable diagnostic paths. The hypothesis about 'tens of thousands of leaked connections/listeners' aligns precisely with the ground truth math (~5,000/hour × 8 hours)."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The two questions asked were well-chosen and together extracted all the critical information. The agent missed asking about server specs (RAM, OS) and did not ask to see server-side error logs, which are noted as information gaps in the summary. However, given that the reporter volunteered the WebSocket anomaly unprompted in response to the second question, the core investigation was complete. The unasked questions are minor given how actionable the result is."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, and both were essential. The first identified the causal trigger (v2.3 upgrade), the second surfaced the WebSocket accumulation data from Grafana. No redundant or low-value questions were included."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was well-framed to elicit causal timeline information without leading the reporter. The second question was genuinely insightful — asking specifically whether WebSocket connections climb without dropping back down demonstrated diagnostic reasoning about a specific failure mode (unbounded listener accumulation) before the reporter confirmed it. This drew out information the reporter described as 'odd' but hadn't connected to the issue."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it includes a precise root cause hypothesis, step-by-step reproduction instructions, four concrete investigation steps targeting the notification subsystem, a proposed integration test with a specific assertion, and a clear list of what remains unknown. A developer could open the v2.3 notification diff and start reviewing connection lifecycle code immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question demonstrated genuine diagnostic reasoning by asking specifically about WebSocket connection counts climbing without dropping — a targeted hypothesis about the failure mode that surfaced critical confirming evidence the reporter had not connected to the issue",
+    "Only two turns to arrive at a root cause hypothesis that closely matches the actual mechanism, with no wasted questions",
+    "The triage summary is exceptionally actionable: includes reproduction steps, a four-point investigation plan targeting the notification subsystem, and a proposed integration test with a specific assertion",
+    "Correctly identified the v2.3 changelog entry about 'improved real-time notifications' as the key signal and anchored the investigation there"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM, Ubuntu 22.04) were never captured — the agent did not ask about the VM's resources, which is relevant for understanding whether the issue is purely a leak or also a sizing concern",
+    "Server-side logs were not requested — error logs might have surfaced cleanup failures or relevant stack traces"
+  ],
+  "most_insightful_question": "And when you look at your server logs (or that Grafana dashboard), do you notice anything climbing alongside the memory — like the number of active connections or WebSocket connections increasing over the day without dropping back down?",
+  "missed_opportunities": [
+    "What are the server's hardware specs (RAM, CPU) and OS? This would confirm the 8GB RAM ceiling and help quantify headroom.",
+    "Can you share any relevant server-side error logs from late in the day when memory is near its peak?",
+    "What is the server's runtime environment (Node.js, Python, JVM, etc.)? This would help prioritize where to look for the listener leak mechanism."
+  ]
+}

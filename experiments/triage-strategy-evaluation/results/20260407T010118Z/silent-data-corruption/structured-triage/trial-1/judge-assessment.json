@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were extracted: the ~50-100 affected records out of 2,000, the truncated (not random) corruption pattern, the ~2-week onset, the nightly batch import as the source, the 3+-digit country code pattern, the US/UK numbers being unaffected, and the recent change to phone number processing. The summary also adds useful extras: ongoing re-corruption on each nightly sync, reproduction steps, a proposed test case, and enumerated information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage satisfies both acceptable diagnostic paths: it identifies the nightly import as the corruption source with the 3+-digit country code pattern, and it connects the 2-week timeline to a recent change in phone number processing. Remarkably, the recommended fix explicitly names the regex pattern `/^\\+(\\d{1,2})/` — nearly identical to the actual offending regex `/^\\+(\\d{1,2})(\\d+)$/`. Nothing in the summary contradicts the ground truth."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Three questions covered the essential diagnostic surface: concrete examples of corruption, the data-entry/import mechanism, and version/recent-change context. The information gaps listed (git history, DB vs. display layer, import logs) all require developer access and are correctly deferred. No obvious reporter-answerable questions were left on the table."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three questions were essential and non-redundant. Each unlocked a distinct, load-bearing piece of information: the corruption pattern, the import pipeline, and the version/timeline. Nothing could have been combined or dropped without losing diagnostic value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question asking for concrete examples directly surfaced the 3+-digit country code truncation pattern — information the reporter had not volunteered and that proved to be the key diagnostic signal. The second question's framing ('how were numbers entered') efficiently bifurcated bulk-import from manual entry. The third question deliberately broadened scope beyond TaskFlow updates to include Salesforce-side changes, showing genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a precise root-cause hypothesis with candidate code constructs (regex, substring, column width), step-by-step reproduction instructions, a proposed unit test with four country-code digit-length cases, a fix path (check recent commits, repair via re-import), and clearly labeled information gaps with suggested discovery methods. A developer could open a git log and begin within minutes."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The first question elicited the 3+-digit country code pattern unprompted, which is the exact discriminating signal for the bug.",
+    "The recommended fix independently hypothesized a regex matching `\\d{1,2}` — nearly identical to the actual offending code — through pure diagnostic reasoning.",
+    "The summary flags that corruption is ongoing with each nightly sync, an operationally critical detail that implies urgency beyond a one-time repair.",
+    "Proposed test case covers 1-, 2-, 3-, and 4-digit country codes, directly encoding the fix verification logic."
+  ],
+  "notable_weaknesses": [
+    "The workaround of disabling the nightly sync was not explicitly recommended, though re-importing from CRM was mentioned; a high-severity ongoing corruption warrants an immediate mitigation step.",
+    "Did not ask whether the reporter could pull import logs or error reports — these might have been accessible without developer involvement and could have confirmed the exact failure point faster."
+  ],
+  "most_insightful_question": "Could you share a couple of examples of what the incorrect phone numbers look like compared to what they should be? — This drew out the Ireland (+353→+35) and Antigua (+1268→+12) examples, immediately revealing the 3+-digit truncation pattern and the US/UK exemption, which is the core diagnostic signal.",
+  "missed_opportunities": [
+    "Ask whether the reporter or their team could pull recent import job logs or error emails — these might have been user-accessible and could have confirmed when corruption started precisely.",
+    "Ask whether the team had attempted any manual edits to fix individual records, to determine if re-corruption on the next nightly run had already been observed."
+  ]
+}

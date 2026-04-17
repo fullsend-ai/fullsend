@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items well: inverted filter behavior, archived tasks appearing in active results, timing (~3 days / v2.3.1), multi-user impact, and the workaround. Two expected items were missed: (1) whether individual task pages show the correct archive status — never asked or confirmed, and (2) the distinction that this is a search index issue rather than application logic — the summary explicitly says to look in frontend/backend code, not the index."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The core finding (filter is inverted since v2.3.1) is correct and aligns with acceptable path #2. However, the root cause hypothesis is pointed at application code ('inverted booleans, swapped enum values in search filter logic, frontend filter serialization, backend query construction') rather than the search index configuration — the actual cause. This is a meaningful misdirection. It partially satisfies acceptable path #2 (update as trigger, archive filter as broken component) but misses the index layer entirely."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two rounds of questions. The reporter volunteered the most critical diagnostic clues (filter inversion, version timing) without prompting. A key question was never asked: 'If you open an individual task that appears in the wrong bucket via search, does its own page show the correct archived/active status?' That answer would have distinguished a search index problem from an application logic problem and directed the developer correctly. Asking about browser/OS was low-yield given the user already noted a teammate on a different setup was affected."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Two rounds of questions is efficient. The first round (search location, manual filters) was well-targeted. The second round (browser/OS) is standard triage but was somewhat predictable as low-yield given the reporter had already flagged her teammate on a different platform saw the same issue. At most one question turn could have been better used."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was solid — asking about search bar location and whether manual filters were in use was directly diagnostic. The second question (browser/OS) was generic and did not demonstrate deeper reasoning about what could cause a filter inversion. The agent missed the most insightful follow-up: asking whether individual task pages correctly display archive status, which would have separated index-layer issues from application-layer issues."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary has clear reproduction steps, a proposed test case, an identified workaround, and points to the v2.3.1 change as the trigger. However, it directs developers to inspect 'frontend filter serialization and backend query construction' rather than the search index configuration, which is where the actual fix lives. A developer following this summary would likely waste time reviewing application code before pivoting to the index layer."
+    }
+  },
+  "weighted_total": 3.1,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Correctly identified the filter inversion as the core behavior and confirmed it with the reporter's own description of toggling the filter producing the opposite result",
+    "Captured version and timing information (v2.3.1, ~3 days ago) which correctly scopes the investigation",
+    "Produced a clear test case and reproduction steps that would confirm the bug, and correctly noted browser-independence"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis targets application code (boolean inversion in filter logic) rather than the search index — the actual locus of the bug — which would misdirect developers",
+    "Never asked whether individual task pages correctly display archive status, which is a key diagnostic question for distinguishing search index issues from application logic",
+    "The browser/OS question in round 2 was generic and the reporter had already provided cross-platform evidence that made it low-value"
+  ],
+  "most_insightful_question": "The first question asking whether the user was applying manual filters or relying on the default — this directly surfaced that the default 'active' filter was the broken component, which is the crux of the bug.",
+  "missed_opportunities": [
+    "Ask whether individual task pages (opened directly, not via search) show the correct archived/active status — this would distinguish a search index mapping issue from an application logic issue",
+    "Ask whether the v2.3.1 update included a database migration or schema change, which would have pointed toward the index rebuild as the trigger",
+    "Ask whether searching without any archive filter (e.g., 'show all') returns both active and archived tasks correctly — this would further confirm the filter predicate (or index mapping) as the isolated failure point"
+  ]
+}

@@ -1,0 +1,36 @@
+# Conversation: slow-search x superpowers-brainstorming
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help narrow down what's going on, could you tell me what kind of search you're typically doing when you see the slowness?
+
+1. **Full-text search** across all your tasks (e.g., searching for a keyword in task titles/descriptions)
+2. **Filtering/narrowing** within a project or list (e.g., by status, tag, or assignee)
+3. **Both** — it's slow no matter how you search
+4. **Something else**
+
+Also, you mentioned it "used to be fast" — do you recall roughly when it started slowing down? (e.g., after an update, after your task count grew past a certain point, etc.)
+
+---
+
+### reporter
+
+It's mostly option 1 — searching for keywords. Now that you mention it, I think searching by task title is actually still pretty quick, it's when I search through the full descriptions that it really bogs down. As for when it started, I'd say maybe 2 weeks ago? I updated to v2.3 around that time so it might be related, but I'm not 100% sure if it was right after the update or a few days later.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text description search regression (~10-15s) after v2.3 update","problem":"Searching across task descriptions takes 10-15 seconds, while searching by task title remains fast. The reporter has a large number of tasks and noticed the slowdown approximately 2 weeks ago, around the time they updated to v2.3.","root_cause_hypothesis":"The v2.3 update likely introduced a regression in how full-text description search is executed — possibilities include a dropped or rebuilt full-text index on the description field, a query change that bypasses the index (e.g., switching from indexed search to LIKE/ILIKE scan), or a new feature (e.g., searching attachments or comments) that broadened the search scope without corresponding index support.","reproduction_steps":["Create or use an account with a large number of tasks (hundreds+) that have non-trivial descriptions","Perform a keyword search using full-text/description search mode","Observe query latency of 10-15 seconds","Compare with a title-only search on the same keyword — expect near-instant results"],"environment":"TaskFlow v2.3, work laptop (OS/specs not specified but unlikely to be the bottleneck given title search is fast)","severity":"medium","impact":"Users with large task collections experience unusable search latency on full-text description searches. Title-only search is unaffected. This degrades a core workflow for power users.","recommended_fix":"Diff the search query path between v2.2 and v2.3, focusing on how description search is executed. Check whether a full-text index on the description column exists and is being used (run EXPLAIN/ANALYZE on the query). If the index was dropped or the query changed to a sequential scan, restore indexed search. Also check if v2.3 expanded the search scope (e.g., now including comments or attachments) without adding indexes.","proposed_test_case":"Performance test: seed a database with 1,000+ tasks with multi-paragraph descriptions. Assert that a full-text keyword search completes in under 1 second. Run this test against both v2.2 (baseline) and v2.3 to confirm the regression and verify the fix.","information_gaps":["Exact number of tasks in the reporter's account (unlikely to change the fix direction)","Whether the slowdown started immediately after the v2.3 update or a few days later (could indicate a background migration or index rebuild issue)"]}
+
+---

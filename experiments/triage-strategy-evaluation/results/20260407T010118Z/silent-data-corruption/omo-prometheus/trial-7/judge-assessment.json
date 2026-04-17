@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import, 3+ digit country code pattern, US/UK numbers unaffected, and the recent phone number formatting change. The summary also adds useful detail not explicitly listed, such as Salesforce data integrity confirmation, recovery path, and specific countries likely affected."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary accurately identifies the nightly import as the corruption source, the 2-week timeline tied to a recent change, and the exact pattern (country codes >2 digits truncated to 2). The root cause hypothesis specifically suggests 'substring(0,2) operations' which closely mirrors the actual regex capture group limiting to \\d{1,2}. This satisfies both the canonical root cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent covered all critical diagnostic axes: data entry mechanism, timing, specific corrupted examples to identify the pattern, recent changes, and source data integrity. The Salesforce integrity check was essential for scoping the recovery options. No obvious follow-ups were left unasked given the information available in the conversation."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each carrying high diagnostic value. Turn 1 established entry mechanism and timing. Turn 2 got concrete examples to identify the pattern and probed for recent changes. Turn 3 confirmed whether source data was intact — the pivotal question for recovery. No questions were redundant or low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated genuine diagnostic reasoning. Asking for specific examples in turn 2 was critical — it revealed the 2-digit truncation pattern the reporter hadn't volunteered. The turn 3 question about Salesforce data integrity was especially insightful: it determined both the blast radius of the problem and whether recovery via re-sync was viable, which directly shaped the recommended fix."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a specific code pattern to search for (substring/length-limited country code parsing), a git timeframe (2 weeks ago), reproduction steps, specific test cases with countries of varying country code lengths, and a concrete recovery path (re-sync from Salesforce after fix). Information gaps are honestly documented without undermining the overall actionability."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Requesting specific examples of corrupted numbers in turn 2 was the pivotal diagnostic move — it surfaced the 2-digit truncation pattern that the reporter hadn't articulated, enabling an accurate hypothesis without any guessing",
+    "The Salesforce integrity question in turn 3 simultaneously scoped the problem (corruption is one-directional) and unlocked the recovery path (re-sync after fix), demonstrating multi-purpose diagnostic thinking",
+    "The recommended fix correctly identifies variable-length country code handling per E.164 and provides a concrete test matrix covering 1-, 2-, and 3-digit country codes",
+    "All 7 expected information items were captured with zero omissions"
+  ],
+  "notable_weaknesses": [
+    "The exact TaskFlow version was not confirmed during the conversation (acknowledged as an information gap in the summary, which is appropriate)",
+    "The agent did not ask whether the corruption is at storage time vs. display time — though the examples strongly implied storage corruption, confirming this explicitly would have been a minor improvement"
+  ],
+  "most_insightful_question": "Are the phone numbers still correct in Salesforce? — This single question determined both the scope of the incident (TaskFlow-only, not bidirectional) and the viability of the primary recovery path (re-sync from intact CRM data), while also prompting the reporter to volunteer that they should pause the nightly sync.",
+  "missed_opportunities": [
+    "Ask for the specific TaskFlow version or a link to the release notes for the phone number formatting update to confirm the exact change and pinpoint the commit",
+    "Ask whether the corruption is visible in stored data vs. only in the UI display (would confirm import-time vs. render-time bug, though the examples made import-time highly likely)"
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: archived tasks appear in active-only search, active tasks missing from results, issue started after v2.3.1 update (~3 days prior), affects all users (Sarah on Mac/Safari confirmed), individual task pages show correct status, search filter behavior is inverted, and the issue is isolated to search (not application/database logic). The summary also adds useful extra detail: reproduction steps, a proposed test case, and an explicit information gaps list."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the v2.3.1 upgrade as the trigger, the archive filter as the broken component, and the search index as the likely cause — matching both acceptable diagnostic paths. The recommended fix even explicitly calls out verifying that 'the indexing pipeline maps the archived/active status correctly' and suggests a reindex with corrected status mapping, which is essentially the actual fix. The agent did not pinpoint the specific field mapping inversion (indexed archived=true as active=true), but its hypothesis (a) is directionally correct and actionable. Minor deduction for also including a less-likely alternative (b) about the filter predicate, which could slightly distract a developer."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after just two Q&A turns. Much of the most critical information — direct-link showing correct status, problem starting after v2.3.1, teammate on different browser also affected — was volunteered by the reporter rather than elicited by targeted questions. The agent never explicitly asked whether the issue correlated with a recent update or migration, which is the key diagnostic question here. The information gaps acknowledge this ('Whether a search index rebuild or migration ran as part of the v2.3.1 upgrade'), confirming the agent knew this was relevant but never asked. That said, the reporter's volunteered answers gave a sufficient basis to close."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Only two questions were asked before resolving. The first question (search location, filter state, exact query) was well-targeted and productive. The second question (browser/OS/version) is standard practice and did yield the version number and cross-browser confirmation, though by that point the multi-user reproduction already implied a backend issue. At most one turn could have been avoided or restructured. No redundancy."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was solid: asking specifically about search location, filter state, and exact query text was diagnostic and not generic. However, the second question was a fairly standard environment checklist (browser, OS, version) that any support template would include — not demonstrating particular insight. A more insightful follow-up after the reporter's first reply (which had already established cross-browser multi-user impact) might have been: 'Did anything change recently in the application — an update, migration, or maintenance window?' That would have directly targeted the root cause rather than leaving it to the reporter to volunteer."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "Exceptionally actionable. The summary includes: a precise root cause hypothesis pointing to the search index and archived flag mapping; a recommended fix with specific investigation steps (compare v2.3.0 vs v2.3.1 filter queries, check index field polarity, reindex if needed); numbered reproduction steps; a concrete proposed test case with assertions; environment details; and explicit information gaps. A developer could open the search index configuration and start auditing the archived field mapping immediately."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly isolated the problem to the search layer rather than the database or UI, matching the actual cause",
+    "Explicitly recommended checking whether the archived/active flag mapping in the index is inverted — essentially pointing at the exact fix",
+    "Proposed test case is specific and executable, covering all three filter states (active-only, all, archived-only)",
+    "Information gaps section demonstrates self-awareness about what was not yet confirmed"
+  ],
+  "notable_weaknesses": [
+    "Never directly asked whether a recent update or migration had occurred — this is the single most diagnostic question and was only answered because the reporter volunteered it",
+    "Second question (browser/OS) was a generic environment checklist rather than a targeted follow-up given that multi-user impact was already established",
+    "Did not ask whether project-scoped search was also affected, which could have further isolated the bug"
+  ],
+  "most_insightful_question": "The first question asking specifically about search location (global vs. project-scoped), filter state, and exact query text — it established that the reporter was using default filters (active-only) and set up the key contrast with direct-link access, which the reporter then volunteered unprompted.",
+  "missed_opportunities": [
+    "Explicitly asking: 'Did this issue start after a recent update, maintenance window, or scheduled job?' — this is the single most valuable diagnostic question and was left to the reporter to volunteer",
+    "Asking whether project-scoped search or task-list filters (not just global search) are also affected, to determine whether the bug is in a shared index or a specific search path",
+    "Asking whether browsing or filtering the task list (outside of search) also shows incorrect archive status, which would further distinguish index vs. query-layer bugs"
+  ]
+}

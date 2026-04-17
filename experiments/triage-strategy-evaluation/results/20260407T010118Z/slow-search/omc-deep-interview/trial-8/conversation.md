@@ -1,0 +1,53 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — that kind of delay definitely isn't expected. To help us narrow this down: when you say "search," are you using the main search bar at the top of the app, or a filter/search within a specific project or task list? And can you give an example of a typical search term you'd type when it's slow — for instance, are you searching by keyword, assignee, tag, or something else?
+
+---
+
+### reporter
+
+I'm using the main search bar at the top. I usually search for keywords — like project names or specific topics from meetings. I type something like "quarterly review" or "backend migration" and it just sits there spinning for a long time. It's weird because if I search for a task by its title it seems to come back pretty quickly, but when I'm searching for something that would be in the task description it's really slow.
+
+---
+
+### triage-agent
+
+That's a really useful detail — the difference between title search and description search points us in a helpful direction. You mentioned it used to be fast: can you roughly pin down when it started getting slow? For example, did it happen after a TaskFlow update, after you imported or bulk-created a bunch of tasks, or did it just gradually get worse over time? Also, roughly how many tasks are in your workspace — hundreds, thousands, more?
+
+---
+
+### reporter
+
+I have around 5,000 tasks — I've been using TaskFlow for about 2 years now. As for when it started, I think it was maybe 2 weeks ago? I'm pretty sure it was around the time I updated to v2.3. I don't remember adding a ton of tasks around that time, so I think the update might have been the trigger, but I'm not 100% sure.
+
+---
+
+### triage-agent
+
+That timing lines up — v2.3 is a good lead for us to investigate. One more thing that would really help: do any of your teammates also use TaskFlow, and if so, have they mentioned the same slowness? Also, is this something that's getting in the way of your daily workflow — like, are you searching frequently enough that the delay is a real blocker, or more of an annoyance you can work around for now?
+
+---
+
+### reporter
+
+I'm not sure if anyone else on my team uses TaskFlow honestly — I think a couple people do but I haven't asked them about it. As for my workflow, yeah it's pretty annoying. I search for things in task descriptions a lot because I paste meeting notes into tasks and then need to find them later. I've been working around it by just searching for the task title when I can remember it, but half the time I only remember a keyword from the description. So it's not a total blocker but it's definitely slowing me down every day.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text search on task descriptions regressed to 10-15s response time in v2.3","problem":"After updating to TaskFlow v2.3, searching by keywords that match task descriptions takes 10-15 seconds in the main search bar. Searching by task title remains fast. The user has ~5,000 tasks accumulated over 2 years and frequently searches description content (e.g., pasted meeting notes).","root_cause_hypothesis":"v2.3 likely introduced a regression in how description fields are searched — possible causes include a dropped or altered full-text index on the task description column, a query planner change that switched from indexed lookup to sequential scan, or a new search feature (e.g., fuzzy matching) that bypasses the index. The fact that title search remains fast strongly suggests the issue is isolated to the description search path.","reproduction_steps":["Create or use a workspace with ~5,000 tasks, many with substantive description text","Ensure TaskFlow is running v2.3","Open the main search bar at the top of the app","Search for a keyword that appears in task descriptions but not titles (e.g., a phrase from meeting notes)","Observe 10-15 second delay before results appear","Search for a keyword that matches a task title — observe that this returns quickly"],"environment":"TaskFlow v2.3, work laptop (OS/browser not specified), workspace with ~5,000 tasks accumulated over 2 years","severity":"medium","impact":"Users who rely on description search (e.g., for meeting notes stored in tasks) experience significant daily friction. Workaround exists — searching by title — but only works when the user remembers the task title. Likely affects any user with a large task count on v2.3.","recommended_fix":"1. Diff the search query path between v2.2 and v2.3 for description search specifically. 2. Check database indexes on the task description column — run EXPLAIN ANALYZE on the description search query against a 5K+ task dataset. 3. If a full-text index was dropped or altered in a v2.3 migration, restore it. 4. If a new search mode (fuzzy, semantic, etc.) was added, verify it uses an appropriate index or add one.","proposed_test_case":"Performance test: with a seeded database of 5,000+ tasks with realistic description text, assert that a keyword search matching description content returns results in under 2 seconds. Include this as a regression test gated on the search query plan using an index.","information_gaps":["Whether other v2.3 users with large workspaces experience the same slowness (reporter unsure if teammates use TaskFlow)","Exact browser and OS details","Whether the issue occurs on the web app, desktop app, or both","Server-side vs client-side timing (is the delay in the API response or in rendering?)"]}
+
+---

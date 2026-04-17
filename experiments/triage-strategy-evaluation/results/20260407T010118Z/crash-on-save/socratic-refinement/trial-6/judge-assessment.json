@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured the CSV import trigger, special characters mechanism, approximate task count (200), and the flashed error dialog. However, it failed to capture the OS and app version entirely (noted as 'not confirmed'), did not explicitly distinguish manual save from auto-save, and did not surface the size-dependent nature of the crash (that smaller lists save fine). Two of the six expected extracts are missing or only implied."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — CSV-imported Word-style special characters causing an unhandled encoding error in the serialization path — matches the first acceptable diagnostic path exactly. The triage correctly identified the CSV import as the trigger and encoding as the mechanism, even without discovering the 64KB size threshold. No significant inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked three productive questions and resolved with a solid hypothesis. However, it never asked for the OS and app version — a standard first question for any crash report — despite explicitly flagging it as an information gap in the summary. It also did not ask whether auto-save triggers the same crash, or whether saving a smaller or clean task list works, either of which would have confirmed the size-dependency dimension."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each building meaningfully on the prior answer. No question was redundant or low-value. The agent did not repeat itself or ask for information already provided."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The timeline question ('was there a point where saving worked fine, and what changed?') was genuinely diagnostic and drew out the CSV import revelation that the reporter would not have volunteered. The follow-up about CSV content was well-targeted and surfaced the Word-origin special characters detail. The opening question was solid but somewhat generic. Overall the questions demonstrated real diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The recommended fix is specific and layered: inspect encoding assumptions in the serializer, add Unicode handling, wrap saves in error handling, and validate at import time. The proposed test case is concrete and includes a note about testing at volume. A developer could begin investigating immediately. The missing environment details (OS, app version) slightly reduce actionability for reproduction."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The timeline question ('what changed around when it started?') was the decisive move — it drew out the CSV import connection that the reporter had not volunteered and would not have without prompting",
+    "The root cause hypothesis is accurate and specific, correctly identifying the encoding mechanism and unhandled exception in the serialization path",
+    "The recommended fix and proposed test case are actionable and well-reasoned, including a note to test at volume (150+ tasks)",
+    "Extremely efficient: resolved in 3 turns with no wasted questions"
+  ],
+  "notable_weaknesses": [
+    "Never asked for OS and app version, despite this being standard crash triage and despite explicitly flagging it as a gap — the agent should have asked before resolving",
+    "Did not probe whether auto-save triggers the same crash, missing an important distinction that was part of the expected extracts",
+    "Did not ask whether saving a smaller task list (or the list without the imported tasks) succeeds, which would have confirmed the size-dependent nature of the crash"
+  ],
+  "most_insightful_question": "Was there a point where saving worked fine with this same task list? If so, can you think of anything that changed around the time it started crashing — maybe you added a batch of new tasks, updated the app, or changed something about how you were using it?",
+  "missed_opportunities": [
+    "What OS and TaskFlow version are you running? (Standard crash triage baseline; should have been asked in the first or second turn)",
+    "Does the crash happen when auto-save triggers, or only when you click Save manually?",
+    "If you create a new, small task list (say, 10 tasks) and save it, does that work? Or does saving any list fail regardless of size?"
+  ]
+}

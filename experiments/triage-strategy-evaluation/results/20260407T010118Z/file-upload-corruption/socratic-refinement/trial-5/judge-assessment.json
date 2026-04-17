@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The agent captured most expected items: small PDFs uploading fine, large PDFs corrupted, regression ~1 week ago, multiple customers affected, and binary content being mangled. It flagged other file types as uncertain but noted developer should verify. What's missing: the 1MB threshold wasn't identified (agent assumed 5-10MB+), and the distinct upload paths (direct vs proxy) weren't surfaced as a mechanism — though the agent did include 'chunked upload assembly' as a hypothesis candidate."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The root cause hypothesis list is directionally correct and includes 'content encoding or transfer encoding (e.g., base64 vs binary) that mangles large payloads' and 'chunked upload handling' — both close to the actual cause. However, neither acceptable diagnostic path is cleanly identified: the agent suspects size-dependent behavior but attributes it to 'threshold' rather than 'different code paths'; it doesn't identify the proxy specifically or connect the recent update to a specific component. The hypothesis is a reasonable scatter that includes the truth but doesn't commit to it."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about timing, file size variation, pre-upload integrity, post-download behavior, and other file types — covering the key diagnostic axes. One obvious follow-up was left unasked: asking the reporter (or clarifying) whether the ~1MB boundary was the cutoff by asking them to try a very small PDF vs a just-over-threshold one. The question about other file types was smart but the reporter couldn't answer definitively, and the agent didn't push further. Overall, thorough enough given the reporter's limited technical knowledge."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns, each targeting different diagnostic axes without overlap. No redundant asks. The agent bundled related sub-questions sensibly. Very efficient for the amount of information extracted."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question — asking whether the file was intact before upload and what exactly changed after download — was the strongest: it both confirmed the corruption was in the pipeline (not client-side) and probed for distinguishing symptoms. The third question about other file types showed genuine diagnostic reasoning. The first question was somewhat generic ('walk me through what a typical upload looks like') but reasonable as an opener. The agent could have asked more precisely about file sizes (e.g., 'can you try uploading a file under 1MB vs over 1MB?') to pin down the threshold."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is excellent. It includes a specific prioritized list of investigation candidates (chunked upload, encoding, middleware, proxy/CDN config), concrete reproduction steps with size guidance, a checksum-based test matrix across sizes and formats, and explicitly flags where to look in deploy/git history. A developer could start coding a diagnostic script or diffing infrastructure configs immediately from this summary."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Identified the size-dependent behavior (small fine, large broken) as a key diagnostic signal, matching acceptable path 1",
+    "Hypothesis list proactively names chunked upload handling and content-type/encoding changes — close to the actual mechanism",
+    "Proposed test case with specific file sizes and checksum verification is immediately actionable",
+    "Efficiently managed an impatient reporter without losing diagnostic depth"
+  ],
+  "notable_weaknesses": [
+    "Never identified or hypothesized different upload code paths (direct vs proxy) as the mechanism behind the size split — stopped at 'size threshold' without asking why size would matter",
+    "Did not surface the 1MB boundary specifically; guessed 5-10MB+ which could misdirect initial testing",
+    "When the reporter mentioned a 'weird image,' the agent dropped the thread instead of following up to confirm non-PDF large files are also affected"
+  ],
+  "most_insightful_question": "Does your team ever attach other types of large files — images, Word documents, spreadsheets, anything besides PDFs? If so, are those also coming through broken, or is it only PDFs that are affected?",
+  "missed_opportunities": [
+    "Ask the reporter to test uploading a very small PDF (under 1MB) vs a known large one to pin down the size threshold rather than leaving it vague",
+    "Follow up on the reporter's mention of 'an image looking weird' to confirm whether other file types are affected — the reporter offered this and the agent let it drop",
+    "Ask whether the corruption pattern is consistent (every large PDF always corrupted) or intermittent, which would help distinguish encoding bugs from race conditions"
+  ]
+}

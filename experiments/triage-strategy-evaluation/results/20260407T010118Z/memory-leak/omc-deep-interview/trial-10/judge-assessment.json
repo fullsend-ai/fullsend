@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present in the summary: linear memory growth from 500MB to 4GB+, v2.3 upgrade trigger (~1 week ago), 200 active users, consistent daily pattern, restart as workaround, v2.3 changelog mentioning notification changes, and 8GB RAM VM specs. The summary also captures additional useful details like webhook integrations, the per-request growth rate calculation (~25 req/user/hour), and the holiday-usage correlation as corroborating evidence."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the actual cause and both acceptable diagnostic paths. The agent identified v2.3 as the trigger, the notification system as the likely source, and correctly reasoned to a per-request (not per-connection) leak pattern — even explicitly naming 'event listeners' as a candidate. The per-request vs. per-connection distinction is exactly correct per ground truth. This is as close as triage can get to the actual root cause without access to the source code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all key diagnostic questions: version/environment, usage correlation, confounding changes around the upgrade, WebSocket connection counts, notification listener counts, and isolation via feature toggle. It also requested a heap dump for developer handoff. The main shortfall is resolving before receiving results of the toggle test and /admin/status check — however, the agent explicitly flagged these as open information gaps, and had a strong enough evidential basis to justify resolution. One obvious follow-up not pursued: asking about the Node.js version or runtime, which could affect GC behavior."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four productive question turns before resolution. The first question bundled version, deployment, background jobs, and usage correlation efficiently. The heap dump request in the final question turn could arguably have been combined with the previous turn's /admin/status and toggle test request, saving one exchange. No redundant questions; every turn extracted new information or set up a productive next step."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions showed genuine diagnostic reasoning rather than generic bug report questions. The WebSocket connection count question was well-targeted. Most impressive was the turn 4 pivot: the agent reinterpreted the reporter's 'linear and steady' observation to distinguish per-request from per-connection leaks — a non-obvious insight that meaningfully refined the hypothesis. The toggle test suggestion was an elegant isolation strategy. The 'did anything else change?' sanity check demonstrated disciplined skepticism about anchoring on v2.3."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer a clear starting point: diff v2.2 and v2.3 notification code for request-scoped allocations without cleanup, check for event emitter/subscription registrations per request, use heap snapshots to identify the accumulating type. An immediate mitigation is specified (TASKFLOW_REALTIME_ENABLED=false). Reproduction steps are concrete and parameterized. A proposed regression test is included. A developer could begin investigating within minutes of reading this summary."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The per-request vs. per-connection leak distinction was a genuinely insightful diagnostic inference, derived from the reporter's description of linear growth proportional to usage — not volunteered by the reporter",
+    "All expected information was captured, with the v2.3 upgrade connection surfaced in the first exchange",
+    "The toggle test (TASKFLOW_REALTIME_ENABLED=false) was an elegant isolation strategy that the reporter confirmed was available and actionable",
+    "The triage summary is exceptionally actionable: specific fix directions, concrete reproduction steps, immediate mitigation, and a proposed regression test"
+  ],
+  "notable_weaknesses": [
+    "Resolved before receiving results of the toggle test and /admin/status check — the information gaps are honestly documented but the resolution is somewhat premature",
+    "The heap dump request came in the final question turn rather than being combined with the previous turn's diagnostic requests, adding an extra round-trip"
+  ],
+  "most_insightful_question": "The turn 4 observation reframing the leak as per-request rather than per-connection, followed by asking for notification subscription/listener counts from /admin/status and proposing the TASKFLOW_REALTIME_ENABLED toggle test — this drew out the reporter's confirmation that growth tracked active usage rather than logged-in users, directly corroborating the per-request leak hypothesis.",
+  "missed_opportunities": [
+    "Could have asked about the Node.js or runtime version — GC behavior and event emitter leak detection differ across versions and could inform debugging approach",
+    "Did not ask whether the reporter had checked application logs for any warnings about listener counts or memory pressure, which some frameworks emit automatically"
+  ]
+}

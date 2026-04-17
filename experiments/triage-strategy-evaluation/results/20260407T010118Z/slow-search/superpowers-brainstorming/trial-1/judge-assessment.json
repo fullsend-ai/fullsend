@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 2,
+      "rationale": "Captured 3 of 7 expected items: task count (~5,000), title-vs-description performance difference, and 10-15 second latency. Missed: version regression (v2.2→v2.3), when slowness started (~2 weeks ago), CPU spikes during search, and long description content. The agent even listed TaskFlow version and onset timing as 'information gaps' but chose not to ask follow-up questions to fill them."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis correctly identifies the title-vs-description performance split and suspects a missing FTS index with LIKE query fallback — matching the second acceptable diagnostic path and closely approximating the actual cause (v2.3 replaced FTS5 with a naive LIKE query). The recommended fix (check schema, add FTS index, review LIKE queries) is well-aligned with reality. Slight deduction because the version regression trigger was not identified, which would have sharpened the hypothesis considerably."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single exchange. Multiple obvious follow-ups were skipped: TaskFlow version (the agent even flagged this as a gap but didn't ask), when the slowness started, CPU behavior, and description length/content. The agent had a reasonable diagnostic direction but closed out prematurely with acknowledged gaps that one more question could have addressed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked, and it was a well-structured multi-part query that efficiently extracted search type, task count, and implicitly surfaced the title-vs-description asymmetry. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The single question was exceptionally well-designed: offering categorized search types (a), (b), (c), (d) provided a clear vocabulary that led the reporter to spontaneously reveal the title-vs-description asymmetry — information they likely would not have volunteered unprompted. Pairing it with a task-count question in the same turn was efficient and diagnostic."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is highly actionable: clear reproduction steps, specific schema-level fix recommendations (FTS index, LIKE query review), and a concrete regression test proposal. A developer could begin investigation immediately. Minor deduction because the version information gap means the developer still needs to determine which code change introduced the regression before they can write a targeted fix."
+    }
+  },
+  "weighted_total": 3.3,
+  "turn_count": 1,
+  "notable_strengths": [
+    "The categorized search-type question was genuinely insightful — offering (a)/(b)/(c)/(d) options gave the reporter vocabulary that surfaced the title-vs-description asymmetry, which is the single most diagnostic finding in this case",
+    "Root cause hypothesis accurately landed on LIKE-query-over-unindexed-text, closely matching the actual cause even without version information",
+    "The triage summary is highly structured and actionable, with specific fix recommendations and a concrete test case"
+  ],
+  "notable_weaknesses": [
+    "Resolved after a single exchange despite explicitly noting TaskFlow version and onset timing as information gaps — a second question would have filled both",
+    "Never asked when the slowness started, which would have pointed directly to the v2.2→v2.3 upgrade as the trigger",
+    "CPU spike behavior and description length/content were never explored, leaving the environmental picture incomplete",
+    "The fix recommendations assume PostgreSQL/MySQL (GIN, FULLTEXT) but the actual database is SQLite with FTS5 — the omission of DB engine confirmation weakens the recommended fix"
+  ],
+  "most_insightful_question": "The multi-part first question offering labeled categories (a)–(d) for search type, combined with a task-count request — it created the conditions for the reporter to spontaneously reveal the title-vs-description performance asymmetry, which is the key diagnostic finding.",
+  "missed_opportunities": [
+    "Ask which version of TaskFlow is installed and whether there was a recent upgrade — would have immediately surfaced the v2.2→v2.3 regression",
+    "Ask when the slowness first appeared (suddenly vs. gradually) — would have confirmed a regression event rather than gradual data growth",
+    "Ask whether CPU usage is noticeably high during slow searches — ground truth confirms 100% single-core spike, which strongly supports full-table-scan hypothesis",
+    "Ask about description content — whether tasks contain long text like meeting notes, which explains why the LIKE scan is especially costly"
+  ]
+}

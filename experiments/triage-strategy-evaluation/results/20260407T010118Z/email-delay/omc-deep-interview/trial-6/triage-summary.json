@@ -1,0 +1,22 @@
+{
+  "title": "Email notification sending delayed 2-4 hours, likely due to queue saturation from new marketing digest",
+  "problem": "Task assignment email notifications that previously arrived within 1-2 minutes are now delayed 2-4 hours. The delay is worst for notifications triggered around 9-10am and improves in the afternoon. Multiple users across multiple workspaces are affected. The issue began approximately one week ago.",
+  "root_cause_hypothesis": "A new daily marketing digest email, introduced roughly one week ago and sent around 9am, is likely saturating the email sending queue. The reporter's email header inspection shows the system does not hand the email to the mail provider until hours after the triggering event, confirming the bottleneck is in the application's email dispatch pipeline (queue/worker), not downstream delivery. The morning spike aligns with the digest send time, and afternoon improvement is consistent with the queue gradually draining.",
+  "reproduction_steps": [
+    "Assign a task to a user around 9:00-9:30am (when the marketing digest is also being sent)",
+    "Note the timestamp of the assignment",
+    "Observe that the notification email is not sent by the system until 2-4 hours later",
+    "Compare with an assignment made in the afternoon — delay should be shorter but still present"
+  ],
+  "environment": "System-wide across all projects/workspaces. Confirmed by multiple team members. Reporter uses Gmail. Issue began approximately one week ago, coinciding with the introduction of a daily marketing digest email.",
+  "severity": "high",
+  "impact": "All users receiving task assignment emails are affected. Team members are missing deadlines because they are unaware of new assignments for hours. No known workaround — users currently rely on email notifications and have not confirmed whether in-app notifications are also delayed.",
+  "recommended_fix": "1. Inspect the email sending queue/worker infrastructure — check queue depth, worker concurrency, and throughput around 9am. 2. Confirm whether the marketing digest is processed through the same queue as transactional notifications. 3. If so, separate transactional emails (task assignments, mentions) into a high-priority queue distinct from bulk/marketing sends. 4. Review rate limits with the email provider to ensure the digest blast isn't triggering throttling that backs up all subsequent sends.",
+  "proposed_test_case": "Assign a task at 9:00am (peak delay window) and verify the notification email Date header timestamp is within 2 minutes of the assignment time. Repeat with the marketing digest disabled or moved to a separate queue to confirm the fix.",
+  "information_gaps": [
+    "Whether in-app notifications are also delayed (reporter agreed to check but hasn't yet — would confirm whether the issue is email-pipeline-specific or system-wide notification dispatch)",
+    "Exact deployment or configuration change that introduced the marketing digest ~1 week ago",
+    "Current email queue architecture and whether transactional and marketing emails share a queue",
+    "Email provider rate limits and whether throttling is a contributing factor"
+  ]
+}

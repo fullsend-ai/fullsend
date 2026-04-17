@@ -1,0 +1,102 @@
+# Conversation: flaky-ci x superpowers-brainstorming
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it blocks releases.
+
+To help narrow this down: do you know what changed around the time the failures started a few days ago?
+
+- A) A dependency or package version was updated
+- B) New tests or test infrastructure changes were added
+- C) The CI environment or configuration changed (e.g., runner image, Node/Python version)
+- D) A code change that touches shared state (database, files, caches)
+- E) Nothing obvious — it seemed to start on its own
+
+This will help me figure out the most likely cause of the flakiness.
+
+---
+
+### reporter
+
+B, we merged a PR that added some new tests like 4 days ago. But the tests pass fine on my machine so I don't see how that's the problem.
+
+---
+
+### triage-agent
+
+That's a really helpful clue — new tests are a common source of flakiness, even when they pass individually.
+
+When CI fails, which tests are actually failing?
+
+- A) The newly added tests themselves
+- B) Existing tests that used to pass reliably
+- C) A mix of both
+- D) Not sure — I haven't looked closely at which specific tests fail
+
+This will help determine whether the new tests have an internal problem or whether they're interfering with the rest of the suite.
+
+---
+
+### reporter
+
+A, it's the new tests that fail. But like I said they pass locally so something is weird with CI.
+
+---
+
+### triage-agent
+
+That narrows it down a lot — new tests that pass locally but fail randomly in CI almost always point to a test isolation issue. Here's my working theory:
+
+The new tests likely depend on some shared state (database records, files, in-memory cache, etc.) that happens to be set up correctly when you run locally, but in CI the test execution order or parallelism is different, so that state isn't always there.
+
+Does this sound plausible? Specifically:
+
+- A) Yes — the new tests do read/write to a database or shared resource, and CI might run tests in parallel or a different order
+- B) Partially — they use shared resources, but I'm pretty sure the order is the same everywhere
+- C) No — the new tests are self-contained unit tests with no shared state
+- D) Not sure — I'd need to look more closely at what the new tests depend on
+
+---
+
+### reporter
+
+C, they're unit tests. They test task ordering — no database, no files, nothing shared. They just sort some tasks and check the order comes back right. I don't get why everyone keeps suggesting it's a test isolation thing when they literally pass every single time on my machine.
+
+---
+
+### triage-agent
+
+I hear you — if they're pure unit tests with no shared state, test isolation isn't the issue. But the fact that they *sort tasks and check the order* is actually a big clue.
+
+Here's a more specific theory: when two tasks have the same priority (or whatever field you're sorting by), the sort order between them is **undefined** — most sort algorithms don't guarantee a stable order for equal elements. On your machine the memory layout happens to produce the same order every time, but CI's environment produces a different one, so the assertion fails.
+
+Do the new tests assert on the **exact order** of the full list, including tasks that might have the same sort key (e.g., same priority, same due date)?
+
+- A) Yes — the tests check the exact position of every task, and some tasks do share the same priority/sort value
+- B) The tests check exact order, but every task has a unique sort key
+- C) The tests only check relative ordering (e.g., high-priority before low-priority), not exact positions
+- D) Not sure — I'd need to look at the test assertions more carefully
+
+---
+
+### reporter
+
+I guess A? Yeah some of the tasks have the same priority and the tests check that they come back in the order they were added. But it works every time locally, so the sort is clearly working fine. Something about CI is broken.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"New task-ordering tests fail intermittently in CI due to unstable sort on equal-priority tasks","problem":"Unit tests added ~4 days ago assert the exact position of every task after sorting, but some tasks share the same priority value. The sort order among equal-priority tasks is non-deterministic, so the assertions pass on the reporter's local machine (where memory layout happens to produce a consistent order) but fail randomly in CI (where the environment produces a different order).","root_cause_hypothesis":"The sort implementation used for task ordering does not guarantee a stable, deterministic order for tasks with equal sort keys. The tests assume insertion order is preserved for ties, but this is not guaranteed across environments, runtimes, or sort algorithm implementations.","reproduction_steps":["Identify the new task-ordering tests added in the PR merged ~4 days ago","Find test cases where multiple tasks share the same priority/sort value","Note that assertions check exact positions of those equal-priority tasks","Run the test suite repeatedly (or shuffle test data input order) to observe non-deterministic ordering of tied elements"],"environment":"Fails in CI; passes locally on reporter's machine. Specific CI runner details not gathered but are not relevant — the issue is algorithmic, not environmental.","severity":"medium","impact":"Blocks CI pipeline and releases. No production bug — this is a test correctness issue only.","recommended_fix":"Two options (apply one or both): (1) Add a secondary tiebreaker to the sort (e.g., sort by priority, then by task ID or creation timestamp) so the order is fully deterministic. (2) Update the test assertions to only verify relative ordering of tasks with *different* priorities, not the exact positions of tasks with equal priority. Option 1 is preferred because deterministic ordering is also better for users.","proposed_test_case":"Create a test with multiple tasks sharing the same priority and assert only that all higher-priority tasks appear before lower-priority ones. If a tiebreaker is added, also test that equal-priority tasks sort by the tiebreaker field. Run the test 50+ times in a loop to confirm no flakiness.","information_gaps":["Exact programming language and sort function used (does not change the fix direction)","Specific test file and function names (developer can find these from the PR merged ~4 days ago)"]}
+
+---

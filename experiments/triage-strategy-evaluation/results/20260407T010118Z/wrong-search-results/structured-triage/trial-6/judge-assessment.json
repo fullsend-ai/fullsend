@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected items were captured explicitly: inverted filter behavior, active tasks missing from results, v2.3.1 timing (~3 days), multi-user confirmation, individual task pages showing correct status, and the filter inversion. The seventh — that the bug is in the search index rather than application logic — was partially captured ('data model is fine, bug is in the list/search query layer') but the agent pointed at application-layer query code rather than the search index configuration specifically. No additional useful information was discovered beyond what the reporter volunteered."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly identified the v2.3.1 update as the trigger and the archive filter inversion as the broken component, which satisfies the second acceptable diagnostic path. However, the recommended fix directs developers to inspect the search/filter query predicate in application code (boolean condition or swapped enum) rather than the search index field mapping configuration. This misdirection, while consistent with the acceptable path's allowance for 'not understanding the exact inversion,' would send developers to the wrong layer first and is a meaningful inaccuracy relative to the actual fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after two rounds of questions and obtained most critical information. Critically, the reporter volunteered the v2.3.1 timing without being asked — the agent never directly asked 'did this start after a recent update?' which was a missed direct line to the root cause. The browser/OS question was a turn spent on generic environmental data. No other major obvious follow-ups were skipped: reproduction steps, scope of impact, and filter behavior were all addressed."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "Turn 1 was well-targeted. Turn 2 asked for browser, OS, and TaskFlow version — standard environmental questions, but the agent's own summary later acknowledged the browser version is 'unlikely to matter for a server/logic-side bug.' That turn could have asked instead whether issues started after a recent update or deployment, which would have surfaced the v2.3.1 timing more directly. The reporter happening to volunteer that information doesn't redeem the missed opportunity to ask it strategically."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was well-constructed: it asked for concrete steps and specifically probed what the search returned, which created the conditions for the reporter to discover and describe the inversion. The second question was generic boilerplate (browser/OS/version) that could apply to any bug report and did not reflect the diagnostic insight the agent had already developed from the reporter's detailed second message. A question like 'did this start after a recent update?' or 'does browsing the task list without searching also show wrong tasks?' would have been more insightful."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is detailed and actionable: exact version, clear reproduction steps (including the inverted-filter confirmation step), a specific hypothesis about where to look in the diff, a proposed test case, and correct severity classification. A developer could begin investigating immediately, though they'd likely look at application query code before discovering the issue is in the search index configuration. The proposed test case is particularly useful."
+    }
+  },
+  "weighted_total": 3.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Recognized the reporter's filter-inversion observation as a 'really valuable clue' and correctly elevated it to the central finding",
+    "Produced a detailed, structured triage summary with reproduction steps, severity, impact assessment, and a proposed test case",
+    "Correctly noted that individual task detail pages show accurate status, establishing that the data model is intact and narrowing the bug to the query/filter layer",
+    "Confirmed multi-user impact and correlated the issue with the v2.3.1 release"
+  ],
+  "notable_weaknesses": [
+    "Directed developers to inspect application-layer query code rather than the search index configuration — a meaningful misdirection that could cost investigation time",
+    "Never directly asked whether the issue started after a recent update; the reporter volunteered the v2.3.1 timing without prompting",
+    "Browser/OS question in turn 2 was generic and lower-value than a targeted question about deployment history or issue onset timing"
+  ],
+  "most_insightful_question": "The first question's structure — asking 'after searching for Q2 planning, do you see the archived task mixed in with active results, or is it the only result returned?' — was the most effective, as it prompted the reporter to investigate carefully and self-discover the complete filter inversion behavior that became the central finding.",
+  "missed_opportunities": [
+    "Ask directly: 'Did this issue start after a recent update, deployment, or system change?' — this would have surfaced the v2.3.1 correlation immediately rather than relying on the reporter to volunteer it",
+    "Ask whether browsing the task list without searching (no search term entered) also shows wrong tasks — this would help distinguish between a search-index issue and a general list-query issue",
+    "Ask whether unfiltered searches (no active/archived filter applied) return a mix of both active and archived tasks — this would have been diagnostic for the index-inversion hypothesis"
+  ]
+}

@@ -1,0 +1,51 @@
+# Conversation: flaky-ci x socratic-refinement
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is incredibly frustrating, especially when it's blocking releases.
+
+To help me understand the bigger picture: can you walk me through what was happening around the time this started a few days ago? For instance, were there any notable changes — new dependencies, infrastructure updates, test additions, or changes to the CI configuration itself? Even things that seem unrelated could be useful context.
+
+Also, when you say the failures seem random, I'm curious what that looks like in practice — are different tests failing each run, or is it the same set of tests that sometimes pass and sometimes don't?
+
+---
+
+### reporter
+
+Look, we merged a PR about 4 days ago that added some new tests for task ordering. Those are the ones that fail. It's always the same tests — the new ordering ones — but they don't fail every single run, which is what's so maddening. They pass locally every time. I've re-run the pipeline like 10 times already and sometimes it goes green. Can we just figure out what's wrong?
+
+---
+
+### triage-agent
+
+That's really helpful — knowing it's specifically the new ordering tests narrows things down a lot.
+
+Can you share what a typical failure looks like when those tests go red? For example, the assertion error or test output — even a snippet would help. I'm especially curious whether the tests are asserting a specific order of tasks and getting a different order back, or whether it's a different kind of failure entirely (like a timeout or missing data).
+
+Also, I'd love to understand more about how your local setup differs from CI — for instance, do your tests run in parallel in CI? Is there a shared database, or does each run get a fresh one?
+
+---
+
+### reporter
+
+Yeah the assertions are about order — the tests check that tasks come back in a specific order after sorting and they get the wrong order back. It's not timeouts or anything like that, just the order is scrambled sometimes.
+
+CI runs on Ubuntu, I'm on macOS. Both Go 1.22. I don't think it's a parallelism thing because I've tried running them without parallel locally and they still pass. Can you just look at the tests? They're in the task ordering module.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Task ordering tests flaky in CI due to likely unstable sort with equal keys","problem":"New task ordering tests added ~4 days ago intermittently fail in CI (Ubuntu) while always passing locally (macOS). The failures are order-assertion mismatches — tasks come back in an unexpected order after sorting — not timeouts or missing data.","root_cause_hypothesis":"Go's sort.Slice is an unstable sort. If any tasks in the test fixtures share the same value for the sort key (e.g., same priority, same timestamp), their relative order is non-deterministic. The tests likely assert a specific exact ordering that depends on the initial input order being preserved for equal elements, which is not guaranteed. Differences between macOS and Linux memory allocators change the input arrangement, making the flakiness more visible on CI's Ubuntu environment.","reproduction_steps":["Examine the task ordering test fixtures for tasks that share the same sort-key value","Run the ordering tests in a loop on Linux: `go test -count=100 -run TestTaskOrdering ./...`","Observe intermittent failures where equal-keyed tasks appear in different relative orders"],"environment":"CI: Ubuntu, Go 1.22. Local: macOS, Go 1.22. Both using same Go version; difference is OS and memory layout.","severity":"medium","impact":"Blocking CI pipeline and releases for the team. No production impact — the sorting logic itself may be correct, but the tests are brittle.","recommended_fix":"1. Inspect the sort comparator in the task ordering module for a missing tiebreaker. Add a deterministic secondary sort key (e.g., task ID) so that equal elements always resolve to the same order. 2. Alternatively, if the test expectations are too strict, use sort.SliceStable instead — but only if preserving insertion order for equal elements is the intended behavior. 3. Update test assertions to either account for the tiebreaker or use an order-agnostic comparison for elements with equal sort keys.","proposed_test_case":"Add a test with multiple tasks sharing the same primary sort key and assert that the output is ordered by the tiebreaker field (e.g., task ID). Run it with `-count=1000` to verify stability across many iterations on both macOS and Linux.","information_gaps":["Exact sort key(s) used in the comparator (confirming which field lacks a tiebreaker)","Whether sort.Slice or sort.SliceStable is currently used","Specific test fixture data (to confirm equal keys exist)"]}
+
+---

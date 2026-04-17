@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: memory growth pattern (~500MB to 4GB+), v2.3 upgrade as trigger (~1 week ago), ~200 active users, consistent day-to-day pattern, restart as workaround, and v2.3 changelog mentioning notification changes. The one gap is server specs (8GB RAM VM) — the summary explicitly notes 'specs not specified' where the ground truth shows an 8GB RAM VM that was available to ask about."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies v2.3 as the trigger, the notification system as the source, and the per-event (not per-connection) nature of the leak. The recommended fix explicitly lists 'event listener registrations that aren't removed' as the likely culprit — which is exactly the actual cause. This satisfies both the canonical root cause and acceptable diagnostic path 1. The per-event vs. per-connection discrimination, confirmed via WebSocket connection count metrics, is precisely correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-sequenced questions that progressively narrowed the cause: timeline/trigger, activity correlation, and connection metrics. It flagged remaining gaps (server runtime, changelog diff, ability to disable notifications). The one obvious omission is server RAM/specs, which was not asked despite being relevant for understanding the memory ceiling and whether an OOM kill was imminent."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, zero redundancy. Each turn unlocked a distinct and essential piece of information: the v2.3 upgrade, the activity-volume correlation, and the stable WebSocket count. No question could be cut without losing a meaningful diagnostic input."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions show genuine diagnostic reasoning. The weekend-vs-weekday framing in turn 2 was a clever way to test whether growth is time-driven or activity-driven without asking the reporter to do math. The WebSocket connection count question in turn 3 is the standout: it was specifically designed to discriminate between a per-connection leak and a per-event leak, and it yielded the critical confirming data point. The reporter explicitly noted this confused them early on — the agent drew out information the reporter wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a precise root cause hypothesis, step-by-step reproduction instructions, a targeted fix direction (per-event allocations in the notification code path, specifically listener deregistration), a concrete proposed test case, and explicitly enumerated information gaps. A developer could open the v2.3 notification diff and start auditing listener cleanup immediately."
+    }
+  },
+  "weighted_total": 4.7,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The WebSocket connection count question precisely discriminated between per-connection and per-event leaks — a genuinely diagnostic rather than generic question",
+    "The weekend-vs-weekday framing elegantly elicited activity-volume correlation without asking the reporter to compute anything",
+    "The recommended fix explicitly names 'event listener registrations that aren't removed' — the actual root cause — alongside other plausible candidates, giving developers a ranked investigation list",
+    "The proposed test case is concrete and verifiable, not a vague suggestion"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM VM) were not asked about and are missing from the environment section, despite being relevant for severity assessment and OOM risk",
+    "The agent did not ask whether the reporter could temporarily roll back to v2.2 to confirm the regression, which would have been a low-cost confirming step"
+  ],
+  "most_insightful_question": "Do you happen to track the number of active connections (e.g., WebSocket connections) or thread/process counts? I'm curious whether those also grow unbounded through the day, or whether it's only memory that climbs while connection counts stay relatively flat.",
+  "missed_opportunities": [
+    "What are the server's RAM and CPU specs? (Would have captured the 8GB RAM detail and helped assess OOM risk)",
+    "Have you tried rolling back to v2.2 to confirm the regression? (Would definitively confirm v2.3 as the cause)",
+    "Is there a way to disable the real-time notifications feature via config? (Would isolate the subsystem without a full rollback)"
+  ]
+}

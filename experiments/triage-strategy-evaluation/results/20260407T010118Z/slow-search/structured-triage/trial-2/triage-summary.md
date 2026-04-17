@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Full-description search takes 10-15 seconds with large task corpus (title search unaffected)
+
+## Problem
+Since approximately the v2.3 update (~2 weeks ago), searching across full task descriptions from the main task list takes 10-15 seconds for any query. Searching by title only (via the title filter dropdown) remains fast. The user has ~5,000 tasks, many with lengthy descriptions (pasted meeting notes).
+
+## Root Cause Hypothesis
+The v2.3 update likely changed the full-text search implementation for task descriptions — possibly dropping or failing to use an index on description content, switching to a non-indexed scan, or introducing a regression in the search query path that doesn't affect the title-only filter. The large volume of long descriptions (~5,000 tasks with pasted meeting notes) amplifies the impact of any missing index or inefficient query.
+
+## Reproduction Steps
+  1. Have an account with a large number of tasks (~5,000) with substantial description text
+  2. Open the main task list in the desktop app
+  3. Type any search term (e.g., 'budget review') into the search bar at the top
+  4. Use the default full-description search (do NOT use the title filter dropdown)
+  5. Observe that results take 10-15 seconds to appear
+  6. Switch to the title filter dropdown and search the same term — observe that it returns near-instantly
+
+## Environment
+Ubuntu 22.04, Lenovo ThinkPad T14, 32GB RAM, TaskFlow desktop app v2.3, ~5,000 tasks with long descriptions
+
+## Severity: medium
+
+## Impact
+Users with large task corpora experience unacceptably slow full-description search. Title-only search is unaffected. This degrades daily workflow for power users who rely on full-text search across task descriptions.
+
+## Recommended Fix
+Investigate what changed in the full-text search path in v2.3. Check whether an index on task descriptions was dropped, altered, or is no longer being used. Compare the query plan for description search vs. title search. Profile the description search query against a dataset with ~5,000 tasks with long descriptions.
+
+## Proposed Test Case
+Create a test dataset with 5,000+ tasks containing multi-paragraph descriptions. Run a full-description search and assert that results return within an acceptable threshold (e.g., under 2 seconds). Compare performance between title-only and full-description search to verify they are in the same order of magnitude.
+
+## Information Gaps
+- No error messages or logs collected from the desktop app — may reveal query timeouts or warnings
+- Exact v2.3 release notes not consulted to identify relevant changes to search
+- Unknown whether other users with fewer tasks also experience the slowdown on v2.3

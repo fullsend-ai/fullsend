@@ -1,0 +1,99 @@
+# Conversation: crash-on-save x superpowers-brainstorming
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — sorry you're losing work, that's definitely frustrating.
+
+To help us track this down, could you tell us what you were saving when the crash happened?
+
+- **A)** Creating or editing a task
+- **B)** Updating project settings or preferences
+- **C)** Exporting or saving a report
+- **D)** Something else (please describe)
+
+Also, does the crash happen *every* time you save, or only sometimes?
+
+---
+
+### reporter
+
+It's A, I'm editing tasks. And yes it crashes every single time I hit Save. I've tried multiple times now and lost my work each time. Can you just fix the save button? It's completely broken.
+
+---
+
+### triage-agent
+
+Thanks for confirming — that helps a lot. Since it happens every time, we should be able to track this down.
+
+When you're editing a task and hit Save, are you changing:
+
+- **A)** The task title or description (text fields)
+- **B)** Due dates, assignees, or other metadata
+- **C)** Adding or editing attachments/files
+- **D)** It doesn't matter — *any* edit to *any* field crashes on Save
+
+If you're not sure, the last thing you edited before hitting Save would be the most useful to know.
+
+---
+
+### reporter
+
+D, it doesn't matter what I'm editing. I could change anything and it crashes when I hit Save. Look, the save button is just broken. It worked fine before last week and now it doesn't. I just need this fixed, I have a deadline coming up.
+
+---
+
+### triage-agent
+
+Got it — sounds like a regression since it worked before last week. That's actually helpful because it narrows things down.
+
+One more thing so we can point a developer at the right code: are you using TaskFlow in:
+
+- **A)** A web browser (Chrome, Firefox, Safari, etc.)
+- **B)** The desktop app (Windows/Mac/Linux)
+- **C)** The mobile app (iOS/Android)
+
+And did the app update around the time it broke, or did it just start happening on its own?
+
+---
+
+### reporter
+
+Desktop app on Mac. And I don't know if it updated or not, I don't pay attention to that stuff. What I do know is I imported a bunch of tasks from a CSV file around that time and that's when things started going sideways. Can someone just look at the save code? It's broken.
+
+---
+
+### triage-agent
+
+That CSV import is a really useful clue — I think it's likely the cause.
+
+Can you try one thing? Create a **brand-new task from scratch** (don't edit an imported one) and see if saving *that* crashes too.
+
+- **A)** New tasks save fine — it only crashes on the imported ones
+- **B)** Even brand-new tasks crash on save
+- **C)** I'm not sure / can't tell which tasks were imported
+
+This will tell us whether the imported data is tripping up the save, or whether the import broke something more broadly. Either way, we're close to handing this off to a developer.
+
+---
+
+### reporter
+
+It crashes no matter what. I've got like 200 tasks in there and it crashes whenever I hit Save, doesn't matter if I'm editing an imported one or not. But I will say, I tried deleting the imported tasks at one point and then save worked again. So yeah I guess it's something about those imported tasks but I need those tasks, I can't just delete them. That's my whole project.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Mac desktop app crashes on any task save when CSV-imported tasks are present","problem":"The Mac desktop app crashes every time the user saves any task (new or existing, any field). The crash began after the user imported ~200 tasks via CSV. Deleting the imported tasks restores normal save functionality. The crash is 100% reproducible.","root_cause_hypothesis":"The CSV import introduced malformed or edge-case data (e.g., invalid characters, overlong fields, null values in required columns, or broken references) that the save codepath loads or validates globally. The save operation likely serializes or checks all tasks (or related indices) and chokes on the bad data, even when the user is editing an unrelated task.","reproduction_steps":["Open TaskFlow Mac desktop app with a fresh or empty project","Import a batch of tasks from a CSV file (the reporter's CSV would be ideal)","Edit any task (imported or newly created) and hit Save","Observe crash"],"environment":"Mac desktop app. Exact macOS version and app version unknown.","severity":"critical","impact":"User is completely unable to save any task edits, losing work repeatedly. The user's entire project (~200 tasks) depends on the imported data, so the workaround (deleting imports) is not viable. Deadline pressure.","recommended_fix":"1. Obtain or recreate the reporter's CSV and inspect the imported data for malformed values (encoding issues, special characters, nulls, constraint violations). 2. Add a breakpoint or crash log capture on the save codepath to identify exactly where it fails when imported records are present. 3. Fix the save path to handle the problematic data gracefully, and consider adding CSV import validation to reject or sanitize bad data at import time.","proposed_test_case":"Import a CSV containing edge-case data (special characters, empty required fields, very long strings, non-UTF-8 encoding) into a project with existing tasks. Verify that all tasks — both imported and pre-existing — can be edited and saved without crashing.","information_gaps":["Exact macOS version and app version","Contents or format of the CSV file used for import","Crash log or error message details"]}
+
+---

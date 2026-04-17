@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected items were extracted: task count (~5,000), title-vs-description performance split, v2.2-to-v2.3 upgrade as trigger, 10-15 second latency, long descriptions (pasted meeting notes), and implicitly the ~2-week timeframe. The one missing item is CPU spike behavior during search — this was neither asked about nor extracted, and it doesn't appear in the summary or information_gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — a dropped or missing full-text index, or a query change causing a full table scan on description content — is essentially correct. The actual cause is exactly this (FTS5 index replaced with a naive LIKE query). The triage also correctly identified both acceptable diagnostic paths simultaneously: the v2.3 upgrade as the trigger and the title-vs-description split as the indexing signal. No meaningful inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after two exchanges and obtained the most diagnostically critical information (version upgrade timing, title-vs-description split). CPU/resource utilization during search was not asked and not noted as a gap — a missed but non-critical follow-up. The information_gaps section shows appropriate self-awareness about what was left unconfirmed (OS, exact prior version, whether migration ran). Resolving here was justified given the strong hypothesis already formed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two agent turns before resolving, each well-targeted. The first turn efficiently combined temporal onset and scale questions. The second turn focused on UX experience and query variation, which directly produced the key discriminating signal (title vs. description). No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was particularly insightful: asking the reporter to 'walk through what they experience' and probing whether delay felt like 'start vs. end' processing led the reporter to independently volunteer the title-vs-description distinction — information they had not thought to mention. This is genuine diagnostic reasoning, not generic bug-report prompting. The first question similarly combined timing, triggering events, and scale into a single efficient probe."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes step-by-step reproduction instructions, three specific things to check in the codebase (dropped FTS index, query plan change, in-memory processing), a concrete proposed test case with numeric thresholds, and a clear severity/impact assessment. A developer could begin investigating the description search diff between v2.2 and v2.3 immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question elicited the title-vs-description performance split without directly asking for it — a genuinely diagnostic move that unlocked the key hypothesis",
+    "Root cause hypothesis correctly converged on indexing/full-table-scan explanation, consistent with the actual FTS5-to-LIKE regression",
+    "Exceptional economy: two turns to reach a high-confidence, well-supported conclusion",
+    "Triage summary is unusually detailed and actionable, with specific fix vectors and a concrete performance test case"
+  ],
+  "notable_weaknesses": [
+    "CPU spike behavior was never asked about and does not appear even in information_gaps — this is a meaningful diagnostic signal that was missed",
+    "The '~2 weeks ago' timing, while present in the conversation, is not explicitly surfaced in the structured summary",
+    "OS/platform was noted as a gap rather than asked directly, though the agent acknowledged it"
+  ],
+  "most_insightful_question": "When you run a search, can you walk me through what you experience? ... is every search slow, or does it depend on what you're searching for — like, is searching for a single word just as slow as a more complex query?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory usage spikes noticeably during a slow search (would have confirmed a compute-bound full scan)",
+    "Ask whether the reporter noticed any migration or schema change notification during the v2.3 upgrade process",
+    "Confirm the exact previous version (v2.2 was inferred but not confirmed)"
+  ]
+}

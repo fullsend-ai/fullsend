@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 8 expected information extracts are present: 30% affected users, plus-addressing/alias pattern identified, SameSite cookie issue identified, email claim mismatch between Okta and Entra confirmed, browser dev tools showing cookie set then dropped, incognito/clearing cookies inconsistently helps, redirect URIs correctly configured, other SSO apps work fine. The triage also discovered additional useful details like specific email normalization behavior (Entra strips plus suffix) and proposed matching on stable identifiers like oid/sub claims."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis matches the ground truth almost exactly: two compounding issues of (1) SameSite cookie preventing session persistence on cross-origin redirect and (2) email claim mismatch between Okta and Entra for plus-addressed/aliased users. The triage correctly identifies these as affecting overlapping but distinct subsets. The only minor deviation is suggesting SameSite=None rather than SameSite=Lax as the fix (ground truth says Lax would fix most cases), but this is a reasonable and arguably more thorough recommendation. The description of cookie being set but dropped on cross-origin redirect is spot-on."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 question turns were needed before reaching a comprehensive and accurate resolution. The first question efficiently targeted both the user-pattern correlation and the cookie/incognito angle simultaneously. The second question targeted log verification and token claim inspection — both essential diagnostic steps. No wasted questions, no redundancy."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. The first question immediately zeroed in on the two most important diagnostic axes: what distinguishes affected users (pattern discovery) and whether client-side state matters (cookie/incognito test). The second question asked for exactly the right evidence: token claims to confirm email mismatch and application logs to understand the session failure. The agent also provided clear working hypotheses that helped the reporter know what to look for, making the reporter's investigation more productive."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable. It provides clear reproduction steps, identifies both root causes with specific technical detail, recommends concrete fixes for both issues (email normalization + SameSite cookie change), suggests both quick fixes and proper long-term solutions (matching on oid/sub claim), includes a proposed test case, and identifies remaining information gaps. A developer could start implementing fixes immediately."
+    }
+  },
+  "weighted_total": 5.00,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Identified both compounding root causes (email mismatch AND SameSite cookie issue) with only 2 question turns",
+    "First question strategically combined two diagnostic angles (user pattern + client-side state) to maximize information per turn",
+    "Provided clear working hypotheses that guided the reporter's investigation effectively",
+    "Summary includes both quick fixes and proper long-term solutions with specific technical recommendations",
+    "Information gaps section shows sophisticated awareness of what remains unknown (OIDC vs SAML, proxy/CDN interference)"
+  ],
+  "notable_weaknesses": [
+    "Recommended SameSite=None instead of SameSite=Lax — while more permissive and functional, SameSite=Lax is generally preferred for security and would suffice for top-level navigation redirects",
+    "Did not probe whether the SameSite attribute was explicitly set to Strict vs. defaulting to Lax — this distinction matters for the fix approach"
+  ],
+  "most_insightful_question": "What distinguishes the affected users from the ones who can log in fine? Specifically — do the affected users have anything in common? (e.g., different department/group, different role in TaskFlow, accounts created at a different time, different browser or OS)",
+  "missed_opportunities": [
+    "Could have asked about the specific SameSite attribute value currently configured on the session cookie",
+    "Could have asked whether TaskFlow uses OIDC or SAML, as this affects redirect behavior (POST vs GET) and SameSite handling"
+  ]
+}

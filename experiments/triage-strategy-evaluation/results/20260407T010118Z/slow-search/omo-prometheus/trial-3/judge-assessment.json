@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts were captured: task count (~5,000), title-fast/description-slow distinction, v2.2-to-v2.3 upgrade trigger, ~2-week timeline, 10-15s latency, CPU spikes, and long descriptions with pasted content. The agent also elicited that the instance runs locally, adding useful context."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage summary correctly identifies both acceptable diagnostic paths simultaneously: the v2.2-to-v2.3 upgrade as the trigger AND the title-vs-description difference pointing to an indexing issue. The hypothesis — 'dropped, failed to rebuild, or stopped using the full-text index on descriptions' — accurately describes the actual cause (FTS5 replaced by LIKE scan), and the recommended fix explicitly calls out checking for a LIKE/ILIKE regression. No material inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered timing, task volume, search pattern, caching behavior, local vs. hosted, CPU spikes, and logs. The only meaningful gap is hardware/OS details (Ubuntu, ThinkPad, RAM), which weren't asked and were noted as absent. Given that the software-side hypothesis was fully supported, skipping hardware specifics is defensible. One minor follow-up — confirming the exact version — was attempted in the information_gaps rather than by asking the reporter directly."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three focused question turns before resolution. Turn 1 efficiently combined three diagnostic questions (when, what kind of search, how many tasks). Turn 2 targeted caching and deployment topology — both relevant to ruling out alternative causes. Turn 3 confirmed the brute-force hypothesis with CPU/fan and sought log evidence. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking 'first search vs. subsequent' (turn 2) probed for caching effects — a plausible alternative explanation for intermittent slowness. Asking about CPU spikes (turn 3) was the right confirmation test for a full-table-scan hypothesis. The agent synthesized the title/description asymmetry volunteered by the reporter into a specific, testable hypothesis rather than just filing it away."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it names specific steps (diff the v2.3 migration, check schema for FTS index, run EXPLAIN ANALYZE, check for LIKE/ILIKE regression), provides clear reproduction steps, proposes a regression test case, and identifies the workaround (title-only search). A developer could begin investigating the migration diff immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Synthesized the reporter-volunteered title/description distinction into a precise, testable hypothesis within the same turn it was received",
+    "CPU spike question was a sharp confirmatory probe for the full-table-scan theory rather than a generic diagnostic",
+    "Triage summary is unusually actionable — includes specific debugging commands (EXPLAIN ANALYZE), migration diffing strategy, and a concrete regression test"
+  ],
+  "notable_weaknesses": [
+    "Exact version was never confirmed — reporter said 'probably v2.3' and this uncertainty persisted into the information_gaps rather than being resolved with a direct follow-up",
+    "OS and hardware details (Ubuntu, RAM) were not collected, leaving the environment section incomplete relative to ground truth"
+  ],
+  "most_insightful_question": "When you run a slow description search, does your laptop's CPU or fan spike noticeably? — This directly confirmed brute-force scanning behavior and validated the full-table-scan hypothesis over alternative explanations like network latency or I/O bottlenecks.",
+  "missed_opportunities": [
+    "Ask for exact TaskFlow version (Settings > About or similar) to resolve the 'probably v2.3' uncertainty",
+    "Ask for OS and hardware specs to complete the environment profile",
+    "Ask whether the reporter had seen any in-app migration notices or changelog entries when upgrading to v2.3"
+  ]
+}

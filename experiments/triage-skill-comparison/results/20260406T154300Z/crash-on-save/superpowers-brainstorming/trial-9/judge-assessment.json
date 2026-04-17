@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage extracted 5 of 6 expected items: manual save vs auto-save distinction, CSV import with special characters, size threshold (~50+ tasks), started after CSV import, and encoding error message. The environment (macOS 14.2, TaskFlow v2.3.1) was not captured — the agent never asked for OS/version, and the summary explicitly notes this as an information gap."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary is largely accurate and consistent with ground truth. The root cause hypothesis about encoding issues with special characters on the manual save path is directionally correct. The chunk/buffer boundary theory is plausible but doesn't match the actual cause (64KB payload threshold causing a panic rather than graceful fallback). The size threshold is noted as ~50 tasks rather than the ground truth's 200, but the reporter themselves said 'under 50 tasks save fine,' so the triage faithfully captured what was reported. No misleading inaccuracies."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 questions were asked before reaching a resolution, and both were well-targeted. The first question identified the save context and error message. The second question probed the character/content angle. A third question about environment would have been valuable but wasn't asked. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions were genuinely insightful. The first question offered specific save contexts and immediately asked about error messages, which drew out the critical 'encoding' clue and the auto-save distinction. The second question was excellent — it took the encoding hint and offered specific character categories (emoji, accented, copy-pasted) that directly led the reporter to reveal the CSV import and Word origin. The multiple-choice format lowered friction for the reporter while still being diagnostically targeted."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary provides clear reproduction steps, a reasonable root cause hypothesis, and a prioritized fix plan. A developer could start investigating the manual save serialization path immediately. The missing environment info is noted as a gap but wouldn't block initial investigation. The recommended fix steps are concrete and ordered logically."
+    }
+  },
+  "weighted_total": 4.15,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Excellent diagnostic questioning that efficiently narrowed from a vague 'app crashes when I save' to a specific, reproducible scenario in just 2 turns",
+    "Multiple-choice question format reduced friction while still being diagnostically precise",
+    "The second question brilliantly pivoted from the encoding clue to probe specific character types, which unlocked the CSV import revelation",
+    "Comprehensive and well-structured summary with reproduction steps, fix recommendations, and explicit information gaps"
+  ],
+  "notable_weaknesses": [
+    "Failed to ask for environment details (OS, app version) which were available in ground truth (macOS 14.2, TaskFlow v2.3.1)",
+    "Size threshold captured as ~50 tasks but the actual problematic size was ~200 tasks — the triage could have probed for the actual list size",
+    "Root cause hypothesis about chunk boundaries is speculative and doesn't match the actual cause (64KB payload size limit)"
+  ],
+  "most_insightful_question": "The second question asking whether the affected task lists contain emoji, accented characters, or copy-pasted content from other apps — this directly connected the encoding error clue to specific content types and led the reporter to reveal the entire CSV import chain.",
+  "missed_opportunities": [
+    "Should have asked for OS version, app version, and platform — basic environment info that was available",
+    "Could have asked how many tasks are in the crashing list to better characterize the size threshold",
+    "Could have asked whether the reporter has crash logs or can reproduce the error dialog text"
+  ]
+}

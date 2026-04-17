@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent captured: small PDFs work fine, larger PDFs are corrupted, started ~1 week ago, multiple customers affected, web browser upload path, and a reasonable hypothesis about upload proxy/encoding. Missing: the 1MB size threshold was not pinned down (reporter only confirmed 'bigger files'), other large file types being affected was never explored, and the intermittency question was left unresolved."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent's hypothesis closely matches the acceptable diagnostic paths. It correctly identified size-dependent behavior, suspected a proxy or middleware change, and explicitly called out 'Verify the Content-Type header is preserved as application/octet-stream or application/pdf through the full upload chain' — which directly anticipates the actual root cause. The agent named nginx, chunked upload, and encoding as suspects, all of which are on-target. Not a perfect match but well within the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about regression timing, file size patterns, download size comparison, file samples for inspection, and upload path. Given the reporter's increasing uncooperativeness and refusal to provide files or size details, resolving after three rounds was appropriate. The main gap was not asking about other file types (images, spreadsheets), which could have been a quick question that wouldn't have burdened the reporter."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three rounds of questioning, each targeting distinct diagnostic dimensions. The file-sharing request in turn 3 was a reasonable ask but was slightly predictable given the reporter's evident impatience. Combining it with the upload-path question was efficient. No redundant questions."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking about download file size (to distinguish truncation from encoding corruption) was notably insightful and not something the reporter would have volunteered. Asking about upload path (web/mobile/API) correctly targeted different upload routes. Questions were well-framed and progressively narrowing."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: specific reproduction steps with file size ranges, a recommended fix pointing directly at nginx, chunked upload handling, and Content-Type header preservation, a proposed integration test with checksums, and clearly enumerated information gaps. A developer could begin investigating the upload proxy and recent deployments immediately."
+    }
+  },
+  "weighted_total": 3.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Explicitly called out Content-Type header preservation in the recommended fix, directly anticipating the actual root cause without being told",
+    "Identified the size-dependent pattern early and built the reproduction steps around it",
+    "Very actionable summary with specific file sizes, hexdump inspection guidance, and a checksum-based integration test proposal",
+    "Correctly read the reporter's frustration and resolved at the right moment rather than continuing to demand information the reporter wouldn't provide"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether other file types (images, spreadsheets) over 1MB were also affected — this would have been a quick, low-burden question that could have confirmed the size-based routing hypothesis",
+    "The 1MB threshold was never established; the agent acknowledged 'larger files' but the information gap note defers this entirely to engineering rather than attempting to narrow it with the reporter",
+    "Did not ask whether the engineering team had any awareness of recent deployments — could have confirmed the regression hypothesis without burdening the reporter"
+  ],
+  "most_insightful_question": "Is the downloaded file the same size as the original you uploaded, or is it noticeably smaller/larger? — This question probed the nature of the corruption (truncation vs. encoding mangling) in a way the reporter would not have volunteered, and correctly framed the diagnostic direction.",
+  "missed_opportunities": [
+    "Ask whether other file types (images, Word documents, spreadsheets) larger than ~1MB are also affected — would have helped confirm the size-based routing hypothesis and potentially surfaced the broader impact",
+    "Ask if the reporter or their customers have noticed the corrupted files are a different size than the original — the reporter declined to check but a simpler framing ('do the file sizes look wrong at all?') might have yielded a useful answer",
+    "Ask whether the issue is 100% reproducible or intermittent — this would distinguish a deterministic bug (like a header being stripped) from a race condition or infrastructure flap"
+  ]
+}

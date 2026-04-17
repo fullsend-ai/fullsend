@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: intermittent failures, specific to recently-added task ordering tests, started ~4 days ago after a PR merge, local vs CI environment difference, and non-deterministic ordering. Missing: the OS difference (macOS vs Ubuntu) was never extracted, and while the reporter mentioned test names appear in CI logs, this wasn't explicitly noted as a useful diagnostic artifact in the summary."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies non-deterministic ordering as the root cause and an environment difference between local and CI as the mechanism — which aligns with acceptable diagnostic path #2 ('Identifying the non-deterministic ordering as the root cause, even if attributed to a different mechanism than map iteration randomization'). The specific mechanism is wrong (database query ordering vs. Go map iteration randomization), but the general direction is sound and the fix recommendations (add tiebreaker or relax ordering assertion) are reasonable approaches even if the actual fix would differ."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about failure type, recent changes, specific assertion output, CI parallelism, and config differences — a solid set. However, it never asked what language or runtime the project uses, which would have been a high-value question here (Go's intentional map iteration randomization is well-known). It also didn't press for the specific config differences when the reporter confirmed CI uses a 'more production-like' config."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three question turns before resolution, each building on prior responses. The third turn's PR number request was marginally redundant — the agent already had enough to write a strong hypothesis and could have noted it as a self-resolvable information gap (as it ultimately did in the summary). No questions were repeated or clearly low-value."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question was the standout: asking for 'expected [A,B,C] but got [B,A,C]' framing was insightful and efficiently confirmed the ordering hypothesis without requiring the reporter to understand the bug themselves. The first question's 'did anything change?' prompt productively surfaced the PR timing. Questions were well-framed and professional throughout."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is detailed and well-structured: clear problem statement, specific reproduction steps, concrete fix options, a proposed stress-test approach, and explicit information gaps with notes on where to find them without reporter involvement. A developer could begin investigating immediately, though they might pivot the hypothesis once they look at the actual test code and find Go map iteration rather than a database query."
+    }
+  },
+  "weighted_total": 3.85,
+  "turn_count": 6,
+  "notable_strengths": [
+    "Quickly focused on the recently-added ordering tests as the prime suspect — the timing correlation was identified in the first question and confirmed by turn 2",
+    "The 'expected [A,B,C] but got [B,A,C]' prompt in the second question efficiently elicited confirmation of ordering non-determinism without requiring the reporter to explain it",
+    "Final summary is actionable and complete, including self-resolvable information gaps so developers don't need to re-engage the reporter"
+  ],
+  "notable_weaknesses": [
+    "Never asked about the programming language or runtime — a question about the tech stack would have surfaced Go's intentional map iteration randomization, leading to the actual root cause",
+    "The OS difference (macOS 14 vs Ubuntu 22.04) was never captured, missing a potentially diagnostic clue about platform-specific behavior",
+    "Root cause hypothesis is confidently framed around database query ordering, which is plausible but wrong — the database framing could send a developer down a false trail before they look at the test code"
+  ],
+  "most_insightful_question": "I'm looking for something like `expected [A, B, C] but got [B, A, C]` — the specific expected-vs-actual values will tell us whether these tests are assuming a deterministic order that the CI environment doesn't guarantee",
+  "missed_opportunities": [
+    "Ask what programming language and runtime version the project uses — critical context for diagnosing non-determinism (Go map randomization, Python dict ordering, etc.)",
+    "Ask specifically what environment variables or config keys differ between local and CI when reporter confirmed 'we use a different config in CI vs local'",
+    "Ask whether the reporter could share the actual CI log output from a failed run, rather than relying on their memory of the assertion output"
+  ]
+}

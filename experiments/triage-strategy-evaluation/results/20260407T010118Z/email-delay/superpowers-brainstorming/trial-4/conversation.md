@@ -1,0 +1,55 @@
+# Conversation: email-delay x superpowers-brainstorming
+
+## Issue
+
+**Email notifications arriving hours late**
+
+Task assignment notifications used to arrive within a minute or two. For the past week, they've been arriving 2-4 hours late. This is causing people to miss deadlines because they don't know they've been assigned a task until hours later. It seems to be worse in the morning — notifications sent around 9-10am take the longest to arrive. Afternoon notifications are usually faster but still delayed.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report — the morning vs. afternoon pattern is a really useful clue.
+
+To help narrow this down: is this delay happening for **everyone on your team**, or as far as you know, is it mainly affecting you (or a few specific people)?
+
+- A) It's affecting everyone — the whole team has noticed
+- B) Just me, as far as I know
+- C) A few specific people but not everyone
+- D) Not sure — I only know about my own experience
+
+---
+
+### reporter
+
+A) It's affecting everyone. I've heard from at least a few other people on the team that their notifications have been late too, especially in the morning. It's not just me.
+
+---
+
+### triage-agent
+
+Thanks for confirming it's team-wide — that points to a systemic issue rather than an account-specific one.
+
+Does TaskFlow send notifications through any other channel besides email (e.g., in-app notifications, Slack, mobile push)? If so, are those also delayed, or is it just email?
+
+- A) We only use email notifications
+- B) We also get in-app/Slack/push notifications, and those are delayed too
+- C) We also get other notifications, but only email is delayed
+- D) Not sure
+
+---
+
+### reporter
+
+C) We get in-app notifications too and those seem to show up on time. It's just the email that's delayed.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Email notification delivery delayed 2-4 hours (team-wide, email-only, worse in mornings)","problem":"For the past week, email notifications for task assignments have been arriving 2-4 hours late instead of within 1-2 minutes. The delay is team-wide and affects only email — in-app notifications arrive on time. The delay is worst for notifications sent around 9-10am and somewhat better in the afternoon.","root_cause_hypothesis":"The email sending pipeline has a bottleneck — most likely in the email queue worker or due to rate limiting from the email service provider. The morning spike pattern suggests either overnight queue buildup that takes hours to drain, worker capacity that cannot keep up with morning peak load, or email provider throttling that kicks in during high-volume periods. Since in-app notifications are unaffected, the core notification dispatch is working correctly; the problem is isolated to the email delivery path.","reproduction_steps":["Assign a task to a user around 9-10am","Note the timestamp of the assignment","Check when the email notification arrives","Compare with the in-app notification timestamp","Repeat in the afternoon to observe the reduced (but still present) delay"],"environment":"Team-wide, all users affected. Email and in-app notification channels in use. Issue began approximately one week ago.","severity":"high","impact":"Entire team is missing or delayed in seeing task assignments, causing missed deadlines. The delay undermines the core workflow of task assignment and accountability.","recommended_fix":"1. Check the email queue (e.g., Sidekiq, Celery, SQS) for backlog depth and processing rate — look for jobs piling up during morning hours. 2. Review email service provider dashboard (e.g., SendGrid, SES, Mailgun) for throttling, rate limit changes, or delivery delays. 3. Check deployment and config change history from ~1 week ago for anything affecting the email pipeline (worker count changes, provider plan changes, new rate limits). 4. Examine email worker logs for errors, retries, or slow processing. 5. If queue-based: consider scaling workers during peak hours or switching to a priority queue for time-sensitive notifications.","proposed_test_case":"Send a task assignment notification and assert that the corresponding email is enqueued within 30 seconds and delivered (or handed off to the email provider) within 2 minutes. Add monitoring/alerting on email queue depth and oldest-job age to catch future regressions.","information_gaps":["Exact email service provider and sending infrastructure (queue system, worker setup)","What changed approximately one week ago (deployment, config, provider plan)","Whether email delivery metrics or queue dashboards show a visible backlog pattern"]}
+
+---

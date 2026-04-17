@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected items: small PDFs fine, large PDFs corrupted, started ~1 week ago, multiple customers affected, other large file types may also be affected, and binary content fully mangled (not truncated). The exact 1MB threshold was not pinpointed (reporter didn't know), but the agent appropriately listed it as an information gap and proposed a test to find it. The connection to the upload proxy specifically was not made explicit, though the hypothesis correctly names proxy/CDN as a candidate."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis aligns strongly with both acceptable diagnostic paths. The agent identified size-dependent behavior and suspected different upload paths ('chunked upload processing or middleware change that mishandles larger payloads'). It specifically calls out 'Content-Type handling' as a candidate cause, which is the exact mechanism in the actual bug. It also flags checking proxy/CDN changes from ~1 week ago — the actual fix vector. This is as close to the canonical cause as one could get without access to the codebase."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered: size-dependent behavior, other file types, upload method (web vs API), browser, and truncation vs full corruption. These were all productive lines of inquiry. The one notable omission: the agent never directly asked whether any deployments or system changes had occurred around the time the issue started — a question that would have immediately pointed at the upload proxy update. The reporter did volunteer '~1 week ago' unprompted, but the agent could have followed up more directly on what changed."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four turns of questions, each covering meaningful ground. The browser question (Chrome/Firefox/Safari) in turn 2 was somewhat low-value — browser identity is unlikely to affect server-side upload corruption and the answer didn't change the hypothesis. Otherwise, questions were well-targeted. The truncation vs. full corruption question in turn 4 was genuinely useful for distinguishing truncation bugs from encoding bugs."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The question about other file types (turn 3) was the standout: it's exactly the right diagnostic question to distinguish a PDF-parsing issue from a general upload pipeline bug, and the reporter's answer (image also looked weird) meaningfully updated the hypothesis. The truncation vs. corruption question showed solid engineering intuition. Questions were professional and diagnostic rather than generic. The browser question slightly lowers the score as it was a dead-end."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: clear root cause hypothesis naming specific mechanisms (Content-Type handling, chunked upload, proxy/CDN), step-by-step reproduction instructions, a 5-point recommended fix, a concrete proposed test case with checksum validation, and a well-structured information gaps section. A developer could begin investigating and writing a reproduction test immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Identified size-dependent behavior early and correctly framed it as pointing to different upload paths",
+    "Proactively asked about other file types, which confirmed the issue is not PDF-specific and expanded the scope appropriately",
+    "Root cause hypothesis correctly named Content-Type handling and proxy/CDN as candidates — strikingly close to the actual bug",
+    "Triage summary is highly actionable with reproduction steps, recommended fix, proposed test case, and explicit information gaps",
+    "Handled an impatient, non-technical reporter gracefully while still extracting diagnostic signal"
+  ],
+  "notable_weaknesses": [
+    "Never directly asked whether any system changes or deployments occurred ~1 week ago — the most direct path to the actual cause",
+    "Browser question was low-value for a server-side corruption bug",
+    "Did not ask about API vs. web upload path, which would have been a strong signal pointing at the proxy"
+  ],
+  "most_insightful_question": "Does your team upload other file types besides PDFs (like Word docs, images, or spreadsheets)? If so, are those coming through fine, or are you seeing the same corruption with non-PDF files too?",
+  "missed_opportunities": [
+    "Ask whether any system updates, maintenance windows, or deployment notifications were received around 1 week ago",
+    "Ask whether uploading via the API (rather than the web interface) produces the same corruption — this would isolate whether the proxy is in the path",
+    "Ask the reporter to try downloading a freshly uploaded large PDF immediately after upload to confirm the corruption is on upload, not on download"
+  ]
+}

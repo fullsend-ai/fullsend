@@ -1,0 +1,35 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "After scoring clarity dimensions: symptom=0.85 (clear crash behavior with encoding dialog flash), cause=0.85 (strong correlation with CSV-imported non-ASCII characters like em-dashes and curly quotes), reproduction=0.80 (import CSV with special chars, save, crash; clean list saves fine; version and OS known), impact=0.75 (affects main 200-task list, workaround exists by removing imported tasks). Overall ambiguity = 0.175, which is below the 0.20 threshold. All dimensions are >= 0.7. Sufficiency criteria met — a developer can act on this without contacting the reporter.",
+  "triage_summary": {
+    "title": "Crash on save when tasks contain non-ASCII characters imported from CSV",
+    "problem": "TaskFlow crashes immediately on save (app closes without warning, briefly flashing an 'encoding'-related dialog) when the task list contains items imported from a CSV file with non-ASCII characters such as em-dashes and curly quotes. Newly created tasks with plain ASCII text save without issue.",
+    "root_cause_hypothesis": "The save/serialization path does not properly handle non-ASCII characters (specifically typographic punctuation like em-dashes and curly quotes) that were imported via CSV. The encoding error is likely an unhandled exception in the serialization layer — possibly assuming ASCII or a narrow encoding instead of UTF-8 when writing task data to disk.",
+    "reproduction_steps": [
+      "Install TaskFlow v2.3.1 on macOS 14.2",
+      "Prepare a CSV file containing tasks with non-ASCII characters (em-dashes '—', curly quotes '""')",
+      "Import the CSV file into TaskFlow",
+      "Attempt to save the task list",
+      "Observe: app flashes an encoding-related dialog and crashes (closes completely)"
+    ],
+    "environment": "TaskFlow v2.3.1, macOS 14.2 (Sonoma)",
+    "severity": "high",
+    "impact": "Users who import CSV data containing non-ASCII characters cannot save their work and lose unsaved changes on crash. The reporter's primary 200-task list is completely unusable. Workaround exists: remove all imported tasks, but this defeats the purpose of the import feature.",
+    "recommended_fix": "Investigate the save/serialization code path for encoding assumptions. Ensure all text is handled as UTF-8 (or the platform-appropriate Unicode encoding) throughout the pipeline. Specifically check the CSV import path — it may be ingesting data correctly but tagging it with the wrong encoding, which then blows up on write. Add proper error handling around the save operation so encoding failures surface as a user-visible error rather than a crash.",
+    "proposed_test_case": "Create a test that imports a CSV containing various non-ASCII characters (em-dashes, curly quotes, accented characters, emoji) and verifies that saving and reloading the task list preserves all characters without error or crash.",
+    "information_gaps": [
+      "Exact error message in the flashing dialog (reporter could not read it fully)",
+      "Whether the issue affects other platforms (Windows, Linux) or is macOS-specific",
+      "Whether the crash also occurs with other non-ASCII sources (e.g., pasting from web, manual entry of emoji) or only CSV import"
+    ],
+    "clarity_scores": {
+      "symptom": 0.85,
+      "cause": 0.85,
+      "reproduction": 0.80,
+      "impact": 0.75,
+      "overall_ambiguity": 0.175
+    }
+  }
+}
+```

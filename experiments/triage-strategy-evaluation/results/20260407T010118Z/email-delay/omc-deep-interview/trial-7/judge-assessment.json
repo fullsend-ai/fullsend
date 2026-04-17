@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, ~1 week onset, morning-worst/afternoon-better pattern, digest email batch connection, queue congestion hypothesis, transactional/bulk pipeline competition, and baseline of 1-2 minute delivery. The agent also surfaced additional useful information: due date reminders are also affected, the issue is team-wide, and weekend behavior was probed as a control condition."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis correctly identifies the digest email feature and queue congestion as the cause, which aligns with the second acceptable diagnostic path ('Identifying the digest email feature as the cause and the queue congestion'). The recommended fix (separate queues, give transactional higher priority) matches the actual fix. The one meaningful inaccuracy is the scale estimate: the agent assumed ~200 digest emails (one per team member) when the actual batch is ~10,000, making the congestion mechanism 50x worse than modeled. The priority queue mechanism itself was not identified, but that is not required by the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent methodically covered: recent changes that coincided with onset, digest email timing and correlation with delay onset, other notification types affected, team-wide vs. individual scope, and weekend behavior as a natural control. No obvious follow-up was skipped given what a reporter-side contact could reasonably know."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Four question turns, each targeting a distinct and necessary diagnostic dimension. No question was redundant or could have been trivially combined with another without losing diagnostic value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated active hypothesis-driven reasoning rather than generic bug triage. The second question ('are the delays improving after the digest arrives, basically trying to understand if they're competing for the same pipeline') and the fourth question about weekends as a natural control are particularly strong — both are non-obvious questions a reporter would not volunteer and directly test the causal hypothesis."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary includes a clear problem statement, root cause hypothesis, four specific fix recommendations (separate queues, bulk priority path, staggered delivery, off-peak shift), concrete reproduction steps, a proposed test case, and explicitly scoped information gaps pointing to server-side investigation. A developer could begin investigation immediately. The score falls short of 5 because the priority queue architecture was not identified, so the exact code change location remains unknown pending server-side review."
+    }
+  },
+  "weighted_total": 4.65,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The agent latched onto the morning timing pattern from the original report and used it as the organizing thread for all subsequent questions, keeping the investigation tightly focused.",
+    "The weekend control question is genuinely clever — it frames a natural experiment that isolates the digest as the causal variable without requiring any server access.",
+    "The final summary is exceptionally structured: it includes reproduction steps, a proposed test case, and scoped information gaps, making it immediately usable by an engineer."
+  ],
+  "notable_weaknesses": [
+    "The agent estimated ~200 digest emails (one per user) when the actual batch is ~10,000 — this underestimates the congestion severity by 50x and could cause a developer to underestimate queue processing time requirements.",
+    "The agent never asked about the email queue architecture or whether the system uses any priority mechanism, which would have been a natural follow-up after the reporter confirmed the digest/transactional overlap hypothesis."
+  ],
+  "most_insightful_question": "Have you noticed whether the notification delays also happen on weekends or days off, when presumably those daily digest emails aren't being sent? If notifications are fast on days without the digest and slow on days with it, that would pretty much confirm they're competing for the same email pipeline.",
+  "missed_opportunities": [
+    "Asking about the volume of digest emails (e.g., 'does everyone on the team get a digest, or is it a subset?') — this would have surfaced the 10K scale rather than the assumed ~200.",
+    "Asking whether the system has any email queue prioritization or separate sending channels for transactional vs. bulk email, which would have pointed directly to the priority inversion as the fix target."
+  ]
+}

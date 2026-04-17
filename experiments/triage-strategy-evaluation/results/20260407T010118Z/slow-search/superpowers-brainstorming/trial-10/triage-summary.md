@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Full-text search regression in v2.3: 10-15s response time on task description search
+
+## Problem
+After upgrading to TaskFlow v2.3 approximately two weeks ago, full-text search across task descriptions takes 10-15 seconds to return results. Title-based search remains fast. The user has approximately 5,000 tasks accumulated over 2 years of use. The slowdown correlates with the v2.3 upgrade, not with gradual data growth.
+
+## Root Cause Hypothesis
+A change in v2.3 likely altered how full-text search queries task descriptions — possible causes include a dropped or unbuilt full-text index on the descriptions column, a query change that bypasses an existing index (e.g., switching from indexed FTS to LIKE/ILIKE), or a migration that failed to rebuild indexes after a schema change. The fact that title search is unaffected suggests the issue is isolated to the description search path.
+
+## Reproduction Steps
+  1. Set up a TaskFlow instance with v2.3
+  2. Populate with ~5,000 tasks that have substantive descriptions
+  3. Perform a keyword search that matches terms in task descriptions
+  4. Observe query time (expected: 10-15 seconds vs sub-second on v2.2)
+  5. Compare with a title-only search on the same keyword (expected: fast)
+
+## Environment
+TaskFlow v2.3, work laptop (specific OS not provided), ~5,000 tasks
+
+## Severity: high
+
+## Impact
+Any user with a non-trivial number of tasks will experience severely degraded full-text search performance after upgrading to v2.3. This affects a core workflow — searching task content by keyword.
+
+## Recommended Fix
+Diff the full-text search code path between v2.2 and v2.3. Check whether the v2.3 migration correctly creates/maintains full-text indexes on the task descriptions column. Run EXPLAIN/ANALYZE on the description search query to confirm whether it uses an index scan or falls back to a sequential scan. If an index was dropped or altered, restore it and add a migration test.
+
+## Proposed Test Case
+Performance regression test: seed a database with 5,000+ tasks with varied descriptions, execute a full-text description search, and assert the query completes within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 schemas to catch index regressions.
+
+## Information Gaps
+- Exact version upgraded from (assumed v2.2 but not confirmed)
+- Whether the v2.3 migration completed without errors
+- Database engine in use (SQLite vs PostgreSQL) — may affect FTS implementation

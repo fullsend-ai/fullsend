@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted ~5,000 tasks, title vs description search difference, v2.2→v2.3 regression, ~2 weeks timing, 10-15 second latency, and environment details. Missed CPU spikes during search and long descriptions in some tasks, but those weren't volunteered and the agent didn't ask about them."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause — it specifically mentions dropped FTS index, change to LIKE/ILIKE queries, and migration issues, which is exactly what happened (FTS5 index replaced with naive LIKE query). The summary accurately reflects all information gathered from the reporter."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions asked across 2 turns. First question efficiently narrowed the symptom to description vs title search. Second question gathered environment, version, and scale in one pass. No wasted questions, no redundancy."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "First question was well-structured and directly led to the critical title-vs-description distinction. Second question efficiently bundled environment, version, and task count. Questions were diagnostic rather than generic. Could have probed deeper on CPU behavior or description characteristics, but the questions asked were well-targeted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear hypothesis (index dropped/changed in v2.3 migration), specific reproduction steps, a recommended investigation path (EXPLAIN ANALYZE, compare schemas), and even a proposed test case. A developer could immediately start comparing v2.2 and v2.3 migration scripts and query plans."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extremely efficient — extracted almost all critical information in just 2 turns",
+    "Root cause hypothesis nearly matches the actual cause, specifically identifying FTS index loss and LIKE query regression",
+    "Well-structured summary with clear reproduction steps and actionable fix recommendations",
+    "Smart question bundling — combined environment, version, and scale questions in one turn"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches, which would have further confirmed full-table-scan hypothesis",
+    "Did not ask about description length/content, which is a contributing factor to severity",
+    "Information gaps mention not knowing the database engine, but could have asked about it"
+  ],
+  "most_insightful_question": "Does every search take 10-15 seconds, or only certain types of queries?",
+  "missed_opportunities": [
+    "Asking about system resource usage (CPU/memory) during slow searches would have confirmed the full-scan hypothesis",
+    "Asking about description sizes or content patterns could have revealed the long-description factor",
+    "Asking whether the reporter tried any workarounds or noticed any other changes after the v2.3 upgrade"
+  ]
+}

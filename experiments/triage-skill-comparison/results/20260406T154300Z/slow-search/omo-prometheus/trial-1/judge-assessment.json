@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted 5 of 7 expected items: ~5,000 tasks, slow on description/fast on title, regression after v2.2→v2.3 upgrade, started ~2 weeks ago, and 10-15 second timing. Missed CPU spikes during search and long descriptions in some tasks — though these weren't volunteered by the reporter either, the agent didn't ask about system resource behavior or task description characteristics."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is close — correctly identifies the shift from indexed search to unoptimized pattern matching (mentioning LIKE specifically), and correctly notes that title search retained its indexing. However, it doesn't pinpoint SQLite FTS5 specifically or the migration script issue. The hypothesis is directionally correct and would lead a developer to the right area of the codebase."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 1 agent turn with 3 well-targeted questions before the reporter provided enough information to resolve. The agent batched its questions effectively and the reporter's single response gave enough to produce a high-quality summary. No wasted turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The questions were well-targeted: asking about timing of onset (surfaced the version upgrade correlation), quantity of tasks (surfaced the 5K number), and whether it was query-dependent (surfaced the title vs. description distinction). Could have followed up about CPU/memory behavior or description sizes, but the initial questions were diagnostic and effective."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it provides clear reproduction steps, a specific root cause hypothesis pointing to the search implementation diff between v2.2 and v2.3, concrete debugging steps (EXPLAIN/ANALYZE), and a proposed regression test. A developer could immediately start investigating the v2.3 search changes."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extremely efficient — resolved in a single agent turn with well-batched questions",
+    "Root cause hypothesis correctly identifies the likely shift from indexed to unindexed search",
+    "Excellent actionability with specific debugging steps and a proposed regression test",
+    "Correctly identified the v2.2→v2.3 upgrade as the likely trigger without being told"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/memory behavior during slow searches, missing a useful diagnostic signal",
+    "Did not probe task description characteristics (length, content type) which would have surfaced the long-description factor",
+    "Environment details are incomplete — OS and hardware specs weren't captured"
+  ],
+  "most_insightful_question": "Does the slowdown happen on every search, or only with certain queries (e.g., longer search terms, specific filters)?",
+  "missed_opportunities": [
+    "Ask about CPU or memory usage during slow searches (would have revealed 100% CPU spike on one core)",
+    "Ask about the size/length of task descriptions (would have revealed 2000+ word descriptions exacerbating the issue)",
+    "Ask about the specific OS and hardware to complete environment details"
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items are present: 2-4 hour delay, ~1 week onset, morning-worst/afternoon-better pattern, digest batch connection, queue congestion hypothesis, transactional vs bulk competition, and 1-2 minute baseline. Additional useful info discovered includes the in-app vs email distinction, trickle vs burst characterization, afternoon baseline of 5-10 min, and team/org size (~200 users)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest email feature as the cause and queue congestion as the mechanism. The recommended fix explicitly says 'if they share a queue, separate them: give transactional emails priority' — this matches both acceptable diagnostic path #2 and approaches the canonical root cause (priority inversion). No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked well-chosen questions and set up a controlled morning test before resolving. The one gap is that it resolved without waiting for the morning test result, and it did not ask directly about the email infrastructure (queue system, provider). However, these gaps are explicitly acknowledged in information_gaps, and the agent had a strong enough basis to form a credible hypothesis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns, each adding distinct value: isolating the delivery layer, uncovering the digest feature, characterizing the queue behavior, and requesting a confirming test. The burst-vs-trickle question is the weakest — it was diagnostic but did not materially change the hypothesis. Otherwise lean and targeted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Questions showed genuine diagnostic reasoning. Distinguishing in-app from email delivery isolated the layer. Asking what changed ~1 week ago was the pivotal question that unlocked the digest connection — the reporter would not have volunteered this. The burst-vs-trickle question demonstrated queue/pipeline thinking. Requesting a controlled morning-vs-afternoon test is exactly what a skilled engineer would do."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear root cause hypothesis, concrete reproduction steps with expected timings, a prioritized fix list (including priority queue separation as the first option), a proposed test case, and explicitly enumerated information gaps. A developer could begin investigating the email queue immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The 'what changed ~1 week ago' question directly surfaced the digest feature — a pivotal diagnostic move the reporter would not have volunteered",
+    "The burst-vs-trickle characterization demonstrated real queue/pipeline reasoning and ruled out a hold-and-release mechanism",
+    "The recommended fix explicitly names priority queue separation, aligning with the actual root cause even without access to server-side details",
+    "The summary is highly structured with reproduction steps, fix options, a proposed test case, and honest information gaps — immediately usable by a developer"
+  ],
+  "notable_weaknesses": [
+    "Resolved before the morning test result was in hand — the strongest confirming data point was pending",
+    "Never asked directly about the email infrastructure (queue system, SMTP provider) which would have accelerated diagnosis",
+    "Did not ask about the volume of digest emails (e.g., how many recipients), which is the key factor in understanding queue saturation magnitude"
+  ],
+  "most_insightful_question": "Do you happen to know if anything changed about a week ago when this started? — This open-ended change-detection question directly uncovered the digest feature rollout, which the reporter had not connected to the delays.",
+  "missed_opportunities": [
+    "Ask about the email sending infrastructure: shared queue, provider, or rate limits — would have accelerated the priority-inversion hypothesis",
+    "Ask how many users receive the digest email (volume estimate) — critical for estimating queue saturation",
+    "Ask whether TaskFlow has an admin dashboard showing email queue depth or delivery metrics — could provide immediate evidence without waiting for a manual test"
+  ]
+}

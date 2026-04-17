@@ -1,0 +1,41 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! A couple of things would really help narrow this down: do you recall roughly when the slowdown started — was it sudden (e.g., after an update or a specific day) or has it been getting gradually worse over time? And approximately how many tasks do you have in TaskFlow right now?
+
+---
+
+### reporter
+
+It started about 2 weeks ago, pretty suddenly actually. I think it was right around when I upgraded to v2.3. I have around 5,000 tasks — I've been using TaskFlow for about 2 years now.
+
+---
+
+### triage-agent
+
+That's really helpful — the timing with the v2.3 upgrade is a strong clue. To help narrow it down further: does every search take 10-15 seconds, or is it only certain kinds of searches? For example, is a simple one-word search like "meeting" just as slow as searching with filters (by date, tag, status, etc.)? And is the very first search after opening TaskFlow slower than subsequent ones, or is it consistently slow every time?
+
+---
+
+### reporter
+
+Good question — I just tested this actually. Searching by task title is still fast, like it used to be. But when I search across task descriptions, that's when it gets really slow. For example, searching for a word I know is in a task description takes 10-15 seconds every time, consistently. It doesn't matter if it's the first search or the fifth. Some of my tasks have pretty long descriptions — I tend to paste meeting notes into them, so some are quite lengthy.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description search regression in v2.3: 10-15s latency on datasets with many/large tasks","problem":"Since upgrading to v2.3, searching across task descriptions takes 10-15 seconds consistently. Title-based search remains fast. The reporter has ~5,000 tasks accumulated over 2 years, many with lengthy descriptions (pasted meeting notes). The slowdown is consistent across all description searches regardless of query or session timing.","root_cause_hypothesis":"The v2.3 release likely introduced a regression in description search — most probably a dropped or changed full-text index on the task descriptions column, a switch from indexed search to sequential scan, or a new search implementation (e.g., moving from database-level FTS to application-level string matching) that doesn't scale with large/long description fields.","reproduction_steps":["Install TaskFlow v2.3","Populate the database with ~5,000 tasks, including many with long descriptions (multiple paragraphs)","Perform a search by task title — confirm it returns quickly","Perform a search across task descriptions for a known term — observe 10-15 second latency","Repeat the description search to confirm the slowdown is consistent (not a cold-cache issue)"],"environment":"TaskFlow v2.3, work laptop (exact OS/specs not gathered but unlikely to be the factor given the version-correlated onset), ~5,000 tasks with many long descriptions","severity":"medium","impact":"Power users with large task databases experience severe search latency when searching descriptions. Title search is unaffected. No data loss or functional breakage — search still returns correct results, just slowly. Users who rely on description search for daily workflow are meaningfully impacted.","recommended_fix":"Compare the search implementation between v2.2 and v2.3 — specifically examine changes to description search queries, full-text indexes, and any ORM/query builder changes. Check whether a database migration in v2.3 dropped or altered an index on the descriptions column. Profile the description search query with EXPLAIN/ANALYZE on a dataset of ~5,000 tasks with large descriptions to confirm whether it's doing a sequential scan.","proposed_test_case":"Performance test: seed a database with 5,000 tasks (descriptions averaging 500+ words), execute a description search, and assert the query completes in under 2 seconds. Run this test against both v2.2 (baseline) and v2.3 to confirm the regression and later verify the fix.","information_gaps":["Exact OS and hardware specs of the reporter's laptop (unlikely to matter given version-correlated onset)","Whether the v2.3 changelog mentions any search or database migration changes","Whether other users on v2.3 with smaller datasets also experience the slowdown (threshold question)"],"clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.8,"impact":0.75,"overall_ambiguity":0.1725}}
+
+---

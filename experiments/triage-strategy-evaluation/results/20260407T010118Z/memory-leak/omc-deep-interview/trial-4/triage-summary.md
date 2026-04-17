@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Goroutine leak in real-time WebSocket notification listeners causes progressive memory exhaustion (regression in v2.3)
+
+## Problem
+After upgrading to TaskFlow v2.3, the Go-based server leaks goroutines tied to WebSocket notification listeners. Memory climbs from ~500MB to 3-4GB over a workday, page loads degrade to 10+ seconds, and the API begins timing out, requiring a daily restart.
+
+## Root Cause Hypothesis
+The v2.3 'improved real-time notifications' change introduced a goroutine lifecycle bug where WebSocket notification listener goroutines are spawned but never cleaned up — likely on client disconnect or reconnect. Each goroutine blocks on an event channel indefinitely. With ~200 active users reconnecting throughout the day, goroutines accumulate into the thousands and their associated memory is never reclaimed.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 (Go-based) with real-time notifications enabled
+  2. Connect ~200 active users performing normal task operations over several hours
+  3. Monitor goroutine count via /debug/pprof/goroutine and memory via /debug/pprof/heap
+  4. Observe goroutine count climbing from dozens to thousands, with memory growing ~10MB/hr initially and accelerating
+  5. Compare against v2.2 under the same load to confirm the regression
+
+## Environment
+TaskFlow v2.3, Go-based deployment, Ubuntu 22.04 VM, 8GB RAM, ~200 active users, real-time notifications enabled
+
+## Severity: high
+
+## Impact
+All ~200 users experience progressively degraded performance throughout each workday, with the application becoming effectively unusable by late afternoon. Operations team must restart the server daily as a workaround.
+
+## Recommended Fix
+Diff the real-time notification subsystem between v2.2 and v2.3. Look for goroutines spawned per WebSocket connection that lack proper cleanup on client disconnect, connection timeout, or reconnect. Ensure each notification listener goroutine is tied to the connection context and exits when that context is canceled. Verify that event channels are closed or drained on disconnect so goroutines don't block indefinitely.
+
+## Proposed Test Case
+Write a test that opens N WebSocket notification connections, disconnects them (both clean close and abrupt TCP drop), and asserts that goroutine count returns to baseline within a reasonable timeout. Run under load with repeated connect/disconnect cycles and verify zero goroutine growth over time.
+
+## Information Gaps
+- Whether the leak occurs on clean WebSocket close, abrupt disconnect, or reconnect (developer will determine from code inspection and pprof stack traces)
+- Whether the acceleration in memory growth later in the day correlates with higher user activity or is a compounding effect of the leak itself
+- Exact function names in the pprof goroutine dump (reporter saw them but didn't share the full trace)

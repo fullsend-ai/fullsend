@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items are present in the triage summary: delay duration (2-4 hours), one-week onset, morning-worse/afternoon-better pattern, connection to digest email batch, queue congestion hypothesis, transactional vs. bulk email competition, and original 1-2 minute SLA. The information_gaps section also surfaced additional useful items (other notification types, email infrastructure, digest scale)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — digest batch flooding the shared queue and delaying transactional emails — matches the second acceptable diagnostic path exactly ('identifying the digest email feature as the cause and the queue congestion, even without understanding the priority system'). The agent did not identify the priority inversion mechanism specifically, but its hypothesis and recommended fix (separate high-priority queue for transactional, lower-priority for digest) are substantively correct and would lead directly to the actual fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions and had sufficient basis for its hypothesis. However, it resolved without asking whether other notification types (comments, due-date reminders) were also delayed — an obvious follow-up that would further confirm queue-wide congestion versus something specific to assignment notifications. Asking about digest volume or arrival time would also have strengthened the hypothesis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were necessary and non-redundant. No turn was wasted. The first surfaced the digest feature; the second precisely disambiguated between two different failure modes. Two turns to a high-quality resolution is excellent economy."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was genuinely insightful: distinguishing between 'assignments still arrive separately but late' versus 'assignments are absorbed into the digest' is a sharp diagnostic split that the reporter would not have volunteered. It ruled out an entirely different failure mode and confirmed the queue-congestion hypothesis. The first question's multiple-choice framing was effective at eliciting the digest detail without leading the reporter."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear hypothesis, step-by-step reproduction instructions, a prioritized recommended fix with concrete options (separate queue, rate-limiting, scheduling), a proposed test case to verify the fix, and explicit information gaps. A developer could immediately begin by checking whether digest and transactional emails share the same queue and examining queue depth around 9am."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question is a textbook diagnostic split — it distinguished between two structurally different failure modes in a single concise question, and the reporter's answer confirmed the queue-congestion hypothesis",
+    "All expected information was captured plus additional context surfaced proactively in the information_gaps section",
+    "The recommended fix is substantively correct and specific: separate high-priority transactional queue from low-priority digest batch, which is exactly what the actual fix requires",
+    "The triage reached a high-quality resolution in only two turns with no wasted questions"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other notification types (comments, due-date reminders) were also delayed — this would have confirmed queue-wide congestion rather than something specific to assignment emails",
+    "Did not ask the scale or recipient count of the digest emails, which would have quantified the queue flood and strengthened the severity estimate",
+    "Resolved without knowing the approximate time the digest email arrives, which would have let the agent confirm the batch runs at 9am"
+  ],
+  "most_insightful_question": "Are the delayed notifications you're seeing the same individual 'you've been assigned a task' emails you used to get (just arriving late), or are some of those assignments now only showing up inside the daily digest email instead of as separate notifications?",
+  "missed_opportunities": [
+    "Are other notification types (comment mentions, due-date reminders) also experiencing delays, or is it only task assignment emails?",
+    "What time does the daily digest email itself typically arrive in your inbox?",
+    "Roughly how many people on your team or organization receive the digest email — is it a small team or a large user base?"
+  ]
+}

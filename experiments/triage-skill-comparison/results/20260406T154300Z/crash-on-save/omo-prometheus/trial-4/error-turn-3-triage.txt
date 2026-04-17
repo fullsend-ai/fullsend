@@ -1,0 +1,35 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter has confirmed the hypothesis: saving works fine without the imported data, the CSV came from Excel, and it contains smart punctuation (em-dashes, curly quotes) — classic Windows-1252/CP1252 characters that Excel auto-generates. The encoding flash in the crash dialog corroborates this. A developer has everything needed to investigate and fix without contacting the reporter again.",
+  "triage_summary": {
+    "title": "App crashes on save when task list contains Windows-1252 characters imported from Excel CSV",
+    "problem": "TaskFlow crashes instantly (app closes, no graceful error) when saving a task list that contains smart punctuation characters (em-dashes, curly quotes) imported from an Excel-exported CSV file. A brief dialog mentioning 'encoding' flashes before the crash. Saving works correctly for task lists that don't contain these characters.",
+    "root_cause_hypothesis": "The CSV import path reads the Excel-exported file (likely encoded as Windows-1252/CP1252) and stores the raw bytes or decoded strings containing smart punctuation characters (em-dashes U+2014, curly quotes U+201C/U+201D/U+2018/U+2019, etc.). The save/serialization logic then fails when it encounters these characters — most likely because it assumes ASCII or a narrow encoding, attempts an incompatible encoding conversion, or uses a serializer that chokes on these code points. The unhandled encoding exception causes the app to crash.",
+    "reproduction_steps": [
+      "Open Excel and create a spreadsheet with task names containing smart punctuation (em-dashes '—', curly quotes '"', etc.)",
+      "Export the spreadsheet as CSV",
+      "In TaskFlow, create or open a task list",
+      "Import the CSV file into the task list",
+      "Click Save in the toolbar",
+      "Observe: a dialog briefly flashes mentioning 'encoding' and the app crashes"
+    ],
+    "environment": "Not explicitly confirmed, but Excel as CSV source implies Windows. TaskFlow version not specified but reporter says saving worked before the import, suggesting current/recent version.",
+    "severity": "high",
+    "impact": "Any user who imports CSV data from Excel (or other tools that produce Windows-1252 encoded files with smart punctuation) will lose the ability to save their task list. The crash causes data loss since in-progress edits are not persisted. This is a common workflow — Excel is a primary source for bulk task imports.",
+    "recommended_fix": "1. Investigate the save serialization path — find where encoding conversion or character handling fails and add proper UTF-8 handling. 2. Fix the CSV import path to normalize encoding on ingest: detect the source encoding (Windows-1252, Latin-1, etc.) and transcode to UTF-8 at import time. 3. Add a try/catch around the save operation so encoding failures surface as a user-facing error dialog instead of a crash. 4. Consider adding a migration/repair step that re-encodes existing task data to UTF-8.",
+    "proposed_test_case": "Import a CSV file containing Windows-1252 smart punctuation characters (em-dashes, curly single and double quotes, ellipses, bullet points) into a task list with 200+ existing tasks, then save. Verify: (a) save completes without crash, (b) the smart punctuation characters are preserved correctly when the list is reopened, (c) re-saving the list also succeeds.",
+    "information_gaps": [
+      "Exact TaskFlow version and OS not confirmed",
+      "Full text of the encoding error dialog not captured (it flashes too quickly)",
+      "Whether the crash also occurs on export/other save-adjacent operations",
+      "Whether the issue affects only the desktop app or also web/other clients"
+    ]
+  },
+  "confidence": {
+    "root_cause": "high",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

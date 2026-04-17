@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Intermittent CI failures in TestTaskOrdering tests due to unstable sort with equal-priority items
+
+## Problem
+Tests in the task ordering module (TestTaskOrdering*) fail intermittently in CI but pass consistently locally. Failures show the correct set of items returned in a different order than expected — no missing or duplicated items.
+
+## Root Cause Hypothesis
+The test fixtures contain tasks with identical sort key values (likely priority). The tests assert a specific order among these equal-keyed items. Go's sort.Slice is an unstable sort — it does not guarantee any particular order among equal elements, and its tie-breaking behavior depends on initial element positions in memory, which vary between runs. This explains the intermittency: it's not that CI always breaks ties differently, it's that the tie-breaking is nondeterministic. Locally, more stable memory allocation patterns happen to produce a consistent order, creating the illusion of correctness.
+
+## Reproduction Steps
+  1. Identify the TestTaskOrdering tests added in the PR merged ~4 days ago
+  2. Examine test fixture data for tasks sharing the same sort key (priority, position, etc.)
+  3. Run the test in a loop locally: `go test -run TestTaskOrdering -count=100 ./...` — with enough iterations, failures should appear even locally
+  4. Alternatively, use `-race` or run under different GOMAXPROCS values to perturb scheduling
+
+## Environment
+Go 1.22, CI environment (likely containerized). Local dev machine passes consistently. Issue appeared after a PR merged approximately 4 days ago that added the ordering tests.
+
+## Severity: medium
+
+## Impact
+Blocking releases for the team. The flaky tests cause CI pipeline failures that require manual re-runs, slowing all PRs. No production bug — the sort itself may work correctly, but the tests are asserting too strongly.
+
+## Recommended Fix
+1. **Confirm equal keys:** Open the test fixtures and identify items sharing the same sort key value. 2. **Fix the sort:** Either switch from `sort.Slice` to `sort.SliceStable` if a stable sort is desired behavior, OR add a deterministic tiebreaker field (e.g., sort by priority, then by task ID). 3. **Fix the tests:** If order among equal-priority items is genuinely unspecified, update assertions to only verify order among items with distinct sort keys — use a comparator that groups equal-key items and checks only inter-group ordering. Option 2 (adding a tiebreaker) is the strongest fix since it makes the application behavior deterministic, not just the tests.
+
+## Proposed Test Case
+Add a test with explicitly duplicated sort keys (e.g., three tasks all with priority=1) and verify that the output is sorted correctly by the tiebreaker field. Additionally, run the existing ordering tests with `-count=100` to confirm they no longer flake.
+
+## Information Gaps
+- Exact test file path and fixture data (discoverable from the recent PR)
+- Whether sort.Slice or sort.SliceStable is currently used (discoverable from the sorting implementation)
+- Whether the product intentionally defines an order among equal-priority tasks (product decision, not blocking the fix)

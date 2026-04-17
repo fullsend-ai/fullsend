@@ -1,0 +1,7 @@
+{
+  "scenario": "memory-leak",
+  "strategy": "structured-triage",
+  "reporter_profile": "cooperative",
+  "turns": 4,
+  "parse_failures": 0
+}

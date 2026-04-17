@@ -1,0 +1,74 @@
+# Conversation: file-upload-corruption x omc-deep-interview
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — corrupted uploads are definitely something we want to get to the bottom of quickly.
+
+To help us narrow down the cause: are *all* PDF uploads coming through corrupted, or only some? If only some, have you noticed any pattern — for example, does it depend on file size, which browser you're using, or how the PDF was originally created? Also, when you say the viewer reports the file as damaged, does the downloaded file appear to be the same size as the original, or is it noticeably smaller (or zero bytes)?
+
+---
+
+### reporter
+
+Look, I don't know about all the technical details. I just know that when my team uploads PDFs they come back broken and we can't open them. I've had multiple customers complain this week. I did notice that some smaller PDFs seem to be fine actually, but the important ones — the longer reports and contracts — those are the ones coming through damaged. I don't know about file sizes or whatever. The files aren't empty or anything, they're just... broken. Can you guys just fix this? It's been like a week of this.
+
+---
+
+### triage-agent
+
+I completely understand the frustration — we want to get this fixed for you. One thing that would really help us reproduce the issue on our end: could you walk me through the exact steps your team takes to upload a PDF? For example, are you dragging the file into the task, using an "Attach" button, or something else? And roughly how large are the files that come through broken — are we talking 5 MB, 20 MB, 50 MB+? Even a rough sense would help us zero in on the problem faster.
+
+---
+
+### reporter
+
+We just use the attach button on the task. Click it, pick the file, it uploads. Nothing fancy. I don't know the exact sizes — they're like, normal business documents. Reports, contracts, stuff like that. Probably a few megabytes? I'm not sitting here checking file sizes, I just need them to work. They USED to work fine until about a week ago.
+
+---
+
+### triage-agent
+
+Totally hear you — and the fact that this started about a week ago is actually a really helpful clue for us. Two quick things that would help us track down the exact change that broke this:
+
+1. Can you remember roughly *when* it started — like, was it Monday-ish, mid-week, over the weekend? Even a rough day helps us check our deployment logs.
+2. If you upload the same broken PDF a second time, does it come through broken again every time, or does it sometimes work?
+
+That's it — no file-size checking needed. Just trying to nail down timing and consistency so our engineers know exactly where to look.
+
+---
+
+### reporter
+
+I don't remember the exact day, it was sometime last week. Maybe Tuesday or Wednesday? I don't keep track of your deployment schedule. And yes, it's broken every single time. I've had my team try re-uploading the same file three times and it's always corrupted. This isn't intermittent, it's just broken.
+
+---
+
+### triage-agent
+
+That consistency is really useful — it tells us this is a solid, reproducible bug, not a flaky network thing. One more question and I think we'll have enough for our engineers to dig in:
+
+Does your team also upload other types of files — like Word documents, images, or spreadsheets? If so, are those still working normally, or are the larger ones breaking too? Just trying to figure out if this is specific to PDFs or if it's hitting all file uploads over a certain size.
+
+---
+
+### reporter
+
+Yeah we upload images and Excel files too sometimes. Now that you mention it, I think there was one spreadsheet that seemed weird when someone downloaded it but I didn't really look into it because the PDFs are the main problem. Most of the images seem okay I guess? I don't know, I haven't been testing every file type, I've been dealing with angry customers about their broken contracts.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"File uploads corrupted for larger files (PDFs, possibly other types) since ~March 31 deployment","problem":"Files uploaded via the task attachment feature are silently corrupted. Downloaded files are non-empty but unreadable/damaged. The issue is size-dependent: smaller files (e.g., simple PDFs, most images) upload correctly, but larger business documents (multi-page reports, contracts — likely several MB+) are consistently corrupted. At least one spreadsheet was also affected, suggesting this is not PDF-specific but a general large-file upload problem.","root_cause_hypothesis":"A deployment around Tuesday–Wednesday of last week (~March 31–April 1) likely introduced a regression in the file upload pipeline. Probable causes: (1) a change to multipart upload chunking that truncates or misassembles chunks for files exceeding a threshold, (2) a misconfigured request body size limit (e.g., nginx/proxy layer) that silently truncates payloads, or (3) an encoding/content-type handling change that corrupts binary data in larger payloads where chunked transfer is triggered.","reproduction_steps":["Open any task in TaskFlow","Click the 'Attach' button","Select a PDF file that is several megabytes (e.g., a 5+ page report or contract)","Wait for upload to complete","Download the uploaded file","Attempt to open it — the PDF viewer will report the file as damaged/corrupted","Repeat with a small/simple PDF (1 page, < 1 MB) to confirm it uploads correctly"],"environment":"Affects multiple customers across unknown browsers/OS. No specific environment dependency reported — appears to be a server-side issue. The attach-button upload flow is the confirmed vector.","severity":"high","impact":"Multiple customers are affected. The file attachment feature is heavily used for business-critical documents (contracts, reports). Teams have been unable to reliably share key documents for approximately one week, forcing workarounds or blocking workflows entirely.","recommended_fix":"1. Check deployment logs for changes shipped Tuesday March 31 – Wednesday April 1. Focus on file upload handling, storage layer, proxy/gateway config, and any dependency updates. 2. Compare uploaded file bytes vs. original file bytes for a large test PDF to identify where corruption occurs (truncation, encoding, chunk reassembly). 3. Check for size-related thresholds in the upload path (proxy body limits, chunk size configs, streaming vs. buffered handling). 4. Test uploads at varying file sizes to identify the exact breakpoint.","proposed_test_case":"Upload files of increasing sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB, 20 MB) across multiple file types (PDF, XLSX, PNG). Download each and verify byte-for-byte integrity against the original using checksums. The test should assert that the downloaded file's hash matches the uploaded file's hash for all sizes and types.","information_gaps":["Exact file size threshold where corruption begins (developer can determine via systematic testing)","Whether the corruption is truncation, byte mangling, or encoding-related (developer can compare uploaded vs. downloaded bytes)","Exact deployment or commit that introduced the regression (check deployment logs for March 31–April 2)","Browser and OS details of affected users (unlikely to matter given server-side hypothesis, but not confirmed)"]}
+
+---

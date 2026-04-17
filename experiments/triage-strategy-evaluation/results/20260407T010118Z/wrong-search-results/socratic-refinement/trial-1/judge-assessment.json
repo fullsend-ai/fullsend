@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: archived tasks appear in active filter results, active tasks missing from default search, onset ~3 days ago after migration, affects multiple users, individual task pages show correct archive status, filter behavior is inverted, and the problem is localized to search index rather than application data. The triage also added reproduction steps, a proposed test case, a recommended fix strategy, and an information_gaps list — going well beyond the minimum."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis correctly identifies the v2.3.1 migration as the trigger, the archive boolean being inverted in the search index, and that the fix involves examining the migration and reindexing. The actual cause is an inverted field mapping in the search index configuration; the hypothesis explicitly mentions 'rebuilt the search index with inverted filter logic' as one of the candidate explanations, which matches. The summary also satisfies both acceptable diagnostic paths: it identifies the search index as out of sync and names the migration as the trigger with the archive filter as the broken component."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after one exchange, which was reasonable given the reporter volunteered an unusually complete account. The information_gaps section honestly acknowledges what remains unknown (search technology, exact migration contents). One obvious follow-up was skipped: the search technology stack (Elasticsearch vs. database full-text search) matters for the specific fix path and could have been asked of the reporter or flagged more prominently as a blocker."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "The single question turn bundled productive sub-questions (timing, recent changes) with low-value ones ('what were you trying to accomplish when you ran that search?' and 'is this the first time you've really relied on it?'). The intent question contributed nothing to diagnosis. The timing/changes question was the productive core; the rest was filler that could have been omitted."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The timing and recent-changes prompt ('did anything change recently — new update, workspace changes, bulk archiving, etc.?') was well-targeted and directly elicited the v2.3.1 migration detail. However, asking about task intent ('what were you trying to accomplish') is generic and diagnostically irrelevant, and the 'first time you've relied on it' framing is an odd angle for a bug report. Overall the question was adequate but not incisive."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it names the specific version, the probable mechanism (inverted boolean in search index post-migration), provides step-by-step reproduction instructions, proposes two concrete fix paths (corrective migration or query-logic fix), suggests a reindex as an alternative resolution, and outlines a regression test. A developer could open the migration script and the search index configuration immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Triage summary is exceptionally detailed — reproduction steps, proposed test case, recommended fix strategy, and explicit information_gaps all included",
+    "Correctly identified all key causal elements: v2.3.1 migration, archive boolean inversion, search index (not application data) as the locus",
+    "Identified the workaround (manually flipping the filter) and correctly characterized severity and blast radius"
+  ],
+  "notable_weaknesses": [
+    "First question included diagnostically irrelevant sub-questions about task intent and whether the reporter had 'really relied on' search before",
+    "Search technology stack (Elasticsearch vs. database FTS) was flagged as an information gap but not asked — it materially affects the fix path",
+    "Question framing was generic enough that it could apply to almost any bug report, rather than demonstrating search-specific diagnostic reasoning"
+  ],
+  "most_insightful_question": "Did anything change recently (new update, workspace changes, bulk archiving, etc.)? — this prompted the reporter to volunteer the v2.3.1 update, the migration notification, and the inverted filter behavior all in one response.",
+  "missed_opportunities": [
+    "Ask what search technology the instance uses (Elasticsearch, database full-text, etc.) — relevant to the specific fix approach",
+    "Ask whether other filter dimensions (project, assignee, date) are also returning inverted or unexpected results — would help isolate whether the inversion is archive-specific or broader",
+    "Ask whether the problem appeared immediately after the update or took some time to surface — relevant to whether the migration runs synchronously or asynchronously"
+  ]
+}

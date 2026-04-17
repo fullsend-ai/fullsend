@@ -1,0 +1,37 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden errors for users with the analyst role (v2.3.1)
+
+## Problem
+Users assigned the 'analyst' role are experiencing intermittent 403 Forbidden errors when accessing the dashboard, reports, and potentially other pages. Approximately 1 in 3 page loads fails. Refreshing the page sometimes resolves it on the next attempt. The issue affects multiple users with the analyst role across different browsers and operating systems, and began a few days after the role was assigned. Users with the 'editor' role are not affected.
+
+## Root Cause Hypothesis
+The analyst role likely has an incomplete or inconsistent permission configuration that causes authorization checks to intermittently deny access. The intermittent nature suggests either: (1) a race condition in permission/session caching where the role's permissions are sometimes not fully loaded or are being evicted from cache, (2) a load-balanced setup where some app server instances have stale or inconsistent role-permission mappings after the analyst role was created or modified, or (3) the analyst role was granted access to some but not all required sub-resources on these pages, and the order in which resources are checked varies.
+
+## Reproduction Steps
+  1. Create or use a user account assigned the 'analyst' role in TaskFlow v2.3.1 (self-hosted)
+  2. Log in and navigate to the dashboard page
+  3. Refresh the page repeatedly (approximately 10-15 times)
+  4. Observe that roughly 1 in 3 page loads returns a 403 Forbidden error
+  5. Repeat on the reports page to confirm it occurs across multiple pages
+  6. Compare with a user assigned the 'editor' role — they should not see the issue
+
+## Environment
+TaskFlow v2.3.1, self-hosted. Reproduced on Chrome 124/125 on Windows 11 and on macOS (coworker). Corporate network (no VPN/proxy). Issue is not browser- or OS-specific.
+
+## Severity: high
+
+## Impact
+All users with the analyst role are affected. They are intermittently locked out of core application pages (dashboard, reports), disrupting their workflow. The issue appears to affect every analyst-role user, not just one individual.
+
+## Recommended Fix
+1. Inspect the analyst role's permission configuration in the RBAC/authorization system — compare it to the editor role to identify missing or misconfigured permissions. 2. Check whether the application uses permission caching (in-memory, Redis, etc.) and whether the analyst role's permissions are being inconsistently cached or evicted. 3. If running multiple app server instances behind a load balancer, verify that role-permission mappings are consistent across all instances. 4. Review authorization middleware logs filtered by 403 responses to identify which specific permission check is failing. 5. Check if the analyst role was added in a recent migration or config change around the time the issue started.
+
+## Proposed Test Case
+Create an integration test that: (1) assigns a test user the analyst role, (2) makes 50 sequential authenticated requests to the dashboard and reports endpoints, and (3) asserts that all requests return 200. Run this test against a multi-instance deployment if applicable to catch load-balancer-related inconsistencies.
+
+## Information Gaps
+- Server-side authorization logs showing which specific permission check triggers the 403
+- Whether the analyst role was created or modified recently in a migration or admin change
+- Whether the deployment uses multiple app server instances behind a load balancer
+- Exact browser console Network tab details (response headers, body) for the 403 responses

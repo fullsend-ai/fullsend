@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All eight expected extracts are present: ~30% affected, plus-addressing/alias pattern, SameSite cookie issue, email claim mismatch, browser dev tools showing cookie dropped, incognito/clearing cookies sometimes helps, redirect URIs verified correct, other SSO apps work fine. The summary also adds useful detail like specific fix recommendations and a proposed test case."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "Both root causes are correctly identified: email claim mismatch and SameSite=Strict cookie issue on cross-origin redirect. The causal hierarchy is inverted from ground truth (email mismatch listed as primary, cookie issue as secondary), but this matches the acceptable diagnostic path 'Identifying both issues but with the causal hierarchy inverted.' The SameSite=Strict diagnosis is accurate; the cookie-drop explanation is mechanically correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked focused questions that unlocked the key diagnostic information. It correctly noticed the inconsistency between a pure email-mismatch theory and the intermittent incognito behavior, which prompted the reporter to volunteer the dev tools cookie observation. No major gaps remain unaddressed. A minor omission: the agent never explicitly asked the reporter to open dev tools and inspect the Set-Cookie header — that information came only because the reporter happened to have a tech-savvy user who did it independently."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each well-targeted. Turn 1 bundled several pattern-identifying questions efficiently. Turn 3 drilled directly into the email claim hypothesis. Turn 5 probed the incognito inconsistency specifically. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 3 is particularly strong: the agent formed a testable hypothesis about email claim normalization and asked for a specific comparison (TaskFlow stored email vs. Entra primary email), yielding direct confirmation. Turn 5 showed genuine diagnostic reasoning — recognizing that pure email mismatch wouldn't explain intermittent incognito success, and asking a precise question to distinguish between two failure modes. Questions went beyond generic 'can you reproduce it?' prompts."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes specific reproduction steps, two clearly articulated root cause hypotheses with technical detail (SameSite=Strict, email claim normalization), concrete fix recommendations (switch to SameSite=Lax, use sub claim instead of email, normalize plus-addressing), a proposed test case, and explicitly listed information gaps. A developer could open the auth callback code and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Identified the plus-addressing/alias pattern in the very first follow-up, narrowing the affected population immediately",
+    "Recognized that intermittent incognito success was inconsistent with a pure email-mismatch theory, which surfaced the cookie issue without having to ask for it explicitly",
+    "Final summary is exceptionally actionable: specific fix paths, a test case, and clearly scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "Causal hierarchy is inverted from ground truth — email mismatch is presented as the primary defect, but the SameSite cookie issue is actually the dominant cause affecting the broader population",
+    "Never proactively directed the reporter to open browser dev tools and inspect the Set-Cookie header; that data came only because an end user happened to do it independently"
+  ],
+  "most_insightful_question": "Turn 3: asking whether the email/identity claim Entra ID sends back matches what's stored in TaskFlow's user table, with a concrete example (jane+taskflow@company.com vs. jane@company.com) — this directly elicited confirmation of the email mismatch and set up the dual-root-cause hypothesis.",
+  "missed_opportunities": [
+    "Proactively asking the reporter (or a tech-savvy user) to open browser dev tools, go to the Network tab, and inspect the Set-Cookie header on the auth callback response — this would have surfaced the cookie-drop evidence a turn earlier",
+    "Asking about TaskFlow's version or whether the codebase had been updated around the SSO migration (could reveal whether a recent change introduced the SameSite regression)",
+    "Asking whether affected users had any residual Okta session cookies that might be interfering with the new Entra ID flow"
+  ]
+}

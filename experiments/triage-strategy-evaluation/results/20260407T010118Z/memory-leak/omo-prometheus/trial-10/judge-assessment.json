@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: memory growth pattern (500MB to 4GB+), v2.3 upgrade as trigger (~1 week ago), ~200 active users, consistent day-to-day pattern, restart as workaround, and notification system changes in v2.3 changelog. Missing: server specs (8GB RAM VM) were never asked about or captured."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the acceptable diagnostic paths and closely approximates the actual cause. The agent correctly identified v2.3 as the trigger, the real-time notifications feature as the likely source, and per-request resource leaks (goroutines, WebSocket connections, subscription objects) as the mechanism. This aligns with the actual event listener leak pattern."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked well-targeted questions: process isolation, version/runtime, rollback feasibility, activity correlation, and feature usage narrowing. The only notable gap is server specs (RAM, OS) were never asked — relevant for characterizing severity and headroom. The agent proactively suggested pprof diagnostics and acknowledged information gaps honestly."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Four turns, each materially advancing the diagnosis. No redundant questions. The agent combined multiple related questions per turn efficiently. Every question produced information that changed or refined the working hypothesis."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions showed genuine diagnostic reasoning. Asking which new v2.3 features were actively used was particularly insightful — it drew out the real-time notifications detail the reporter wouldn't have volunteered unprompted. The usage-vs-time correlation question was well-designed to distinguish leak types. Offering pprof guidance was practical and appropriately scoped to the reporter's skill level."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it identifies the specific subsystem (real-time notifications), provides a concrete diff target (v2.3 vs v2.2 notification code), lists specific Go debugging commands with endpoints, suggests what patterns to look for (goroutine leaks, missing close handlers, unevicted subscriber maps), and proposes a specific load test with measurable assertions. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Identified the v2.3 upgrade as the likely trigger in turn 2 and built all subsequent questions around confirming and narrowing that hypothesis",
+    "The question about which v2.3 features were actively used was a high-leverage move that directly surfaced the notification system without the reporter connecting the dots themselves",
+    "Information gaps section in the summary is honest and specific, setting clear next steps for the developer without overstating certainty",
+    "Matched Go-specific debugging advice (pprof) to the reporter's self-described skill level"
+  ],
+  "notable_weaknesses": [
+    "Server specs (RAM, OS) were never captured — the 8GB RAM figure is relevant for understanding how close the system is to OOM and was in the ground truth",
+    "The activity correlation question could have also asked about memory behavior after a weekend with no restart to further characterize the leak rate"
+  ],
+  "most_insightful_question": "Which new v2.3 features is your team actively using? — This question was the pivotal diagnostic move that surfaced the real-time notifications feature as the prime suspect without leading the reporter.",
+  "missed_opportunities": [
+    "Ask about server specs (RAM, disk, OS) to characterize headroom and environment",
+    "Ask whether memory ever drops between requests or trends strictly upward — this would have further confirmed a non-GC-able leak vs. cache bloat"
+  ]
+}

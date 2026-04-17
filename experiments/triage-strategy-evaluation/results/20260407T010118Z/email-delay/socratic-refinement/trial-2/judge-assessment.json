@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present in the triage summary: 2-4 hour delay, ~1 week onset, morning/afternoon pattern, digest email batch as the cause, queue congestion, shared pipeline between bulk and transactional mail, and the prior <2 minute baseline. The summary also surfaces additional useful details like reproduction steps, a proposed test case, and explicitly flagged information gaps."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the digest email batch introduced ~1 week ago as competing with transactional notifications in the same pipeline, matching acceptable path #2. The recommended fix explicitly names priority separation (higher priority for transactional). The one inaccuracy is underestimating digest volume: the agent assumed ~200 emails (one per user) when the actual batch is ~10,000. This slightly weakens the congestion explanation but does not misdirect a developer — the mechanism identified is correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen investigative rounds before resolving. The agent established onset timing, identified the digest batch, confirmed org-wide scope, and formed a solid hypothesis. One obvious follow-up was skipped: whether other transactional notification types (due date reminders, comment notifications) are also delayed, which would have strengthened confidence in a shared-pipeline diagnosis. The agent acknowledged this gap in information_gaps, which mitigates the omission."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two investigative questions, both essential. No redundancy, no low-value probing. The first question was broad enough to surface unexpected context (the digest emails), and the second immediately zoomed in on the scale and distribution of those emails. Efficient use of turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was open-ended and effective — it drew out the digest email observation that the reporter would not have volunteered unprompted. However, its illustrative examples (new team joining, workflow changes) pointed away from infrastructure, making it somewhat generic in framing. The second question was sharply targeted: asking about digest email reach and user count to estimate queue load demonstrated real diagnostic reasoning. Overall strong but not exceptional."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary gives a developer an immediate starting point: check whether digest and transactional emails share the same queue/worker pool, apply priority separation, and run the proposed test case. The recommended fix enumerates four concrete options in order of impact. A developer could open the email infrastructure code and begin investigating within minutes."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Immediately latched onto the morning/afternoon asymmetry as a diagnostic signal and used it to frame the first question",
+    "The open-ended 'what changed' question successfully surfaced the digest email feature without leading the witness",
+    "Recommended priority separation as a fix, aligning closely with the actual root cause even without knowing internal queue details",
+    "Comprehensive, structured summary with reproduction steps, a test case, and explicitly flagged gaps — immediately actionable for a developer"
+  ],
+  "notable_weaknesses": [
+    "Underestimated digest email volume at ~200 (one per user) versus the actual ~10,000, which weakens the quantitative congestion argument",
+    "Did not ask whether other transactional notification types (due date reminders, comment alerts) are also delayed — a quick confirming question that would have solidified the shared-pipeline hypothesis",
+    "First question's examples (new team, workflow changes) pointed away from email infrastructure, slightly reducing its diagnostic precision"
+  ],
+  "most_insightful_question": "Can you tell me more about those digest emails? For instance, does everyone on your team (or across your organization) get them, or just certain people? And do you know roughly how many users are on your TaskFlow instance?",
+  "missed_opportunities": [
+    "Are other types of transactional notifications (due date reminders, comment alerts) also delayed, or only task assignment emails?",
+    "Did the digest emails appear in your inbox for the first time exactly around when the delays started, or had they been running longer?",
+    "Have you or anyone on your team noticed any warning messages or bounce notices in the email system around 9am?"
+  ]
+}

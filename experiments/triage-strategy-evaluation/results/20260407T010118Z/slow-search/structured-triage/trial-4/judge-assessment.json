@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description distinction, v2.3 upgrade, ~2 weeks ago, and 10-15 second latency. Missed CPU spikes during search and the presence of unusually long descriptions (copy-pasted meeting notes, 2000+ words), both of which are meaningful diagnostic signals pointing toward the actual cause."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis ('description field lacks a proper full-text search index, or an existing index was dropped or not migrated during the 2.3 upgrade') aligns precisely with both acceptable diagnostic paths and is very close to the actual cause (FTS5 replaced by naive LIKE query in v2.3 migration). The agent correctly identified both the upgrade as the trigger and the indexing issue as the mechanism, and even recommended comparing database schema/query plans between v2.2 and v2.3."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked two rounds of questions and had a reasonable basis for resolution. However, it left notable follow-ups on the table: CPU behavior during search (would confirm compute-bound vs. I/O-bound), description content size (directly relevant to scan cost), and explicit confirmation that slowness began at upgrade time rather than inferring it. The agent itself acknowledged the upgrade timing gap in information_gaps but chose to resolve rather than ask."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question turns were well-structured and multi-part. The browser question in turn 2 was slightly misaligned (reporter uses desktop app), but it was bundled with higher-value questions so not a wasted turn. No redundancy or repeated asks. At most one sub-question could have been dropped or reframed."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The agent showed genuine diagnostic reasoning by immediately flagging the title-vs-description distinction as 'really helpful and likely significant' and pivoting to version and scale questions in turn 2. Turn 1 questions were slightly generic (reproduction steps framing), but turn 2 demonstrated targeted thinking. The version and task-count questions were exactly right given the hypothesis forming."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: clear reproduction steps, a specific and accurate root cause hypothesis, a concrete recommended fix (check FTS index in v2.3, compare migration against v2.2 schema, verify query planner behavior), and a proposed regression test with an explicit latency threshold. A developer could open the v2.3 migration script immediately and know exactly what to look for."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately identified the title-vs-description performance distinction as diagnostically significant and built the hypothesis around it",
+    "Root cause hypothesis correctly named both the trigger (v2.3 upgrade migration) and the mechanism (missing or dropped full-text index), hitting both acceptable diagnostic paths",
+    "Exceptionally actionable summary: reproduction steps, recommended fix, proposed test case, and information gaps are all concrete and specific",
+    "Good question economy — two focused multi-part turns extracted the core diagnostic information efficiently"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU behavior during slow searches, which would have confirmed the compute-bound nature of the full-table scan",
+    "Did not explore description content size or structure (long meeting notes), which is directly relevant to scan cost and distinguishes this from a merely large-row-count problem",
+    "Did not explicitly confirm whether slowness began at the moment of the v2.3 upgrade — the reporter said 'upgraded maybe two weeks ago' but the temporal correlation was inferred, not confirmed"
+  ],
+  "most_insightful_question": "The multi-part turn 2 question asking for OS, app version, and task count — particularly the TaskFlow version question, which surfaced the v2.3 upgrade and its recency, unlocking the regression hypothesis.",
+  "missed_opportunities": [
+    "Ask whether the reporter notices any CPU or system slowness during a search (would confirm compute-bound full-table scan)",
+    "Ask whether any tasks have very long descriptions, such as pasted documents or meeting notes (directly relevant to per-row scan cost)",
+    "Ask explicitly: 'Did the slowness start around the time you upgraded to v2.3, or was it already happening before?' to confirm the temporal correlation rather than inferring it"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected items: small PDFs work fine, started ~1 week ago, multiple customers affected, file size preserved indicating binary mangling (not truncation), and other file types (images) potentially affected. The size threshold was characterized as '3-4MB range' based on the reporter's example rather than establishing the actual 1MB boundary. The proxy/upload-path connection was surfaced as a hypothesis rather than confirmed. Nearly all key items present."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate: the agent specifically called out '(1) an encoding or content-type transformation applied incorrectly to binary data' and 'a middleware or proxy change that mangles binary content above a buffering threshold' as likely causes. This directly matches the canonical root cause (upload proxy stripping Content-Type, causing text encoding of binary data). The agent also correctly identified size-dependent upload paths as the mechanism. Both acceptable diagnostic paths are substantially met."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about scope (all PDFs vs. some), size characteristics, file integrity (upload vs. download corruption), timing, and other file types. These were the right investigative axes. The main gap is not pressing for a more precise size threshold — asking 'does anything under 1MB break?' would have been high-value. The timing question was answered incidentally rather than asked directly, but the answer was captured."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns before resolution. The third turn (asking about downloaded file size in bytes) was somewhat low-value since the reporter clearly didn't have that data and had already said she couldn't compare — but the intent (isolating upload vs. download corruption) was sound and the question wasn't wasted space. No redundancy across turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Questions were well-targeted and diagnostic rather than generic. The first question intelligently asked about size, creation method, and browser in one pass. The third question — asking whether the downloaded file size matched the upload — was particularly clever as a way to determine whether corruption happens on ingestion or egress. The fourth question about other file types was insightful and surfaced the image anomaly. Questions were professional and showed genuine reasoning about the failure space."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it includes detailed reproduction steps with specific size ranges, a prioritized list of where to look (recent deployments, proxy/middleware, content-type handling, chunked upload changes), a proposed regression test with SHA-256 comparison methodology, and clearly documented information gaps. A developer could begin both the investigation and writing a regression test immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Root cause hypothesis explicitly named content-type transformation on binary streams and proxy/middleware changes as top candidates — closely matching the actual bug",
+    "Correctly inferred size-dependent upload paths as the likely mechanism from limited reporter data",
+    "Question about other file types (turn 4) surfaced the image anomaly, confirming the issue is not PDF-specific",
+    "Triage summary includes a concrete, byte-level regression test proposal (SHA-256 hash comparison across file sizes/formats)",
+    "Correctly characterized the corruption as content mangling rather than truncation based on preserved file size"
+  ],
+  "notable_weaknesses": [
+    "Did not establish a precise size threshold — the actual boundary is 1MB, but the agent only captured '3-4MB' from the reporter's example without probing smaller sizes",
+    "The upload-vs-download corruption question (turn 3) asked the reporter to do something she couldn't easily do, slightly wasting a turn",
+    "Did not ask whether API uploads (bypassing the proxy) are also affected, which would have been a high-signal diagnostic question"
+  ],
+  "most_insightful_question": "Does your team upload other types of files too — like Word docs, images, or spreadsheets? If so, are those also coming back broken, or is it just PDFs?",
+  "missed_opportunities": [
+    "Ask whether any file under ~1MB has ever come back broken — this would have helped establish the size threshold more precisely",
+    "Ask whether uploads via API or integrations (not the browser UI) are also affected — a 'no' would strongly implicate the upload proxy specifically",
+    "Ask whether the reporter could check the exact date the issue first appeared (a specific date would correlate more precisely with deployment logs than 'about a week ago')"
+  ]
+}

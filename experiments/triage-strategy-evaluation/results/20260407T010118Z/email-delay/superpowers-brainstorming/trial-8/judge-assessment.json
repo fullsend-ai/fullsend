@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are captured: delay magnitude (2-4 hours), onset (~1 week ago), time-of-day pattern (worst 9-10am, better afternoon), relation to marketing digest batch job, queue congestion/priority issue, transactional vs bulk email competition, and prior baseline (1-2 minutes). The summary also adds reproduction steps, a proposed test case, multiple fix options, and explicit information gaps — genuinely useful extras."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches acceptable path #2 (digest email feature causing queue congestion) and closely approximates the canonical cause. The summary correctly identifies FIFO ordering as the mechanism by which digest emails block transactional ones, and the recommended fix ('dedicated high-priority queue') is exactly the canonical fix. No factual inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent reached a well-supported conclusion after one diagnostic question and one confirming question. It correctly flagged remaining unknowns (queue implementation, digest volume, provider rate limits) as information gaps rather than leaving them invisible. A minor deduction because it didn't try to quantify the digest batch size or confirm the exact firing time from the reporter — but these are reasonably delegated to the developer."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two turns, zero redundancy. The first question used a structured multiple-choice format to efficiently cover the space of plausible causes. The second question confirmed the synthesized hypothesis. No question could be removed or combined without losing value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The opening question was exemplary: it framed the diagnostic space clearly, used concrete answer options to lower cognitive load for the reporter, and directly prompted the reporter to surface the digest email feature — information the reporter likely wouldn't have volunteered unprompted. The follow-up confirmation question pinned down the timing relationship precisely. Both questions demonstrated genuine causal reasoning, not generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start: a clear root cause hypothesis, step-by-step reproduction instructions, four concrete fix options with a recommended approach, a proposed test case with acceptance criteria, and explicit information gaps pointing to where to look in the codebase. A developer could plausibly open the queue implementation and begin a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Identified the digest batch job as the root cause in a single diagnostic turn — the structured multi-option first question directly prompted the reporter to surface the key clue",
+    "The synthesized hypothesis accurately described the FIFO queue-flooding mechanism without access to the codebase, and the recommended fix (priority queue separation) matches the canonical solution",
+    "The final summary is unusually actionable: reproduction steps, test case, four fix options with a recommendation, and explicit information gaps are all present"
+  ],
+  "notable_weaknesses": [
+    "Did not ask the reporter to estimate digest email volume, which would have quantified the congestion and helped the developer prioritize urgency",
+    "Did not confirm the exact time the digest batch fires (assumed ~8-9am from context rather than asking directly)"
+  ],
+  "most_insightful_question": "The opening multiple-choice question asking what changed approximately one week ago — the structured options (deployment, infrastructure, usage increase, nothing, something else) provided just enough scaffolding to prompt the reporter to recall the digest email rollout, which they had not connected to the delays on their own.",
+  "missed_opportunities": [
+    "Ask roughly how many digest emails are sent per batch — this would have let the agent estimate queue drain time and validate the multi-hour delay magnitude",
+    "Confirm whether other notification types (e.g., due-date reminders) are also delayed, which would have strengthened the case that the issue is queue-wide rather than specific to assignment notifications"
+  ]
+}

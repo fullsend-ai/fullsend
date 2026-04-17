@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: size-dependent corruption, small PDFs working, ~1 week timeline, proxy/middleware as likely culprit, binary mangling (explicitly called out in recommended fix), and multiple customers affected. The one gap is whether other large file types (images, spreadsheets) are also affected — this was never asked and never surfaced."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary correctly covers both acceptable diagnostic paths: size-dependent behavior with different upload paths suspected, and the proxy/recent-update as trigger. The agent explicitly lists 'middleware or proxy change (e.g., nginx)' and 'binary stream treated as text' as top hypotheses, both of which point directly at the actual cause. It doesn't land on the exact mechanism (Content-Type header stripping) but is well within acceptable diagnostic territory."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about error message, size pattern, upload method, regression timing, and size thresholds — all productive. However, it never asked whether other file types (images, spreadsheets) were also affected, which would have been a strong signal pointing to a size-based upload path rather than a PDF-specific issue. That's a meaningful diagnostic gap left on the table."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four turns, mostly efficient. The first message bundled three related questions well. The browser question in turn 4 was low-value — browser was unlikely to be relevant given a server-side regression pattern — but it was quick and not repeated. No questions were egregiously redundant."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Several questions showed genuine diagnostic reasoning: asking about file size comparison (truncation vs. corruption), upload method (web vs. API, directly relevant to upload paths), and the regression framing ('did this used to work?') were well-targeted. The browser question was generic. Overall the questions led the reporter to provide the key 800KB/2MB data point that anchored the entire summary."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally developer-ready: clear reproduction steps with specific file sizes, a ranked hypothesis list (proxy, body-parser limit, binary encoding) that maps directly to real code paths, a concrete investigation checklist, a proposed byte-level test case with hash verification, and explicit information gaps. A developer could open logs and start investigating immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Extracted the 800KB/2MB size boundary through targeted questioning, which is the single most diagnostic data point in the case",
+    "The regression-timing question ('did this used to work?') was precisely framed and immediately unlocked the deployment window",
+    "The final summary is developer-ready with reproduction steps, prioritized hypotheses, a test case design, and clear information gaps",
+    "Correctly identified the upload method (web vs. API) as relevant, which maps to different code paths"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether other large file types (images, spreadsheets) are also affected — this would have strongly implicated the chunked/size-based upload path rather than PDF-specific handling",
+    "The browser question was low-value given all other evidence pointed to a server-side regression",
+    "Did not ask the reporter to check whether the corrupted file is larger, smaller, or the same size as the original — this distinction (truncation vs. re-encoding) would have narrowed the hypothesis list"
+  ],
+  "most_insightful_question": "Did PDF attachments used to work fine for these same kinds of reports, and then something broke about a week ago? Or has this always been an issue with larger files and you're only now reporting it?",
+  "missed_opportunities": [
+    "Ask whether other large file types (images, Word documents, spreadsheets) are also affected when uploaded at similar sizes",
+    "Ask the reporter to compare the file size of the downloaded corrupted PDF against the original — same size with garbled content implies encoding/transcoding, not truncation",
+    "Ask whether the API upload path was ever tried as a workaround, which would have directly implicated the web upload proxy"
+  ]
+}

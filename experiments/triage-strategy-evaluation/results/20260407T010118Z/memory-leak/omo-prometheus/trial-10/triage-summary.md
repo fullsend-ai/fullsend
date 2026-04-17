@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Memory leak in v2.3: per-request resource leak likely in real-time notifications feature causes OOM-level growth under normal usage
+
+## Problem
+TaskFlow v2.3 application server process leaks memory proportional to user activity. Memory grows from ~500MB at startup to 4GB+ over a business day with ~200 active users, causing 10+ second page loads and API timeouts. Requires daily restart. The issue began immediately after upgrading from v2.2 to v2.3.
+
+## Root Cause Hypothesis
+The v2.3 'real-time notifications' feature (push notifications for task updates, comments, etc.) is leaking a per-request resource — most likely goroutines, WebSocket connections, or notification subscription objects that are allocated on each user action but never released. In a Go application, the most common pattern would be goroutines spawned per notification event or per subscriber connection that are never cancelled/closed, or an in-memory subscriber registry that grows without eviction when clients disconnect.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 on a clean instance with real-time notifications enabled
+  2. Simulate sustained user activity (task creation, comments, status changes) with multiple concurrent users
+  3. Monitor the TaskFlow server process memory via `top`, `docker stats`, or Grafana
+  4. Observe memory climbing steadily with no plateau, proportional to request volume
+  5. Compare against v2.2 under identical load to confirm the regression
+
+## Environment
+Self-hosted TaskFlow v2.3 (upgraded from v2.2 ~1 week ago), Go runtime, ~200 active users, with Redis and database on the same host (both behaving normally)
+
+## Severity: high
+
+## Impact
+All 200 active users experience progressively degrading performance throughout the workday, culminating in 10+ second page loads and API timeouts by late afternoon. Requires daily manual restart. No data loss reported, but productivity impact is significant.
+
+## Recommended Fix
+1. Diff the v2.3 real-time notifications code path against v2.2 — look for goroutine spawns without corresponding cancellation, WebSocket/SSE connections without close handlers, or in-memory subscriber maps that grow without cleanup on disconnect. 2. Run `go tool pprof` against `/debug/pprof/heap` and `/debug/pprof/goroutine` on a live instance after several hours of usage to get direct evidence of what's accumulating. 3. Check whether notification subscriber cleanup fires on client disconnect/timeout. 4. Verify any new caches introduced in v2.3 have eviction policies.
+
+## Proposed Test Case
+Load test: simulate 50+ concurrent users generating notification-triggering actions (task updates, comments) for 2+ hours. Assert that server memory stays within a bounded range (e.g., <1.5GB) and that goroutine count does not grow monotonically. Additionally, simulate client disconnects during active notification streams and verify that server-side resources (goroutines, subscriptions) are cleaned up within a reasonable timeout.
+
+## Information Gaps
+- Exact pprof heap/goroutine profile has not been captured yet (reporter willing to try; developer can also do this directly)
+- Rollback to v2.2 has not been attempted to definitively confirm regression (reporter hesitant due to migration concerns)
+- Exact Go version not confirmed (reporter believes it's Go but is the sysadmin, not the developer)
+- Whether /debug/pprof endpoints are enabled in the current deployment is unknown

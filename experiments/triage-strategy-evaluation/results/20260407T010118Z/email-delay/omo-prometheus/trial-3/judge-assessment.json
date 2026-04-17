@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: delay duration (2-4 hours), onset (~1 week ago), time-of-day pattern (9-10am worst, afternoon better), connection to batch digest email, queue congestion hypothesis, transactional vs. bulk email competition, and baseline performance (1-2 minutes). The summary also adds useful extras: reproduction steps, a proposed test case, and enumerated information gaps."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified the digest email as the cause and queue congestion as the mechanism — matching acceptable path 2. It also listed 'prioritize transactional notifications over batch/marketing emails' as a recommended fix, which is the actual solution. The main inaccuracy is scale: the agent estimated ~200 digest emails (org size) rather than the actual ~10,000 (the digest goes beyond TaskFlow users). The agent also did not identify that this is a priority queue and that both email types share priority=1, but it arrived at the same fix recommendation regardless."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about scope, recent changes, digest timing, and org size — all of which were productive. It correctly documented remaining unknowns (queue architecture, provider rate limits, send rate) as information gaps rather than unresolved blockers. One obvious question was not asked: whether the digest goes to a broader audience than just the ~200 TaskFlow users, which would explain why 200 users cause hours of delay. That gap led to a scale underestimate but did not derail the core hypothesis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions over three turns, none redundant. Q1 efficiently combined scope and change-detection into one ask. Q2 was a tightly targeted follow-up on digest timing. Q3 probed scale to assess queue load. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1's second part ('did anything change roughly a week ago?') elicited the digest email lead from a non-technical reporter who had not connected the two events — a genuine diagnostic find. Q2 ('what time do the digest emails arrive?') directly tested the causal hypothesis rather than asking generically about email problems. Q3 ('how many users?') correctly anticipated that scale was the key variable for understanding queue saturation. All three questions demonstrated active reasoning rather than generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it names the digest feature as the suspect, provides a 9am queue-depth check as the immediate investigation step, recommends queue separation or priority adjustment as quick mitigations, includes concrete reproduction steps, and specifies a test case for verifying the fix. A developer could open the queue monitoring dashboard and the digest feature code immediately."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Surfaced the marketing digest email lead from a non-technical reporter in the first question, without leading the witness",
+    "Correctly hypothesized queue congestion and recommended priority separation of transactional vs. bulk email — the actual fix — even without knowing it was a priority queue",
+    "Summary is unusually actionable: includes reproduction steps, a proposed test case, and documented information gaps for the engineer to follow up on",
+    "Time-of-day correlation was immediately recognized as a diagnostic signal and pursued directly"
+  ],
+  "notable_weaknesses": [
+    "Scale estimate (200 digest emails) was significantly off from reality (~10,000), because the agent did not ask whether the digest reaches a broader audience than TaskFlow users — this weakens the queue saturation explanation slightly",
+    "Did not ask about the email queue architecture, which would have revealed the priority queue and led to a more precise root cause identification",
+    "Did not verify whether engineering had confirmed any deployments around the onset of the issue, which would have strengthened or ruled out alternative causes"
+  ],
+  "most_insightful_question": "Do you know roughly what time of day those digest emails arrive? Specifically, do they land around 9am or earlier in the morning? — This directly tested the causal hypothesis by linking the digest send time to the delay peak, converting a reporter hunch into a confirmable correlation.",
+  "missed_opportunities": [
+    "Ask whether the digest email goes to all company employees or only to TaskFlow users — this would have revealed that the batch is far larger than 200 emails and explained why the delays are so severe",
+    "Ask whether an engineer confirmed any code or configuration deployments around the time the issue started, to rule out other concurrent changes",
+    "Ask about the email sending infrastructure (single queue, worker count, provider rate limits) — the agent noted this as a gap but could have asked the reporter to loop in an engineer to answer it before resolving"
+  ]
+}

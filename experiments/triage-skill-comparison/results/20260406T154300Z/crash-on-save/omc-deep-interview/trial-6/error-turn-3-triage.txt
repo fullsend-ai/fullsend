@@ -1,0 +1,37 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "After three rounds of questioning, clarity scores meet the sufficiency threshold (ambiguity <= 0.20). We have a clear symptom (crash with encoding error on save), a strong causal hypothesis (imported CSV data with non-ASCII characters like em-dashes and curly quotes triggers an encoding error, but only when the task list is large enough — suggesting a size-dependent code path or buffer issue in serialization), reproducible conditions, and known impact with a workaround. The size-dependent aspect is an important clue for developers but doesn't require further reporter input to act on.",
+  "triage_summary": {
+    "title": "Crash on save with encoding error when saving large lists containing imported non-ASCII characters",
+    "problem": "The application crashes immediately on save — displaying a brief 'encoding' error dialog before the window disappears — when the task list is large (~200 tasks) and contains data imported from CSV that includes non-ASCII characters such as em-dashes and curly quotes. Smaller lists with the same imported characters save successfully, indicating the crash is triggered by the combination of non-ASCII content and list size.",
+    "root_cause_hypothesis": "The save/serialization path likely uses a fixed-size buffer or a different encoding strategy when the payload exceeds a certain size threshold. For small payloads, the encoding handles non-ASCII characters correctly (or uses a different code path). For larger payloads, the encoder either overflows a buffer, falls back to a strict ASCII encoding that chokes on multi-byte characters, or hits an unhandled exception in a bulk-write path. The 'encoding' error in the flash dialog supports this — likely an uncaught encoding/conversion exception that tears down the application.",
+    "reproduction_steps": [
+      "Prepare a CSV file containing task names with non-ASCII characters (em-dashes '—', curly quotes '"'  '"', etc.)",
+      "Import the CSV into TaskFlow so the total task count reaches approximately 200 tasks",
+      "Attempt to save the task list",
+      "Observe: brief encoding error dialog flashes, then the application window closes immediately",
+      "Control: create a new small list with a few tasks containing the same special characters — this should save successfully",
+      "Control: remove the imported tasks from the large list — saving should work again"
+    ],
+    "environment": "Not specified — appears to affect the desktop application generally. No OS, version, or platform details provided, but the bug is content- and size-dependent rather than environment-dependent.",
+    "severity": "high",
+    "impact": "Users who import data from external tools (CSV) risk losing all unsaved work when the app crashes on save. The crash is deterministic once triggered, making the imported data effectively unusable in larger lists. Workaround exists: remove imported tasks or keep lists small.",
+    "recommended_fix": "1. Examine the save/serialization code path for encoding handling, particularly any divergence between small and large payloads (e.g., buffered vs streaming writes, different serializers by size). 2. Ensure UTF-8 encoding is used consistently throughout the save pipeline regardless of payload size. 3. Add proper error handling around the encoding/serialization step so an encoding failure shows a user-facing error message instead of crashing the app. 4. Consider adding encoding validation/normalization at CSV import time to flag or convert problematic characters early.",
+    "proposed_test_case": "Create a task list with 200+ tasks where at least 10 tasks contain non-ASCII characters (em-dashes, curly quotes, accented characters, emoji). Verify that save completes without error. Additionally, test boundary conditions: find the approximate list size where the current code switches behavior and add regression tests at that threshold.",
+    "information_gaps": [
+      "Exact application version and platform (OS) — unlikely to change the fix approach but useful for verification",
+      "Exact error message text (reporter could only partially read the flash dialog)",
+      "Precise size threshold where the crash begins occurring",
+      "Whether the issue is specific to CSV import or also affects copy-pasted non-ASCII text in large lists"
+    ],
+    "clarity_scores": {
+      "symptom": 0.9,
+      "cause": 0.75,
+      "reproduction": 0.8,
+      "impact": 0.7,
+      "overall_ambiguity": 0.195
+    }
+  }
+}
+```

@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — losing work to crashes is definitely frustrating, and we want to get this sorted out.\n\nTo start narrowing this down: when you say the app crashes, what exactly do you see? For example, does the app close entirely, do you get a frozen screen, or do you see an error message? And could you tell me what you're saving — is this a new task, an edit to an existing task, or something else?"
+    },
+    {
+      "author": "reporter",
+      "body": "The app just closes. Like it completely shuts down. I think there's some kind of error dialog that flashes for a split second but I can't read it fast enough. I'm trying to save my task list — I have a bunch of tasks in there and when I hit Save it just dies."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that helps a lot. The app closing completely with a flash of an error dialog points to an unhandled crash, so we'll want to reproduce this on our end.\n\nCould you walk me through the exact steps you take before hitting Save? For example: Do you open the app, create new tasks or edit existing ones, and then hit Save? And does this happen every single time you try to save, or only sometimes (e.g., only with a large number of tasks, or only after a certain amount of time)?"
+    },
+    {
+      "author": "reporter",
+      "body": "Look, I just open the app and hit Save. That's it. It happens every time now. I have like 200 tasks in there and it just crashes. It wasn't doing this before — it started after I imported a bunch of tasks from a CSV file. I don't know why that would matter but that's when it started."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That CSV import detail is a great clue — it very likely matters, so thanks for mentioning it.\n\nCould you let me know what environment you're running TaskFlow in? Specifically:\n- What operating system are you on (e.g., Windows 11, macOS Sonoma, Ubuntu 24.04)?\n- Which version of TaskFlow you're using (you can usually find this under Help → About or in Settings)?\n- If it's the web version, which browser are you using?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm on a Mac, macOS 14 something. TaskFlow 2.3.1 I think. It's the desktop app not the web version. Can we focus on fixing the crash though? I already told you it started after the CSV import."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save after importing large CSV task list (~200 tasks)\",\"problem\":\"TaskFlow desktop app crashes immediately (closes completely) whenever the user hits Save. A brief error dialog flashes but is unreadable. The crash began after the user imported a large number of tasks (~200) from a CSV file. It now reproduces every time.\",\"root_cause_hypothesis\":\"The CSV import likely introduced data that causes an unhandled exception during the save/serialization path — either malformed or edge-case data in one or more imported tasks (e.g., special characters, unexpected field lengths, null values) or a performance/memory issue when serializing ~200 tasks at once.\",\"reproduction_steps\":[\"Import a large CSV file containing approximately 200 tasks into TaskFlow\",\"Open the app normally\",\"Click Save\",\"Observe: app crashes and closes completely\"],\"environment\":\"macOS 14.x, TaskFlow 2.3.1, desktop app (not web)\",\"severity\":\"high\",\"impact\":\"User is completely unable to save any work, resulting in data loss risk. The app is effectively unusable since every save attempt crashes it. Any user who imports a large CSV may hit this.\",\"recommended_fix\":\"Investigate the save/serialization code path with a large number of CSV-imported tasks. Check for: (1) unhandled exceptions during task serialization — add try/catch with logging, (2) malformed data from CSV import (special characters, encoding issues, missing required fields), (3) memory issues with large task lists. Examine macOS crash logs (~/Library/Logs/DiagnosticReports/) for the stack trace from the crash dialog the user couldn't read.\",\"proposed_test_case\":\"Import a CSV file with 200+ tasks containing varied data (including special characters, empty fields, long strings) and verify that Save completes without crashing. Add a unit test for the serialization path with edge-case task data.\",\"information_gaps\":[\"Exact macOS crash log / stack trace (developer can retrieve from DiagnosticReports if they reproduce)\",\"Contents or structure of the CSV file that was imported\",\"Whether the issue occurs with fewer imported tasks (threshold)\"]}"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured 5 of 7 expected items: affected record count, truncation pattern, nightly import link, 3+ digit country code pattern, and US/UK numbers being fine. Missing: when the issue started (~2 weeks ago) and any connection to a recent change in the normalizer. The agent even self-identified these as gaps in the information_gaps field but resolved without pursuing them."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the nightly batch import as the corruption source and the 3+ digit country code as the affected pattern, matching acceptable path 1. The root cause hypothesis explicitly includes a regex capturing only 2 digits after '+', which is exactly the actual bug. The summary is directionally correct and actionable. Minor gap: it didn't connect the issue to a recent code change, so the hypothesis is framed as a long-standing bug rather than a regression."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after just 2 questions, leaving obvious follow-ups unasked: when did the issue start, and has anything changed recently in the import pipeline or phone handling logic? The timeline (~2 weeks ago) is critical for identifying the root cause as a regression. The agent recognized these gaps explicitly in information_gaps yet chose to resolve rather than ask one more question. For a data integrity issue affecting production, this was premature."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and well-targeted. No redundant or low-value turns. The first question efficiently identified the data entry path; the second pinpointed the exact corruption pattern. Nothing to cut."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions were structured with clear options that helped a non-technical reporter identify the precise pattern. The second question especially — asking for before/after examples and categorizing corruption types — was diagnostically insightful and led directly to the Ireland (+353→+35) and Antigua (+1268→+12) examples that nailed the pattern. The reporter likely would not have volunteered those specific examples unprompted."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is detailed and well-structured: reproduction steps, multiple plausible fix locations (substring, VARCHAR, regex), a proposed test matrix covering 1–4 digit country codes, and a remediation path for already-corrupted records. A developer could begin investigating immediately. The missing timeline (2-week window) would have been a very useful pointer toward the specific commit or change to examine, but the summary is still highly actionable without it."
+    }
+  },
+  "weighted_total": 3.70,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question was exceptionally well-designed — the before/after framing with categorized options led the reporter to volunteer concrete examples that precisely revealed the truncation mechanism",
+    "The root cause hypothesis explicitly named a regex capturing only 1-2 digits after '+', which matches the actual bug exactly",
+    "The recommended fix and test case are comprehensive and production-ready, covering all E.164 country code lengths"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the issue was first noticed — the 2-week timeline would have pointed directly to a recent code change as the trigger",
+    "Never asked whether any recent changes were made to the import pipeline or phone number handling — despite listing this as an information gap, the agent resolved instead of asking",
+    "Resolving without the timeline means the summary frames this as a potential long-standing design flaw rather than a regression, which affects how urgently a developer would search recent commits"
+  ],
+  "most_insightful_question": "When you look at one of the bad phone numbers, what does the corruption actually look like? (with categorized options and a request for before/after examples)",
+  "missed_opportunities": [
+    "When did you first notice the phone numbers were wrong — was it recent, or could this have been happening for a while?",
+    "Have there been any recent changes to your Salesforce integration, import configuration, or anything on the TaskFlow side related to phone number handling?",
+    "Are the corrupted records recent imports, or do you see bad numbers on older records too? (This would establish whether corruption is ongoing or historical)"
+  ]
+}

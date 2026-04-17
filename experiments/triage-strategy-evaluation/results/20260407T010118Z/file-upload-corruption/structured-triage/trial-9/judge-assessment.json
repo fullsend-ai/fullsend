@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent captured: small PDFs work fine (key insight), multiple customers affected, version (2.3.1), regression nature. Missing: approximate timeline (~1 week ago — the reporter strongly hinted at this but the agent never asked), exact size threshold (1MB), whether other large file types are also affected (listed as an information gap rather than investigated), and whether the corruption is encoding mangling vs. truncation."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis explicitly lists 'a content-type/encoding issue in the upload pipeline that only manifests above a certain file size' — this is remarkably close to the actual cause. The agent also correctly suspects chunked upload handling as the likely vector. This satisfies acceptable path 1 (size-dependent behavior → different upload paths) and partially path 2 (recent change as trigger). The hypothesis is broad but its best candidate matches the actual bug closely."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two question turns. Key follow-ups were skipped: timeline (when did it stop working?) was never asked despite the reporter explicitly prompting it ('something changed on your end', 'can you just look into what changed recently?'). Other large file types were not investigated. Approximate file sizes of the broken PDFs were not established. The agent had enough to form a reasonable hypothesis but left notable gaps."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Two question turns, both reasonably targeted. The first question was well-structured and efficiently surfaced the size-dependent behavior. The second question bundled a low-value component (browser/OS) with a high-value one (app version); the reporter correctly pushed back on the browser angle. One question slot was partially wasted, but no outright redundancy."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was genuinely diagnostic — proactively suggesting a small-PDF test before the reporter mentioned it was smart framing that directly elicited the key size insight. The second question was less sharp: asking about browser/OS when the reporter was clearly pointing at a server-side regression was a mild misstep, though asking for the version number was valuable. Overall, question 1 stands out as strong."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is quite actionable: it directs developers to check git history for upload pipeline changes, compare checksums to characterize the corruption, test at multiple file sizes to find the threshold, and check server-side logs. The proposed test case (checksum comparison across size tiers) is specific and immediately implementable. A developer could begin investigating with minimal additional context."
+    }
+  },
+  "weighted_total": 3.65,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question proactively suggested testing with a small PDF before the reporter mentioned size as a variable — this efficiently surfaced the key diagnostic clue",
+    "Root cause hypothesis explicitly named 'content-type/encoding issue in the upload pipeline' as a candidate, which is the actual bug",
+    "Triage summary is structured and actionable, with a concrete proposed test case and specific investigation steps",
+    "Correctly identified this as a regression and directed developers to check recent changes to the upload pipeline"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the issue started despite the reporter repeatedly and explicitly signaling a recent server-side change ('something changed on your end', 'can you just look into what changed recently?') — the ~1 week timeline would have been easy to extract",
+    "Never asked whether other large file types (images, spreadsheets) are also affected, which would have quickly isolated size vs. file-type as the discriminating factor",
+    "Browser/OS question was partially low-value and consumed goodwill with an already-impatient reporter"
+  ],
+  "most_insightful_question": "The suggestion in the first question to test with 'a small, simple PDF (like a one-page text document)' to check whether file size or content plays a role — this framing directly elicited the confirmation that small PDFs work fine, which is the central diagnostic clue.",
+  "missed_opportunities": [
+    "When did this start? / When did it last work correctly? (The reporter strongly hinted at a recent change but was never asked for a timeline)",
+    "Have you tried uploading other large files — images, Word documents, spreadsheets — to see if those are also affected? (Would have distinguished PDF-specific from size-specific corruption)",
+    "Roughly how large are the PDFs that are failing? Can you give me a sense of the file sizes? (Would have helped establish the ~1MB threshold)"
+  ]
+}

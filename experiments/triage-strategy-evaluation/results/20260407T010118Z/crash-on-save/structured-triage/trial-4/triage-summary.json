@@ -1,0 +1,24 @@
+{
+  "title": "Desktop app crashes instantly on save after CSV task import (possible encoding issue)",
+  "problem": "The desktop app on macOS crashes immediately when the user clicks Save in the toolbar while editing a task list. The user loses unsaved work each time. The crash began after the user imported tasks from a CSV file. A brief error flash mentioning 'encoding' appears before the app closes.",
+  "root_cause_hypothesis": "The CSV import likely introduced task data containing characters in an encoding the app's save/serialization logic cannot handle (e.g., non-UTF-8 characters, malformed Unicode sequences, or BOM markers). When the save routine attempts to serialize the task list, it hits an unhandled encoding exception that crashes the process instead of being caught gracefully.",
+  "reproduction_steps": [
+    "Import a CSV file containing tasks into TaskFlow (file likely contains non-UTF-8 or mixed-encoding characters)",
+    "Open the imported task list for editing",
+    "Click Save in the toolbar",
+    "App crashes instantly — no crash dialog, brief flash of encoding-related error"
+  ],
+  "environment": "Desktop app on macOS 14 (Sonoma). Exact app version and macOS patch version unknown.",
+  "severity": "high",
+  "impact": "User is completely blocked from saving any work in the affected task list. Data loss occurs on every save attempt. User has an upcoming deadline and has been experiencing this for multiple days.",
+  "recommended_fix": "1. Investigate the CSV import path for encoding handling — check whether imported data is normalized to UTF-8. 2. Check the save/serialization code for unhandled encoding exceptions — the crash suggests an uncaught exception rather than a graceful error. 3. Add a try/catch around the save serialization to surface the error to the user instead of crashing. 4. If the root cause is malformed data already in the user's task list, provide a migration or sanitization pass to fix existing data.",
+  "proposed_test_case": "Import a CSV file containing mixed encodings (e.g., Latin-1 characters, BOM markers, invalid UTF-8 byte sequences) into a task list, then attempt to save. Verify the app either saves successfully (after normalizing encoding) or displays a user-facing error message without crashing.",
+  "information_gaps": [
+    "Exact app version",
+    "Exact macOS version (only know '14 something')",
+    "Contents or encoding of the original CSV file",
+    "Crash log from Console.app or macOS crash reporter",
+    "Full text of the encoding error message",
+    "Whether the crash occurs only on the imported task list or on all task lists"
+  ]
+}

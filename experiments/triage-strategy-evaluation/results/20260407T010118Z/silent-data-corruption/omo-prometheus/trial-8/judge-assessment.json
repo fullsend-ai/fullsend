@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items were captured: record count (~50-100 of 2,000), truncation pattern (not random), 2-week onset, nightly batch import as vector, country code length pattern (3+ digits affected), US/UK unaffected, and a recent change to phone number normalization logic. The agent also discovered the recurrence risk (nightly sync overwriting any manual corrections) which was not in the expected extracts."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly import as the corruption source, the country code pattern (3+ digits truncated to 2), the 2-week timeline tied to a recent change, and explicitly hypothesizes 'a regex, substring, or parsing library change that assumes all country codes are 1-2 digits.' The actual cause is exactly a regex capture group limiting country codes to 1-2 digits. This matches the canonical root cause and both acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about import vs. manual entry, timing, recent changes, Salesforce data integrity, concrete examples of corruption, pattern confirmation, and sync timestamps. One obvious follow-up was skipped: asking the reporter to loop in their dev or IT team to identify the specific deployment or commit from ~2 weeks ago, rather than deferring this to an 'information gap.' The agent had strong signal (the reporter said 'something was updated maybe 2 weeks ago') that warranted a targeted follow-up question."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each pulling distinct and critical information: scoping questions (turn 1), source confirmation and concrete examples (turn 2), pattern validation and timestamp correlation (turn 3). No question was redundant or could be considered low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The standout was asking for 2-3 concrete examples of mangled numbers with redaction guidance — this directly caused the reporter to notice the country code pattern themselves ('I hadn't really thought about that pattern until just now'). Asking whether Salesforce data was still correct was the right early differentiator to localize the bug. The timestamp question demonstrated forward-thinking diagnostic reasoning, even though the reporter couldn't easily answer it."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is developer-ready: it includes a hypothesis pointing at regex/substring logic for country codes, exact reproduction steps using specific countries (Antigua +1268, Ireland +353), a proposed test matrix (1-digit, 2-digit, 3-digit, 4-digit country codes), a recommended fix path (E.164 compliance), and a proposed workaround (restore from Salesforce, disable sync). The note that nightly sync will overwrite manual corrections is critical operational context a developer needs immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Requesting concrete examples of mangled numbers caused the reporter to independently identify the country code length pattern — highly effective elicitation technique",
+    "Early confirmation that Salesforce data was intact immediately localized the bug to the TaskFlow sync pipeline",
+    "The final summary correctly anticipated the recurrence risk (nightly sync overwriting corrections) and included it in impact — this is non-obvious and critical for prioritization",
+    "Proposed test case covers the full range of country code lengths needed to catch this regression class"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly prompt the reporter to escalate to their dev/IT team to identify the specific change from ~2 weeks ago, leaving the deployment correlation in 'information gaps' when it could have been pursued in conversation",
+    "Did not ask whether there was an immediate workaround needed (e.g., temporary sync pause), which would have added operational value for the reporter"
+  ],
+  "most_insightful_question": "Can you share 2-3 examples of what the mangled numbers look like in TaskFlow versus what they should be? — this prompted the reporter to notice the country code length pattern themselves, which became the central diagnostic finding",
+  "missed_opportunities": [
+    "Ask the reporter to check with their dev or IT team about what specifically changed in the import pipeline around 2 weeks ago (a deployment, library upgrade, or config change) — the reporter volunteered 'something was updated' but the agent did not pursue this thread in conversation",
+    "Ask whether any affected records were manually corrected in TaskFlow and then re-corrupted by the next nightly sync — this would have confirmed the overwrite behavior earlier"
+  ]
+}

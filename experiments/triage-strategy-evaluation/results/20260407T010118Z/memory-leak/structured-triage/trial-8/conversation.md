@@ -1,0 +1,92 @@
+# Conversation: memory-leak x structured-triage
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana data — the consistent memory climb pattern is very helpful.
+
+To help us narrow down the source of the leak, could you walk us through what a typical day of usage looks like on your instance? Specifically:
+
+- Are there particular features your team uses heavily (e.g., file attachments, real-time collaboration, recurring task automation, webhook integrations)?
+- Does the memory growth seem to correlate with user activity, or does it climb even during low-usage periods (e.g., overnight if you skip the restart)?
+
+This will help us determine whether the leak is triggered by specific operations or is a steady background accumulation.
+
+---
+
+### reporter
+
+Good questions. Our team uses TaskFlow pretty broadly — task management, comments, some file attachments, and the real-time notifications are popular since people like seeing updates come in live. We don't use webhook integrations much.
+
+The memory growth definitely correlates with user activity. On weekends when fewer people are on, the growth is much slower. If we skip the restart overnight, the memory stays roughly where it was at end of day — it doesn't keep climbing when nobody's using it. Then it picks up again in the morning when people log in.
+
+One thing I should mention — we upgraded from v2.2 to v2.3 about a week ago, and that's right when this started. I didn't connect the dots at first because we assumed it was a load issue, but looking back the timing lines up exactly with the upgrade. The v2.3 changelog mentioned 'improved real-time notifications' as one of the new features, which might be relevant given how much our team uses those.
+
+---
+
+### triage-agent
+
+Thanks for connecting the dots on the v2.3 upgrade timing — that's a really valuable clue, especially combined with the 'improved real-time notifications' changelog entry and the correlation with user activity.
+
+To round out the environment picture, could you share a few server details?
+
+- **Server OS** (e.g., Ubuntu 22.04, RHEL 9, etc.)
+- **Node.js version** (or whatever runtime TaskFlow runs on)
+- **How the server is deployed** (bare metal, Docker container, VM, etc.)
+
+This will help developers reproduce the issue and check for any environment-specific factors.
+
+---
+
+### reporter
+
+Sure! The server is running on Ubuntu 22.04 on a VM with 8GB of RAM. I'm not sure about the Node.js version or whatever runtime TaskFlow uses — I'm the sysadmin but I mostly manage the infrastructure side and followed the official install docs. I deployed it directly on the VM, not in Docker. Happy to look up the runtime version if you need it, just let me know where to find that info.
+
+---
+
+### triage-agent
+
+Thanks for those details! Since you offered to look up the runtime version, here's how to find it — just run this on your TaskFlow server:
+
+```bash
+node --version
+```
+
+If you're not sure TaskFlow uses Node.js, you can also check with:
+
+```bash
+ps aux | grep -i taskflow
+```
+
+That will show the running process and which runtime it's using. The version matters because some memory leak behaviors are runtime-specific, and it'll help developers reproduce your exact setup.
+
+---
+
+### reporter
+
+Thanks for the commands! I ran them and here's what I got:
+
+`node --version` returned v18.17.0.
+
+The `ps aux | grep taskflow` output shows it's running as a Node.js process. So Node.js it is!
+
+Let me know if there's anything else you need from the server side — happy to run whatever diagnostics would help track this down.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in TaskFlow v2.3 likely caused by real-time notifications — server OOMs daily","problem":"After upgrading from v2.2 to v2.3, the TaskFlow server exhibits a memory leak that causes memory to climb from ~500MB at startup to 4GB+ by end of day, resulting in 10+ second page loads and API timeouts. The server requires a daily restart to remain usable.","root_cause_hypothesis":"The 'improved real-time notifications' feature introduced in v2.3 is the most likely source of the leak. The memory growth correlates strongly with user activity (slower on weekends, stops when no users are active), and the team heavily uses real-time notifications. A likely mechanism is that notification connections (e.g., WebSocket or SSE listeners) or their associated state are not being properly cleaned up when users disconnect or navigate away.","reproduction_steps":["Deploy TaskFlow v2.3 on a Node.js v18.17.0 server","Allow normal usage by multiple users with real-time notifications enabled","Monitor memory usage over several hours of active use","Observe steady memory climb that correlates with user activity","Compare against a v2.2 deployment under the same conditions to confirm regression"],"environment":"Ubuntu 22.04 VM, 8GB RAM, Node.js v18.17.0, TaskFlow v2.3, ~200 active users, direct install (no Docker)","severity":"high","impact":"All 200 users on this self-hosted instance experience progressively degrading performance throughout the workday, with the server becoming effectively unusable by late afternoon. Requires daily manual restarts. Any self-hosted v2.3 deployment with active real-time notification usage is likely affected.","recommended_fix":"Investigate the real-time notifications changes introduced in v2.3 (diff against v2.2). Focus on: (1) WebSocket/SSE connection lifecycle — are connections properly cleaned up on client disconnect? (2) Per-connection state or event listener accumulation — are handlers being removed? (3) Take a heap snapshot on a running instance to identify the retained object graph. A Node.js --inspect session with heap profiling would quickly pinpoint the leaking objects.","proposed_test_case":"Create a load test that simulates many users connecting to real-time notifications, performing actions that generate notifications, and then disconnecting. Run for an extended period and assert that memory usage remains bounded (e.g., returns to near-baseline after connections close). Verify no growth in WebSocket/SSE connection count beyond active users.","information_gaps":["Server-side logs during the degradation period (may reveal connection errors or warnings)","Whether rolling back to v2.2 resolves the issue (reporter has not tried this)","Exact number of concurrent real-time notification connections at peak"]}
+
+---

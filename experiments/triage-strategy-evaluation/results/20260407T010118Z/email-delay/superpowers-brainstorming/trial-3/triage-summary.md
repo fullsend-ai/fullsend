@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Email notification delays (2-4 hours) caused by likely queue saturation from new daily digest feature
+
+## Problem
+Task assignment email notifications that previously arrived within 1-2 minutes are now delayed 2-4 hours. The delays are system-wide, affecting all users, and are worst in the morning (9-10am sends take the longest). The issue started approximately one week ago.
+
+## Root Cause Hypothesis
+The new daily digest email feature, introduced ~1 week ago, is likely saturating TaskFlow's email sending queue. Digest emails are probably sent in bulk each morning, flooding the queue and causing transactional notifications (like task assignments) to wait behind thousands of digest emails. This explains both the timing correlation and the morning-heavy delay pattern.
+
+## Reproduction Steps
+  1. Assign a task to a user in the morning (9-10am window)
+  2. Observe the email notification delivery time — expect 2-4 hour delay
+  3. Compare with the email send queue depth at that time
+  4. Check whether the daily digest batch job runs just before the observed delay window
+
+## Environment
+System-wide, all users on at least one company email domain. Gmail confirmed as one affected client. Production environment.
+
+## Severity: high
+
+## Impact
+All users are receiving late task assignment notifications, causing missed deadlines. This undermines the core value proposition of task assignment notifications.
+
+## Recommended Fix
+1. Confirm the hypothesis by checking the email queue depth and digest send times vs. notification send times in the past week. 2. Separate transactional emails (notifications) from bulk emails (digests) into distinct queues or sending channels, with transactional emails given priority. 3. Consider rate-limiting or staggering digest sends to avoid queue saturation. 4. As a quick mitigation, move digest sends to an off-peak window (e.g., early morning before business hours).
+
+## Proposed Test Case
+After the fix, assign a task at 9:30am (peak delay window) and verify the notification email arrives within 2 minutes. Additionally, confirm that daily digests still deliver successfully, just without blocking transactional emails.
+
+## Information Gaps
+- Exact email queue implementation (single queue vs. multiple) — requires codebase inspection
+- Precise schedule and volume of the daily digest sends — requires checking the batch job configuration
+- Whether other notification types (not just assignments) are also delayed — reporter only mentioned assignments

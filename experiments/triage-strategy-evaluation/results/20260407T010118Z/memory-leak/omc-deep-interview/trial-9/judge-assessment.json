@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present in the summary: memory growth from ~500MB to 4GB+, v2.3 upgrade timing (~1 week ago), 200 active users, consistent day-to-day pattern, daily restart as workaround, v2.3 changelog mention of notification changes, and 8GB RAM VM specs. The agent also surfaced the ~25 requests/user/hour figure and the steeper slope during 9am-5pm, which are additional useful details not in the expected list."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the v2.3 upgrade as the trigger and the real-time notifications subsystem as the likely source — fully satisfying the first acceptable diagnostic path. The root cause hypothesis specifically calls out 'event listeners or pub/sub subscriptions accumulating without cleanup,' which maps closely to the actual cause (listener leak, never deregistered). No inaccuracies were introduced, and the correlation with active user count is consistent with the ground-truth mechanism (~5,000 leaked listeners/hour at peak)."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The three-turn sequence covered all critical investigative angles: (1) isolating the leaking process, (2) identifying the change trigger, (3) confirming the per-connection growth pattern and proposing a disabling test. No obvious follow-ups were left on the table given the information available. The agent had a solid evidential basis before resolving."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each advancing the diagnosis in a distinct and necessary way. No redundant questions, no restating of information already provided. The agent combined related sub-questions efficiently within single turns (e.g., correlation with users + disabling the feature in one message)."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first two questions were excellent diagnostic moves — isolating the process and probing for a triggering change. The third question was insightful in asking about traffic correlation and proposing a controlled disabling test. A minor weakness: at the end of the third comment, the agent offered to help the reporter 'grep through the config file' for a flag it admitted not knowing — slightly undermining confidence and adding noise. Otherwise, questions led to information the reporter wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer three specific code-level things to investigate (connection teardown, listener/subscription cleanup, unbounded in-memory caches), a comparison point (v2.2 vs v2.3 connection lifecycle), a concrete reproduction procedure, a proposed test case with pass/fail criteria, and an immediate mitigation to confirm the hypothesis. A developer could begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question ('did anything change around when this started?') was a textbook pivot that unlocked the v2.3 upgrade correlation — the single most important fact in the triage.",
+    "The third question's suggestion to disable real-time notifications as a controlled confirmation test is an excellent diagnostic move that gives the reporter a concrete next action.",
+    "The final summary is unusually thorough: it includes reproduction steps, a proposed test case with pass/fail criteria, an impact statement, and clearly scoped information gaps — all in a single structured artifact."
+  ],
+  "notable_weaknesses": [
+    "At the end of turn 3, the agent offered to help find a config flag it admitted not knowing, slightly undermining credibility without adding value.",
+    "No attempt was made to ask about memory profiling tools (heap dumps, pprof, etc.) that would help developers pinpoint the leak site more precisely.",
+    "The agent did not ask whether v2.3 patch releases existed or whether the issue had already been reported upstream, which would be immediately actionable for the reporter."
+  ],
+  "most_insightful_question": "You mentioned this has been happening for the past week. Did anything change around when it started — a TaskFlow version upgrade, a configuration change, a new integration or webhook, or a significant increase in usage?",
+  "missed_opportunities": [
+    "Ask whether the reporter had checked for v2.3.x patch releases or searched the TaskFlow issue tracker for similar reports.",
+    "Ask whether any memory profiling or heap dump tooling was available (e.g., pprof, jmap, heapdump endpoints) to identify the specific object type accumulating.",
+    "Ask whether the notification mechanism is WebSocket-based, SSE, or polling — this would narrow the code path before the developer even opens the source."
+  ]
+}

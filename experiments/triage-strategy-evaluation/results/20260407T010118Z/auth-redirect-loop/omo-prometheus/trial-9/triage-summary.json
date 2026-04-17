@@ -1,0 +1,23 @@
+{
+  "title": "SSO redirect loop caused by email mismatch between Entra ID claims and TaskFlow user records after Okta migration",
+  "problem": "After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users are stuck in an infinite redirect loop during login. These users authenticate successfully with Entra ID but TaskFlow fails to match them to an existing account, causing repeated redirects back to the IdP. When the loop is occasionally bypassed (via cookie clearing or incognito), a new empty account is created rather than matching the existing one.",
+  "root_cause_hypothesis": "TaskFlow's auth callback performs a user lookup by matching the email claim from the IdP against stored user emails. Entra ID returns the user's primary UPN/email (e.g., jane@company.com), but TaskFlow's user records still contain the plus-addressed or aliased email from the Okta era (e.g., jane+taskflow@company.com). The lookup fails, and the auth callback handler — rather than returning an error or provisioning — redirects back to the login flow, creating an infinite loop. The intermittent success with cookie clearing likely depends on a race condition or session state that occasionally allows the auto-provisioning code path to execute instead of the redirect-on-failure path.",
+  "reproduction_steps": [
+    "Identify a user whose TaskFlow account email differs from their Entra ID primary email/UPN (e.g., TaskFlow has jane+taskflow@company.com, Entra has jane@company.com)",
+    "Have that user attempt to log into TaskFlow via SSO",
+    "User authenticates successfully with Entra ID",
+    "User is redirected back to TaskFlow",
+    "TaskFlow fails to match the Entra email claim to the stored user record",
+    "TaskFlow redirects the user back to the IdP, creating an infinite loop"
+  ],
+  "environment": "TaskFlow with SSO integration, recently migrated from Okta to Microsoft Entra ID. Affected users have email mismatches between Entra ID UPN/primary email and their stored TaskFlow account email (plus-addressed emails and consolidated aliases from migration).",
+  "severity": "high",
+  "impact": "Approximately 30% of the team cannot log into TaskFlow at all. The only workaround (clearing cookies) is unreliable and when it works, creates a duplicate account with no access to existing projects/data.",
+  "recommended_fix": "Two-part fix: (1) **Immediate:** In the auth callback handler, investigate the code path that handles failed user lookups — it should not redirect back to the IdP. It should either show an error, attempt auto-provisioning, or perform a fuzzy/normalized email match. (2) **Data migration:** Write a migration script to reconcile email mismatches — either update TaskFlow user records to match Entra ID primary emails, or add support for email aliases/secondary email lookup. Additionally, review whether the user lookup should normalize emails (strip plus-addressing, case-insensitive comparison) to prevent this class of issue going forward.",
+  "proposed_test_case": "Create a test user in Entra ID with UPN user@example.com. Create a TaskFlow user record with email user+alias@example.com. Attempt SSO login and verify: (a) no redirect loop occurs, (b) the user is matched to their existing account, (c) existing projects and data are accessible.",
+  "information_gaps": [
+    "Exact auth callback code path — whether the loop is an explicit redirect-on-failure or an implicit consequence of missing session state",
+    "Whether TaskFlow has any email normalization or alias support that could be leveraged",
+    "Full list of affected users and their specific email mismatches (reporter was uncertain about some non-plus-addressed cases)"
+  ]
+}

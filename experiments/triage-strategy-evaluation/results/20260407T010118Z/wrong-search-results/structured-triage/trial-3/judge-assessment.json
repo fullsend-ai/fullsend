@@ -1,0 +1,50 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured most key items: archived tasks appearing in search, active tasks missing, multi-user impact, and the v2.3.1 timing correlation. However, it never asked about or captured whether individual task pages show the correct archive status — a critical diagnostic data point that would separate search-index issues from application-logic issues. The inversion of filter behavior is listed as a hypothesis but was never confirmed through questioning."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the v2.3.1 upgrade as the trigger and the search index/archived-status filter as the broken component. This aligns squarely with the second acceptable diagnostic path ('identifying the schema migration as the trigger and the archive filter as the broken component'). The inversion hypothesis is explicitly listed as one of the probable causes. The summary does not mislead; it points developers in the right direction."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single exchange. The reporter volunteered the upgrade timing unprompted, which was lucky — the agent had not specifically asked about recent changes. Key diagnostic questions were never asked: (1) Do individual task detail pages show the correct archive status? (2) What happens when you manually toggle the 'show archived' filter — do results invert? (3) Can you browse active tasks outside of search and see them correctly? These questions would have significantly sharpened the root cause hypothesis and are obvious follow-ups given the nature of the report."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Only one question was asked, and it was reasonable. The environment/version question was well-combined and directly yielded the key upgrade timing correlation. The premature resolution is a thoroughness problem, not an economy problem — no turns were wasted."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The single question asked (platform, browser, version) is the standard first-response checklist for any bug report. It happened to work because the reporter volunteered the timing connection unprompted. The question itself did not demonstrate specific diagnostic reasoning about search index behavior, filter inversion, or data-layer separation. A more insightful question would have targeted whether task detail pages reflect correct status, or asked the reporter to try toggling the archive filter."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is well-structured and gives a developer a clear starting point: check the index rebuild during the v2.3.1 migration, compare archived/active filter logic between versions, and verify the indexing pipeline. The proposed test case is concrete and useful. A developer could begin investigating immediately, though the missing 'individual task pages' data point means they lack one confirming signal that the bug is purely in the index layer."
+    }
+  },
+  "weighted_total": 3.3,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly identified the v2.3.1 upgrade as the causal trigger and correlated it with the search index rebuild — matching an acceptable diagnostic path",
+    "Triage summary is well-structured with clear reproduction steps, a proposed test case, and specific investigation recommendations",
+    "Correctly flagged the inversion hypothesis as one of the probable causes, which aligns with the actual root cause",
+    "Appropriately assessed severity as high given all-user impact on a core workflow feature"
+  ],
+  "notable_weaknesses": [
+    "Resolved after a single exchange, leaving obvious diagnostic questions unasked",
+    "Never asked whether individual task detail pages show the correct archive status — the single most useful question to separate search-index vs. application-logic causes",
+    "Never asked the reporter to toggle the 'show archived' filter to confirm the inversion pattern",
+    "The upgrade timing correlation was volunteered by the reporter, not elicited — the agent's question did not specifically probe for recent changes"
+  ],
+  "most_insightful_question": "The environment/version question that elicited the v2.3.1 upgrade timing — though it was a generic checklist question rather than a targeted diagnostic one, it produced the most valuable information in the conversation.",
+  "missed_opportunities": [
+    "Do individual task pages (opened directly, not via search) show the correct archive status for those tasks? This would immediately confirm the bug is in the search layer, not the data layer.",
+    "What happens when you manually toggle the archive filter in search — do you then see your active tasks but not the archived ones? This would confirm the inversion pattern specifically.",
+    "Can you browse your active tasks through the task list view (not search) and see all 150 of them correctly listed? This would further isolate search as the broken component.",
+    "Did the search issues begin on a specific day, and does that date match when the v2.3.1 update was applied? Pinning the exact onset would strengthen the migration correlation.",
+    "Did your team's administrator run any manual steps during the upgrade, such as a database migration or index rebuild?"
+  ]
+}

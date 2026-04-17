@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected information items were captured: inverted filter behavior, active tasks missing from results, ~3-day timeline tied to v2.3.1, multi-user impact, correct status labels on individual task pages, and the inverted filter. The one gap is the search index layer — the agent never surfaced that the issue is in the search index (Elasticsearch) rather than application logic, which is a meaningful miss given it's in the expected extracts."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The canonical root cause (Elasticsearch field mapping inversion) was not identified, but the triage matches acceptable path #2: the schema migration is correctly identified as the trigger, and the archive filter is correctly identified as the broken component. The root cause hypothesis (DB boolean flip or column rename without query update) is wrong about the layer but directionally plausible. The recommended fix would lead a developer to look at application code before the search index config, which adds friction but doesn't constitute a complete misdirection."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two targeted question rounds before resolving. The first round established filter state and how archived tasks appeared; the second established the timeline and migration trigger. One obvious follow-up was skipped: asking whether searching with no archive-status filter (returning all tasks) also shows anomalies would have been a strong test for whether the inversion was in the filter predicate vs. the index itself. Otherwise solid coverage."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question turns were well-targeted and contributed unique diagnostic value. The first turn's multi-part question was appropriate given the need to establish baseline context. No questions were redundant. Possibly the first question could have deferred the 'where in TaskFlow' part given the issue title implied the main search bar, but this is minor."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The standout question — 'was it clearly marked as archived in the results, or did it appear as if it were a normal active task?' — demonstrates genuine diagnostic reasoning. This single question distinguished between a display rendering bug and a filter/index bug, and it elicited the reporter's unprompted description of the full bidirectional inversion. The timeline question was standard but well-framed to surface migration events. Both questions drew out information that materially shaped the diagnosis."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The triage summary is detailed and includes clear reproduction steps, severity, and a proposed test case. However, the recommended fix points developers at application code (migration scripts, ORM predicates) rather than the search index configuration. A developer following this summary would likely inspect DB migration scripts and query predicates before discovering the actual fix requires reindexing with corrected field mappings. The information gaps section usefully flags the API endpoint question. Adequate starting point but with meaningful misdirection."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The question about whether archived tasks appeared 'clearly marked as archived' vs. appearing as normal active tasks was a high-leverage diagnostic move that immediately distinguished a display bug from a filter/index inversion",
+    "The timeline question was well-framed to surface migration events, and it worked — the reporter directly connected the issue to the v2.3.1 database migration",
+    "The triage correctly identified bidirectional filter inversion, multi-user scope, and the migration trigger in just two turns",
+    "The information_gaps section shows appropriate epistemic humility about what wasn't confirmed",
+    "Reproduction steps are specific and actionable, including concrete task counts that help reproduce scale-dependent behavior"
+  ],
+  "notable_weaknesses": [
+    "The triage never surfaced the search index layer — the hypothesis and recommended fix are entirely framed around database and application code, missing that the actual inversion is in the Elasticsearch field mapping",
+    "No question was asked about whether searching with no archive-status filter (showing all tasks) behaves correctly — this would have been a strong diagnostic signal pointing toward the index layer vs. application predicate",
+    "The recommended fix would lead a developer to inspect migration scripts and ORM filters before discovering the actual issue is in index configuration, adding investigation friction"
+  ],
+  "most_insightful_question": "Was it clearly marked as archived in the results, or did it appear as if it were a normal active task?",
+  "missed_opportunities": [
+    "Ask whether searching with no archive filter (returning all tasks) shows a correct mixed result set — this would distinguish between a filter predicate bug and a deeper index mapping issue",
+    "Ask whether the issue is reproducible via the API or only the UI search bar — the information gaps section acknowledges this post hoc but it could have been asked directly",
+    "Ask whether newly created tasks (after the v2.3.1 migration) are also affected or only tasks that existed before — this would have helped characterize whether it was a data migration issue vs. an ongoing indexing configuration issue"
+  ]
+}

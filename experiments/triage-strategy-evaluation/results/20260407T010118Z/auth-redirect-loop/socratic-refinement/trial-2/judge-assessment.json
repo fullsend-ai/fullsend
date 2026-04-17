@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: the 30% affected rate, the plus-addressing and email alias pattern, the email claim mismatch, redirect URIs being correctly configured, other SSO apps working, and the incognito workaround. The SameSite cookie issue surfaced in the conversation and was acknowledged in the summary under 'information_gaps', but was not fully captured as a primary finding — it was treated as a possible side effect rather than an independent extracted fact. Browser dev tools showing the cookie dropped was mentioned but not firmly recorded as a diagnostic data point."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the email claim mismatch as a root cause and noted the cookie behavior as worth investigating. This matches acceptable diagnostic path #3: identifying both issues but with the causal hierarchy inverted (email as primary, cookie as secondary). The agent did not dismiss the cookie clue entirely — it flagged it as a potential secondary issue — which prevents a lower score. The causal inversion is the only inaccuracy relative to ground truth."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked two productive rounds of questions and reached a defensible conclusion. However, when the reporter mentioned that a developer saw a Set-Cookie header that 'didn't stick,' the agent resolved without following up. That clue — combined with the incognito window sometimes working — was a clear signal pointing to browser cookie behavior (SameSite). One more targeted question about the cookie attributes or the incognito behavior would have surfaced the primary cause. Resolving at that point left an obvious diagnostic thread unpulled."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both question rounds were targeted and non-redundant. No information was asked for twice. The agent combined related sub-questions efficiently within each turn. Nothing could be cut."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question about patterns among affected users was the right opening move and drew out the plus-addressing and alias information the reporter hadn't fully synthesized. The second question about token claims versus stored emails was well-targeted and directly produced the key diagnostic information. Both questions required diagnostic reasoning, not just information-gathering. The slight deduction is for not following up on the incognito clue or the dropped cookie observation, both of which were concrete signals worth a more probing question."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it gives an immediate fix (update user records to match Entra primary emails), a durable fix (switch matching to sub/oid claim), a proposed test case, and explicitly flags the cookie issue for code-level investigation. A developer could open the SSO callback handler and start working immediately. The information gaps are clearly labeled and correctly assessed as non-blocking."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Opening question immediately targeted user pattern differentiation — the highest-yield diagnostic move — and successfully drew out the plus-addressing and alias information",
+    "Second question correctly probed token claims vs. stored email, producing the key mismatch finding",
+    "Triage summary is exceptionally actionable: immediate fix, durable fix, proposed test cases, and clearly labeled information gaps",
+    "Correctly identified an acceptable diagnostic path (email mismatch as primary cause) and did not dismiss the cookie observation entirely"
+  ],
+  "notable_weaknesses": [
+    "When the reporter volunteered that a developer observed a Set-Cookie header that didn't stick, the agent resolved instead of following up — missing the opportunity to identify SameSite=Strict as the primary cause",
+    "The incognito window workaround was noted but not interrogated; probing why incognito sometimes works would have pointed directly to cookie/browser behavior",
+    "The summary classifies the cookie issue as 'likely a side effect' when it is actually the primary cause; this inversion could lead a developer to deprioritize the more impactful fix"
+  ],
+  "most_insightful_question": "Can you tell me more about what happens on TaskFlow's side when the redirect comes back from Microsoft? Specifically: do you know whether TaskFlow looks up users by the email claim in the SSO token, or by some other identifier — and for one of the affected users, have you been able to check what email Entra ID is actually sending back in the token versus what's stored in TaskFlow's user record?",
+  "missed_opportunities": [
+    "Follow up on the dropped Set-Cookie observation: 'You mentioned the cookie wasn't sticking — do you know whether the session cookie has a SameSite attribute set? SameSite=Strict can cause cookies to be dropped on cross-origin redirects, which would explain the loop independently of the email mismatch.'",
+    "Probe the incognito workaround more directly: 'When incognito sometimes works, does it work consistently for a given user, or is it intermittent? And does clearing all cookies and retrying in a normal window also help?' — this would have surfaced cookie-state dependency as the primary factor"
+  ]
+}

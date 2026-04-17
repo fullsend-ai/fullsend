@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured all extractable expected information: memory growth from ~500MB to 4GB+, v2.3 upgrade trigger one week ago, ~200 active users, v2.3 changelog notification changes. The daily restart as a temporary fix is implicit but not explicitly called out as a diagnostic fact. Server specs (8GB RAM VM, Ubuntu 22.04) were never volunteered by the reporter and were correctly flagged as an information gap, so that omission is not penalized. The consistent day-to-day pattern from the original issue body was noted in the body but not highlighted in the structured summary."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the v2.3 upgrade as the trigger and the real-time notification subsystem as the source — matching acceptable path 1 exactly. The mechanism is framed as WebSocket connections not being closed (connection leak), while the actual cause is event listeners registered per API request never being deregistered. This is a reasonable interpretation given the reporter's evidence of connection count exceeding user count, and within the acceptable diagnostic paths. The fix direction (investigate WebSocket lifecycle management in the notification module) is correct and actionable."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after two well-targeted question rounds, having obtained strong evidence (WebSocket count exceeding concurrent users). Remaining unknowns — server OS/runtime, error logs, whether leak is per-navigation or per-session — were acknowledged as information gaps. The agent could have asked for error logs or server specs before resolving, but the diagnostic confidence from the WebSocket count observation was high enough to justify resolution. At most one obvious follow-up (server logs) was skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns, both well-targeted and efficiently batched. No questions were repeated or redundant. The first turn established version, timing, and usage patterns in one pass. The second turn drilled directly into the WebSocket/notification thread the reporter had flagged. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was genuinely insightful: asking the reporter to compare active WebSocket connection counts early vs. late in the day was a concrete, diagnostic instruction the reporter would not have thought to check on their own. It directly surfaced the key evidence (connections accumulating beyond concurrent users), which confirmed the leak hypothesis. The first question efficiently combined version, timing, usage patterns, and background processes."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes a clear root cause hypothesis, specific reproduction steps calibrated to the actual environment, five concrete sub-items for the recommended fix (disconnect handlers, heartbeat, TTL, code diff against v2.2), a proposed integration and soak test, and explicitly enumerated information gaps. A developer could begin inspecting the v2.3 notification module's WebSocket lifecycle code immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 5,
+  "notable_strengths": [
+    "The WebSocket connection count question in turn 2 was a genuinely diagnostic prompt that the reporter would not have checked unprompted — it directly surfaced the smoking-gun evidence",
+    "The agent immediately picked up the reporter's observation about the v2.3 changelog and made it the central thread of investigation rather than letting it get buried",
+    "The resolution summary is unusually actionable: specific fix sub-items, a concrete test strategy, and explicit information gaps all reduce time-to-fix for the developer"
+  ],
+  "notable_weaknesses": [
+    "The mechanism in the root cause hypothesis (WebSocket connections not closed) is subtly different from the actual cause (event listeners registered per API request and never deregistered) — close enough for an acceptable path, but a developer might look in the wrong place first",
+    "Server error/application logs were never requested and not mentioned as something to collect before the developer starts, despite being likely to contain relevant warnings",
+    "The day-to-day consistency of the pattern — noted in the original issue as 'very consistent' — was not surfaced as a distinct diagnostic signal in the structured summary"
+  ],
+  "most_insightful_question": "If you check active connections (like WebSocket connections or long-polling requests) late in the day versus early morning, are they accumulating?",
+  "missed_opportunities": [
+    "Asking for server-side application or error logs from a high-memory period — these might contain listener registration warnings or out-of-memory hints",
+    "Asking for server runtime specs (OS, Node.js/runtime version, containerized vs. bare metal) before resolving rather than leaving it as a gap",
+    "Asking whether the memory growth rate correlates with request volume (e.g., does it climb faster on busy days?) — would have helped confirm a per-request vs. per-session leak pattern"
+  ]
+}

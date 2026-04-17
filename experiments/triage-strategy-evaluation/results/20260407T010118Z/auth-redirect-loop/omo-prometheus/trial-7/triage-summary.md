@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** SSO login redirect loop caused by email mismatch between Entra ID token and TaskFlow user records
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. They authenticate successfully with Entra but TaskFlow cannot establish a valid session, causing an immediate redirect back to the identity provider.
+
+## Root Cause Hypothesis
+TaskFlow performs a strict email match to associate incoming OAuth tokens with local user records. Two categories of users fail this lookup: (1) Users with '+' in their email addresses — Entra ID URL-encodes the '+' as a space in the OAuth callback form data, so 'jane+taskflow@company.com' is decoded as 'jane taskflow@company.com', which doesn't match the stored record. Okta likely preserved or percent-encoded the '+' differently. (2) Users whose email changed in the corporate directory (name changes, personal-to-company email migration) — Entra sends the current directory email, but TaskFlow still has the old email on file. In both cases, the token is valid but the user lookup fails. TaskFlow sets a session cookie but the session has no associated user, so on the next request it's treated as unauthenticated and the loop restarts.
+
+## Reproduction Steps
+  1. Set up TaskFlow with Microsoft Entra ID SSO
+  2. Create or identify a user whose email in Entra ID differs from their email in TaskFlow (e.g., a plus-sign email like user+tag@company.com, or a user whose email was updated in the directory but not in TaskFlow)
+  3. Attempt to log in as that user
+  4. Observe: successful Entra authentication, redirect back to TaskFlow, Set-Cookie header present in response, but cookie is not effective — user is immediately redirected back to Entra
+  5. Loop continues indefinitely
+
+## Environment
+Self-hosted TaskFlow instance, recently migrated from Okta to Microsoft Entra ID SSO. OAuth/OIDC callback flow. Issue affects approximately 30% of users.
+
+## Severity: high
+
+## Impact
+~30% of the user base cannot log in at all. No reliable workaround exists — clearing cookies and incognito mode provide inconsistent temporary relief at best. Affected users are completely blocked from using TaskFlow.
+
+## Recommended Fix
+1. **Immediate fix:** Normalize email comparison in the OAuth callback handler — apply URL decoding (specifically handling '+' encoding) before matching, and use case-insensitive comparison. 2. **User lookup resilience:** Consider matching on a stable claim like the Entra Object ID (`oid` or `sub` claim) rather than email alone, or implement a fallback lookup strategy. 3. **Email sync:** For the email-mismatch users, either update their emails in TaskFlow to match Entra, or implement an account-linking flow that can reconcile mismatched emails. 4. **Migration script:** Audit all user records and flag any where the stored email doesn't match the Entra directory email, so mismatches can be resolved proactively.
+
+## Proposed Test Case
+Write a test for the OAuth callback handler that authenticates a user whose Entra token contains 'user+tag@company.com' and verifies that the session is correctly established and the user is matched to their existing TaskFlow account. Additionally, test a user whose Entra email differs from their stored TaskFlow email and verify the lookup either matches correctly or produces a clear error rather than a redirect loop.
+
+## Information Gaps
+- Exact code path in TaskFlow's OAuth callback handler — server logs were not obtained to confirm the specific failure point
+- Whether TaskFlow uses the email claim, sub claim, or another field for user matching
+- Whether the non-plus-sign affected users' pattern holds for all 4-5 cases (only 2 were verified)
+- TaskFlow version and specific OAuth/OIDC library in use

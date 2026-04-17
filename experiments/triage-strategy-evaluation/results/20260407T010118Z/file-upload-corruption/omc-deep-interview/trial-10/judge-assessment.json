@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: small PDFs fine, started ~1 week ago, binary content being mangled (UTF-8 transcoding hypothesis), multiple customers affected, other file types possibly affected, and size-dependent behavior. The one gap is the specific 1MB threshold — the agent captured '2-5MB range' from the reporter but didn't pin down the boundary. The upload proxy specifically was not identified, though the agent did surface the concept of size-dependent code paths."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The agent's root cause hypothesis — 'binary data being treated as text (e.g., UTF-8 transcoding stripping bytes)' in a 'size-dependent code path' following 'a backend change ~1 week ago' — is remarkably close to the actual cause (Content-Type stripping causing text encoding on chunked/proxied uploads). This satisfies acceptable path #1 (size-dependent behavior pointing to different upload paths) and approaches acceptable path #2 (proxy as corruption source). The agent even named the specific mechanism (encoding transformation on binary data) without knowing the Content-Type header detail. No material inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered the most important diagnostic angles across four question turns: error specifics, size dependency, upload method, file size range, other file types, and timing of the regression. The main unasked question was whether previously uploaded PDFs still download correctly (which would confirm upload-side vs. serving-side), and whether the issue reproduces in different browsers. The agent appropriately flagged these as information gaps rather than leaving them unnoticed."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns, each combining two related diagnostic questions efficiently. No redundant questions. The first question (file size comparison + error message) was slightly lower-value since the reporter couldn't easily answer the size-comparison part, but the error message detail was worth asking. All other questions were well-targeted and yielded useful information."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — asking whether some PDFs get through fine versus it being across-the-board — was the pivotal diagnostic move of the conversation. The reporter would not have volunteered the size dependency unprompted, and this single question unlocked the key discriminating fact. The subsequent question about file size range and the probe about other file types also showed genuine diagnostic reasoning rather than generic troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it names the specific backend change timeframe, provides a precise hypothesis about the corruption mechanism, gives step-by-step reproduction instructions including boundary size testing, recommends checking deployment history for upload pipeline changes, and proposes a byte-for-byte regression test. A developer could begin investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.55,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The second question directly surfaced the size-dependency — the single most important diagnostic fact — that the reporter would not have volunteered unprompted",
+    "The root cause hypothesis accurately identified the corruption mechanism (binary data treated as text via encoding transformation) without access to server-side information",
+    "The triage summary includes boundary-size reproduction steps and a proposed regression test, making it immediately actionable for an engineer"
+  ],
+  "notable_weaknesses": [
+    "The first question asked the reporter to compare downloaded vs. original file sizes — a task the reporter couldn't reasonably do on the spot, making this sub-question low-yield",
+    "The agent never asked whether previously uploaded PDFs (before the regression week) still download correctly, which would have confirmed this as an upload-side rather than serving-side issue"
+  ],
+  "most_insightful_question": "does this happen with *every* PDF you upload, or are some getting through fine? For example, have you noticed if smaller or simpler PDFs work while larger ones don't?",
+  "missed_opportunities": [
+    "Ask whether PDFs uploaded before the regression started still download correctly — would confirm upload-side corruption vs. a serving-side change",
+    "Ask the reporter to test uploading a small PDF right now to confirm small files work in the current session, establishing a controlled baseline",
+    "Ask whether the corrupted files can at least be downloaded (versus failing at download) to distinguish upload corruption from download corruption"
+  ]
+}

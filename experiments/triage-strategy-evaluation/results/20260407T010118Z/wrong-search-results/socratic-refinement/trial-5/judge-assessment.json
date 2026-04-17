@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks appearing in active filter, active tasks missing from default results, onset tied to migration ~3 days ago, multi-user impact confirmed, individual task pages showing correct status, filter behavior explicitly described as inverted, and isolation to the search layer (not application logic). The summary also captures additional useful detail: exact task counts (150/300), reproduction steps, a proposed test case, and clearly listed information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis directly identifies the search index as the broken layer, explicitly lists 'search index rebuilt with inverted status values' as the leading candidate, and recommends correcting the field mapping and reindexing — which matches the canonical cause exactly. The triage also correctly notes that individual task views read from the primary store (explaining why they're correct), and traces the trigger to the v2.3.1 migration. No inaccuracies that would mislead a developer."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after a single question, but only because the reporter's reply was unusually comprehensive — volunteering the migration context, inversion behavior, individual task correctness, and task counts unprompted. The agent appropriately captured the information gaps (schema diff details, whether a separate search index is used, org-wide vs. team scope). One obvious follow-up — confirming whether other teams or organizations are affected — was left unasked rather than answered, though it was noted as a gap."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked before resolution, and the agent resolved as soon as it had a complete picture. No redundant or low-value turns. Maximally efficient given the information obtained."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The opening question was well-structured and covered context, recency, and whether behavior had changed — which successfully drew out the migration connection. However, it was fairly generic (applicable to most bug reports) rather than search-specific. A more targeted question — e.g., asking whether the same tasks appear correctly when browsed directly vs. via search — would have proactively surfaced the index/data-layer split. Still, the question was effective and professional."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names the specific release, identifies the search index as the failure domain, lists three concrete things to check in the migration (boolean inversion, enum remapping, index rebuild logic), recommends a reindex as the likely fix, provides step-by-step reproduction steps, and includes a proposed regression test. A developer could open the v2.3.1 migration diff and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.70,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Single-turn diagnosis: the agent's first question was open-ended enough to elicit a maximally informative reply, allowing a complete and accurate resolution in minimal turns.",
+    "Root cause hypothesis is precise and well-reasoned — explicitly names search index field mapping inversion and recommends a targeted fix (correct mapping + reindex) rather than a vague 'look into it'.",
+    "Information gaps are honestly and specifically enumerated, so a developer knows exactly what to verify before closing the issue.",
+    "Proposed test case and reproduction steps make the summary immediately usable for both debugging and regression prevention."
+  ],
+  "notable_weaknesses": [
+    "The opening question was somewhat generic — it didn't probe search-specific hypotheses (e.g., index vs. database query, filter predicate vs. stored value) that could have led to an even faster diagnosis if the reporter had been less forthcoming.",
+    "The agent did not ask whether other teams or organizations are affected, leaving scope of impact partially unresolved (though this was honestly flagged as an information gap)."
+  ],
+  "most_insightful_question": "\"Do you have a rough sense of when it stopped working as expected?\" — this prompted the reporter to surface the v2.3.1 migration, which was the key diagnostic anchor for the entire triage.",
+  "missed_opportunities": [
+    "Ask whether searching without any archive filter (showing all tasks) returns the correct full set — this would have confirmed whether the inversion is filter-only or affects ranking/indexing more broadly.",
+    "Ask whether the team's account or data partition is on a different server or shard, to scope whether this is org-wide or isolated to their environment.",
+    "Ask whether the search queries the primary database directly or goes through a separate search service (e.g., Elasticsearch) — this was noted as an information gap but could have been resolved in the conversation."
+  ]
+}

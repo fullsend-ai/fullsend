@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured several key items: inverted filter behavior, active tasks missing from results, all users affected, and the workaround (toggling the filter). However, it missed three important expected extracts: (1) when the issue started — no question about timing or recent changes/migrations was asked; (2) whether individual task pages show correct archive status — a key diagnostic signal that would differentiate a UI display bug from a search/index bug; (3) the search index vs. application logic distinction was never established."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly identified that the archive filter is inverted and that active tasks are inaccessible via default search — this partially matches the acceptable path 'Identifying the archive filter as the broken component.' However, the root cause hypothesis directs developers toward application code (frontend filter construction, API query layer, boolean predicate in code), whereas the actual cause is an Elasticsearch index field mapping inversion caused by a schema migration rebuild. This misdirection could cost significant developer investigation time. The agent did not identify the migration as the trigger, nor the search index as the layer where the inversion lives."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single exchange. Several obvious and high-value questions were skipped: (1) When did this start? (would have surfaced the ~3-day-ago migration); (2) Has anything changed recently — deployments, updates, migrations? (the most direct path to root cause); (3) Do individual task detail pages show the correct archive status? (would have distinguished search index bug from application logic bug). The reporter's first answer was informative but not sufficient to warrant immediate resolution — there were clear unresolved diagnostic signals."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked, and it was well-targeted. No questions were redundant or wasted. The issue is not with economy but with thoroughness — the agent stopped too soon, not that it wasted turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The single question was genuinely insightful. The multiple-choice framing (hidden vs. filtered vs. ranked lower) helped the reporter articulate a nuanced expectation they might not have expressed unprompted, and it directly elicited the key 'filter is backwards' observation. The reporter's response confirmed the inversion and provided the workaround detail. The question demonstrated real diagnostic reasoning about the nature of the filtering problem."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The triage summary is well-structured with clear reproduction steps and a proposed test case. A developer could begin investigating from it. However, the hypothesis directs them toward application code and frontend filter construction rather than the search index configuration — where the actual bug lives. A developer following this summary would likely spend time auditing query-building code before discovering the index mapping is the real culprit. The summary is a reasonable starting point but points in a partially wrong direction."
+    }
+  },
+  "weighted_total": 3.20,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The multiple-choice question about archive filter expectations was well-framed and efficiently elicited the reporter's confirmation that the filter is reversed, including the workaround",
+    "Correctly identified the inverted filter as the core symptom and accurately described impact in terms of active/archived task counts",
+    "Produced clean, well-structured reproduction steps and a proposed test case that correctly exercises the inversion"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the issue started — a single timing question would likely have surfaced the recent migration as the trigger",
+    "Never asked whether individual task pages show correct archive status — this diagnostic question would have ruled out a UI display bug and pointed toward the search index layer",
+    "Root cause hypothesis incorrectly targets application code (boolean predicate, frontend filter construction) rather than the search index field mapping, which is where the actual inversion lives",
+    "Resolved after only one question-answer pair despite clear opportunity to gather information that would have substantially improved accuracy"
+  ],
+  "most_insightful_question": "The multiple-choice question about expected archive behavior: 'Hidden by default / Filtered out / Shown but ranked lower / Something else' — this framing helped the reporter precisely articulate that the filter exists but is inverted, and prompted them to volunteer the key workaround (toggling the filter shows the opposite of what's expected).",
+  "missed_opportunities": [
+    "When did this issue first appear? Has anything changed in the past week — software updates, deployments, or database migrations?",
+    "If you open an individual task that appears in your search results (one of the archived tasks showing up as active), does its detail page correctly show it as archived?",
+    "Are you on a specific version of the application, and do you know when the last update was applied?",
+    "Does searching without any filter (if that option exists) return a mix of all tasks, or is it also broken?"
+  ]
+}

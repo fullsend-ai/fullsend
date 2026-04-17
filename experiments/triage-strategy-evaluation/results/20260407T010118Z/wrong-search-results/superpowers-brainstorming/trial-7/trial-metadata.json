@@ -1,0 +1,7 @@
+{
+  "scenario": "wrong-search-results",
+  "strategy": "superpowers-brainstorming",
+  "reporter_profile": "cooperative",
+  "turns": 2,
+  "parse_failures": 0
+}

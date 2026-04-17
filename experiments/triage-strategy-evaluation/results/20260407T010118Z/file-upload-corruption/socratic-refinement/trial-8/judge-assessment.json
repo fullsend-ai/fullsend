@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of the seven expected items were captured: size-dependent corruption (>1-2 MB), small PDFs fine, started ~1 week ago, binary content mangled (file size preserved but content garbled), multiple customers affected, and an implicit reference to upload path/proxy changes. The one gap is whether other large file types (images, spreadsheets) are also affected — this was noted as an information gap rather than extracted from the reporter."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary correctly identifies size-dependent behavior and suspects a recent deployment affecting chunked transfer or streaming — squarely matching acceptable path 1. The hypothesis specifically calls out 'binary vs. text mode in file I/O' as a candidate cause, which is essentially the actual root cause (storage defaulting to text/plain encoding and mangling binary content). The proxy is mentioned as one of several components to investigate. Does not fully land on the proxy-as-culprit framing of acceptable path 2, but the diagnostic direction is accurate and well-reasoned."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about timing, what changed, the nature of the corruption, and the size dependency — all critical questions. The one obvious omission is not asking whether other file types (images, Word docs) over the same size threshold are also affected, which would have been a direct diagnostic probe distinguishing PDF-specific behavior from a general large-file bug. Flagged as an information gap in the summary, but not asked while the reporter was available."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four well-structured turns before resolution. Each question advanced the diagnosis meaningfully. The ask for a before/after comparison in turn 4 was a low-probability request given the reporter's evident frustration, and could have been omitted or saved for a follow-up, but it did not waste significant conversation space."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Questions showed genuine diagnostic reasoning. The third question — probing what the corrupted files look like and whether some PDFs get through — was the pivotal move that surfaced the size-dependent behavior the reporter hadn't consciously connected. Questions were professional and incrementally narrowing. The second question's framing ('did anything change on your side?') was reasonable but slightly generic for a customer-facing reporter with no visibility into deployments."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate, structured starting point: review deployments from ~1 week ago touching the upload/storage/download path, binary-diff a corrupted file against the original to characterize the corruption pattern, and specifically check chunked upload handling, proxy/gateway buffer limits, and binary vs. text mode in file I/O. Reproduction steps are concrete with specific size ranges. A proposed integration test with SHA-256 checksums across a size matrix is included. A developer could start coding an investigation immediately."
+    }
+  },
+  "weighted_total": 4.1,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The pivot to asking about size dependency in turn 3 was well-timed and drew out the key diagnostic signal the reporter hadn't consciously recognized",
+    "The root cause hypothesis is remarkably close to the actual cause, specifically calling out binary/text encoding mode as a candidate",
+    "The triage summary is exceptionally structured — reproduction steps, recommended fix, and proposed test case give a developer immediate, actionable footholds",
+    "Correctly established server-side causation and ruled out client-side factors early"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other large file types (images, spreadsheets) were also affected — this single question would have been highly diagnostic in distinguishing PDF-specific versus large-file-general behavior",
+    "The before/after comparison request in turn 4 was unlikely to pay off given the reporter's clearly non-technical role and mounting frustration, consuming half a turn that could have been spent on the file-type question"
+  ],
+  "most_insightful_question": "And is it happening to *every* PDF your team uploads, or are some getting through okay (maybe smaller ones, or ones from a particular source)?",
+  "missed_opportunities": [
+    "Ask whether other file types over the same size threshold (images, Word documents, spreadsheets) are also coming through corrupted — this would immediately distinguish a PDF-codec issue from a general large-file pipeline issue",
+    "Ask whether there is a workaround available (e.g., compressing a large PDF to under 1 MB and re-uploading) to both help the customer immediately and confirm the size threshold hypothesis"
+  ]
+}

@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Memory leak in v2.3 real-time notification subsystem: event listeners registered per API call but never removed
+
+## Problem
+After upgrading from v2.2 to v2.3, the TaskFlow server process leaks memory steadily during normal usage, climbing from ~500MB at startup to 4GB+ over a workday with ~200 active users. Page loads degrade to 10+ seconds and API calls time out, requiring a daily server restart.
+
+## Root Cause Hypothesis
+The 'improved real-time notifications' feature introduced in v2.3 registers a notification event listener on every API call but never removes it. Over a day of normal usage (~200 users making repeated API calls), the listener count grows from ~200 to 40,000+, each retaining references that prevent garbage collection. The connections themselves are managed correctly (count stays stable at ~220-230), but the listeners attached to them accumulate without bound.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 (the bug does not exist in v2.2)
+  2. Start the server and note baseline memory (~500MB) and listener count (~200 via /debug/vars)
+  3. Allow normal user activity with ~200 users over several hours
+  4. Monitor memory via htop and listener count via /debug/vars
+  5. Observe memory climbing steadily and listener count growing with every API call, never decreasing
+  6. By end of day, memory reaches 4GB+ and listener count exceeds 40,000
+
+## Environment
+Self-hosted TaskFlow v2.3, ~200 active users, server monitored via Grafana and htop. Regression from v2.2 where the server ran stably for weeks.
+
+## Severity: high
+
+## Impact
+All ~200 users experience progressively degrading performance throughout each workday (10+ second page loads, API timeouts by late afternoon). Requires manual daily restart as a workaround. No data loss, but significant productivity impact.
+
+## Recommended Fix
+Diff the real-time notification subsystem between v2.2 and v2.3. Look for event listener registration in API request handlers (middleware, decorators, or notification subscription logic) that lacks a corresponding teardown/removal. Likely fix: ensure listeners are either (a) registered once per connection/session rather than per API call, or (b) properly removed after use. Check for patterns like `emitter.on()` without a corresponding `emitter.removeListener()` or `emitter.off()`, or subscription callbacks added inside request handlers without cleanup.
+
+## Proposed Test Case
+Write a load test that simulates 50+ users making repeated API calls over a sustained period. Assert that the notification event listener count (from /debug/vars) stays proportional to the number of active connections/sessions and does not grow with the number of API calls. Also assert that memory usage remains within a bounded range (e.g., does not exceed 2x baseline) after 10,000 API calls.
+
+## Information Gaps
+- Exact code path where listeners are registered (requires reading the v2.3 diff)
+- Whether the leak rate varies by API endpoint or is uniform across all endpoints
+- Whether a config option or feature flag can disable the new notification system as a temporary mitigation beyond daily restarts

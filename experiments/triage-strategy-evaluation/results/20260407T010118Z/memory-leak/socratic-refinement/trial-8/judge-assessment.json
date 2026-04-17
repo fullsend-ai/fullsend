@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: linear memory growth (~500MB to 4GB+), v2.3 upgrade timing (~1 week ago), ~200 active users, consistent day-to-day pattern, restart as workaround, and v2.3 changelog mentioning notification changes. The one missing item is server specs (8GB RAM VM, Ubuntu 22.04), which the reporter never volunteered and the agent never asked about — a notable gap but not central to the diagnosis."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The hypothesis correctly identifies v2.3 as the trigger and the real-time notification system as the source, matching the first acceptable diagnostic path exactly. The fix guidance explicitly calls out 'event listener or subscription registrations without corresponding removal on connection teardown', which closely describes the actual per-request listener leak. The nuance that the leak is per-API-request rather than per-disconnect is not fully pinpointed, but all guidance points squarely at the actual mechanism."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions before resolving, and by the end of turn 2 had strong evidence for a resource-leak hypothesis tied to v2.3. Server specs (RAM, OS, runtime/framework) were never asked — the agent acknowledged these as information gaps, which shows awareness, but not asking about them before closing means a developer is left without that environmental context. The core diagnostic path was solid enough to justify closing."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, each efficiently combining multiple sub-questions into a coherent diagnostic probe. No question was redundant or low-value. The agent resolved promptly once the key signal (memory never reclaims on its own, growth proportional to cumulative traffic) was confirmed."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 efficiently scoped the workload profile and tested the peak-load hypothesis. Q2 was genuinely insightful: asking whether memory drops during lunch distinguished a connection-count-based leak from a cumulative-traffic-based leak — a distinction the reporter would not have volunteered unprompted. The reporter's answer ('memory never drops even during lunch') was the pivotal evidence that narrowed the diagnosis to a per-request resource leak."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear root cause hypothesis, step-by-step reproduction instructions, specific areas of the codebase to diff (connection handlers, event listener registrations, unbounded in-memory structures), a concrete proposed test case, and explicit information gaps. A developer could begin a targeted code diff and write a regression test immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Q2 was diagnostically decisive: asking whether memory decreases during low-activity periods elegantly distinguished a concurrent-connection leak from a cumulative per-request leak, surfacing the key insight without the reporter having to volunteer it.",
+    "The fix guidance is unusually specific — it enumerates exactly what to look for in the diff (connection close handlers, listener deregistration, unbounded tracking structures) and proposes a concrete integration test to verify the fix.",
+    "The agent correctly connected three signals — v2.3 notification changes, linear growth proportional to traffic, and no memory reclaim on user disconnect — into a coherent and accurate hypothesis in just two turns."
+  ],
+  "notable_weaknesses": [
+    "Server specs (RAM, OS, runtime/framework) were never asked. These appear in information_gaps, showing awareness, but asking upfront would have provided environmental context useful for a developer investigating memory limits and GC behavior.",
+    "The hypothesis frames the leak as occurring when clients disconnect or navigate away, whereas the actual leak is per-API-request — a subtle but meaningful framing difference that could send a developer looking at connection teardown code rather than request middleware."
+  ],
+  "most_insightful_question": "Do those notification connections stay open all day... does the memory ever drop back down when people log off for lunch, or does it only ever go up?",
+  "missed_opportunities": [
+    "What server runtime and framework is TaskFlow running on? (Node.js, Python, Go, etc.) — critical for suggesting specific profiling tools and GC behavior",
+    "What are the server's hardware specs (RAM, CPU)? — helps contextualize the 4GB ceiling and GC pressure",
+    "Have you checked the v2.2-to-v2.3 changelog or diff for the notification changes? — the reporter mentioned the changelog entry; asking them to read the full diff might have immediately surfaced the listener registration change"
+  ]
+}

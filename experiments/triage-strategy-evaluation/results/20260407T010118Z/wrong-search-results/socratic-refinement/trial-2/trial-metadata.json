@@ -1,0 +1,7 @@
+{
+  "scenario": "wrong-search-results",
+  "strategy": "socratic-refinement",
+  "reporter_profile": "cooperative",
+  "turns": 2,
+  "parse_failures": 0
+}

@@ -1,0 +1,52 @@
+# Conversation: intermittent-403 x superpowers-brainstorming
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this. To help narrow this down, when you hit the 403, which of these best describes what you're doing?
+
+1. **Loading the dashboard fresh** (e.g., navigating to it or refreshing the page)
+2. **Performing a specific action** on the dashboard (e.g., clicking a filter, opening a task)
+3. **Returning after being idle** for a while (e.g., coming back to a tab that's been open)
+4. **Something else**
+
+Also — when it does fail, does refreshing the page fix it, or does it stay broken for a while?
+
+---
+
+### reporter
+
+It's mostly option 1 — just loading the dashboard or refreshing the page. It doesn't seem to matter what I'm doing specifically, sometimes it just comes back as 403. And yeah, refreshing usually fixes it! Sometimes I have to refresh a couple times but eventually it loads. I've been assuming it's some kind of network issue on my end but my coworker who also just got the new analyst role is seeing the same thing, so I figured I'd report it.
+
+---
+
+### triage-agent
+
+That's really helpful — and the detail about the 'new analyst role' stands out. A couple of things I want to check:
+
+Is the **analyst role** something that was recently created or assigned (i.e., around the same time the 403s started a couple days ago)? And do you know if anyone **not** in the analyst role is seeing these 403 errors too?
+
+This would help us figure out whether it's a permissions/role configuration issue vs. something broader.
+
+---
+
+### reporter
+
+Yeah, the analyst role is brand new — I think it was added just a couple days ago, right around when this started. My manager assigned me and a couple other people to it. As for people outside the analyst role, I'm not sure honestly. I asked one of the admins on my team and they said they haven't had any issues, but I don't know if that's just luck or what. It does seem like it's mostly the people with the new analyst role complaining about it though, now that you mention it.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on dashboard for users with new analyst role (permission caching issue)","problem":"Users assigned to the recently created 'analyst' role are experiencing intermittent 403 Forbidden errors when loading the TaskFlow dashboard. The errors are non-deterministic — the same page load sometimes succeeds and sometimes returns 403. Refreshing the page one or more times eventually resolves it. The issue began approximately when the analyst role was created and assigned, and appears isolated to users with that role. Admin users have not reported the issue.","root_cause_hypothesis":"The authorization/permission layer is caching role-permission mappings, and the cache is inconsistently populated for the new analyst role. On cache misses or stale cache hits, the system fails to recognize the analyst role's dashboard access grant and falls back to a deny (403). This explains the intermittent nature (cache hit vs. miss across requests or across multiple app servers) and why refreshing eventually works (a subsequent request hits a warm cache or a different server with the correct mapping).","reproduction_steps":["Create or use an account assigned only the 'analyst' role","Navigate to the TaskFlow dashboard","Refresh the page repeatedly (10-20 times) and observe that some loads return 403 while others succeed","Compare with an admin-role account performing the same steps (expected: no 403s)"],"environment":"Affects multiple users with the analyst role across the team; not browser- or network-specific. Role was created approximately 2 days before the report.","severity":"high","impact":"All users assigned the new analyst role are intermittently locked out of the dashboard, disrupting their workflow. As more users are assigned this role, the impact will grow.","recommended_fix":"Investigate the permission/authorization caching layer: (1) Check whether the analyst role's permissions were correctly propagated to all cache nodes or app server instances. (2) Look for a race condition where the role-to-permission mapping is lazily loaded and occasionally evicted or missing. (3) Verify that role creation properly invalidates or warms the permission cache. (4) As an immediate mitigation, consider clearing the permission cache or restarting the authorization service to force a full reload of role mappings.","proposed_test_case":"After fixing, write an integration test that creates a new role with dashboard access, assigns it to a test user, and verifies that 50+ consecutive dashboard requests all return 200 (no intermittent 403s). Additionally, test cache invalidation by creating a role, assigning permissions, and immediately verifying access without relying on cache warm-up.","information_gaps":["Exact cache technology and TTL configuration used by the authorization layer (internal architecture question)","Whether the deployment uses multiple app servers or a load balancer that could explain request-level inconsistency (internal infrastructure question)","Server-side error logs or authorization audit logs for the 403 responses (requires developer investigation)"]}
+
+---

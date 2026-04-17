@@ -1,0 +1,22 @@
+{
+  "title": "Infinite login redirect loop for users whose stored email doesn't match Entra ID email claim (plus-addressing and domain aliasing)",
+  "problem": "After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop: they authenticate successfully with Entra, get redirected back to TaskFlow, but TaskFlow immediately sends them back to Entra. The affected users fall into two groups: (1) users with plus-addressed emails (e.g., jane+taskflow@company.com) because Entra normalizes these to the base address (jane@company.com), and (2) users whose primary email domain changed between Okta and Entra due to aliasing.",
+  "root_cause_hypothesis": "Two-part failure. First, TaskFlow's OAuth callback performs user lookup by matching the email claim in the Entra token against stored user records. For affected users, the email in the Entra token (normalized/re-domained) doesn't match what TaskFlow has stored (plus-addressed or old-domain), so no user session is established and TaskFlow falls through to its unauthenticated redirect-to-login behavior. Second, the session cookie on the callback response is set with SameSite=Strict. Since the callback is a cross-domain redirect from Entra's domain to TaskFlow's domain, the browser treats this as a cross-site navigation and will not send existing SameSite=Strict cookies with the request — this may interfere with CSRF state validation or session continuity during the OAuth flow, compounding the lookup failure into a hard loop rather than an error page.",
+  "reproduction_steps": [
+    "Use TaskFlow v2.3.1 self-hosted with Entra ID SSO configured",
+    "Create or identify a user whose TaskFlow account email is plus-addressed (e.g., user+taskflow@company.com) or whose stored email domain differs from their Entra primary email",
+    "Attempt to log in via SSO",
+    "Observe the infinite redirect loop: TaskFlow → Entra → TaskFlow → Entra..."
+  ],
+  "environment": "TaskFlow v2.3.1, self-hosted, SSO via Microsoft Entra ID (recently migrated from Okta), HTTPS on taskflow.company.com",
+  "severity": "high",
+  "impact": "~30% of the team is completely unable to log into TaskFlow. No reliable workaround exists (incognito works intermittently). Affected users span multiple security groups and browsers (Chrome, Edge confirmed).",
+  "recommended_fix": "1. **Immediate fix:** Update stored emails in TaskFlow's user database to match what Entra sends in the token's email/preferred_username claim for all affected users. 2. **Durable fix:** Change TaskFlow's user-matching logic to use the `oid` (object ID) or `sub` claim from the OIDC token instead of (or in addition to) the email claim — these are stable identifiers that survive email changes. 3. **Cookie fix:** Change the session cookie's SameSite attribute from `Strict` to `Lax`, which still provides CSRF protection but allows the cookie to be sent on top-level cross-site navigations (exactly the OAuth redirect-back flow). This is the standard recommendation for OAuth/OIDC callback flows. 4. Investigate whether TaskFlow should show an explicit error ('no matching account found') rather than silently redirecting to login when user lookup fails.",
+  "proposed_test_case": "Create a test user in TaskFlow with a plus-addressed email (test+tag@domain.com). Configure Entra to return the base email (test@domain.com) in the token. Verify that (a) the user can log in successfully after the fix, and (b) the session cookie is set with SameSite=Lax. Additionally, test with a user whose stored email domain differs from the Entra email domain to cover the aliasing case.",
+  "information_gaps": [
+    "Exact claim Entra is sending (email vs preferred_username vs UPN) — reporter described it generally but didn't identify the specific OIDC claim field",
+    "Whether TaskFlow v2.3.1 has a configuration option for user-matching strategy (email vs OID) that might already exist",
+    "Whether the SameSite=Strict cookie is a TaskFlow default or was explicitly configured — determines whether the fix is a config change or a code change",
+    "Why incognito works intermittently — may involve browser-level cookie policy differences or a race condition in session establishment"
+  ]
+}

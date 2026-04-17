@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~5,000 tasks, title-fast/description-slow split, v2.2→v2.3 regression, ~2 weeks ago onset (captured in conversation turn 4, implicitly in summary via version reference), 10-15s timing, CPU spike, and long descriptions. The summary also correctly calls out OS as an information gap rather than inventing it."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage hits both acceptable diagnostic paths simultaneously: it identifies the v2.2→v2.3 upgrade as the trigger AND the title-vs-description disparity pointing to an indexing issue. The recommended fix even names SQLite and index removal as a leading candidate — which matches the actual cause (FTS5 index replaced by a LIKE scan) without having source access."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three question rounds extracted all critical information. The agent resolved only after obtaining task count, description length, version regression, timing, and CPU behavior. One minor miss: it never asked about OS/hardware or whether the reporter had tried reindexing — both noted as information gaps in the summary. No major unasked questions that would have changed the diagnosis."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "Q1 and Q2 were efficient and high-value. Q3 incorrectly assumed a browser context and asked about developer tools / network timing — an approach that didn't apply to a desktop app. The question still yielded useful CPU information (the reporter volunteered it in correcting the assumption), but the framing was wasted effort and added an unnecessary false branch to the investigation."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Q2 was excellent — asking what changed around the time of slowdown without leading the witness, which organically surfaced the version upgrade. Q1 was solid diagnostic segmentation. Q3 showed good intent (server vs. UI bottleneck framing) but the browser assumption was a misstep for a desktop app; the underlying diagnostic logic was sound even if the mechanism was wrong."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise problem statement, a well-reasoned root cause hypothesis naming SQLite and index removal as candidates, concrete reproduction steps with task count and description length parameters, a version-comparison fix strategy, a quantified performance test case, and explicitly listed information gaps. A developer could begin a git diff of the search subsystem between v2.2 and v2.3 immediately."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q2 was a textbook open-ended trigger question that surfaced the version upgrade without leading the reporter — the single most important fact in the triage",
+    "The root cause hypothesis independently converged on SQLite index removal as the leading candidate, matching the actual cause (FTS5 → LIKE scan) without source access",
+    "The final summary is developer-ready: reproduction steps include quantified parameters (5,000 tasks, 2,000+ char descriptions) and the recommended fix points directly at the right code area"
+  ],
+  "notable_weaknesses": [
+    "Q3 incorrectly assumed a browser context and asked about dev tools / network tab — inapplicable to a desktop app and a wasted framing, even though useful CPU data was recovered from the reporter's correction",
+    "The '~2 weeks ago' timing detail is captured in the conversation but not surfaced explicitly in the written summary, which relies on the version reference to imply it"
+  ],
+  "most_insightful_question": "Can you recall roughly when the slowdown started? For instance, did it coincide with a TaskFlow update, a big import of tasks, or around the time you started pasting meeting notes into descriptions?",
+  "missed_opportunities": [
+    "Ask for OS and hardware specs (Ubuntu version, RAM) — would have completed the environment picture without needing to flag it as a gap",
+    "Ask whether the reporter had tried any cache-clearing, reindexing, or reinstalling v2.2 — would have surfaced the workaround path and confirmed the regression is not data-corruption related"
+  ]
+}

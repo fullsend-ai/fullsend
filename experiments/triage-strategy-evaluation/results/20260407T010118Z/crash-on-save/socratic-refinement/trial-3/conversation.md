@@ -1,0 +1,77 @@
+# Conversation: crash-on-save x socratic-refinement
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can understand how frustrating it is to lose your work.
+
+To help us get to the bottom of this, could you walk me through what you were doing when the crash happened? Specifically, what were you working on in TaskFlow at the time — for example, were you editing a task, updating a project, or something else? And when you say the app "crashes," what exactly do you see — does it freeze, close entirely, show an error message, or something else?
+
+---
+
+### reporter
+
+I was editing my task list, I have a bunch of tasks in there. When I hit Save it just closes. Like the whole app just disappears. I think there's some kind of error dialog that flashes for a split second but I can't read it. It's been happening for a few days now and I'm getting really tired of it.
+
+---
+
+### triage-agent
+
+That's really helpful, thank you. The fact that it started a few days ago is an interesting clue — can you think of anything that changed around that time? For instance, did the app update, did you add a lot of new tasks, or change anything about how you were using it?
+
+Also, when you say you have "a bunch of tasks" — roughly how many are we talking about? I'm wondering whether the size of your task list might be connected to the crash.
+
+---
+
+### reporter
+
+I don't know, maybe like 200 or so tasks? Look, I did import some tasks from a CSV file around when this started happening, but I import stuff all the time so I don't see why that would matter. Can you guys just fix the save button? It worked fine before.
+
+---
+
+### triage-agent
+
+I hear you — and we definitely want to get that save button working for you again.
+
+I know you said you import CSV files all the time, so this might feel like a dead end, but the timing is really striking — the crashes started right around that last import. Could you tell me a bit more about that particular import? For instance, where did that CSV come from, and was there anything different about it compared to your usual imports — maybe a different source, more rows than usual, or data that looked a little unusual (like special characters, very long task names, or empty fields)?
+
+I'm asking because sometimes a single unexpected value in imported data can cause trouble down the line, even if the import itself seemed to go fine.
+
+---
+
+### reporter
+
+I don't know, it was just a CSV from a spreadsheet my coworker sent me. I didn't look at it that closely. Maybe it had some fancy characters in it, like smart quotes or whatever — my coworker is one of those people who makes everything look pretty in their documents. But I've imported CSVs with way more rows before and it was fine, so I really doubt that's the issue. Can you just look at why the save button crashes?
+
+---
+
+### triage-agent
+
+Thanks for bearing with me on this — I think we're close to understanding what's going on.
+
+Here's what I'm piecing together: the crashes started right after that CSV import, and your coworker tends to use formatted text with things like smart quotes. My best guess is that one or more of those imported tasks contain characters that the app can't handle when it tries to save — the import worked fine because it just reads the data in, but saving involves writing it back out in a specific format, and that's where it chokes.
+
+Would you be willing to try one quick thing to test this? If you create a brand new task list (or a copy without the imported tasks) and try saving *that*, does it work? If it does, that pretty much confirms the imported data is the culprit, and we'll know exactly where to look. If it still crashes, then we know it's something else entirely and we won't waste time chasing the wrong lead.
+
+---
+
+### reporter
+
+Ugh, fine. I actually already tried something like that — I removed the tasks I imported and it saved fine. But that's not a solution, I NEED those tasks. I can't just delete half my work. So yeah, it's probably the imported tasks, but I still need to be able to save them. Are you going to fix this or what?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save when task list contains imported CSV data with special characters","problem":"The app closes abruptly (with a briefly visible error dialog) whenever the user tries to save a task list that contains tasks imported from a specific CSV file. Removing the imported tasks restores normal save functionality.","root_cause_hypothesis":"The CSV import path accepts characters (likely smart/curly quotes, em dashes, or other Unicode characters from a formatted spreadsheet) that the save/serialization path cannot handle. The import succeeds because it only reads data in, but saving requires writing it back in a specific format, and the serializer chokes on these characters — causing an unhandled exception that crashes the app.","reproduction_steps":["Create or open a task list in TaskFlow","Import a CSV file containing tasks with special/formatted characters (smart quotes, em dashes, etc.)","Verify the import completes successfully and tasks appear in the list","Click Save","Observe: app crashes (closes entirely) with a briefly flashing error dialog"],"environment":"Not specified; issue appears to be platform-independent and related to data content rather than environment","severity":"high","impact":"User cannot save any work while the problematic imported tasks exist in their task list. They are forced to either delete the imported tasks (losing work) or avoid saving (risking data loss from the crash). This is a data-loss scenario that blocks normal workflow.","recommended_fix":"Investigate the save/serialization codepath for character encoding issues. Likely the serializer does not handle non-ASCII or Unicode characters properly. Check for unhandled exceptions during save and add proper encoding support (e.g., UTF-8) to the serialization logic. Also: the crash on save should never kill the app silently — add error handling so a save failure shows a readable error message and does not discard the user's in-memory state.","proposed_test_case":"Create a task list containing tasks with various special characters (smart quotes U+2018/U+2019, em dashes U+2014, non-ASCII Unicode, emoji, etc.), then save and verify the save completes without error and the data round-trips correctly when reloaded.","information_gaps":["Exact contents of the problematic CSV file (developer can request it from the reporter in a follow-up)","Exact error message from the flashing dialog (developer can reproduce and capture it, or check logs)","App version and platform (unlikely to change the investigation direction)"]}
+
+---

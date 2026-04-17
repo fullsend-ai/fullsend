@@ -1,0 +1,99 @@
+# Conversation: auth-redirect-loop x omc-deep-interview
+
+## Issue
+
+**Login redirect loop after SSO change**
+
+We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.
+
+We've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report. That redirect loop sounds frustrating, especially with only a subset of users affected.
+
+Have you been able to identify any pattern that distinguishes the ~30% of affected users from those who can log in successfully? For example: are they in different Entra ID groups, using a different browser, have existing TaskFlow sessions/cookies from before the migration, or were their accounts provisioned differently in the old Okta setup?
+
+---
+
+### reporter
+
+Good question. I've been trying to figure out a pattern myself. One thing I noticed is that a lot of the affected users have '+' characters in their email addresses — like jane+taskflow@company.com. We use plus addressing for some of our team members. But I don't think that's the whole story because there are a couple users without the '+' who are also affected. Those users I think had their email addresses changed at some point — like they were originally under a different email in Okta and we added their current one as an alias when we moved to Entra. Browser-wise, it seems to happen across Chrome, Edge, and Firefox so I don't think it's browser-specific. Oh and one weird thing — a few people said they were able to get in using an incognito window, though that didn't work for everyone.
+
+---
+
+### triage-agent
+
+That email pattern is a really promising lead — the '+' addresses and the aliased/changed emails both suggest something may be going wrong when TaskFlow tries to match the identity coming back from Entra to an existing user account.
+
+Could you check TaskFlow's server-side logs during one of these failed login attempts? Specifically, I'm looking for: (1) whether the OAuth callback from Entra is actually being received by TaskFlow (i.e., does the redirect URI get hit?), (2) what email or subject claim Entra is sending back in the token, and (3) whether TaskFlow logs any kind of "user not found" or session-creation error before issuing the redirect back to Microsoft. If you can grab the relevant log lines from one affected user's attempt, that would narrow this down significantly.
+
+---
+
+### reporter
+
+Honestly, I'm not super familiar with digging through server logs — I'm more on the IT admin side than a developer. I can try to look into it but it might take me a bit. What I can tell you is that from the browser side, when I watched one of the affected users try to log in, the redirect back to TaskFlow does seem to happen (the URL briefly shows our TaskFlow domain before it bounces back to Microsoft). I opened up the browser dev tools network tab and I could see a Set-Cookie header coming back on one of the redirects, but the login still didn't stick. I'm not sure what email Entra is sending back in the token — is there an easy way to check that without looking at server logs? Like from the browser side? I'll try to get someone to help me pull the server logs but that might take a day or so.
+
+---
+
+### triage-agent
+
+Great observations from the network tab — that's actually very helpful. Yes, there is a way to check what Entra is sending back without server logs! In the browser dev tools Network tab, look for the POST request back to TaskFlow's callback URL (it'll be the redirect from `login.microsoftonline.com` back to your TaskFlow domain). The response or the request body should contain an `id_token` parameter — it's a long string with two dots in it. You can copy that string and paste it into https://jwt.ms (Microsoft's own token decoder) to see the claims. I'm most interested in what appears in the `email`, `preferred_username`, and `sub` fields for an affected user versus a working user.
+
+Also, one follow-up on the incognito detail: for the affected users where incognito *did* work — after they closed that incognito window and tried again in a regular window, did it still fail? And had those users cleared their cookies before trying in the regular window, or were they working with existing cookies from before the Entra migration?
+
+---
+
+### reporter
+
+Oh okay, I'll try that jwt.ms thing next time I'm with one of the affected users — that sounds doable. I'll try to compare what it shows for someone who's affected vs someone who isn't and report back.
+
+As for the incognito question — I think for the couple people where incognito worked, they hadn't cleared their cookies in their regular browser. When they closed incognito and went back to their normal browser it still failed. I did have one person try clearing all their cookies in their regular browser and I think it worked for them that one time, but then the next day they were stuck again. So it's like clearing cookies gives a temporary fix but it doesn't last? I'm not totally sure about that though, it was kind of chaotic that day with everyone trying different things.
+
+---
+
+### triage-agent
+
+Thanks for checking on the incognito and cookie details — that temporary-fix-then-breaks-again pattern is a really useful clue.
+
+When you had the browser dev tools open watching the redirect loop, you mentioned seeing a `Set-Cookie` header. Could you take another look at that and tell me: what's the **name** of the cookie being set (e.g., is it something like `session`, `taskflow_auth`, `.AspNetCore.Cookies`, or similar), and does the `Set-Cookie` header include a `Domain=` or `Path=` attribute? If there are multiple `Set-Cookie` headers on that response, I'd be interested in all of them.
+
+Also — for the user whose cookies you cleared and it worked temporarily before breaking the next day: do you know if they actively logged out of TaskFlow at the end of that working session, or did they just close the browser? I'm trying to figure out if something is re-creating a bad cookie on logout versus on the next login attempt.
+
+---
+
+### reporter
+
+I don't remember the exact cookie name off the top of my head — I'd have to pull up dev tools again to check. I remember seeing the Set-Cookie header but I wasn't really looking at the details of it at the time, I was more focused on why the redirect kept happening. I'll try to grab that info next time. I think there might have been something about SameSite in there but I'm not 100% sure.
+
+As for that user who cleared cookies — I believe they just closed the browser at the end of the day, I don't think they specifically logged out. Then the next morning when they came back it was looping again. But I'm honestly not certain, things were pretty hectic that day with the migration issues.
+
+---
+
+### triage-agent
+
+While you're waiting to grab those token and cookie details, here's something you can probably check right now from the admin side: in TaskFlow's user management or directory settings, what email address is stored for the affected users? Specifically, I'm curious whether the email TaskFlow has on file for those users matches exactly what they're authenticating with in Entra — for example, does TaskFlow store `jane+taskflow@company.com` with the plus sign, or a version without it? And for the users whose emails were changed during the Okta-to-Entra migration, does TaskFlow still show their old email, their new one, or both?
+
+This would help us figure out whether the loop is happening because TaskFlow receives a valid token but can't find a matching user in its own database, which would explain why it kicks you back to the login flow.
+
+---
+
+### reporter
+
+Oh that's a good idea, I can check that. So I just looked in TaskFlow's user admin panel — for the plus-address users like Jane, TaskFlow has them stored as jane+taskflow@company.com with the plus sign. I'm not sure exactly what Entra is sending back but I know in Entra their primary email is just jane@company.com without the plus part. So yeah, those probably don't match.
+
+For the users who had email changes, TaskFlow still shows their old email address from when they were originally set up in Okta. Their new/current email is what's in Entra now. I don't think TaskFlow has both — just the original one.
+
+So it does sound like there's a mismatch for both groups. But if that's the issue, why would clearing cookies temporarily fix it? The emails would still be mismatched after clearing cookies, right?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"SSO login redirect loop due to email mismatch between Entra ID token claims and TaskFlow user records","problem":"After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop when logging into TaskFlow. The user authenticates successfully with Entra, gets redirected back to TaskFlow, but is immediately sent back to Microsoft to re-authenticate. Two user groups are affected: (1) users with plus-addressed emails (e.g., jane+taskflow@company.com) stored in TaskFlow where Entra sends the base address (jane@company.com), and (2) users whose emails changed during migration where TaskFlow retains the old Okta-era email while Entra sends the new one.","root_cause_hypothesis":"TaskFlow's OAuth callback handler performs a user lookup by matching the email claim from the Entra ID token against its local user database. When no match is found (due to plus-addressing differences or stale email addresses from the Okta migration), TaskFlow cannot create a valid session and redirects the user back to the login flow, creating an infinite loop. The session cookie that gets set during this failed attempt may also contribute to the loop by causing TaskFlow to repeatedly attempt and fail session validation rather than starting a fresh auth flow.","reproduction_steps":["Set up a user in TaskFlow with a plus-addressed email (e.g., testuser+taskflow@company.com)","In Entra ID, ensure that same user's primary email is the base address (testuser@company.com) without the plus portion","Attempt to log into TaskFlow via SSO","Observe the redirect loop: TaskFlow → Entra (auth succeeds) → TaskFlow callback → TaskFlow redirects back to Entra","Alternative reproduction: Create a user in TaskFlow with email old@company.com, then in Entra set their email to new@company.com and attempt login"],"environment":"TaskFlow with Microsoft Entra ID (formerly Azure AD) SSO integration, migrated from Okta. Browser-independent (Chrome, Edge, Firefox all affected). Redirect URIs verified correct in Entra app registration.","severity":"high","impact":"Approximately 30% of the team cannot log into TaskFlow at all (no durable workaround). Clearing cookies provides only temporary relief. This blocks affected users from accessing the task management system entirely.","recommended_fix":"1. **Immediate fix:** Update TaskFlow's user records to match the emails Entra ID returns — normalize plus-addressed emails and update stale emails from the Okta migration. 2. **Code fix:** Modify the OAuth callback user-matching logic to be more resilient: (a) match on a stable claim like `sub` or `oid` rather than (or in addition to) email, (b) implement case-insensitive and plus-address-aware email matching, (c) when no user match is found, return a clear error page instead of redirecting back to the SSO provider (to prevent the loop). 3. **Session handling:** Investigate the session cookie being set during failed login attempts — ensure a failed user lookup does not set a session cookie that perpetuates the loop on subsequent attempts.","proposed_test_case":"Create integration tests for the OAuth callback user-matching logic: (1) token email 'jane@company.com' should match user record 'jane+taskflow@company.com', (2) token email 'newemail@company.com' should match user originally provisioned as 'oldemail@company.com' (after migration fix or via sub/oid claim), (3) when no user match exists at all, the system should display an error page rather than redirect back to the SSO provider, (4) a failed user lookup should not set a session cookie that triggers a loop on the next request.","information_gaps":["Exact email/preferred_username/sub claims in the Entra ID token for affected vs. unaffected users (reporter will check via jwt.ms but hasn't yet)","Exact cookie name and attributes (Domain, Path, SameSite) being set during the failed redirect","Whether TaskFlow's user matching uses email, sub/oid claim, or another identifier","TaskFlow's server-side logs showing what happens during the OAuth callback for an affected user","Which OAuth/OIDC library or framework TaskFlow uses for SSO integration","Whether the few affected users without plus-addresses who also had email changes are fully explained by the stale-email theory"]}
+
+---

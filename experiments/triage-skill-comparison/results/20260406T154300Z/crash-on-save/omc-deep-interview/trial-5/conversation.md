@@ -1,0 +1,52 @@
+# Conversation: crash-on-save x omc-deep-interview
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — sorry you're dealing with crashes and lost work.
+
+To help us track this down, could you walk us through exactly what you're doing when the crash happens? Specifically:
+- What are you saving (a new task, edits to an existing task, something else)?
+- How are you saving (keyboard shortcut, button click, auto-save)?
+- What happens when it crashes — do you see an error message, does the window close, does it freeze?
+
+Also, what version of TaskFlow are you running and on what platform (Windows/Mac/Linux, browser vs desktop app)?
+
+---
+
+### reporter
+
+I'm editing a big task list — around 200 tasks. The crash happens when I click the 'Save' button in the toolbar. Interestingly, auto-save doesn't seem to cause it. When it crashes, I see a quick flash of a dialog box that mentions something about 'encoding' and then the whole app just closes. No freeze, it just quits.
+
+I'm on TaskFlow v2.3.1, macOS 14.2, desktop app.
+
+---
+
+### triage-agent
+
+That 'encoding' mention in the dialog is a really useful clue — thanks for catching that detail.
+
+Do any of your tasks contain special characters, emoji, or non-English text (accented characters, CJK, etc.)? If you're not sure, could you try duplicating your task list, removing a chunk of tasks, and hitting Save to see if it still crashes? That would help us figure out whether it's the size of the list or something in the content that's triggering the encoding error.
+
+---
+
+### reporter
+
+Good thinking — yes, actually, now that you mention it, the problems started after I imported a CSV file that had some fancy characters in it. Things like em-dashes and curly quotes in the task names. I tried removing those imported tasks and saving worked fine after that. Also, I have a smaller list with under 50 tasks that includes some of the same imported data and that one saves without any issues. So it seems like it's a combination of the special characters AND having a large number of tasks.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Desktop app crashes on manual Save when large task list contains non-ASCII characters from CSV import","problem":"TaskFlow v2.3.1 desktop app on macOS crashes (abrupt quit with brief 'encoding' error dialog) when the user clicks the Save button on a task list with ~200 tasks that includes special characters (em-dashes, curly quotes) imported from a CSV file. Auto-save does not trigger the crash. Smaller lists (<50 tasks) with the same special characters save without issue, and large lists without special characters also save fine.","root_cause_hypothesis":"The manual Save code path likely uses a different (or buffer-size-limited) text encoding/serialization routine than auto-save. When the task list is large enough that the serialized payload exceeds some internal buffer or chunk boundary, non-ASCII characters (em-dashes U+2014, curly quotes U+201C/U+201D) cause an encoding conversion error — possibly a truncated multi-byte sequence at a buffer boundary — that results in an unhandled exception and app crash.","reproduction_steps":["Install TaskFlow v2.3.1 desktop app on macOS 14.2","Create or import a task list with ~200 tasks (import a CSV containing em-dashes and curly quotes in task names works reliably)","Click the 'Save' button in the toolbar","Observe: brief dialog flash mentioning 'encoding', then app closes"],"environment":"TaskFlow v2.3.1, macOS 14.2 (Sonoma), desktop app","severity":"high","impact":"Users who import CSV data containing non-ASCII punctuation into large task lists lose all unsaved work on crash. Workaround exists (remove special characters or rely on auto-save), but data loss risk is high for unaware users.","recommended_fix":"Investigate the manual Save serialization path for encoding handling differences vs auto-save. Likely candidates: (1) a fixed-size buffer that splits multi-byte UTF-8 sequences, (2) an implicit ASCII encoding assumption in the Save button handler vs UTF-8 in auto-save, or (3) a missing error handler around the encoding step. Unify the Save and auto-save serialization paths or ensure the manual Save path handles UTF-8 correctly at all payload sizes. Add a crash-safe write (write to temp file, then atomic rename) to prevent data loss even on failure.","proposed_test_case":"Create a task list with 200+ tasks where multiple task names contain multi-byte UTF-8 characters (em-dashes, curly quotes, emoji, CJK characters). Invoke the manual Save path and verify: (a) save completes without error, (b) file is valid and re-loadable, (c) all special characters are preserved. Also test boundary sizes (50, 100, 150, 200, 500 tasks) to identify the exact threshold.","information_gaps":["Exact error message in the flashed dialog (reporter only caught 'encoding')","Whether the issue reproduces on Windows/Linux or is macOS-specific","Whether emoji or CJK characters also trigger the crash or only Windows-1252 legacy characters","Crash logs from macOS Console.app that might pinpoint the exact exception"],"clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.85,"impact":0.75,"overall_ambiguity":0.15}}
+
+---

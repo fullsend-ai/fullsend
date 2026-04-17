@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: affected record count (50-100/2000), truncation pattern, 2-week timeline, nightly batch import link, 3+ digit country code pattern, US/UK unaffected, and the recent phone formatting change. The summary also adds reproduction steps, test cases, and ongoing re-corruption risk not in the expected list."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage lands squarely on both acceptable diagnostic paths: it identifies the nightly import as the corruption source, characterizes the 3+ digit country code pattern precisely, and connects the issue to a ~2-week-old change. The root cause hypothesis explicitly lists 'regex extracting the country code' as a candidate alongside other mechanisms — directly matching the actual regex bug. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-chosen question sets covering examples, data source/timing, and version/deployment history. It correctly noted remaining gaps (sync logs, exact deployment date, manually-entered numbers). One follow-up that could have been asked: whether triggering a manual re-sync immediately would overwrite any manually corrected records — though the agent inferred this and mentioned it in the impact section."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each essential. No question was repeated or low-value. The agent efficiently bundled related sub-questions (data source + timing in one turn; version + update history in another) without padding."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question — asking for concrete examples of correct vs. incorrect numbers with a privacy-safe framing — was exceptionally well-targeted and immediately surfaced the country-code-length pattern the reporter would not have articulated unprompted. Subsequent questions built logically on each answer. The request for version and deployment history in turn 3 directly elicited the reporter's recollection of 'phone number formatting changes,' the key corroborating clue."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could open the git log filtered to phone number/import code from two weeks ago and start reviewing immediately. The summary includes a specific root cause hypothesis, concrete reproduction steps, a proposed test matrix (1-, 2-, 3-, 4-digit country codes), a recommended fix strategy referencing E.164, and a data remediation path via Salesforce re-sync."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The opening question asking for concrete before/after number examples (with privacy framing) immediately surfaced the 3+-digit country code pattern — the diagnostic breakthrough of the entire conversation.",
+    "The final summary is developer-ready: it includes reproduction steps, a proposed test matrix covering edge cases like +1268, and a remediation path via CRM re-sync.",
+    "The agent correctly identified that each nightly sync would re-corrupt any manually fixed records, proactively flagging ongoing data integrity risk."
+  ],
+  "notable_weaknesses": [
+    "The agent asked about TaskFlow updates generally but did not ask specifically about changes to the import pipeline or phone number processing code — the reporter's offhand mention of 'phone number formatting changes' was not actively probed before resolution.",
+    "No question was asked about sync job logs or error output, which are noted only as an information gap in the final summary rather than pursued during triage."
+  ],
+  "most_insightful_question": "Could you share a couple of examples of what the incorrect phone numbers look like compared to what they should be? (with the privacy-safe framing about 'shape' of correct vs. incorrect values)",
+  "missed_opportunities": [
+    "Asking directly: 'You mentioned something about phone number formatting changes — do you recall any more detail, or who might know?' before closing the conversation.",
+    "Asking whether sync job logs or import error reports are available and could be checked for warnings during the affected period.",
+    "Asking whether any affected records had been manually corrected, and if so whether those corrections survived the next nightly sync."
+  ]
+}

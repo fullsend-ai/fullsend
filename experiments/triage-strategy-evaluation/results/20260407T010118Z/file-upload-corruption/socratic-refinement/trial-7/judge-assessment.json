@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured: small PDFs working fine, large/multi-page PDFs corrupted, started ~1-2 weeks ago, multiple customers affected, possible other file types affected (unconfirmed spreadsheet), and corruption is immediate. Missing: the 1MB threshold wasn't pinned (though reporter couldn't provide exact sizes), and the upload proxy as the specific locus wasn't confirmed — it appears only as one hypothesis among several. The binary mangling vs. truncation distinction was flagged as an information gap rather than extracted."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the first acceptable diagnostic path: size-dependent behavior with suspicion of different upload paths. The root cause hypothesis explicitly calls out 'middleware or proxy change,' 'chunked upload change,' and 'binary-to-text encoding error' — all directly relevant to the actual cause. The timeline (~1-2 weeks) is consistent with the ground truth. The agent didn't identify the specific Content-Type header stripping, but it's not penalized for that per the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about file types, sizes, upload method, timing, immediate vs. delayed corruption, small-file behavior, and other file formats. All major diagnostic angles were covered. A question specifically probing whether files over a specific size (e.g., 1MB) consistently fail was not asked, but the reporter was resistant to detail, and the agent surfaced enough to identify the size-dependent pattern."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three question turns, each covering distinct diagnostic territory. The first question was multi-part but each part served a purpose (content type, size, upload method, timing). No redundant follow-ups. The second and third questions each introduced new diagnostic angles. Slightly verbose framing, but nothing wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking whether the file is broken immediately on download vs. later is a sharp question that rules out viewer-side issues. The suggestion to test a small PDF upload was the key move — the reporter confirmed small files work, which cracked open the size-dependent pattern. Asking about other file types in the third turn was appropriately targeted and surfaced the spreadsheet hint. These questions led to information the reporter would not have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes precise reproduction steps (including the small vs. large PDF comparison), a structured proposed test case with file size increments and checksum verification, and a prioritized recommended fix list pointing directly at proxy/middleware configuration, chunked upload logic, and encoding handling. A developer could begin investigating immediately with this summary."
+    }
+  },
+  "weighted_total": 4.25,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The suggestion to test a small PDF upload directly elicited the key finding that small files work — this was the pivotal diagnostic move",
+    "The root cause hypothesis explicitly named the correct mechanisms (proxy change, chunked upload, binary-to-text encoding error) even without knowing the exact Content-Type header issue",
+    "The proposed test case with file size increments and checksum verification is exceptionally actionable and would rapidly isolate the threshold"
+  ],
+  "notable_weaknesses": [
+    "The 1MB threshold was never surfaced or probed — a question like 'are the broken ones typically over 1MB?' might have been answerable by the reporter and would have sharpened the diagnosis",
+    "The upload proxy was listed as one hypothesis among four rather than the primary suspect, slightly diluting the diagnostic direction",
+    "The triage notes the corruption nature (truncation vs. encoding) as an information gap, but the immediate corruption and the spreadsheet hint together strongly suggest encoding rather than truncation — a sharper inference was possible"
+  ],
+  "most_insightful_question": "If you could try uploading a small, simple PDF (even a one-page test doc) and letting me know whether that one also comes through damaged, that would tell us a lot about where the problem is happening.",
+  "missed_opportunities": [
+    "Ask whether files above a specific size threshold (e.g., 1MB) consistently fail — reporter might have been able to confirm even without knowing exact byte counts",
+    "Ask whether the file size of the downloaded copy differs from the original — this would immediately distinguish truncation from encoding corruption",
+    "Ask if the reporter or their team had noticed any platform update or maintenance notification from TaskFlow in the past two weeks, which might have corroborated the server-side change"
+  ]
+}

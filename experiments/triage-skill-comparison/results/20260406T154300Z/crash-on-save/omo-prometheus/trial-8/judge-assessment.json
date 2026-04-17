@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured 5 of 6 expected extracts: manual save trigger, CSV import with special characters, timing after CSV import, encoding error message, and environment details. The size threshold aspect (only crashes with large lists, works under 50 tasks) was partially captured — the reporter mentioned removing imported tasks fixes it and the summary notes ~200 tasks, but the triage didn't probe or identify that list size is a factor independent of the special characters. The agent didn't distinguish that auto-save doesn't trigger the crash."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is very close to the actual cause — correctly identifies non-ASCII characters from CSV import causing an encoding failure in the save/serialization layer. It misses the specific detail that the issue is tied to payload size exceeding 64KB (which is why small lists work even with special characters), but the general direction is accurate and would lead a developer to the right area of code."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent turns to reach a comprehensive triage summary. Both questions were well-targeted and each extracted substantial information. No redundant or wasted questions. The agent resolved the issue in the minimum viable number of turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question efficiently combined multiple essential diagnostics (what's being saved, version, platform, regression timing). The second question was genuinely insightful — asking whether a new small list saves fine was a targeted isolation test that directly led the reporter to discover the workaround (removing imported tasks). This showed real diagnostic reasoning rather than generic troubleshooting."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary includes clear reproduction steps, a well-reasoned root cause hypothesis, specific recommended fixes, and a proposed test case. A developer could start investigating the save serializer and CSV import encoding immediately. The information gaps are clearly noted. It falls slightly short of 5 because it doesn't identify the payload size threshold, which would be important for pinpointing the exact failure point."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptionally efficient — resolved in only 2 turns with high information density per exchange",
+    "The isolation question (try saving a new small list) was a smart diagnostic move that led the reporter to volunteer the workaround",
+    "The root cause hypothesis is well-reasoned and closely matches the actual cause",
+    "The summary is thorough with reproduction steps, recommended fixes, test cases, and clearly identified information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not identify that list size is an independent factor — small lists with special characters save fine, suggesting a payload size threshold",
+    "Did not ask whether auto-save also crashes or only manual save (turns out auto-save works fine)",
+    "Could have asked the reporter to check Console.app for crash logs, which might have revealed the exact error"
+  ],
+  "most_insightful_question": "Is the crash tied to the imported tasks specifically? If you create a brand-new task list with just a couple of manually-created tasks and hit Save, does that work?",
+  "missed_opportunities": [
+    "Ask whether auto-save (if enabled) also crashes or only the toolbar Save button",
+    "Ask the reporter to try saving a smaller subset of the imported tasks to determine if there's a size threshold",
+    "Ask the reporter to check macOS Console.app for crash logs or error details"
+  ]
+}

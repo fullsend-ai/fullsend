@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: task count (~5,000), title-vs-description performance split, v2.2-to-v2.3 regression, 2-week timeline, 10-15 second latency, and long descriptions. The one notable gap is CPU spike behavior during searches — the agent never asked about system resource usage, which would have strengthened the diagnosis and helped developers reproduce the bottleneck."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — that v2.3 dropped or broke a full-text index on description fields, leaving title search on the old indexed path — directly matches both acceptable diagnostic paths and closely approximates the actual cause (FTS5 index not migrated, replaced by a naive LIKE query). All stated facts align with ground truth. The agent correctly identified the version upgrade as the trigger and the title/description split as the key diagnostic signal."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two turns once the title-vs-description pattern emerged, which was a reasonable stopping point. However, it left obvious follow-ups on the table: CPU/resource behavior during slow searches (would confirm a scan-heavy operation), exact OS/hardware details (present in ground truth but absent from summary), and whether the reporter had attempted any mitigations. These gaps are acknowledged in information_gaps but were never pursued."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and well-targeted. The first efficiently combined search-type characterization with temporal anchoring. The second zoomed in on the fast/slow pattern to find the diagnostic key. No turns were wasted; no information was asked for twice."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was genuinely insightful: rather than asking a checklist of technical questions, it invited the reporter to compare fast versus slow searches from memory, which caused the reporter to independently discover the title-vs-description split — a finding they explicitly say they hadn't connected before. This is exactly the kind of Socratic probing that surfaces information a reporter wouldn't volunteer unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis, step-by-step reproduction instructions, a concrete recommended fix sequence (check v2.3 changelog, verify/rebuild FTS indexes, ensure new fields are indexed before being queried), and a proposed regression test. A developer could open the v2.3 diff and the database schema immediately and know exactly what to look for."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question used comparative memory elicitation ('fast search vs slow search — what was different?') to surface the title/description split without leading the witness — the reporter made the connection themselves",
+    "The root cause hypothesis precisely anticipates the actual bug (FTS index regression on description fields) without access to the codebase",
+    "The triage summary is developer-ready: reproduction steps, fix sequence, and a regression test case are all concrete and specific",
+    "Correctly identified the v2.3 upgrade as the trigger and connected long pasted descriptions to the performance cost"
+  ],
+  "notable_weaknesses": [
+    "CPU/system resource behavior during slow searches was never asked about, leaving out a key data point that corroborates a full-table-scan hypothesis",
+    "OS and hardware details (Ubuntu 22.04, ThinkPad T14, 32GB RAM) were not collected despite the reporter mentioning 'work laptop' — these appear in ground truth but not in the summary",
+    "The reporter expressed uncertainty about the version ('I think it was around when I updated to v2.3') but the agent resolved without confirming the exact version"
+  ],
+  "most_insightful_question": "Think back to the last time a search was fast and the last time one was slow. What was different about those two moments? — This comparative framing caused the reporter to independently discover the title-vs-description performance split, which is the central diagnostic finding of the entire triage.",
+  "missed_opportunities": [
+    "Ask about CPU or system behavior during a slow search (e.g., 'Does your machine feel sluggish or does a CPU/fan spin up when the slow search runs?') — would have confirmed scan-heavy computation",
+    "Confirm the exact TaskFlow version — reporter was uncertain and a one-line follow-up would have locked this down",
+    "Ask what OS and hardware the work laptop is running — environment details were available but not collected",
+    "Ask whether the reporter had tried any workarounds such as clearing cache, reindexing, or reinstalling — would have revealed that no mitigation was attempted and potentially offered a short-term workaround"
+  ]
+}

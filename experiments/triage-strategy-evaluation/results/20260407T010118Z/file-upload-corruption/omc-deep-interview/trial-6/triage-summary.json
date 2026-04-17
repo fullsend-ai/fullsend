@@ -1,0 +1,23 @@
+{
+  "title": "Large file uploads corrupted during upload — regression introduced ~1–2 weeks ago",
+  "problem": "PDF files (and possibly other large file types) are silently corrupted during upload. Uploaded files cannot be opened and are reported as damaged by PDF viewers. Small files (e.g., single-page PDFs under ~1 MB) upload successfully. The issue affects multiple users and began approximately 1–2 weeks ago with no client-side changes.",
+  "root_cause_hypothesis": "A server-side change approximately 1–2 weeks ago likely broke the upload pipeline for files exceeding a certain size threshold. Probable causes include: (1) a misconfigured or newly introduced request body size limit (e.g., nginx/reverse proxy max body size, or application-level multipart limit) that silently truncates large uploads, (2) a broken chunked transfer or multipart reassembly that loses data beyond a certain offset, or (3) a change to file storage or encoding (e.g., base64 encoding applied where binary stream was expected) that corrupts content proportionally to size. The fact that small files survive suggests truncation rather than total encoding failure.",
+  "reproduction_steps": [
+    "Upload a small PDF (single page, under 1 MB) to a task — verify it downloads and opens correctly",
+    "Upload a larger PDF (multi-page contract/report, likely 2–5 MB+) to a task",
+    "Download the larger PDF and attempt to open it — expect corruption/damage error",
+    "Compare uploaded and downloaded file sizes to check for truncation",
+    "Check server/deployment logs for changes made in the last 1–2 weeks to the upload pipeline, reverse proxy config, or file storage layer"
+  ],
+  "environment": "Multiple users (team of 15), role is support/account management. Standard browsers, no recent client-side changes. Exact browser/OS not specified but issue is consistent across the team, ruling out client-specific causes.",
+  "severity": "high",
+  "impact": "A team of 15 people who rely heavily on file attachments for daily workflow is blocked from using large-file uploads. This affects core business operations (contracts, reports). Workaround is limited to sharing files outside TaskFlow, which defeats the purpose of the tool.",
+  "recommended_fix": "1. Review all deployment/config changes from the past two weeks, focusing on upload path: reverse proxy settings (max_body_size, timeout), application upload handlers, file storage service, and any middleware changes. 2. Test uploads at various file sizes (1 MB, 2 MB, 5 MB, 10 MB, 20 MB) to identify the exact corruption threshold. 3. Compare byte-level content of uploaded vs. downloaded files to determine whether the corruption is truncation, encoding error, or data mangling. 4. Check if the issue also affects non-PDF large files (spreadsheets, images) to confirm it is file-type-agnostic. 5. If truncation, check for recently changed size limits; if encoding, check for changes in content-type handling or binary/text mode processing.",
+  "proposed_test_case": "Upload files at various sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB, 20 MB) across multiple file types (PDF, XLSX, PNG). Download each and verify byte-for-byte integrity against the original using checksum comparison. Assert that all files round-trip without corruption. Add this as a regression test against the upload/download pipeline.",
+  "information_gaps": [
+    "Exact file size threshold where corruption begins (determinable via controlled upload testing)",
+    "Whether non-PDF large files are also affected (reporter hinted yes for spreadsheets but was uncertain)",
+    "Precise date the regression was introduced (determinable from deployment logs)",
+    "Whether corruption is truncation, encoding error, or something else (determinable by comparing original and downloaded byte content)"
+  ]
+}

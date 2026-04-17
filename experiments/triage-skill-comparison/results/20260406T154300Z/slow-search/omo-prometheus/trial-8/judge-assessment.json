@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured ~5,000 tasks, description vs title search distinction, v2.2→v2.3 regression, ~2 weeks ago, and 10-15 second timing. Missed CPU spikes during search and long descriptions in some tasks — both of which were discoverable with follow-up questions but weren't asked."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. It correctly identifies the likely shift from an indexed search to an unindexed LIKE/ILIKE scan, and specifically calls out that the FTS index may have been dropped or not migrated. This matches the ground truth almost exactly (SQLite FTS5 → naive LIKE query, migration didn't migrate the FTS index)."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only one round of questions was needed. Three well-targeted questions extracted the critical information in a single exchange. The agent then resolved immediately rather than asking unnecessary follow-ups. Excellent economy."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The three questions were well-structured and directly diagnostic: timing/trigger, scale, and search type. The 'which search' question successfully drew out the critical title-vs-description distinction. Could have probed deeper on system behavior (CPU usage) or description characteristics, but the questions asked were high-value and well-framed."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear root cause hypothesis, specific reproduction steps, a concrete debugging plan (diff search paths, check migration scripts, run EXPLAIN ANALYZE), and a proposed test case with success criteria. A developer could immediately start investigating the v2.3 migration scripts and search query changes."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extracted the critical title-vs-description distinction in a single round, which is the key diagnostic signal",
+    "Root cause hypothesis is nearly identical to the actual cause — impressive diagnostic reasoning from limited information",
+    "Summary is exceptionally well-structured with reproduction steps, fix recommendations, and test cases",
+    "Correctly identified this as a high-severity regression rather than a scaling issue"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior, which would further confirm the full-table-scan hypothesis",
+    "Did not ask about description sizes/content, missing the long-description factor that exacerbates the issue",
+    "Dismissed the laptop specs as 'not likely relevant' without investigating — the CPU spike on a single core is actually a useful diagnostic clue"
+  ],
+  "most_insightful_question": "Which search are you using? The quick-search bar at the top, the full search page with filters, or the search within a specific project?",
+  "missed_opportunities": [
+    "Ask whether the user notices any system resource changes during search (CPU/memory) — would have revealed the single-core CPU spike",
+    "Ask about the nature of the task descriptions (length, content type) — would have revealed the 2000+ word descriptions that exacerbate the scan",
+    "Ask whether the user has tried any workarounds or if they've noticed any pattern in which searches are slower"
+  ]
+}

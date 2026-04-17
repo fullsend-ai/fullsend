@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items are captured: affected record count (~50-100 of 2,000), truncation pattern, two-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK numbers unaffected, and a strong hypothesis pointing to a recent normalization change. The summary additionally surfaces the recurrence mechanism (nightly overwrite) and confirms Salesforce-side data is intact."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage aligns with both acceptable diagnostic paths: it correctly identifies the nightly import as the corruption source, characterizes the exact country-code-length pattern, and connects the regression to a change ~2 weeks ago. The root cause hypothesis explicitly calls out 'a new phone number normalization step' and 'a regex/parsing change in the import pipeline,' which maps directly to the actual regex bug. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered timing, data entry mechanism, change history, and the truncation pattern — the core diagnostic questions. The main gap is not asking about data recovery: whether the correct numbers exist anywhere in TaskFlow history or only in CRM backups (they exist only in CRM). The agent also did not push to confirm whether the nightly sync could be paused immediately to stop ongoing corruption. These are acknowledged as information gaps but were never directly asked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each well-targeted. The second question efficiently bundled three related concerns (when, entry mechanism, does a manual fix persist). No redundant or low-value questions were asked."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated genuine diagnostic reasoning. Asking for concrete before/after examples immediately surfaced the country-code-length pattern — information the reporter framed vaguely as 'truncated or mangled.' Asking whether manual edits persist was particularly insightful: it probed the persistence of corruption and implicitly confirmed the nightly overwrite mechanism before the reporter explicitly stated it. Asking about recent changes on both sides appropriately probed for a regression without assuming fault on either end."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a precise reproduction procedure, a prioritized fix list (git history review, regex/constraint audit, corrective re-import), a concrete unit test case covering all E.164 country code lengths, and clear severity/impact context. A developer could open the import pipeline code and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the country-code-length pattern from the reporter's first examples, pivoting the investigation from vague 'mangled numbers' to a precise hypothesis in one turn",
+    "The question about whether manual corrections persist was diagnostically sharp — it confirmed the nightly overwrite mechanism before the reporter stated it explicitly",
+    "The recommended fix is end-to-end: stops ongoing corruption (pause sync), recovers data (re-import from CRM), and prevents recurrence (normalizer fix + unit tests)"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether old correct numbers are recoverable from TaskFlow itself (they are not — only CRM backups exist), which is relevant for scoping the remediation effort",
+    "Did not ask the reporter to immediately pause the nightly sync to stop ongoing nightly corruption while the fix is developed — this operational step is implied but never confirmed"
+  ],
+  "most_insightful_question": "Do you know roughly when these numbers went wrong? ... And if someone edits one of these records and re-enters the correct number today, does it stay correct or does it get corrupted again on save?",
+  "missed_opportunities": [
+    "Ask whether the correct numbers are still recoverable from TaskFlow's own history/audit log, or only from the CRM backup — this scopes the remediation path",
+    "Ask the reporter to pause the nightly sync immediately to prevent continued corruption while the fix is in progress",
+    "Ask for the TaskFlow version or release notes from ~2 weeks ago to confirm the regression commit directly"
+  ]
+}

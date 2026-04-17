@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~50-100 affected records out of 2,000, truncated (not random) corruption, ~2-week onset, nightly batch import as the source, 3+ digit country code pattern, US/UK unaffected, and the recent change to international phone format support in the import pipeline."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary correctly identifies the nightly import as the corruption source, the 3+ digit country code truncation pattern, the ~2-week timeline tied to a recent code change, and pinpoints 'regex patterns that assume country codes are at most 2 digits' as the likely mechanism — matching both the canonical root cause and the acceptable diagnostic paths. The hypothesis is essentially correct without having seen the code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-sequenced rounds of questions and captured all critical information. One meaningful question was left unasked during the conversation (whether nightly syncs re-corrupt manually fixed records), though the agent correctly identified it as an information gap in the final summary. Caribbean numbers were mentioned but not fully clarified — the distinction between +1 area-code Caribbean numbers and true 3-digit country code Caribbean numbers was noted as a gap but not pursued."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, each well-targeted and non-redundant. The first established data flow and whether numbers were ever correct; the second obtained concrete examples and the timeline of changes. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first immediately probed data provenance and historical correctness — precisely the right framing for a data integrity issue. The second asked for specific before/after examples (with a privacy-preserving suggestion), which directly elicited the +353 → +35 truncation pattern that cracked the case. Asking 'what changed around two weeks ago' in the same turn efficiently connected timing to cause."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise title, root cause hypothesis pointing to country code parsing logic (and specifically regex patterns), step-by-step reproduction instructions with concrete test data, a recommended fix referencing ITU E.164, proposed unit and integration test cases, and explicit information gaps for the developer to resolve. A developer could open git blame on the phone normalizer and start coding a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Asking for concrete before/after examples directly elicited the +353 → +35 truncation pattern — the single most diagnostic piece of information in the entire conversation",
+    "Connecting 'what changed around two weeks ago' to the reporter's vague recollection of import pipeline work in the same question was efficient and decisive",
+    "The final summary correctly hypothesized a regex with a fixed-length assumption on country codes without having seen any code, matching the actual root cause",
+    "Reproduction steps and proposed test cases are specific and immediately usable, including the correct +1/+44/+353 boundary cases"
+  ],
+  "notable_weaknesses": [
+    "Did not ask during the conversation whether the nightly sync re-corrupts any manually fixed records — an operationally important question for the workaround, though it was noted in information_gaps",
+    "Caribbean country code ambiguity (+1-area-code Caribbean numbers vs. true 3-digit country codes like +1-268 for Antigua) was not clarified — the actual ground truth involves +1268-style numbers which have a 4-digit 'country code' block, a subtlety that could matter for the fix"
+  ],
+  "most_insightful_question": "Can you tell me more about what the wrong numbers actually look like? For instance, if a correct number is something like (555) 123-4567, what does the mangled version look like in TaskFlow — is it missing digits, missing the area code, has extra characters, or something else entirely? If you could share a couple of before/after examples (with digits changed for privacy, of course), that would be incredibly useful.",
+  "missed_opportunities": [
+    "Ask whether the nightly sync overwrites previously corrected records, which determines whether manual remediation is viable or futile until the bug is fixed",
+    "Ask for a specific Caribbean example to clarify whether affected numbers use +1 with a 3-digit area code (Antigua +1-268) or a distinct 3-digit country code — this distinction affects the regex fix and test coverage"
+  ]
+}

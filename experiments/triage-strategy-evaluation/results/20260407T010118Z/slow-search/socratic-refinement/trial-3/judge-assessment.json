@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts were captured: ~5,000 tasks, title fast/description slow distinction, v2.2→v2.3 regression, ~2 weeks ago onset, 10-15s latency, CPU spike (inferred from fan kicking on), and long descriptions (2,000+ word meeting notes). The agent also noted correct results and long-form usage patterns as additional useful context."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names 'LIKE-based matching' as the likely culprit and a dropped full-text index — this closely matches the actual cause (FTS5 → LIKE regression). The agent also correctly identified both acceptable diagnostic paths: the v2.2→v2.3 upgrade as trigger and the title-vs-description performance divergence as the key symptom. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-chosen questions extracted all critical diagnostic information. The agent did not explicitly ask about OS/hardware, but correctly assessed these as unlikely to matter for a regression. CPU usage was volunteered rather than solicited. One minor gap: the agent could have asked whether other search surfaces (tags, dates) were also affected, though the title-vs-description finding made this less critical."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three agent turns before resolution, each asking a distinct and necessary question. No redundancy. The third turn efficiently combined a summary-for-confirmation with the task count question. Nothing could be trimmed without losing diagnostic value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — asking about search characteristics (type of query, result correctness) — was particularly insightful. The reporter would not have volunteered the title-vs-description distinction without that prompt, and it turned out to be the most diagnostically significant finding. Questions were progressively targeted, not generic checklists."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: reproduction steps are precise (5,000 tasks, 2,000+ word descriptions, description keyword search), the fix recommendation is specific (diff migrations, check for dropped FTS index, run EXPLAIN/ANALYZE, check LIKE vs indexed path), and a regression test case is proposed. A developer could open the migration diff and start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question elicited the title-vs-description performance distinction — the single most valuable diagnostic finding — which the reporter would not have volunteered unprompted",
+    "The root cause hypothesis specifically named LIKE-based pattern matching as the likely mechanism, matching the actual cause without access to the codebase",
+    "The triage summary is unusually actionable: it includes reproduction steps, a targeted fix recommendation, a proposed regression test, and clearly scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "OS and hardware details (Ubuntu 22.04, ThinkPad T14, 32GB RAM) were not captured in the environment field — the agent flagged these as 'unlikely to matter' which is reasonable but leaves the environment section incomplete",
+    "CPU spike was volunteered by the reporter rather than explicitly solicited; the agent could have asked about resource usage directly as a diagnostic signal"
+  ],
+  "most_insightful_question": "Can you tell me more about what your searches look like when they're slow? For example, does it happen with every search regardless of what you type, or is it worse with certain kinds of queries (like searching for a single word vs. a phrase, or filtering by tags/dates)?",
+  "missed_opportunities": [
+    "Explicitly asking about CPU or resource usage during slow searches (reporter volunteered this, but a direct question might have prompted more detail)",
+    "Asking whether downgrading to v2.2 or searching in a different way provides a workaround — would have confirmed the regression hypothesis and given the reporter immediate relief"
+  ]
+}

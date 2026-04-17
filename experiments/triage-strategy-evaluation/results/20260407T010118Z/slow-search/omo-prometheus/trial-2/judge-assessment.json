@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected extracts are present: ~5,000 tasks, slow on description/fast on title, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 second latency, CPU spikes, long descriptions. Additionally captured hardware specs, ThinkPad T14, 32GB RAM, and developed reproduction steps and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary correctly identifies the v2.2→v2.3 upgrade as the trigger and accurately hypothesizes a search implementation regression — specifically that description search lost its index and is now doing a full scan. This matches acceptable path #1 and is directionally correct on acceptable path #2 as well. The hypothesis about FTS index removal aligns precisely with the actual cause (FTS5 index replaced by LIKE query)."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked well-targeted questions covering timing/version, search type differentiation, and result-count vs scan behavior. One minor gap: the OS/platform was not explicitly asked (though the reporter volunteered hardware specs). The OS (Ubuntu 22.04) is listed as a gap, which the agent correctly notes is likely irrelevant. No major obvious follow-ups were left unasked."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four questions across four turns, each building on previous answers. The third question about rare-vs-common search terms was somewhat diagnostic but could be considered marginally lower value — the title vs. description distinction was already a strong enough signal. However, the answer did usefully rule out result-volume as a confounding factor, making it defensible."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Questions demonstrated genuine diagnostic reasoning. The pivot to asking about title vs. description search showed real insight into where the regression could lie. The rare-vs-common word question was clever — it distinguished between a scanning problem and a result-retrieval problem. These are questions a developer with database knowledge would ask, not generic bug report questions."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it names the specific v2.2→v2.3 migration as the trigger, hypothesizes index removal on the description field, gives concrete investigation steps (diff search implementation, check migration scripts, look for index changes), provides a proposed regression test with specific criteria, and notes the database backend as a follow-up for the developer to verify."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Early pivot to title vs. description search distinction, which is the key diagnostic signal and an acceptable path to the root cause",
+    "The rare-vs-common word question elegantly ruled out result-volume as a confounding factor, narrowing the hypothesis to full-scan behavior",
+    "Highly actionable summary with concrete investigation steps, proposed test case, and accurate scoping of impact"
+  ],
+  "notable_weaknesses": [
+    "OS version was not explicitly asked (though it was correctly flagged as likely irrelevant in information_gaps)",
+    "Did not ask whether the reporter had tried any workarounds like clearing cache or reindexing, which could have been a quick mitigation to offer"
+  ],
+  "most_insightful_question": "Is searching by keyword (e.g., typing a word from a task title) slow? — This question surfaced the title vs. description distinction, which is the core diagnostic signal and directly maps to the actual cause (title search still uses the FTS index while description search was regressed to a LIKE scan).",
+  "missed_opportunities": [
+    "Asking whether the reporter had tried any workarounds (cache clear, reindex) — could surface the 'no reindex attempted' detail and potentially offer a mitigation",
+    "Asking about the OS/platform explicitly (though the reporter volunteered hardware; Ubuntu 22.04 was not captured)"
+  ]
+}

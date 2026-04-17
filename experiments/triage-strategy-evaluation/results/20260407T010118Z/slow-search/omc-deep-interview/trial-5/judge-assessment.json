@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items: task count (~5,000), title-vs-description performance split, v2.2→v2.3 regression, ~2 week timeline, 10-15s latency, and long descriptions. The one notable miss is CPU spiking during searches — the agent never asked about system behavior or resource usage, which is in the expected extract list and would have added diagnostic value."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches both acceptable diagnostic paths simultaneously: it identifies the v2.2→v2.3 upgrade as the trigger AND the title-vs-description indexing asymmetry. The recommended fix even specifically calls out 'dropped or altered full-text indexes on the description column' and suggests EXPLAIN/ANALYZE — directly pointing toward the actual FTS5→LIKE regression without having access to the source. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked substantive questions and established the core diagnostic picture. However, it left several obvious follow-ups unasked: CPU/resource behavior during slow searches, OS and hardware details, and whether the reporter had tried clearing cache or triggering a reindex. The agent acknowledged OS/hardware as an 'information gap' but chose not to ask — reasonable given the version correlation, but CPU spike data would have been valuable for developers."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Most questions were well-targeted. Turn 3 bundled task count with consistency-of-slowness — good use of a single turn. Turn 4 asked about other concurrent changes alongside version confirmation; the version was already implied as v2.3 by the reporter, so that part was slightly redundant. The specific-vs-common term question in turn 5 was efficient and diagnostic. Overall, one turn could have been tightened."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The opening question about title vs. description search was the standout — it immediately unlocked the key diagnostic signal the reporter hadn't noticed. The question distinguishing 'scanning cost vs. result-assembly cost' (specific vs. common terms) demonstrates genuine query-engine reasoning that few reporters would volunteer. Questions showed a coherent diagnostic arc rather than a generic checklist."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes specific reproduction steps (dataset size, long descriptions, title vs. description comparison against v2.2.x baseline), a concrete root cause hypothesis naming the likely code area, a targeted recommended fix (diff search layer, check for dropped FTS index, run EXPLAIN/ANALYZE), and a proposed regression test with measurable pass criteria. A developer could start coding within minutes."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The opening question about search type and title-vs-description distinction immediately surfaced the single most diagnostic signal in the entire conversation — information the reporter had not volunteered",
+    "The specific-vs-common term question demonstrates genuine query-engine reasoning: distinguishing per-row scan cost from result-set assembly cost is a sophisticated diagnostic move",
+    "The final summary is exceptionally actionable, naming FTS index regression as a candidate, recommending EXPLAIN/ANALYZE, and providing a concrete regression test — all consistent with the actual root cause"
+  ],
+  "notable_weaknesses": [
+    "CPU spike during searches was never asked about — this is in the expected extract list and would have independently pointed toward a full-table-scan pathology",
+    "OS and hardware details (Ubuntu 22.04, ThinkPad T14) were never collected; acknowledged as a gap but not pursued",
+    "No question about cache clearing or index rebuilding, which would also establish the workaround surface and rule out simpler fixes"
+  ],
+  "most_insightful_question": "If you search for a word that you know only appears in one or two task descriptions, is it still just as slow as searching for a common word that would match many tasks? — This elegantly distinguishes scanning cost from result-assembly cost, directly pointing toward a full-table-scan explanation.",
+  "missed_opportunities": [
+    "Ask whether CPU or memory usage spikes noticeably during a slow search (would corroborate full-scan hypothesis)",
+    "Ask whether the reporter had tried clearing the app cache or triggering any kind of data reindex since upgrading",
+    "Ask what OS and machine specs the work laptop has — useful for ruling out hardware as a factor and for reproduction environment"
+  ]
+}

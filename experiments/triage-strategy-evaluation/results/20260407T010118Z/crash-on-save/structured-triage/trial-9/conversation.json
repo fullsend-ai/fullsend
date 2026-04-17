@@ -1,0 +1,26 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I can see how frustrating it must be to lose your work.\n\nTo help us track this down, could you describe what exactly happens when the crash occurs? For example:\n- Does the app freeze, show an error message, or close suddenly?\n- Does it happen on a specific screen (e.g., editing a task, saving project settings)?\n- Are you saving a particular type of content when it crashes?\n\nAny of those details would help us narrow things down."
+    },
+    {
+      "author": "reporter",
+      "body": "It just closes. The whole app just shuts down when I hit Save. I think there's some kind of error message that flashes for a split second but I can't read it before everything disappears. I'm trying to save my task list, nothing fancy. Can you just fix this? I've lost my work multiple times now."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that helps a lot. The sudden close with a briefly-flashing error is a useful clue.\n\nCould you let us know what environment you're running the app in? Specifically:\n- **Operating system** (e.g., Windows 11, macOS Sonoma, Ubuntu 24.04)\n- **App version** (you can usually find this under Help → About or in Settings)\n- **Browser**, if you're using the web version (e.g., Chrome 124, Firefox 126)\n\nThis will help us narrow down whether this is platform-specific or a broader issue."
+    },
+    {
+      "author": "reporter",
+      "body": "I'm on a Mac, macOS 14 something. The app version is 2.3 I think? It's not a web app, it's the desktop version. Look, I don't think this is a platform thing — it was working fine until recently."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Desktop app crashes (sudden close) when saving a task list on macOS\",\"problem\":\"The desktop application abruptly closes whenever the user attempts to save a task list. A brief error message flashes on screen but disappears too quickly to read. The user reports losing work repeatedly. The issue is a recent regression — saving previously worked fine.\",\"root_cause_hypothesis\":\"A recent change (likely in v2.3 or a near update) introduced a crash in the save/serialization path for task lists on macOS. The briefly-flashing error suggests an unhandled exception that triggers an app-level crash handler or immediate process exit rather than a graceful error dialog.\",\"reproduction_steps\":[\"Install TaskFlow desktop app (~v2.3) on macOS 14\",\"Open or create a task list\",\"Make edits to the task list\",\"Click Save\",\"Observe: app closes abruptly with a momentary error flash\"],\"environment\":\"macOS 14 (Sonoma), TaskFlow desktop app version ~2.3\",\"severity\":\"high\",\"impact\":\"Users lose unsaved work on every save attempt. The core save functionality is broken, making the app effectively unusable for task list editing. Likely affects all macOS desktop users on this version.\",\"recommended_fix\":\"1. Pull the macOS crash report from Console.app (or reproduce locally) to get the full stack trace. 2. Check recent changes to the task-list save/serialization path in the v2.3 release. 3. Look for unhandled exceptions in file I/O, serialization, or autosave logic that could cause an immediate process exit rather than an error dialog. 4. Ensure the save path has proper error handling that surfaces errors gracefully instead of crashing.\",\"proposed_test_case\":\"Create a task list with several items on macOS, click Save, and verify the app remains open with a success confirmation. Additionally, test save with edge-case content (empty list, very large list, special characters) to ensure no crash occurs.\",\"information_gaps\":[\"Exact app version (reporter said '2.3 I think')\",\"Exact macOS version (reporter said '14 something')\",\"Full error message or crash log from macOS Console.app\",\"What specifically changed before the issue started ('it was working fine until recently')\",\"Whether the crash occurs with all task lists or only specific ones\"]}"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Memory leak in v2.3 real-time notification system causes linear memory growth (~3.5GB/day), requiring daily restarts
+
+## Problem
+After upgrading from TaskFlow v2.2 to v2.3, the server's memory usage climbs linearly from ~500MB at startup to 4GB+ over the course of a business day, causing progressively degraded performance (10+ second page loads, API timeouts) and requiring a daily restart. The issue affects all 200 active users by late afternoon.
+
+## Root Cause Hypothesis
+The v2.3 'improved real-time notifications' feature is likely leaking resources on a per-request basis — most probably WebSocket connections, event listeners, or notification subscription objects that are created but never cleaned up when a user navigates away, closes a tab, or their session ends. The linear memory growth proportional to total request volume (not tied to any specific feature) suggests the leak occurs in a middleware or connection-handling layer common to all requests, rather than in a specific endpoint.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 with default configuration on a self-hosted instance
+  2. Simulate steady usage (~5,000 requests/hour across multiple users) over several hours
+  3. Monitor server memory usage — expect linear growth of approximately 400-500MB per hour
+  4. Compare with v2.2 under identical load — expect stable memory
+
+## Environment
+Self-hosted TaskFlow v2.3 (upgraded from v2.2 approximately one week ago), ~200 active users, steady usage pattern of ~25 requests/user/hour during business hours (8am-5pm), monitored via Grafana
+
+## Severity: high
+
+## Impact
+All 200 users experience progressively degraded performance throughout the day, with the application becoming effectively unusable by late afternoon. Operations team must perform daily manual restarts, causing disruption.
+
+## Recommended Fix
+Diff the v2.3 real-time notification implementation against v2.2. Investigate: (1) WebSocket connection lifecycle — are connections being closed when clients disconnect or navigate away? (2) Event listener/subscriber registration — are notification listeners being removed when no longer needed? (3) Any in-memory caches or data structures in the notification system that grow without bounds or eviction. Look for per-request allocations in middleware or connection-handling code that lack corresponding cleanup. A heap dump comparison between startup and after several hours of use would pinpoint the leaking objects.
+
+## Proposed Test Case
+Run a load test simulating 200 concurrent users making 25 requests/hour each for 8 hours. Assert that server memory usage remains within a bounded range (e.g., does not exceed startup memory + 500MB) and that no WebSocket connections or event listeners accumulate beyond the number of active sessions. Run the same test with real-time notifications disabled to confirm isolation.
+
+## Information Gaps
+- Exact WebSocket connection count trend over time (reporter offered to check but hasn't yet — developer can verify directly)
+- Whether the v2.3 configuration allows disabling real-time notifications (useful for a quick mitigation, but not needed for root cause investigation)
+- Server-side language/runtime (e.g., Node.js, Java) — would help target specific memory profiling tools, but developer will know this from the codebase

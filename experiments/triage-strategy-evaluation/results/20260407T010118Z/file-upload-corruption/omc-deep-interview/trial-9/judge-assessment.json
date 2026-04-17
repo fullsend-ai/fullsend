@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present. The triage captures: small PDFs fine / large corrupted, regression timeframe (~1-2 weeks), multiple customers affected, upload path/proxy as suspect, byte-level corruption implied by checksum recommendation, and other file types possibly affected. The one gap is the binary-content-mangling finding is described indirectly (via checksum tests) rather than confirmed explicitly. The 1MB threshold is not pinned — the reporter said 'a few MB' and the triage faithfully reflects that uncertainty."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary correctly identifies size-dependent behavior and explicitly names a reverse proxy (Nginx) and chunked upload handling as likely culprits — both are accurate. This satisfies acceptable path 1 (size-dependent, different upload paths) and path 2 (proxy as corruption source, recent update as trigger). The Content-Type header stripping is not identified, but that level of specificity was not achievable from the conversation alone. The hypothesis is directionally correct and would point a developer straight to the actual bug."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about size patterns, upload method, and other file types — three well-chosen diagnostic angles. The regression timeframe was captured because the reporter volunteered it, not because the agent asked directly; explicitly asking 'when did this start?' would have been slightly more reliable. The agent resolved with a sound basis after three rounds. No critical follow-up was left entirely unaddressed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three rounds of questions, each covering distinct diagnostic ground: (1) which files are affected and file-size signals, (2) rough size range and upload surface, (3) cross-format behavior to isolate upload pipeline vs PDF processing. No question was redundant or low-value."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Round 3 — asking about other large file types — was genuinely insightful diagnostic reasoning that elicited the anecdotal image corruption report, directly supporting the 'general upload pipeline' hypothesis. Round 2 asking about upload method (web/mobile/API) was well-targeted. Round 1 was slightly generic (file size comparison is a standard first step), but still appropriate. Questions progressively narrowed the problem space."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes concrete reproduction steps with specific file sizes, a proposed integration test with SHA-256 checksum assertions, and a prioritized investigation list that explicitly calls out Nginx config, chunked transfer encoding, multipart upload handling, and storage backend changes. A developer could begin reproducing and bisecting the issue immediately."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Correctly identified size-dependent behavior early and maintained that framing throughout",
+    "Explicitly named Nginx and chunked upload handling as suspects — matching the actual root cause pathway",
+    "Round 3 question about other file types was diagnostically sharp and yielded the cross-format corruption hint",
+    "Triage summary is exceptionally actionable: reproduction steps, checksum test case, and prioritized investigation areas are all concrete"
+  ],
+  "notable_weaknesses": [
+    "The regression timeframe was captured only because the reporter volunteered it — the agent never directly asked 'when did this start?'",
+    "Binary content mangling (vs truncation or metadata corruption) is implied by the checksum recommendation but never explicitly confirmed in the conversation",
+    "Exact size threshold left as an information gap when the 1MB boundary was a key diagnostic signal that a follow-up question might have surfaced"
+  ],
+  "most_insightful_question": "Have you tried uploading any other large files (Word docs, images, ZIPs, etc.) recently? Do those come through fine, or is the corruption happening with all larger attachments — not just PDFs?",
+  "missed_opportunities": [
+    "Directly asking when the problem first appeared (e.g., 'Did this start around a specific date or after any changes on your end?') rather than relying on the reporter to volunteer the timeframe",
+    "Asking whether downloading the file immediately after upload shows corruption, or if it develops over time — this would have helped distinguish upload-path corruption from retrieval-path corruption",
+    "Asking whether the reporter could share or describe the exact file size of a failing PDF, even approximately, to anchor the size threshold more precisely"
+  ]
+}

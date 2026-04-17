@@ -1,0 +1,25 @@
+{
+  "title": "TaskFlow server gets slower throughout the day, requires daily restart",
+  "body": "Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.\n\nI've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.",
+  "quality": "good",
+  "reporter_profile": "cooperative",
+  "ground_truth": {
+    "description": "The reporter is the sysadmin for a self-hosted TaskFlow deployment. The memory leak started after upgrading to v2.3 one week ago. The leak is in the real-time notification system: every API request registers a WebSocket event listener for push notifications, but the listener is never removed when the request completes. Each leaked listener holds a reference to the full request context (~2KB). With ~200 users making ~25 requests/hour each, that's ~5,000 leaked listeners/hour, or ~10MB/hour. After 8 hours, ~80MB of leaked listeners accumulate, but GC pressure from the growing listener list causes additional memory overhead, reaching 3-4GB. The v2.2-to-v2.3 changelog mentions 'improved real-time notifications' as a feature. The server runs on a 8GB RAM VM with Ubuntu 22.04.",
+    "actual_cause": "Event listener leak in the WebSocket notification system. Each API request registers a listener that is never cleaned up. The fix is to deregister the listener when the request context is done (e.g., using context.Done() or a defer). This was introduced in v2.3 as part of the 'improved real-time notifications' feature.",
+    "acceptable_paths": [
+      "Identifying the v2.3 upgrade as the trigger and the notification system as the likely source, even without pinpointing the listener leak mechanism",
+      "Identifying a per-request resource leak pattern from the memory growth rate and request volume, even without identifying the specific subsystem"
+    ],
+    "environment": "Ubuntu 22.04 VM, 8GB RAM, TaskFlow v2.3, ~200 active users, Grafana monitoring",
+    "workaround": "Restart the server daily; or reduce traffic by rate-limiting the API"
+  },
+  "expected_triage_extracts": [
+    "memory grows linearly from ~500MB to 4GB+ over a workday",
+    "started after v2.3 upgrade, approximately 1 week ago",
+    "~200 active users",
+    "pattern is consistent day-to-day",
+    "restarting temporarily fixes the issue",
+    "v2.3 changelog mentions notification system changes",
+    "server specs: 8GB RAM VM"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I can see how frustrating it must be to lose work. To help us track this down, could you tell us a bit more about what you see when the crash happens? For example, does the app freeze and then close, do you get an error message or dialog, or does it just disappear instantly? And does this happen every single time you save, or only sometimes?"
+    },
+    {
+      "author": "reporter",
+      "body": "It happens every time I hit Save. The app just closes — well actually there's like a quick flash of some error dialog but it disappears too fast to read. I think it said something about encoding? I don't know. It's just gone and then I have to reopen everything. This has been happening for days now and I really need this fixed."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That encoding clue is really helpful, thank you. Could you tell me a bit about the task or content you're saving when this happens? For instance, does the text contain any special characters, emoji, or content pasted from another application? And did this start happening after you did something specific — like updating the app, changing a setting, or working on a particular project?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah I imported a bunch of tasks from a CSV file a while back. That's probably when it started I guess. The tasks have some weird characters in them, like fancy dashes and quotes from whatever program exported the CSV. Look, I just need to be able to save my work — can you guys fix this or not?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's very helpful context about the CSV import — we're definitely going to get this sorted out for you.\n\nOne thing that would really help us narrow this down: does the crash happen when you save *any* task, or only when you're editing one of those tasks that came from the CSV import? For example, if you create a brand-new task from scratch with plain text and hit Save, does that also crash?"
+    },
+    {
+      "author": "reporter",
+      "body": "Honestly I haven't tried that. The whole list has like 200 tasks in it and a bunch of them are from the import. I don't really want to go through and delete them one by one just to test things for you. I did notice that a smaller project I have saves fine though, so maybe it's related to the size? I don't know. I just know it worked before I did that import."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Totally understand — you shouldn't have to delete anything or run experiments on your end. Just two quick details so a developer can reproduce this on their side: what operating system are you on (Windows, Mac, or Linux), and do you know which version of TaskFlow you're running? You can usually find the version under Help → About or in Settings. That plus the CSV-with-special-characters angle should be enough for us to replicate and fix this."
+    },
+    {
+      "author": "reporter",
+      "body": "Mac, Sonoma. Version is 2.3 something, I don't remember exactly. Can you just try importing a CSV with a bunch of tasks and saving it? That should break it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Crash on save with encoding error after importing CSV containing non-ASCII characters\",\"problem\":\"TaskFlow crashes immediately on save in any project that contains tasks imported from a CSV file with typographic characters (curly quotes, em-dashes). The user sees a brief flash of an error dialog mentioning 'encoding' before the app closes, resulting in lost work. A separate project without imported tasks saves normally.\",\"root_cause_hypothesis\":\"The CSV import ingested text containing non-ASCII typographic characters (e.g., Unicode curly quotes U+2018/U+2019, em-dashes U+2014) that the save/serialization path cannot handle. The save routine likely assumes ASCII or a specific encoding and throws an unhandled encoding exception when it encounters these characters, crashing the app instead of gracefully handling or replacing them.\",\"reproduction_steps\":[\"Install TaskFlow ~2.3.x on macOS Sonoma\",\"Create or obtain a CSV file containing tasks with typographic characters (curly/smart quotes, em-dashes, etc.)\",\"Import the CSV into a new or existing project\",\"Edit any task and click Save\",\"Observe: app crashes with a brief encoding-related error dialog\"],\"environment\":\"macOS Sonoma, TaskFlow version 2.3.x\",\"severity\":\"high\",\"impact\":\"Any user who imports CSV data containing non-ASCII characters is completely unable to save their project, losing all unsaved work on every attempt. The user reports this affects ~200 tasks and has persisted for days.\",\"recommended_fix\":\"1. Investigate the save/serialization path for encoding assumptions — ensure it handles UTF-8 and common Unicode characters. 2. Add proper error handling around the save path so encoding failures surface as a user-visible error rather than a crash. 3. Audit the CSV import path to either normalize or validate character encoding at import time. 4. Consider adding an auto-save/recovery mechanism so crashes don't lose work.\",\"proposed_test_case\":\"Import a CSV containing tasks with Unicode typographic characters (curly quotes U+2018/U+2019, em-dashes U+2014, non-breaking spaces U+00A0) into a project, then save. Verify the save completes without error and the characters are preserved (or gracefully normalized) in the saved output.\",\"information_gaps\":[\"Exact TaskFlow version (user only recalls '2.3 something')\",\"Whether the crash is caused specifically by the special characters vs. the number of tasks (user's smaller project works but also lacks imported data)\",\"Exact encoding of the original CSV file (UTF-8, Windows-1252, etc.)\",\"Whether the error dialog text mentions a specific character or encoding name\"]}"
+    }
+  ]
+}

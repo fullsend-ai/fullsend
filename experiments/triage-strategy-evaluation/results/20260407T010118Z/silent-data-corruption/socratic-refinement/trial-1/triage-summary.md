@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Nightly Salesforce sync truncates phone number country codes to 2 characters
+
+## Problem
+Customer phone numbers imported from Salesforce via the nightly batch sync are having their country codes truncated to exactly 2 characters. Numbers with country codes longer than 2 digits (e.g., +353 for Ireland, +1268 for Antigua) are corrupted, while numbers with 1-2 digit country codes (+1 for US, +44 for UK) appear unaffected. Approximately 50-100 of ~2,000 customer records are affected. The source data in Salesforce remains correct.
+
+## Root Cause Hypothesis
+A change introduced approximately two weeks ago in the phone number parsing or storage logic of the Salesforce sync/import pipeline is truncating the country code portion of phone numbers to a maximum of 2 characters. This could be a database column width change, a substring/parsing bug in the import code, or a new validation rule that silently truncates. The fact that the rest of the number after the country code is preserved suggests the truncation targets the country code field or parsing segment specifically, not the overall number length.
+
+## Reproduction Steps
+  1. Identify a customer record with a country code longer than 2 digits (e.g., an Irish number with +353) that is correct in Salesforce
+  2. Wait for or manually trigger the nightly batch sync from Salesforce to TaskFlow
+  3. Examine the phone number for that record in TaskFlow — the country code should be truncated to 2 characters (e.g., +353 becomes +35)
+  4. Verify that a record with a 1-2 digit country code (e.g., +1 or +44) is not affected
+
+## Environment
+Production TaskFlow instance with nightly batch import from Salesforce CRM. Issue affects the sync/import pipeline, not the Salesforce source data.
+
+## Severity: high
+
+## Impact
+Support team cannot reach customers with affected phone numbers. Approximately 50-100 records are corrupted, specifically international customers with country codes longer than 2 digits. Data integrity of customer contact information is compromised and likely worsening with each nightly sync if the mangling is applied on every run.
+
+## Recommended Fix
+1. Review git history for the Salesforce sync/import code for changes made approximately 2-3 weeks ago. 2. Look specifically at phone number parsing logic — check for any substring, column width, or validation change that would cap the country code at 2 characters. 3. Check whether the database schema for the phone number or country code field was altered. 4. Fix the truncation bug and re-sync affected records from Salesforce to restore correct numbers. 5. Consider adding a validation check that flags phone numbers whose length changed during import.
+
+## Proposed Test Case
+Create test records with phone numbers using country codes of varying lengths: +1 (1 digit), +44 (2 digits), +353 (3 digits), +1268 (4 digits). Run the import/sync logic and assert that all country codes are preserved in full. Additionally, regression-test against a snapshot of known-good Salesforce data to ensure no truncation occurs.
+
+## Information Gaps
+- Exact date the issue was introduced (reporter estimates ~2 weeks ago; sync logs or git history should pinpoint this)
+- Whether the sync re-corrupts numbers on every run or if this was a one-time corruption (testable by the developer)
+- Whether a specific TaskFlow update or migration was deployed around that time

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent captured: timing (~1 week ago), multiple customers affected, immediate corruption on upload, and binary/encoding mangling as a hypothesis. It missed: the size threshold (>1MB) as the distinguishing factor, the explicit confirmation that small PDFs work fine, and whether other large file types are affected. These last two were listed as 'information gaps' rather than extracted facts, even though a direct follow-up question could have surfaced them."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent's root cause hypothesis explicitly included 'an encoding/content-type handling change that corrupts binary data (e.g., treating binary as UTF-8)' — which is essentially the actual cause. The recommended fix explicitly says 'Check if the upload handler correctly preserves binary content-type.' The hypothesis also mentioned chunked/multipart upload issues and proxy config changes, both of which are consistent with the acceptable diagnostic paths. The main gap is not identifying the size threshold, but the directional accuracy is strong."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after only two turns. When the reporter said 'some PDFs work fine and some don't,' this was a clear opening to ask specifically about file size — the most diagnostic follow-up available. The agent instead pivoted to timing/server-side changes. It also never asked whether other file types are affected, which the expected extracts explicitly list. The agent had a reasonable basis to resolve given the reporter's vague answers, but a third targeted question about file size would have been high-value."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Only two questions were asked, and both were well-chosen. The second question efficiently combined two distinct inquiries (immediate vs delayed corruption, and recent changes). No redundant or low-value questions were wasted. The early resolution kept the conversation tight, though it came at the cost of thoroughness."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was notably well-designed — it explicitly offered 'only large PDFs (e.g., over a certain file size)' as a multiple-choice option, demonstrating that file size was already on the agent's radar as a diagnostic axis. The second question was also well-framed, combining corruption timing with deployment change inquiry. The weakness is that after receiving 'seems kind of random,' the agent should have followed up with a direct file-size probe rather than accepting ambiguity."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is detailed and well-structured. Reproduction steps include testing PDFs across a range of sizes, which would quickly surface the 1MB threshold. The recommended fix specifically calls out content-type preservation and proxy config review — both directly relevant to the actual bug. The proposed test case with SHA-256 checksum verification is concrete and reusable. A developer would have a strong starting point, though they'd still need to identify the size threshold themselves."
+    }
+  },
+  "weighted_total": 3.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The root cause hypothesis independently arrived at encoding/content-type corruption of binary data — essentially the correct answer — without any explicit hints from the reporter",
+    "The first question explicitly surfaced file size as a diagnostic axis with a well-structured multiple-choice format",
+    "The recommended fix specifically calls out content-type preservation in the upload handler, which is the precise fix needed",
+    "Reproduction steps include testing across file size ranges, which would independently reveal the 1MB threshold during developer investigation"
+  ],
+  "notable_weaknesses": [
+    "After 'some PDFs work fine and some don't,' the agent did not follow up with a direct question about file sizes, missing the most actionable diagnostic path available",
+    "The size threshold and other-file-types questions were punted to 'information gaps' rather than pursued — a third turn would have been justified given the high value of that information",
+    "The agent accepted the reporter's vague 'seems random' answer without probing for patterns the reporter might not have consciously noticed"
+  ],
+  "most_insightful_question": "The first question, which offered 'Only large PDFs (e.g., over a certain file size)' as an explicit option — this demonstrated proactive diagnostic reasoning and would have immediately surfaced the size correlation if the reporter had been tracking it.",
+  "missed_opportunities": [
+    "After 'some work, some don't,' ask: 'Can you try uploading the same PDF in two versions — one under 1MB and one larger — and tell us if the small one opens correctly?' This would have directly confirmed the size threshold.",
+    "Ask whether other file types (images, spreadsheets) uploaded at similar sizes also have issues, which would have widened the scope and confirmed the upload-path hypothesis.",
+    "Ask the reporter to share a corrupted file for direct inspection, which could have revealed encoding artifacts in the binary."
+  ]
+}

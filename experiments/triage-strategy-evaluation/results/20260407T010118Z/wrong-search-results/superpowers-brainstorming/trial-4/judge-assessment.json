@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent captured the core behavioral facts: archived tasks appear when filtering for active, active tasks are missing, filter behavior is inverted, and multiple users are affected. However, two important items were never extracted: (1) when the issue started (timing relative to the v2.3.1 migration ~3 days ago), and (2) whether individual task pages show the correct archive status — a key data point for distinguishing index vs. application logic bugs."
+    },
+    "accuracy": {
+      "score": 2,
+      "rationale": "The agent correctly characterized the inversion behavior, but its root cause hypothesis is wrong in a consequential way. It concluded 'the underlying data and index are fine — only the filter predicate is wrong' and pointed to a negation error in application code. In reality, the search index field mapping is the broken component, not application logic. This contradicts both acceptable diagnostic paths: the agent explicitly ruled out an index problem (path 1), and it never identified the schema migration as a trigger (path 2). A developer following the recommended fix would search application code rather than the index configuration."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after just two questions, having established a clear inversion pattern. The second question was well-chosen and elicited compelling evidence. However, it skipped obvious follow-ups: asking when the issue started (which would have surfaced the migration), and asking whether individual task pages display the correct archive status (which would have distinguished index vs. application bugs). These gaps led to a confident but incorrect root cause hypothesis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were purposeful. The first clarified expected behavior to establish a baseline. The second directly tested the inversion hypothesis by probing the opposite filter state. No redundant or low-value turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question — asking what happens when toggling to 'include archived tasks' — was genuinely insightful and demonstrated diagnostic reasoning beyond surface-level fact-gathering. It transformed vague 'wrong results' into a confirmed bidirectional inversion. The first question was well-structured with clear options but was somewhat routine. Together they efficiently narrowed the symptom space, though neither probed for timing or index-level distinctions."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary is detailed, well-structured, and includes good reproduction steps. However, the recommended fix ('locate the filter predicate in the search query path, check for a negation error') would direct developers to application code rather than the search index configuration. A developer following this summary would likely spend time auditing query-builder logic before eventually discovering the index mapping issue. The summary provides a reasonable starting point but points in the wrong direction for the fix."
+    }
+  },
+  "weighted_total": 3.1,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question was diagnostically sharp: asking about the opposite filter state directly confirmed a bidirectional inversion rather than a one-sided omission, which meaningfully narrowed the problem space.",
+    "The triage summary is well-structured and includes concrete reproduction steps, a severity assessment, and a proposed test case — all useful artifacts for a developer handoff.",
+    "The agent correctly inferred that the issue is server-side (affecting multiple users, not browser-specific) from the multi-user scope."
+  ],
+  "notable_weaknesses": [
+    "The agent explicitly concluded the index was fine ('the underlying data and index are fine') when the index is actually the broken component. This is a consequential misdirection.",
+    "Timing was never asked about. A single question about when the issue started would likely have surfaced the recent v2.3.1 update, pointing toward a migration-related regression.",
+    "Individual task page behavior was never probed. This is a classic differentiator between a display/index bug and a data integrity bug — its absence left the root cause hypothesis underconstrained."
+  ],
+  "most_insightful_question": "When you toggle that filter to include archived tasks, what happens? (A) I then see only my active tasks (the opposite of what I'd expect) ...",
+  "missed_opportunities": [
+    "When did this issue first appear? Did anything change around that time — an update, maintenance window, or system notification?",
+    "If you open an individual task that appeared in your 'active only' search results, does its detail page show it as archived or active?",
+    "Are there any tasks where the search result and the task detail page disagree on archive status?"
+  ]
+}

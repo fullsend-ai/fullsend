@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured nearly all expected information: the 30% affected rate, the plus-addressing and aliased-email pattern, the SameSite cookie issue, the email claim mismatch hypothesis, the browser dev tools cookie observation, that redirect URIs are correctly configured, and that other SSO apps work fine. The one notable gap is the incognito/clearing-cookies workaround — the ground truth notes this sometimes helps, but the summary explicitly states 'No workaround is currently known,' which is incorrect."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified both root causes: SameSite=Strict preventing cookie persistence on cross-origin redirects, and email claim mismatch for plus-addressed and aliased users. The causal hierarchy is slightly inverted from the ground truth (ground truth calls SameSite the primary cause; the triage leads with email mismatch in its recommended-fix ordering), but 'identifying both issues with causal hierarchy inverted' is explicitly listed as an acceptable diagnostic path. The one inaccuracy is the false claim that no workaround is known."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about user patterns, server logs, a confirmatory alias test, a cross-check of affected vs. unaffected users, and the specific Set-Cookie header attributes. All of these were productive. The one obvious skipped follow-up: asking whether incognito or a fresh browser profile helped affected users — this would have directly surfaced the workaround and further confirmed the cookie hypothesis without waiting for an alias test. The agent got to the same conclusion via another route, but the incognito question was a missed shortcut."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four agent turns (plus the resolution), each advancing the investigation. The server-log request (turn 2) was slightly mismatched to the reporter's expertise level — an IT admin, not a developer — though it did prompt the reporter to volunteer the browser dev tools observation, so it wasn't wasted. Turn 3's alias-test proposal and cross-check were efficiently bundled. Turn 4's targeted Set-Cookie attribute query was excellent. Overall very efficient with at most one question that could have been better tailored."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning throughout. Turn 1 immediately sought to narrow the affected population in a structured way. Turn 3 proposed a confirmatory experiment (alias test) rather than just asking for more data — showing causal thinking. Turn 4 asked for the specific cookie attributes (SameSite, Domain) that would reveal the cross-site cookie issue, which is a non-obvious but precisely targeted question that led directly to the SameSite=Strict discovery. The reporter would not have volunteered any of these observations without being asked."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it provides a prioritized investigation sequence, specific code-level hypotheses ('+' URL-encoding, exact-match email comparison, oid vs email as lookup key), concrete reproduction steps, and a proposed integration test suite. A developer could immediately check the session cookie configuration and SSO callback email-claim parsing without needing to gather additional context."
+    }
+  },
+  "weighted_total": 4.25,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Identified both root causes (SameSite=Strict and email claim mismatch) through systematic questioning, matching the ground truth even though neither was obvious from the original report",
+    "The Set-Cookie attribute question (turn 4) was precisely targeted and directly surfaced the SameSite=Strict finding — a non-trivial SSO-specific insight",
+    "The triage summary is highly actionable, with a prioritized fix sequence, code-level hypotheses, reproduction steps, and a proposed test suite",
+    "Proposed the alias-test experiment as a confirmatory step rather than passively requesting more data — shows genuine diagnostic reasoning"
+  ],
+  "notable_weaknesses": [
+    "The summary incorrectly states 'No workaround is currently known' — incognito mode and clearing cookies sometimes help, per the ground truth, and this is meaningful signal for diagnosing the cookie issue",
+    "The server-log request (turn 2) was slightly misaligned with the reporter's stated role as an IT admin rather than a developer, though the reporter's response compensated by volunteering the browser dev tools observation",
+    "The recommended-fix ordering slightly inverts the causal hierarchy (email claim parsing listed before SameSite fix), whereas the ground truth identifies SameSite as the primary cause affecting more users"
+  ],
+  "most_insightful_question": "Could you share the exact Set-Cookie header value — specifically the cookie name and its attributes like Domain, Path, and SameSite? — This question directly elicited the SameSite=Strict discovery, which is the primary root cause per the ground truth and would not have been volunteered by the reporter without prompting.",
+  "missed_opportunities": [
+    "Asking whether affected users found that incognito/private browsing or freshly cleared cookies allowed them to log in — this would have surfaced the known workaround and provided strong additional confirmation of the cookie persistence hypothesis without waiting for the alias test",
+    "Following up on whether the reporter confirmed that affected users actually cleared cookies as instructed before the switch — old Okta cookies could have been an additional confounding factor worth ruling out"
+  ]
+}

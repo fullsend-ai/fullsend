@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: delay duration (2-4 hours), onset (~1 week ago), time-of-day pattern (worse 9-10am, better afternoon), connection to marketing digest batch, queue congestion, transactional vs. bulk email competition (captured in recommended fix), and prior baseline (1-2 minutes). The summary also adds reproduction steps and a proposed test case beyond what was expected."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest email feature as the cause and queue congestion as the mechanism, matching acceptable diagnostic path #2. While the priority inversion specifics weren't surfaced (the reporter couldn't know them), the recommended fix explicitly calls out priority lanes and separating transactional from bulk emails — essentially pointing at the correct fix. No inaccuracies introduced."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about scope (all users vs. subset), what changed around a week ago, and then confirmed the queue congestion hypothesis. It resolved after solid confirmation from the reporter. Minor gaps: it didn't probe the email infrastructure (priority queue vs. flat queue, provider), the exact digest batch size, or the precise dispatch time — but correctly logged these as information gaps rather than pretending to know."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two turns of questions, each well-targeted. Turn 1 combined scope and change-detection into one efficient ask. Turn 2 presented the hypothesis and sought confirmation. No redundant questions, no low-value asks. The agent correctly skipped irrelevant questions (e.g., OS/browser) since it recognized this as a server-side issue."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question's 'did anything change about a week ago' is the key diagnostic move — it's open-ended enough to let the reporter surface the digest email detail themselves, which they did. This is genuinely insightful framing. The follow-up hypothesis-confirmation question was efficient and gave the reporter clear options, reducing ambiguity in their response."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis, step-by-step reproduction instructions (including checking queue depth over a day), multiple concrete fix options (priority lanes, throttling, scheduling), a proposed test case with pass criteria, and explicit information gaps scoped to what engineering would need. A developer could begin investigation and likely implement a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The open-ended 'did anything change a week ago' question efficiently surfaced the digest email connection without leading the witness",
+    "Hypothesis was formed and confirmed in just two turns without sacrificing diagnostic quality",
+    "Final summary is exceptionally actionable: includes reproduction steps, fix options, a proposed test case, and scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not probe email infrastructure details (priority queue vs. flat queue, third-party provider) before resolving — though these were correctly listed as information gaps",
+    "Did not ask for the exact time the digest batch runs, which would confirm the 9am queue spike hypothesis more precisely"
+  ],
+  "most_insightful_question": "Did anything change about a week ago when this started (e.g., a plan change, new team members added, or a notification settings update)?",
+  "missed_opportunities": [
+    "Ask whether the email system uses a priority queue or a flat FIFO queue — this would have surfaced the priority inversion root cause directly",
+    "Ask approximately how many users receive the daily digest, which would have revealed the 10K batch size driving the congestion",
+    "Ask what time the digest emails arrive in inboxes, to pin down the exact dispatch time and strengthen the 9am queue-flood hypothesis"
+  ]
+}

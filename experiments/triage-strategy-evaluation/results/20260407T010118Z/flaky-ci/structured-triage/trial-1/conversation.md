@@ -1,0 +1,50 @@
+# Conversation: flaky-ci x structured-triage
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI failures are really frustrating, especially when they block releases.
+
+To help narrow this down: when the tests fail in CI, which specific tests are failing, and what do the failure messages or error output look like? For example, are they timing out, throwing assertion errors, or failing with connection/resource errors? If you can share a snippet from a recent failed CI run, that would be very helpful.
+
+---
+
+### reporter
+
+Look, I don't have the logs in front of me right now, but they're assertion errors — the tests expect tasks in a certain order and they come back in a different order. It's the new ordering tests that were added last week. They pass locally every single time. I've re-run the CI like 5 times and sometimes they pass, sometimes they don't. Can someone just look at the CI config?
+
+---
+
+### triage-agent
+
+Thanks for that detail — knowing it's assertion errors on ordering is really helpful. That pattern (tests pass locally but return items in a different order in CI) is a strong clue.
+
+Could you share what your CI environment looks like compared to your local setup? Specifically:
+- What CI system are you using (GitHub Actions, Jenkins, etc.) and what OS/container image does it run on?
+- What database are you using locally vs. in CI (e.g., SQLite locally, PostgreSQL in CI)?
+- Are there any differences in the app version, runtime version, or configuration between the two environments?
+
+Ordering differences across environments often come down to database engine or configuration differences, so this will help narrow it down quickly.
+
+---
+
+### reporter
+
+We use GitHub Actions, Ubuntu runners. Go 1.22 both locally and in CI. There's no database involved here — these are unit tests for task ordering logic, it's all in-memory. I don't know what else would be different, that's kind of why I'm filing this issue. It works on my Mac every time. Can someone just look at the tests and the CI config? I don't have time to keep re-running the pipeline hoping it passes.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky ordering assertion failures in CI: new task ordering tests assume deterministic order from non-deterministic source","problem":"Recently added task ordering unit tests pass consistently on the reporter's Mac but fail intermittently on GitHub Actions Ubuntu runners. Failures are assertion errors where tasks are returned in an unexpected order.","root_cause_hypothesis":"The new ordering tests likely depend on iteration order of a Go map or another non-deterministic source (goroutine scheduling, etc.) without applying an explicit sort. Go map iteration order is randomized, and behavioral differences between macOS and Linux (or between Go runtime seeds) can make this appear stable locally while failing in CI.","reproduction_steps":["Push a branch that includes the new ordering tests added last week","Trigger CI pipeline on GitHub Actions (Ubuntu runner, Go 1.22)","Observe that the ordering test suite intermittently fails with assertion errors showing tasks in a different order than expected","Locally, run the same tests with '-count=100' or 'go test -race' to attempt to surface the flakiness"],"environment":"CI: GitHub Actions, Ubuntu runners, Go 1.22. Local: macOS, Go 1.22. Unit tests are in-memory with no database dependency.","severity":"high","impact":"Blocking releases for the team. Every CI run is a coin flip, forcing repeated retries and eroding confidence in the test suite.","recommended_fix":"Inspect the new ordering tests added last week. Look for assertions that compare slices or ordered output derived from Go map iteration without an explicit sort. Either (a) sort the results before asserting order, (b) use an order-independent assertion (e.g., ElementsMatch), or (c) ensure the production code applies a deterministic sort before returning results. Also consider running 'go test -count=100' locally to verify the fix eliminates flakiness.","proposed_test_case":"Run the ordering tests with '-count=1000' on both macOS and Linux (or in CI) and confirm zero failures. Additionally, add a test that explicitly shuffles input before calling the ordering logic to prove the output order is deterministic regardless of input order.","information_gaps":["Exact test file and function names for the new ordering tests","Specific assertion output showing expected vs. actual order","Whether the flakiness can be reproduced locally with '-count=N' or '-race'"]}
+
+---

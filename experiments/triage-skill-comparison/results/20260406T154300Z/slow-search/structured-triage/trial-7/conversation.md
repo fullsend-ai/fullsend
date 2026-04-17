@@ -1,0 +1,55 @@
+# Conversation: slow-search x structured-triage
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help us track down the slowness, could you walk us through the steps to reproduce it? Specifically:
+
+- What are you searching for (e.g., a keyword, a tag, a filter combination)?
+- Where in the app are you searching (the main search bar, a project-specific search, etc.)?
+- Roughly how many tasks are in your workspace?
+
+This will help us narrow down whether it's related to a specific query type or the dataset size.
+
+---
+
+### reporter
+
+Sure! I'm just searching for keywords in the main search bar — like searching for 'budget' or 'quarterly review', stuff like that. I have about 5,000 tasks built up over the past couple years. The weird thing is, it seems like searching for something that matches a task title comes back fast, but when I'm searching for a word that's buried in a task description, that's when it grinds to a halt. I've got some tasks with really long descriptions (I paste meeting notes into them sometimes) so maybe that's related? It was totally fine until a couple weeks ago though.
+
+---
+
+### triage-agent
+
+Thanks for the detail — that's really helpful, especially the distinction between title vs. description searches. That gives us a strong lead.
+
+Could you share a few environment details so we can try to reproduce this on our end?
+
+- What **OS** are you on (e.g., Windows 11, macOS Sonoma, Ubuntu 24.04)?
+- Which **browser** are you using (and roughly what version)?
+- What **version of TaskFlow** are you running? (You can usually find this under Settings → About.)
+
+Since you mentioned it started about two weeks ago, knowing the version will help us check whether a recent update might have introduced a regression.
+
+---
+
+### reporter
+
+I'm on Ubuntu 22.04 on a ThinkPad T14. It's not a browser app — I'm using the desktop version. I upgraded to v2.3 about two weeks ago, which now that you mention it, is right around when the slowness started. Before the upgrade I was on v2.2 and search was snappy.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search regression in v2.3: full-text description search takes 10-15s with large task count","problem":"After upgrading from v2.2 to v2.3, keyword searches that match task descriptions take 10-15 seconds to return results. Searches matching task titles remain fast. The user has approximately 5,000 tasks, some with lengthy descriptions (pasted meeting notes). Search was performant on v2.2.","root_cause_hypothesis":"The v2.3 release likely introduced a regression in full-text search over task descriptions — possibly a removed or broken index on the description field, a change from indexed search to naive string scanning, or a new search implementation (e.g., switching search backends) that doesn't handle large description text efficiently.","reproduction_steps":["Set up a TaskFlow workspace with ~5,000 tasks, including some with lengthy descriptions (multiple paragraphs of text)","Upgrade to or install TaskFlow v2.3 (desktop version)","Open the main search bar and search for a keyword that appears only in task titles — observe fast results","Search for a keyword that appears only in task descriptions (not titles) — observe 10-15 second delay"],"environment":"Ubuntu 22.04, ThinkPad T14, TaskFlow desktop app v2.3 (regression from v2.2)","severity":"high","impact":"Any user with a non-trivial number of tasks who relies on searching task descriptions is experiencing severe performance degradation. This likely affects power users and long-term users with large task histories most acutely.","recommended_fix":"Diff the search implementation between v2.2 and v2.3. Investigate whether description indexing was dropped, altered, or bypassed. Check for changes to the query planner, search backend, or database schema affecting the description field. Profile the search query to confirm whether the bottleneck is query execution or result processing.","proposed_test_case":"Create a performance test that seeds a workspace with 5,000 tasks (some with multi-paragraph descriptions), then asserts that a keyword search matching only description text completes within an acceptable threshold (e.g., under 2 seconds).","information_gaps":["No error messages or logs were collected — the search completes, just slowly","Unknown whether the issue also manifests on other platforms (macOS, Windows) or is Linux/desktop-specific"]}
+
+---

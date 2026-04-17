@@ -1,0 +1,75 @@
+# Conversation: memory-leak x omc-deep-interview
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana data — the consistent daily pattern is really helpful.
+
+To help us narrow down what's driving the memory growth: what version of TaskFlow are you running, and could you share a bit about your deployment setup? Specifically, are you using the built-in task scheduler / background workers, and do you have any integrations enabled (e.g., email notifications, webhooks, or external calendar sync)?
+
+---
+
+### reporter
+
+We're running TaskFlow v2.3 — we upgraded from v2.2 about a week ago, which is actually right around when this problem started. The server is an 8GB RAM VM running Ubuntu 22.04.
+
+We do have the built-in task scheduler running, and we're using the real-time notifications feature (push notifications via WebSocket). I don't think we have any external calendar sync set up, and we're not using webhooks. We do have email notifications enabled but those have been on since before the upgrade without issues.
+
+Now that I think about it, the timing lines up pretty well with the v2.3 upgrade. I remember the changelog mentioned 'improved real-time notifications' as one of the new features.
+
+---
+
+### triage-agent
+
+That's a really useful observation about the v2.3 upgrade timing — it's a strong lead.
+
+Could you check whether WebSocket connections are accumulating over the course of the day? For example, if you run `ss -s` or check your server's connection count mid-morning vs. late afternoon, do you see the number of established connections growing steadily? Alternatively, if it's easy to try, you could temporarily disable the real-time notifications feature for a day and see if the memory growth pattern changes. Either data point would help us confirm whether the 'improved real-time notifications' change in v2.3 is the culprit.
+
+---
+
+### reporter
+
+I haven't checked the WebSocket connection counts specifically, but I can do that tomorrow morning and again in the afternoon and report back. That's a good idea.
+
+Disabling real-time notifications for a day is also something I can try — I'll just need to give our users a heads up since they rely on the push notifications. I could probably do that on Wednesday.
+
+One thing I can tell you right now though: I pulled up our Grafana metrics more carefully and the memory growth looks very linear and steady throughout the day. It's not like there are spikes — it just climbs at a consistent rate that correlates pretty closely with our usage hours. When people go home for the evening the growth basically stops, and it stays flat overnight until the next morning when people start working again. That makes me think it's tied to user activity rather than some background process leaking.
+
+---
+
+### triage-agent
+
+That correlation with usage hours is a great clue — it really does point away from a background process.
+
+One thing that would help us distinguish between two possible leak patterns: could you check the current WebSocket connection count right now while users are active? Something like `ss -s | grep estab` or `ss -tn state established | grep :<your_websocket_port> | wc -l` would work. Then compare that number to roughly how many users are logged in at the moment.
+
+If connections are way higher than active users (say 1,500 connections for 100 active users), that suggests connections aren't being cleaned up when users navigate away or close tabs — a connection leak. If the count roughly matches active users, the leak is more likely per-notification: each task update or event is allocating something that never gets freed, which would need a different fix.
+
+This might save you the trouble of the full day-long test — if the numbers are clearly off, we'll have our answer right away.
+
+---
+
+### reporter
+
+I just ran those commands. We have about 150 users online right now and the WebSocket connection count is around 160 — so that looks pretty normal, roughly one per active user. Connections don't seem to be piling up.
+
+So it sounds like it's more the second pattern you mentioned — something being allocated per-event or per-request that never gets freed. That would make sense with the linear growth tied to usage hours. Our users are pretty active, probably averaging around 25 API requests per user per hour between task updates, comments, and dashboard refreshes. So that's a lot of individual requests generating notifications throughout the day.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in v2.3 real-time notifications: per-event allocation grows unbounded during active usage","problem":"After upgrading to TaskFlow v2.3, the server's memory climbs linearly from ~500MB to 4GB+ over the course of a workday, directly correlated with user activity. This causes page loads to exceed 10 seconds and API timeouts by late afternoon, requiring a daily restart. The pattern is consistent day-over-day, growth stops outside business hours, and started exactly when v2.3 was deployed.","root_cause_hypothesis":"The 'improved real-time notifications' feature in v2.3 is allocating memory per notification event (e.g., storing notification payloads, registering event listeners, or buffering broadcast messages) that is never freed. WebSocket connections themselves are properly managed (~1 per active user), so the leak is in the per-event processing path rather than the connection lifecycle. At ~200 users × ~25 requests/hour, that is roughly 5,000 events/hour, each likely retaining a small allocation that accumulates to gigabytes over a full workday.","reproduction_steps":["Deploy TaskFlow v2.3 with real-time notifications enabled","Connect ~150-200 concurrent users (or simulate equivalent load generating ~25 API requests/user/hour)","Monitor memory via Grafana or `ps` over several hours","Observe steady linear memory growth (~400-500MB/hour during active usage) that stops when user activity stops"],"environment":"TaskFlow v2.3 (upgraded from v2.2), self-hosted on Ubuntu 22.04 VM with 8GB RAM, ~200 active users, real-time notifications (WebSocket push) and email notifications enabled, built-in task scheduler running","severity":"high","impact":"All 200 active users experience degraded performance daily, with the application becoming effectively unusable by late afternoon. The team has been performing daily manual restarts for a week. No data loss, but significant productivity impact.","recommended_fix":"Investigate the v2.3 diff for the real-time notifications subsystem. Look for: (1) per-notification objects appended to in-memory collections (e.g., notification history, broadcast queues) that are never pruned or capped, (2) event listeners or callbacks registered per-event that are never removed, (3) notification payloads retained in memory after delivery rather than being garbage collected. Compare the notification broadcast/dispatch path between v2.2 and v2.3 to identify what 'improved' means and what new allocations were introduced. A heap dump taken mid-afternoon on a busy day would pinpoint the leaking object type.","proposed_test_case":"Create a load test that simulates 200 concurrent WebSocket-connected users generating task updates at ~25 requests/user/hour for 4 simulated hours. Assert that server RSS memory does not exceed startup memory + a reasonable bounded threshold (e.g., 200MB). This test should pass on v2.2 and fail on v2.3 to confirm the regression, then pass again after the fix.","information_gaps":["No heap dump or profiler output to identify the specific leaking object type","v2.2 rollback not yet tested to definitively confirm the regression","The reporter planned to disable real-time notifications on Wednesday — that result would further confirm the hypothesis but is not needed to begin investigation"]}
+
+---

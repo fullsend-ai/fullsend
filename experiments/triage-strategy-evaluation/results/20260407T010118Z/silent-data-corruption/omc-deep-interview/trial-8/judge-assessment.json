@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected information was extracted: ~50-100 affected records out of 2,000, truncated (not random) numbers, ~2 week timeline, nightly batch import connection, the country code length pattern (3+ digit codes affected, 1-2 digit codes fine), US/UK numbers unaffected, and the recent developer change to phone number handling. The summary also added valuable additional context like ongoing corruption risk and workaround steps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the nightly import as the corruption source and the country code length pattern — matching acceptable diagnostic path #1 exactly. It correctly identifies the 2-week timeline and connects it to a recent change in the import pipeline — matching acceptable diagnostic path #2. The root cause hypothesis (a parsing step truncating country codes to 2 characters) is essentially correct, even without identifying the exact regex. All facts are consistent with the ground truth."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked targeted questions that progressively narrowed the cause: first establishing timeline and potential triggers, then requesting concrete examples of corrupted numbers, then confirming the sync connection via timestamps and asking about recent code changes. No obvious follow-ups were skipped. The agent correctly noted information gaps for items that couldn't be resolved through the reporter."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions across three turns, each essential. The first established timeline and triggers, the second got concrete examples, the third confirmed the sync vector and developer change. No redundant or low-value questions. The multi-part third question efficiently combined two related but distinct queries."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — asking for before/after examples of corrupted numbers — was particularly insightful and directly led to the reporter providing the Ireland (+353→+35) and Antigua (+1268→+12) examples, which revealed the country code length pattern. The third question about timestamps and recent code changes demonstrated genuine diagnostic reasoning by hypothesizing the sync as the vector before confirmation. Questions showed progressive diagnostic reasoning, not generic bug report templates."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately: the summary identifies where to look (the commit ~2 weeks ago modifying phone number handling in the sync pipeline), what to look for (a 2-character cap on country codes), how to fix it (support 1-3 digit country codes per E.164), includes concrete reproduction steps, a proposed test case with specific inputs, and a remediation plan for existing corrupted records."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question asking for concrete before/after examples was the key diagnostic move — it directly surfaced the country code length pattern that unlocked the root cause hypothesis",
+    "The agent recognized the pattern immediately from the examples and articulated it precisely ('country codes longer than 2 digits are being clipped to exactly 2 characters')",
+    "The final summary is exceptionally actionable, including reproduction steps, a specific unit test strategy with concrete inputs, and both a fix approach and a data remediation plan",
+    "The agent correctly flagged ongoing corruption risk ('the corruption is ongoing and may worsen as more records are touched'), which is important operational context not in the original report"
+  ],
+  "notable_weaknesses": [
+    "The workaround of disabling the nightly sync was not explicitly suggested, though the summary does recommend re-syncing from Salesforce after fixing, implying Salesforce data is intact"
+  ],
+  "most_insightful_question": "Could you share a couple of examples of what the corrupted phone numbers look like compared to what they should be? — This question directly produced the Ireland and Antigua examples that revealed the country code length truncation pattern, which was the key diagnostic breakthrough.",
+  "missed_opportunities": [
+    "Could have asked whether the nightly sync could be paused to prevent further corruption while the fix is being developed"
+  ]
+}

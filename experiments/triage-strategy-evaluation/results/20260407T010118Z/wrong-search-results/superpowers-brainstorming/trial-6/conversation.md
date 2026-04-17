@@ -1,0 +1,36 @@
+# Conversation: wrong-search-results x superpowers-brainstorming
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To make sure I understand the expected behavior: when you search for tasks, how do you expect archived tasks to be handled?
+
+1. **Hidden by default** — archived tasks should never appear in search results unless I explicitly ask for them
+2. **Filtered out** — there's a filter/toggle (like an "Include archived" checkbox) that I expect to be off by default, but it's not working
+3. **Shown but ranked lower** — archived tasks can appear, but active tasks should always appear first
+4. **Something else**
+
+This will help us figure out whether this is a filtering bug, a ranking bug, or something else entirely.
+
+---
+
+### reporter
+
+It's option 2. There's an archive filter that defaults to showing only active tasks, and that's how I expect it to work. But right now it seems like the filter is doing the opposite — when it's set to show active tasks, I'm seeing archived ones instead. I have about 150 active tasks and 300 archived ones, and my search results are flooded with old archived stuff while my active tasks don't show up. If I manually flip the filter to show archived tasks, I actually see my active ones there. It's like the filter is backwards.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search archive filter is inverted — 'active' filter shows archived tasks and vice versa","problem":"The search archive filter applies the opposite predicate. When set to show only active tasks (the default), search results return archived tasks instead. When manually toggled to show archived tasks, active tasks appear. This affects all searches for all users.","root_cause_hypothesis":"The boolean condition on the archive filter is inverted. The filter predicate likely checks something like `task.archived === true` when it should check `task.archived === false` for the 'active only' setting (or a NOT is missing, or an enum comparison is swapped). This could be in the query layer, the API filter parameter, or the frontend filter construction.","reproduction_steps":["Log in as any user with both active and archived tasks","Ensure the archive filter is set to the default ('active tasks only')","Search for a term that matches both an active task and an archived task (e.g., 'Q2 planning')","Observe that archived tasks appear and matching active tasks do not","Toggle the archive filter to 'show archived'","Observe that active tasks now appear in results instead"],"environment":"Affects all users; reported by at least two accounts. Not environment-specific — this is a logic bug.","severity":"high","impact":"All users' default search experience is broken. Active tasks are effectively unsearchable without manually inverting the filter. Users with many archived tasks (reporter has 300 archived vs 150 active) are disproportionately affected as results are flooded with irrelevant archived items.","recommended_fix":"Find the archive filter predicate in the search query path and invert the boolean condition. Check both the API/query layer and the frontend filter construction — the inversion could be in either place. Search the codebase for the archive filter parameter and trace how its value maps to the database/index query predicate.","proposed_test_case":"Create a test with both active and archived tasks matching the same search term. Assert that with the default filter (active only), only the active task is returned. Assert that with the filter set to 'archived', only the archived task is returned. Assert that with 'all', both appear.","information_gaps":["Exact location of the inversion (frontend filter construction vs API query layer vs database query) — but this is for the developer to determine during investigation, not something the reporter would know"]}
+
+---

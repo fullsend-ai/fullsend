@@ -1,0 +1,22 @@
+{
+  "title": "Intermittent 403 Forbidden errors for users with the new analyst role",
+  "problem": "Users assigned the recently created 'analyst' role experience 403 Forbidden errors on approximately 1 in 3 dashboard page loads. Refreshing the page typically resolves the error after a couple of attempts. The issue affects all known analyst-role users and does not affect users with editor or admin roles. The problem began a few days ago, coinciding with when the analyst role was introduced.",
+  "root_cause_hypothesis": "The analyst role's permissions are likely subject to a caching or eventual-consistency issue in the authorization layer. Possible causes: (1) a permission cache that intermittently serves stale/empty permission sets for the new role, (2) a load-balanced setup where not all instances have consistent role definitions, or (3) a race condition where the role's permissions are resolved asynchronously and sometimes not ready before the authorization check runs.",
+  "reproduction_steps": [
+    "Assign a user account the 'analyst' role",
+    "Log in and navigate to the TaskFlow dashboard",
+    "Load or refresh dashboard pages repeatedly (~10-15 times)",
+    "Observe that roughly 1 in 3 loads returns a 403 Forbidden error",
+    "Confirm that refreshing after a 403 typically succeeds within 1-2 attempts"
+  ],
+  "environment": "Affects the TaskFlow dashboard in production. Observed by multiple users on the analyst role. No specific browser, OS, or network dependency identified — the issue is server-side.",
+  "severity": "high",
+  "impact": "All users with the analyst role are unable to reliably access the dashboard, making the role effectively broken. This blocks any workflow that depends on analyst-level access.",
+  "recommended_fix": "Investigate the authorization path for the analyst role: (1) Check how role permissions are loaded and cached — look for cache TTL issues or lazy-loading race conditions specific to newly created roles. (2) Compare the analyst role's permission definition with editor/admin to see if it's structured differently or missing a required field. (3) Check whether authorization is evaluated across multiple services or instances and whether the role definition is consistently propagated. (4) Review any recent changes to the role/permission system deployed around the same time the analyst role was created.",
+  "proposed_test_case": "Create an integration test that assigns a user the analyst role and performs 50 consecutive authenticated requests to the dashboard endpoint, asserting that all return 200. Run this against a single instance and then against the load-balanced setup to isolate whether the inconsistency is per-instance or cross-instance.",
+  "information_gaps": [
+    "Exact deployment date/commit that introduced the analyst role",
+    "Whether the 403s occur on all dashboard routes or specific ones",
+    "Server-side logs showing what the authorization check returns during a 403 for an analyst user"
+  ]
+}

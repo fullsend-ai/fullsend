@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: 2-4 hour delay, started ~1 week ago, worse at 9-10am and better in afternoon, correlation with marketing digest, queue congestion hypothesis, transactional vs bulk email pipeline competition (explicitly called out in recommended_fix), and 1-2 minute baseline noted in problem statement."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches both acceptable diagnostic paths: the agent identified the digest email feature as the cause, correctly framed it as a queue flooding/congestion mechanism, explained why morning delays are worst (fresh batch) and afternoon delays shorter (backlog draining), and even suggested checking for a shared queue and implementing priority separation — which is exactly the canonical fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two rounds of questioning covered isolation (email vs in-app), scope, version, hosting, and email provider. The key causal clue (digest email correlation) was volunteered by the reporter rather than elicited. The agent did not explicitly ask 'has anything changed in the past week?' but the reporter surfaced it anyway. Information gaps are correctly acknowledged. One obvious follow-up was not asked: the approximate number of users receiving digest emails, which would have helped quantify the queue impact."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Most questions were well-targeted. The email provider question turned out to be low-value since the reporter immediately and correctly pointed out the delay is on the sending side — but ruling out receiving-side throttling is a reasonable diagnostic step. No questions were repeated or redundant."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The in-app vs. email isolation question was genuinely insightful — it confirmed the issue lives in the email sending pipeline, not in notification delivery broadly. The scope question (all users vs. specific teams) was well-framed. Questions were professional and targeted, though not deeply inventive; a sharper agent might have directly probed 'did anything change around a week ago?' rather than waiting for the reporter to volunteer it."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear root cause hypothesis, step-by-step reproduction instructions timed to the peak delay window, three specific investigation steps for the developer, a concrete proposed test case (with and without digest feature), and an explicit list of information gaps. A developer could begin investigating the queue configuration and digest job scheduling immediately."
+    }
+  },
+  "weighted_total": 4.60,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Correctly identified the marketing digest feature as the likely root cause from a reporter-volunteered clue, and framed the queue congestion mechanism with high precision",
+    "In-app vs. email isolation question effectively narrowed the problem to the email sending pipeline in the first turn",
+    "Summary is exceptionally actionable: includes reproduction steps, a specific A/B test case, and three concrete developer investigation steps that map directly to the actual fix"
+  ],
+  "notable_weaknesses": [
+    "The email provider question added little value once the reporter confirmed the issue is TaskFlow-specific — it could have been skipped or combined with a more targeted 'sending vs. receiving' framing",
+    "The agent never directly asked 'did anything change around a week ago?' — the critical causal correlation was volunteered by the reporter, not elicited"
+  ],
+  "most_insightful_question": "When the notification finally arrives, does it come via email only, or are in-app notifications also delayed?",
+  "missed_opportunities": [
+    "Explicitly asking 'has anything changed in the past week — new features, configuration changes, or increased usage?' to proactively surface the digest feature connection rather than relying on the reporter to volunteer it",
+    "Asking approximately how many users receive the daily digest email, which would have helped quantify the likely queue depth and backlog duration"
+  ]
+}

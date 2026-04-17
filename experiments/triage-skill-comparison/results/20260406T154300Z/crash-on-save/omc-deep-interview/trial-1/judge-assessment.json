@@ -1,0 +1,41 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All six expected information extracts are present: manual save trigger, CSV import with special characters, large task list size dependency, onset after CSV import, encoding error message, and exact environment. The triage also surfaced additional useful details like the workaround (removing imported tasks) and the size threshold (~50 vs ~200)."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary is factually accurate and the root cause hypothesis is close — it correctly identifies the encoding/serialization failure with non-ASCII characters at scale. However, it hypothesizes a buffer overflow or accumulating error rather than the actual cause (64KB payload threshold + panic instead of graceful fallback). The 'fixed-size buffer' guess is in the right neighborhood but not precise. The size-dependency explanation misses the 64KB serialized payload detail."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent questions were needed to extract all critical information. Both questions were well-targeted: the first established the crash behavior and context, the second drilled into the CSV data characteristics and environment. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question smartly asked about crash behavior (freeze vs instant close, error dialog) AND what was being saved, which efficiently covered two diagnostic axes. The second question showed genuine diagnostic reasoning by zeroing in on the CSV content characteristics (non-English characters, special symbols) after the reporter mentioned the CSV import — this directly led to uncovering the special characters as the trigger. Asking for the CSV attachment was also practical."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes concrete reproduction steps, specific environment details, a reasonable root cause hypothesis pointing to the save/serialization path and encoding handling, a prioritized recommended fix with three specific investigation targets, and a proposed test case with boundary conditions. A developer could start investigating the save serializer immediately."
+    }
+  },
+  "weighted_total": 4.80,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extremely efficient — extracted all critical information in just 2 turns",
+    "First question was well-structured to cover multiple diagnostic dimensions simultaneously",
+    "Summary is exceptionally well-organized with reproduction steps, recommended fix, and proposed test cases",
+    "Correctly identified the information gaps (auto-save vs manual save, platform specificity, CSV encoding) without burdening the reporter with more questions"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether auto-save also triggers the crash — this is noted as an information gap but could have been asked",
+    "Root cause hypothesis mentions buffer overflow as a possibility, which is less precise than the actual 64KB payload threshold mechanism"
+  ],
+  "most_insightful_question": "What kind of data was in the CSV? For instance, did any of the task names or descriptions contain non-English characters, emoji, or special symbols like curly quotes?",
+  "missed_opportunities": [
+    "Could have asked whether auto-save triggers the same crash, which would have confirmed the manual-save-only aspect",
+    "Could have asked about the approximate size of the CSV file or total data volume to help pinpoint the threshold"
+  ]
+}

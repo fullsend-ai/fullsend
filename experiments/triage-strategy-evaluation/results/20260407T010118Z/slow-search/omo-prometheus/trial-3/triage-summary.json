@@ -1,0 +1,22 @@
+{
+  "title": "Description search regression in v2.3: ~10-15s latency due to probable missing full-text index",
+  "problem": "Since approximately the v2.3 update, searching task descriptions via the main search bar takes 10-15 seconds consistently. Title search remains fast. The user has ~5,000 tasks, some with very large descriptions (pasted meeting notes). CPU spikes noticeably during description searches, suggesting brute-force scanning.",
+  "root_cause_hypothesis": "The v2.3 update likely dropped, failed to rebuild, or stopped using the full-text index on the task descriptions column. Description searches are now performing a sequential scan across all ~5,000 rows, reading potentially large text blobs on every query. Title search is unaffected because it still has a working index.",
+  "reproduction_steps": [
+    "Set up a TaskFlow instance with ~5,000 tasks, some with large descriptions (multi-paragraph text)",
+    "Update to v2.3",
+    "Open the main search bar and search for any single word that appears in task descriptions",
+    "Observe ~10-15 second delay and elevated CPU usage",
+    "Repeat the same search using title-only search and observe it returns quickly"
+  ],
+  "environment": "TaskFlow v2.3 (likely), running locally on a work laptop, ~5,000 tasks accumulated over ~2 years, some tasks with large descriptions containing pasted meeting notes",
+  "severity": "high",
+  "impact": "Any user with a non-trivial number of tasks is likely affected when searching by description. The main search bar — a core workflow feature — is effectively unusable for description queries. Title search still works as a partial workaround.",
+  "recommended_fix": "1. Diff the v2.3 database migration against v2.2 to identify changes to the descriptions table or its indexes. 2. Check whether a full-text index on the descriptions column exists in the current schema — if not, add a migration to recreate it. 3. If the index exists, check whether the search query planner is actually using it (run EXPLAIN ANALYZE on the search query). 4. If v2.3 changed the search implementation (e.g., switched from indexed FTS to LIKE/ILIKE scanning), revert to indexed search. 5. Consider whether large descriptions need special handling (e.g., indexing only first N characters, or async indexing).",
+  "proposed_test_case": "Create a test database with 5,000+ tasks where descriptions contain substantial text (500+ words each). Run a description search query and assert it completes in under 1 second. Run the same test with the full-text index dropped and confirm it reproduces the slow behavior. This validates both the fix and the root cause.",
+  "information_gaps": [
+    "Exact TaskFlow version — reporter said 'probably v2.3' but is not 100% certain",
+    "Server-side logs that could confirm sequential scan vs. index usage",
+    "Whether other users on v2.3 with fewer tasks also experience slowness (threshold unknown)"
+  ]
+}

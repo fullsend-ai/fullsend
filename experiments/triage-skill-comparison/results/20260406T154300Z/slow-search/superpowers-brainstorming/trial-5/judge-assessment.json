@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 2,
+      "rationale": "The triage captured the version upgrade (v2.2→v2.3), ~5,000 tasks, the ~2 week timeline, and the 10-15 second latency. However, it missed several critical pieces: the distinction between description search (slow) vs title search (fast), CPU spikes during search, and long descriptions in tasks. The title-vs-description distinction is the single most diagnostic fact and was never explored."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The general direction is correct — it correctly identifies a v2.3 search regression and hypothesizes a lost index or switch from indexed to unindexed search. However, without discovering the title-vs-description split, the hypothesis remains too broad. The mention of 'full-text search across more fields' is close to the actual cause but was stated as speculation rather than confirmed through questioning."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one question and then immediately resolved the issue. While the first question was good (timing + scale), closing after a single exchange was premature. At least one more turn was needed to probe which types of searches are slow, what system resources look like during search, and whether the reporter has tasks with unusual characteristics. The agent left significant information on the table."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The initial question was well-structured with multiple-choice options and covered two important dimensions (timing and scale). However, the agent failed to ask any follow-up questions about search behavior patterns (title vs description), system resource usage, or task characteristics — all of which would have been natural diagnostic follow-ups that could have pinpointed the issue much more precisely."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary gives a developer a reasonable starting point — diff search code between versions, check indexes, profile queries. But without knowing that title search is fast and description search is slow, a developer would waste time investigating all search paths equally. The recommended fix is generic ('diff all search-related code') rather than targeted. The information gaps section correctly identifies the missing search-type distinction but frames it as optional rather than critical."
+    }
+  },
+  "weighted_total": 2.55,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Well-structured initial question with multiple-choice options made it easy for the reporter to respond",
+    "Correctly identified the version upgrade as the likely trigger",
+    "Good severity assessment and impact analysis",
+    "Information gaps section correctly flagged the missing search-type distinction"
+  ],
+  "notable_weaknesses": [
+    "Resolved after only one exchange, missing critical diagnostic information",
+    "Never discovered the title-vs-description search performance split, which is the key diagnostic clue",
+    "Did not ask about system resource behavior (CPU spikes) during search",
+    "Did not explore task characteristics (long descriptions) that contribute to the problem"
+  ],
+  "most_insightful_question": "The initial question about timing (after update vs gradual vs sudden) was good and successfully surfaced the version upgrade correlation, but no follow-up questions were asked to dig deeper.",
+  "missed_opportunities": [
+    "Ask whether all search types are equally slow or if some searches are faster than others (would have revealed title vs description split)",
+    "Ask about system resource usage during slow searches (would have revealed CPU spike on one core)",
+    "Ask about the nature/size of task content (would have revealed long descriptions)",
+    "Ask whether the reporter has tried any workarounds or noticed any patterns in which searches are slow"
+  ]
+}

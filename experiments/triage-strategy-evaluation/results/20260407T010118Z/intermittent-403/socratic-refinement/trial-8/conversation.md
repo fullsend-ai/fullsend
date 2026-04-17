@@ -1,0 +1,77 @@
+# Conversation: intermittent-403 x socratic-refinement
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s are frustrating, especially when permissions haven't changed.
+
+To start digging into this: can you walk me through what a typical session looks like when this happens? For example, do you log in, land on the dashboard successfully, and then get a 403 on a refresh or navigation? Or are you sometimes getting the 403 on the very first load after logging in? I'm trying to understand the shape of the pattern — anything you've noticed about *when* it works vs. when it doesn't (time of day, specific actions right before, which browser/device, etc.) would be really helpful.
+
+---
+
+### reporter
+
+It's pretty random honestly. Sometimes I log in and the dashboard loads fine right away, other times I get the 403 immediately on first load. And then if I just refresh the page, it might work on the next try. There's no real pattern with time of day that I've noticed. I'm using Chrome on my work laptop. I'd say it works maybe 2 out of 3 times and fails the other third? I figured it was some kind of network issue on our end but my coworker who just got the same role as me is seeing it too, so I thought I'd report it.
+
+---
+
+### triage-agent
+
+That's really helpful context, thank you. The timing here is interesting — you mentioned this started a couple of days ago, and also that your coworker "just got the same role" as you. I'm curious about that intersection: were there any changes around that time — like a permissions update, a role reassignment, or anything your admin team did? Even if your own role didn't change, sometimes batch permission updates or policy changes can have ripple effects.
+
+Also, when you say refreshing sometimes fixes it — does the URL stay exactly the same, or does it redirect you through a login flow again before the dashboard loads successfully?
+
+---
+
+### reporter
+
+Now that you mention it, yeah — I was actually assigned the 'analyst' role pretty recently, like right around when this started. My coworker got the same role around the same time too. I'm not sure if the admin team did some kind of update but the timing does line up I guess. And when I refresh, the URL stays the same — it doesn't go through login again. It just either shows the dashboard or gives me the 403. No redirect or anything.
+
+---
+
+### triage-agent
+
+That timing with the 'analyst' role is a really interesting clue — thanks for connecting those dots.
+
+Two related things I'm curious about: what role did you have before you were assigned 'analyst'? And do you know if anyone who's had the 'analyst' role for a longer time (not recently assigned) is seeing these same 403 errors, or is it just the folks who got the role around the same time as you?
+
+That would help narrow down whether this is about the role itself or something about how the transition happened.
+
+---
+
+### reporter
+
+I had the 'viewer' role before, and got bumped up to 'analyst' so I could access some reporting features. As for whether anyone who's had the analyst role longer is seeing this — I'm not sure actually. The role is pretty new I think? I don't know if anyone had it before me and my coworker. You might want to check with the admin team on that. We might have been the first ones assigned to it.
+
+---
+
+### triage-agent
+
+That's a really useful detail — it sounds like you and your coworker may have been the first people to use this role in practice, which could explain a lot.
+
+Here's what I'm wondering: since you got the 'analyst' role specifically to access reporting features — have you been able to use those reporting features at all? Do they work reliably, or are they also hit-or-miss like the dashboard? And more broadly, is the 403 something you've only seen on the dashboard, or have you run into it on other pages too?
+
+Basically I'm trying to understand whether this is a dashboard-specific issue or something wider with how the analyst role's permissions are set up.
+
+---
+
+### reporter
+
+The reporting features are hit-or-miss too, same as the dashboard. Sometimes they load, sometimes I get the 403. It's not just the dashboard — pretty much any page I try to access has the same problem. Like I said it works roughly 2 out of 3 times no matter what page I'm on. So yeah it seems like it's everything, not just one specific page.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on all pages for users with newly-created 'analyst' role","problem":"Users assigned the recently-created 'analyst' role experience intermittent 403 Forbidden errors on approximately 1 out of 3 page loads. The errors affect all pages (dashboard, reporting features, etc.), not a specific route. Refreshing the same URL without re-authenticating sometimes succeeds, sometimes fails. At least two users with the same role and similar assignment timing are affected.","root_cause_hypothesis":"The 'analyst' role is new and its permission definitions are likely not consistently available across all application server instances. If the app runs behind a load balancer with N instances (the ~2/3 success rate suggests 3 instances with 1 misconfigured), requests routed to the instance(s) missing the role definition would return 403. Alternatively, a permissions cache with inconsistent TTL or a replication lag in the authorization data store could produce the same pattern. The key signal is that the failure rate is roughly constant regardless of page, time, or user action — pointing to infrastructure-level inconsistency rather than a logic bug.","reproduction_steps":["Assign a user the 'analyst' role (this is a recently-created role)","Log in as that user via Chrome","Attempt to load the dashboard or any other page","Observe that approximately 1 in 3 loads returns a 403 Forbidden","Refresh the same URL — it may succeed or fail independently of the previous attempt"],"environment":"Chrome on desktop (work laptop). Multiple users affected. No specific OS version reported. Started approximately 2 days before the report, coinciding with the 'analyst' role being created and first assigned.","severity":"high","impact":"All users with the 'analyst' role are unable to reliably access any part of the application, including the reporting features the role was specifically created to unlock. The role appears to be new, so the affected user base is currently small (at least 2), but will grow as more users are assigned the role.","recommended_fix":"1. Check whether the analyst role and its permission grants are consistently defined across all application server instances, authorization service replicas, or permission cache layers. 2. If using a distributed cache or database for permissions, verify replication status and check for nodes with stale data. 3. Compare the permission storage for the 'analyst' role against a working role like 'viewer' — look for missing entries in specific nodes/replicas. 4. If the role was added via a migration or config change, verify it was applied to all instances (check for failed deployments or skipped nodes). 5. As a quick validation, check access logs to see if 403s correlate with a specific upstream server or instance ID.","proposed_test_case":"Send 20+ sequential authenticated requests as an 'analyst' user to the dashboard endpoint and assert that all return 200. If a load balancer is in use, pin requests to each backend instance individually and verify consistent 200 responses. Additionally, add an integration test that creates a new role, assigns it to a user, and verifies access across all instances.","information_gaps":["Exact application server topology (number of instances, load balancer configuration)","How the 'analyst' role was provisioned (migration, admin UI, API call) and whether it completed successfully across all stores","Whether any other recently-created roles exhibit the same behavior","Server-side access logs correlating 403 responses with specific instance IDs"]}
+
+---

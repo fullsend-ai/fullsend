@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~5,000 tasks, slow on description/fast on title, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 second latency, CPU spike on one core, and long descriptions with pasted meeting notes. The agent also surfaced the no-caching-benefit finding and the self-hosted/SQLite assumption as additional useful context."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the acceptable diagnostic path: identifying the v2.2→v2.3 upgrade as the trigger and suspecting a search implementation regression (FTS index dropped or switched to LIKE/sequential scan). The agent even specifically called out FTS5 vs LIKE as the likely mechanism, which matches the actual cause exactly. No inaccuracies found."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about timing/task count, search type differentiation, hosting model/CPU behavior, and database engine. All major diagnostic questions were covered. One minor gap: the agent never explicitly asked about the OS/hardware (though the reporter volunteered ThinkPad T14 and Ubuntu), and didn't ask whether reindexing had been attempted. These are minor omissions that don't significantly affect the triage."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four turns of questions, all well-targeted. The database engine question in turn 4 was somewhat low-yield — the reporter couldn't answer it and the agent ultimately had to assume SQLite anyway — but it was a reasonable diagnostic step. No questions were redundant or repeated."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question (title vs. description search differentiation) was particularly insightful — the reporter wouldn't have volunteered this distinction, and it became the key diagnostic pivot. The 'same search twice' caching probe was clever and eliminated a whole class of explanations. Questions built logically on each other and demonstrated genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a specific recommended fix with numbered steps (diff query logic, check migrations, verify FTS5 virtual table, run EXPLAIN QUERY PLAN), a concrete proposed test case with pass criteria, and clearly identified information gaps. A developer could start investigating immediately and knows exactly where to look."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The title-vs-description differentiation question was a high-value diagnostic move that unlocked the core finding without the reporter volunteering it",
+    "The caching probe ('same search twice') elegantly eliminated warm-up and caching hypotheses in a single question",
+    "The final summary is exceptionally actionable — specific EXPLAIN QUERY PLAN guidance and a concrete test case with pass criteria go beyond what most triage summaries provide",
+    "Root cause hypothesis landed precisely on FTS5 vs LIKE, matching the actual cause"
+  ],
+  "notable_weaknesses": [
+    "The database engine question consumed a full turn and ultimately yielded no confirmed information — the agent had to assume SQLite anyway",
+    "The agent never asked whether the reporter had tried any workarounds or reindexing, which would have been useful context"
+  ],
+  "most_insightful_question": "Is every search slow (10-15 seconds), or only certain kinds of searches? For example, does searching for a single word like a task title behave differently than a broader search?",
+  "missed_opportunities": [
+    "Ask whether the reporter had tried any workarounds (e.g., reindexing, clearing cache) — relevant for both triage and providing an immediate workaround",
+    "Ask whether TaskFlow has any admin/diagnostic tools or a search settings page that could reveal the current search backend configuration"
+  ]
+}

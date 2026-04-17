@@ -1,0 +1,42 @@
+{
+  "title": "Getting random 403 Forbidden errors on the dashboard",
+  "body": "I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — intermittent 403s are frustrating, especially when permissions haven't changed.\n\nTo help narrow this down: when you get the 403, is it happening on initial page load of the dashboard, or does it occur when you perform a specific action (e.g., filtering tasks, loading a project, refreshing the page)? Also, does the 403 show up as a full error page, or do you see it as a failed API call in parts of the dashboard (like a panel failing to load while the rest works)?"
+    },
+    {
+      "author": "reporter",
+      "body": "It's on the initial page load — I just go to the dashboard URL and sometimes I get a full 403 error page instead of the dashboard. It's not like part of the page loads and part fails, it's the whole page. If I refresh a couple times it usually comes back. I figured it might be some network issue on our end but it's been happening for two days now so I thought I should report it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — knowing it's a full-page 403 (not partial) on initial load points toward something upstream of the app itself.\n\nDo you know if there were any deployments, infrastructure changes, or configuration updates around the time this started two days ago? And when you see the 403 page, does it look like TaskFlow's own error page (styled with the app's branding), or is it a plain/generic error page that might come from a load balancer, reverse proxy, or CDN?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah actually, now that you mention it — I think there was a deployment around that time. I was recently assigned a new 'analyst' role, and I believe they rolled that out a couple days ago. Not sure of the exact details though, you'd have to check with the ops team. As for the error page, it looks like TaskFlow's own 403 page — it has the logo and everything, not like a generic browser error."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That deployment timing is really telling — a new 'analyst' role rolling out right when the 403s started is a strong lead.\n\nQuick question: the teammates who are also seeing this — do they also have the 'analyst' role? And conversely, do you know anyone who does *not* have the analyst role who's experiencing the same issue? That would help us confirm whether this is tied specifically to how that role's permissions were configured."
+    },
+    {
+      "author": "reporter",
+      "body": "Hmm, good question. I think the teammates I talked to are also analysts — we're all on the same data team and got the new role around the same time. I haven't really asked around outside my team though. The other folks I work with who are admins or editors haven't mentioned anything, but I don't know if that's because they're not affected or just haven't said anything. I could ask around if that would help."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really useful context — the analyst role connection seems like a strong lead.\n\nOne thing that's puzzling: if it were purely a permissions misconfiguration, you'd expect the 403 to happen *every* time, not intermittently. The fact that a refresh sometimes fixes it is interesting.\n\nWhen it fails and you refresh to make it work, have you noticed any pattern — like it tends to fail on the *first* load of the day (or after being idle a while) and then works after that? Or is it truly random even within the same session — working one minute, 403 the next? That distinction would really help the team figure out whether this is a caching issue, a load-balancer inconsistency, or something else."
+    },
+    {
+      "author": "reporter",
+      "body": "It's pretty random honestly. It's not like a first-load-of-the-day thing — I can be working fine, click a link, get a 403, refresh and it works again. If I sit there and refresh a bunch of times I'd say it fails maybe like 1 out of every 3 tries? It doesn't seem to matter if I just loaded it or if I've been idle. I actually started thinking it was a network thing because of how random it seems, but the 1-in-3 thing has been pretty consistent now that I think about it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Intermittent 403 Forbidden on dashboard for users with new 'analyst' role — likely inconsistent deployment across backend instances\",\"problem\":\"Users with the recently deployed 'analyst' role receive full-page 403 errors (TaskFlow's own error page) approximately 1 in 3 times when loading the dashboard. Refreshing usually resolves it. The issue began ~2 days ago, coinciding with the deployment of the new analyst role. Multiple analysts on the same data team are affected.\",\"root_cause_hypothesis\":\"The ~1-in-3 failure rate suggests the application runs behind a load balancer with multiple backend instances (likely 3), and the analyst role's dashboard permissions were not deployed consistently to all instances. One instance lacks the correct permission grants for the analyst role, causing 403s when the load balancer routes to it. This explains why the error is intermittent (round-robin or random LB routing) rather than consistent (which a pure misconfiguration on all instances would produce).\",\"reproduction_steps\":[\"Log in as a user with the 'analyst' role\",\"Navigate to the dashboard URL\",\"Observe that the page loads successfully or returns a full 403 error page\",\"Refresh repeatedly — approximately 1 in 3 loads should return 403\",\"Compare behavior with an admin or editor role user on the same dashboard URL\"],\"environment\":\"TaskFlow production environment, users with the new 'analyst' role, behind a load balancer with multiple backend instances. Deployment of analyst role occurred approximately 2 days before report (around April 5, 2026).\",\"severity\":\"high\",\"impact\":\"All users with the 'analyst' role are affected. The dashboard is inaccessible ~33% of the time, disrupting the data team's workflow. Workaround exists (refresh the page) but is unreliable and disruptive. Admins and editors appear unaffected, though this is not conclusively confirmed.\",\"recommended_fix\":\"1. Check all backend/app server instances for consistent analyst role permission configuration — compare role-to-route mappings across instances. 2. Identify which instance(s) return 403 for analyst users (correlate access logs with load balancer routing). 3. Redeploy or sync the analyst role permissions to all instances. 4. Review the deployment process to ensure role/permission changes are applied atomically across all instances.\",\"proposed_test_case\":\"Automated test: authenticate as an analyst-role user and request the dashboard endpoint N times (e.g., 20); assert that every request returns 200. Run this against each backend instance individually (bypassing the load balancer) to verify consistent behavior.\",\"information_gaps\":[\"Exact number of backend instances behind the load balancer\",\"Deployment manifest or changelog for the analyst role rollout\",\"Confirmation that non-analyst roles (admin, editor) are definitively unaffected\",\"Server-side access logs correlating 403 responses with specific backend instances\"]}"
+    }
+  ]
+}

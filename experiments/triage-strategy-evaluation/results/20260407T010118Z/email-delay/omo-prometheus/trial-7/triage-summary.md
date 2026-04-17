@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Email notification delays caused by shared queue contention with daily digest feature
+
+## Problem
+Task assignment email notifications that previously arrived within 1-2 minutes are now delayed 2-4 hours. The delays are worst in the morning (9-10am) and gradually improve through the afternoon. This is causing users to miss task deadlines because they don't learn about assignments in time. All ~200 users on the instance are affected.
+
+## Root Cause Hypothesis
+The recently launched daily digest email feature generates ~200 digest emails around 9am each morning. These digest emails share the same sending queue as individual task-assignment notifications. The digest job floods the queue, and individual notifications must wait behind the digest backlog. Because the queue processes sequentially (trickle pattern, not burst), notifications are delayed for hours until the queue drains. By early afternoon the backlog clears and notification latency returns to near-normal.
+
+## Reproduction Steps
+  1. Ensure the daily digest feature is enabled (default for all users)
+  2. Assign a task to a user at approximately 9:00-9:30am, shortly after the digest job runs
+  3. Observe that the assignment notification email arrives 2-4 hours late
+  4. Repeat the assignment at approximately 2:00-3:00pm and observe significantly shorter delay
+  5. Optionally: disable the digest feature or reduce digest recipients, then repeat the 9am test to confirm latency returns to normal
+
+## Environment
+TaskFlow instance with ~200 users, daily digest feature recently enabled. Specific email provider/queue infrastructure unknown but the shared queue architecture is the key factor.
+
+## Severity: high
+
+## Impact
+All ~200 users experience delayed task assignment notifications, primarily in the morning. Users are missing deadlines because they don't learn about assignments for hours. The delay undermines the core workflow of timely task assignment.
+
+## Recommended Fix
+Investigate the email sending architecture. The most likely fix is to separate the digest emails and transactional notifications into distinct queues or priority lanes, so that the bulk digest job does not block time-sensitive individual notifications. Alternatives include: (1) adding a priority field to the queue and prioritizing transactional notifications over digests, (2) rate-limiting or staggering the digest job so it doesn't flood the queue all at once, (3) moving digest generation to an off-peak time (e.g., 6am or overnight). The developer should also check whether the email queue has concurrency or throughput limits that could be raised.
+
+## Proposed Test Case
+With the digest feature active and ~200 users enrolled, assign a task at 9:05am (just after the digest job fires) and assert that the notification email is delivered within 5 minutes. This should pass after the fix and would have failed before it.
+
+## Information Gaps
+- Exact email queue implementation and provider (in-app queue, SQS, Redis, third-party service, etc.)
+- Whether the digest job has any built-in rate limiting or concurrency controls
+- Server-side queue metrics (depth, processing rate) to confirm the hypothesis quantitatively

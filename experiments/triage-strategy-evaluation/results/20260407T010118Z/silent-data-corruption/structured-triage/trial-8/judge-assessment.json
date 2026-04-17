@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were captured: affected record count (~50-100 of 2,000), truncation pattern, 2-week onset, nightly batch import as vector, 3+ digit country code pattern, US/UK numbers unaffected, and recent change to import pipeline. The summary also surfaced additional useful context: ongoing corruption with each nightly sync, impact on other organizations using the integration, and a proposed test case with edge cases."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage hits both acceptable diagnostic paths: it identifies the nightly import as the corruption source with the 3+ digit country code pattern, and it correctly connects the 2-week timeline to a recent change in the import pipeline. The root cause hypothesis explicitly calls out 'validation regex update' and 'parsing function that splits on the wrong boundary when extracting the country code' — this is very close to the actual cause (a regex with a \\d{1,2} capture group). No meaningful inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all high-value questions before resolving and correctly identified the pattern after just one round of examples. The information gaps section honestly notes what remains unknown (import-time vs display-time corruption, import logs). The one obvious follow-up not pursued was requesting import logs or asking if the reporter could check whether numbers in the database are corrupted vs. just rendered incorrectly — the agent flagged this as a gap rather than investigating it, which is reasonable given the solid hypothesis already formed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns, each tightly targeted. Turn 1 asked for concrete examples and entry method — both directly necessary to identify the pattern and narrow the surface area. Turn 2 asked for version, import configuration, and history — all three pieces were used in the diagnosis. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question's request for concrete before/after examples was the key diagnostic move — it immediately surfaced the country code length pattern that the reporter had not articulated. The second question's inclusion of 'Has this import been running for a while without issues?' prompted the reporter to volunteer the 2-week timeline they had not initially mentioned, which is a critical clue the reporter wouldn't have thought to include unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a precise problem statement, a specific hypothesis (regex or parser limiting country code to 2 digits in the Salesforce import pipeline), step-by-step reproduction instructions, a prioritized fix checklist (check recent changes to normalization code, schema migrations, regex constraints), a data remediation path, and a concrete proposed test case covering 1-, 2-, 3-, and 4-digit country codes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Requesting concrete before/after examples in turn 1 immediately surfaced the structural pattern (country code length threshold) without requiring the reporter to analyze it themselves",
+    "The pattern identification was stated explicitly and correctly after a single set of examples: '3-digit codes like +353 become +35 and 4-digit codes like +1268 become +12, while 1- and 2-digit codes come through fine'",
+    "The open-ended timeline question in turn 2 caused the reporter to volunteer the 2-week onset — a critical clue that confirmed a regression rather than a configuration error",
+    "The summary is unusually complete: reproduction steps, prioritized fix checklist, data remediation guidance, proposed test cases with edge cases, and honest information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether the truncation happens at import time (data written incorrectly) vs. display time (data stored correctly but rendered wrong) — this distinction matters for the fix strategy and was noted only as a gap",
+    "Did not ask about import logs, which could have confirmed the exact point of failure and potentially revealed error messages from the normalizer"
+  ],
+  "most_insightful_question": "Could you share a few concrete examples of what the mangled phone numbers look like? Even 2-3 examples of the before/after would help us identify the pattern.",
+  "missed_opportunities": [
+    "Ask whether the reporter can check if the numbers are corrupted in the database or only in the UI (import-time vs display-time corruption)",
+    "Ask whether TaskFlow provides import logs or an audit trail for the nightly Salesforce sync that might show warnings or errors",
+    "Ask if the reporter knows whether any TaskFlow update or configuration change was applied around the 2-week mark (to confirm a code regression vs. a data or config change)"
+  ]
+}

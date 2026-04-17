@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden for users with 'analyst' role — likely stale role config on subset of backend instances
+
+## Problem
+Users assigned the new 'analyst' role receive intermittent 403 Forbidden errors on page loads across all routes (not limited to a specific page or API call). Approximately 1 in 3 requests fail. The issue began roughly 2 days ago, coinciding with the 'analyst' role being assigned to multiple team members. Users with the 'editor' role are unaffected.
+
+## Root Cause Hypothesis
+The 'analyst' role was recently introduced or assigned, but not all backend server instances behind the load balancer have the updated role/authorization configuration. Requests routed to instances with stale config reject 'analyst' users with 403, while instances with current config serve them normally. The ~1-in-3 failure rate suggests one out of three backend instances is misconfigured or has a stale authorization cache.
+
+## Reproduction Steps
+  1. Log in as a user with the 'analyst' role
+  2. Navigate to any page (e.g., /dashboard)
+  3. Refresh repeatedly — approximately 1 in 3 page loads will return 403 Forbidden
+  4. Note: users with 'editor' role do not experience this issue
+
+## Environment
+Production environment, multiple backend instances behind a load balancer. Issue affects all users with the 'analyst' role. No specific browser or OS dependency identified — the 403 is server-side.
+
+## Severity: high
+
+## Impact
+All users recently assigned the 'analyst' role are affected, experiencing intermittent inability to access any page in the application. No reliable workaround exists beyond repeatedly refreshing. This blocks normal work for the affected user group.
+
+## Recommended Fix
+1. Check authorization/role configuration across ALL backend instances — look for the 'analyst' role definition and verify it is present and identical on every instance. 2. If using a role cache, force invalidation or restart on all instances. 3. Verify the deployment that introduced or updated the 'analyst' role was rolled out to all instances (check for a partial or stuck deployment). 4. Consider whether a rolling restart or redeployment resolves the issue immediately.
+
+## Proposed Test Case
+Send N sequential authenticated requests as an 'analyst' user and verify all return 200. Ideally pin requests to each backend instance individually (via direct instance addressing or sticky headers) and confirm each instance accepts the 'analyst' role. Add an integration test that verifies all defined roles are authorized for their expected routes.
+
+## Information Gaps
+- Exact number of backend instances and their deployment state
+- Whether the 'analyst' role was added via a recent code change, config change, or admin UI action
+- Exact deploy or config change timestamp to correlate with the onset of the issue

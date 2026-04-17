@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected information was extracted: ~50-100 affected records out of 2,000, truncation pattern, ~2-week timeline, nightly batch import as the source, country code length pattern (3+ digits affected, US/UK fine), and the recent phone number formatting change in the changelog. The agent also discovered additional useful details like specific examples (Ireland +353→+35, Antigua +1268→+12) and noted information gaps about fax/mobile fields."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies both acceptable diagnostic paths: the nightly import as the corruption source and the country code length pattern. The root cause hypothesis precisely matches the actual cause — a recent normalizer change truncating country codes to 2 digits. The examples cited match exactly what the ground truth describes. The recommended fix correctly references ITU E.164 standard and variable-length country codes."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked about data entry method, confirmed numbers were previously correct, requested specific examples of corruption, asked about recent changes, confirmed the country code pattern across all affected records, and identified the changelog connection. No obvious follow-ups were skipped. The information gaps noted (exact commit, truncation point, other fields) show awareness of remaining unknowns."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns of questioning, each well-targeted. The first asked about data source and whether numbers were ever correct — both essential. The second asked for concrete examples and recent changes — both essential and efficiently combined. The third confirmed the country code pattern hypothesis and asked about the changelog — appropriate wrap-up. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Questions demonstrated genuine diagnostic reasoning. The first question about data entry method was the key pivot that unlocked the import hypothesis. The request for specific examples with comparison to Salesforce was precisely what revealed the truncation pattern. Combining 'show me an example' with 'what changed recently' in one turn was efficient. The third question synthesized findings into a testable hypothesis and invited confirmation — excellent diagnostic technique."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately. The summary specifies: the import pipeline, the normalizer/parser as the suspect component, the exact truncation behavior (2-digit cap), specific examples to reproduce, a concrete test case with varying country code lengths, and a clear fix path referencing ITU E.164. The workaround (pause nightly sync, restore from Salesforce) is also actionable for the ops team."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "First question immediately identified the data entry mechanism, which was the single most important diagnostic pivot",
+    "Synthesized the country code length pattern from just two examples and presented it as a testable hypothesis for reporter confirmation",
+    "Combined related questions efficiently across turns without redundancy",
+    "Recommended fix references the correct technical standard (ITU E.164) giving developers a clear implementation target",
+    "Identified the ongoing harm (nightly sync continuing to corrupt records) and addressed the reporter's implicit request about stopping it"
+  ],
+  "notable_weaknesses": [
+    "Minor: did not explicitly ask whether mobile or fax fields were also affected (noted as an information gap, but could have asked the reporter directly)",
+    "Minor: +1268 is part of NANP (North American Numbering Plan) and technically shares the +1 country code — the agent's description of it as a 3+ digit country code is slightly imprecise, though the truncation behavior described is still correct"
+  ],
+  "most_insightful_question": "Can you show me an example or two of what a mangled number looks like compared to the correct one in Salesforce? — This question produced the concrete examples that revealed the country code length pattern, which was the core diagnostic insight of the entire triage.",
+  "missed_opportunities": [
+    "Asking whether other phone number field types (mobile, fax) are also affected through the same import pipeline",
+    "Asking whether the reporter could trigger the nightly import manually or share import logs that might show error messages or transformation records"
+  ]
+}

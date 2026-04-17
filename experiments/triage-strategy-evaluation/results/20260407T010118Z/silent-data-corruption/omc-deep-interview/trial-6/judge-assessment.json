@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: affected count (~50-100 of 2,000), truncation pattern, ~2-week timeline, nightly import connection, 3+ digit country code pattern, US/UK numbers unaffected, and the 2-week-ago code change hypothesis. The summary additionally includes reproduction steps, proposed test cases, and a recommended fix path."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly Salesforce import as the corruption source, the 3+ digit country code pattern as the distinguishing factor, the ~2-week timeline, and hypothesizes a regex like `\\+\\d{2}` — which closely matches the actual bug (`\\+(\\d{1,2})(\\d+)`). This satisfies the first acceptable diagnostic path in full. The root cause hypothesis is specific enough to guide a developer directly to the normalizer code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all high-value questions: concrete examples, timeline/trigger, whether corruption recurs each sync, and the technical sync mechanism. One minor gap: when the reporter mentioned 'there might have been an update around that time,' the agent could have probed more directly for the specific release or deploy event rather than accepting the uncertainty and moving on. Otherwise, coverage was excellent."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four questions over four reporter turns, each advancing the diagnosis meaningfully. The fourth question about sync mechanism and phone format was reasonable but predictably unanswerable by a non-technical reporter, making it the one lower-yield turn. No questions were redundant."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question immediately targeted the corruption pattern with concrete examples, surfacing the country-code-length hypothesis in turn 1. The third question — asking whether corruption recurs each sync and whether manually entered records are affected — was particularly insightful: it simultaneously tested the import hypothesis, characterized the ongoing severity, and identified a control group the reporter wouldn't have volunteered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is developer-ready: it specifies where to look (Salesforce import/normalization code path), what to look for (fixed-width or 2-digit regex), how to reproduce (test records with 1-, 2-, 3-, 4-digit country codes), concrete fix steps, a proposed unit and integration test, and a recovery path (re-run sync after fix to restore from Salesforce source). A developer could open the git log and start the investigation immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Immediately recognized the country-code-length pattern from the first example pair and drove all subsequent questions around confirming that hypothesis",
+    "The recurring-corruption question distinguished between a one-time data event and an ongoing nightly problem — critical for communicating severity and preventing futile manual corrections",
+    "Recommended fix path is specific and actionable, including git history investigation, library suggestion (libphonenumber), and post-fix re-sync for remediation",
+    "Proposed test cases cover all relevant country code lengths (1, 2, 3, 4 digits) with both unit and integration test variants"
+  ],
+  "notable_weaknesses": [
+    "When the reporter said 'I think there might have been an update around that time,' the agent accepted the uncertainty rather than pressing for the specific release version or deploy date — this was the most direct path to confirming the 2-week-ago normalizer change",
+    "The fourth question about sync mechanism was unlikely to be answerable by a non-technical reporter; directing it explicitly to their dev team earlier could have saved a turn"
+  ],
+  "most_insightful_question": "Are the numbers getting re-corrupted on each nightly import, or was this more of a one-time event? And do you have records created directly in TaskFlow (not imported) — are those intact?",
+  "missed_opportunities": [
+    "Pressing specifically on what changed ~2 weeks ago — asking for a TaskFlow version number or deploy date to correlate with the normalizer update",
+    "Asking whether affected records cluster by geography or customer origin country, which would have further confirmed the country-code hypothesis before the reporter volunteered examples"
+  ]
+}

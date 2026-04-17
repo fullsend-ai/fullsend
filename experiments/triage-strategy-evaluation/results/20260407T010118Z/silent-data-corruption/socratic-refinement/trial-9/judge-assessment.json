@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: affected record count (~50-100 of 2,000), truncation nature, 2-week timeline, nightly batch import origin, 3+ digit country code pattern, US/UK unaffected, and recent change to phone number handling. The summary additionally includes reproduction steps, proposed test cases, and a severity rating."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary correctly identifies the nightly import as the corruption source, precisely characterizes the truncation pattern (3+ digit country codes affected, 1-2 digit fine), connects the 2-week timeline to a recent code change in phone number handling, and correctly infers a max-2-digit limit in the parsing logic. This fully satisfies both acceptable diagnostic paths and is extremely close to the canonical root cause without having access to the source code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two rounds of well-structured questions and resolved only after receiving strong confirming evidence. No critical diagnostic questions were skipped. A minor missed follow-up: the agent did not ask whether the CRM (Salesforce) retains the original uncorrupted numbers for backfill, which is directly relevant to the workaround. This appeared in the information_gaps but was never asked of the reporter who likely would have known."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only 2 question turns were used before resolving. Both turns were tightly scoped and each yielded information that materially advanced the diagnosis. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first turn established the data entry mechanism and temporal scope in a single combined question. The second turn was particularly strong: asking for concrete examples of mangled numbers caused the reporter to reveal the exact truncation pattern (country code length), and pairing it with 'anything change around two weeks ago' surfaced the code change. Both questions demonstrated genuine diagnostic reasoning rather than generic bug triage."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: look at commits from ~2 weeks ago touching phone number parsing, find logic capping country codes at 2 digits, fix to support 1-3 digits per ITU E.164. Reproduction steps are concrete and testable. Proposed unit test cases cover the exact failure modes. Information gaps are clearly listed so the developer knows what to verify without re-triaging."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Identified the precise truncation pattern (3+ digit country codes) from a single example exchange, enabling an extremely accurate root cause hypothesis without code access",
+    "Summary is exceptionally actionable: includes reproduction steps, specific fix guidance referencing E.164 standard, and concrete unit test cases with specific country code examples",
+    "Resolved in only 2 question turns while capturing all expected information — excellent signal-to-turn ratio"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether the Salesforce CRM retains original uncorrupted numbers suitable for backfill — this is the key workaround and the reporter likely could have confirmed it directly",
+    "Did not ask for the TaskFlow version, which was part of the ground truth environment context (v2.3.1)"
+  ],
+  "most_insightful_question": "Can you show me an example or two of what the mangled numbers look like compared to what they should be? — This prompted the reporter to provide concrete before/after examples that immediately revealed the country code truncation pattern and the US/UK-unaffected observation, which are the core diagnostic facts.",
+  "missed_opportunities": [
+    "Ask whether Salesforce still has the original uncorrupted phone numbers and whether a backfill from CRM is feasible",
+    "Ask whether the nightly sync could be paused or disabled while the fix is developed, to prevent further corruption",
+    "Ask for the TaskFlow version to complete the environment picture"
+  ]
+}

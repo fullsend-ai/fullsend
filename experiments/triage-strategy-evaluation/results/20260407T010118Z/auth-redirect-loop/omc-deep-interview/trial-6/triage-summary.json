@@ -1,0 +1,25 @@
+{
+  "title": "SSO login redirect loop due to email mismatch between Entra ID token claims and TaskFlow user records",
+  "problem": "After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop when logging into TaskFlow. The user authenticates successfully with Entra, gets redirected back to TaskFlow, but is immediately sent back to Microsoft to re-authenticate. Two user groups are affected: (1) users with plus-addressed emails (e.g., jane+taskflow@company.com) stored in TaskFlow where Entra sends the base address (jane@company.com), and (2) users whose emails changed during migration where TaskFlow retains the old Okta-era email while Entra sends the new one.",
+  "root_cause_hypothesis": "TaskFlow's OAuth callback handler performs a user lookup by matching the email claim from the Entra ID token against its local user database. When no match is found (due to plus-addressing differences or stale email addresses from the Okta migration), TaskFlow cannot create a valid session and redirects the user back to the login flow, creating an infinite loop. The session cookie that gets set during this failed attempt may also contribute to the loop by causing TaskFlow to repeatedly attempt and fail session validation rather than starting a fresh auth flow.",
+  "reproduction_steps": [
+    "Set up a user in TaskFlow with a plus-addressed email (e.g., testuser+taskflow@company.com)",
+    "In Entra ID, ensure that same user's primary email is the base address (testuser@company.com) without the plus portion",
+    "Attempt to log into TaskFlow via SSO",
+    "Observe the redirect loop: TaskFlow → Entra (auth succeeds) → TaskFlow callback → TaskFlow redirects back to Entra",
+    "Alternative reproduction: Create a user in TaskFlow with email old@company.com, then in Entra set their email to new@company.com and attempt login"
+  ],
+  "environment": "TaskFlow with Microsoft Entra ID (formerly Azure AD) SSO integration, migrated from Okta. Browser-independent (Chrome, Edge, Firefox all affected). Redirect URIs verified correct in Entra app registration.",
+  "severity": "high",
+  "impact": "Approximately 30% of the team cannot log into TaskFlow at all (no durable workaround). Clearing cookies provides only temporary relief. This blocks affected users from accessing the task management system entirely.",
+  "recommended_fix": "1. **Immediate fix:** Update TaskFlow's user records to match the emails Entra ID returns — normalize plus-addressed emails and update stale emails from the Okta migration. 2. **Code fix:** Modify the OAuth callback user-matching logic to be more resilient: (a) match on a stable claim like `sub` or `oid` rather than (or in addition to) email, (b) implement case-insensitive and plus-address-aware email matching, (c) when no user match is found, return a clear error page instead of redirecting back to the SSO provider (to prevent the loop). 3. **Session handling:** Investigate the session cookie being set during failed login attempts — ensure a failed user lookup does not set a session cookie that perpetuates the loop on subsequent attempts.",
+  "proposed_test_case": "Create integration tests for the OAuth callback user-matching logic: (1) token email 'jane@company.com' should match user record 'jane+taskflow@company.com', (2) token email 'newemail@company.com' should match user originally provisioned as 'oldemail@company.com' (after migration fix or via sub/oid claim), (3) when no user match exists at all, the system should display an error page rather than redirect back to the SSO provider, (4) a failed user lookup should not set a session cookie that triggers a loop on the next request.",
+  "information_gaps": [
+    "Exact email/preferred_username/sub claims in the Entra ID token for affected vs. unaffected users (reporter will check via jwt.ms but hasn't yet)",
+    "Exact cookie name and attributes (Domain, Path, SameSite) being set during the failed redirect",
+    "Whether TaskFlow's user matching uses email, sub/oid claim, or another identifier",
+    "TaskFlow's server-side logs showing what happens during the OAuth callback for an affected user",
+    "Which OAuth/OIDC library or framework TaskFlow uses for SSO integration",
+    "Whether the few affected users without plus-addresses who also had email changes are fully explained by the stale-email theory"
+  ]
+}

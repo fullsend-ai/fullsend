@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: task count (~5,000), title-vs-description performance split, v2.2-to-v2.3 regression, 10-15s latency, CPU spike, and environment details. The 'started ~2 weeks ago' detail appears in the conversation but not in the final summary. Critically missing: task description length (long descriptions with 2000+ words are a direct contributor to the sequential-scan cost and were never asked about)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage lands squarely on both acceptable diagnostic paths simultaneously: it identifies the v2.2→v2.3 upgrade as the trigger AND the title-vs-description performance asymmetry as evidence of an indexing regression. The root cause hypothesis explicitly names FTS5 for SQLite and a switch to naive string scanning — which is exactly what happened. No factual inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about search UI context, query-type variation, task count, version correlation, local-vs-hosted setup, and CPU behavior — covering most of the diagnostic surface. The one clear gap is task description length, which is directly relevant to why the LIKE query is so slow and was never probed. OS version was noted as a gap but deprioritized reasonably given the version correlation."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Most questions were well-targeted. The suggestion to test on a second device was a reasonable defensive move but low-yield once the reporter identified it as a local desktop app — that turn could have been trimmed or the device-test question dropped in favor of asking about description length. No questions were truly redundant."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second agent turn ('does the slowness happen with certain queries or every search term?') successfully prompted the reporter to volunteer the title-vs-description distinction unprompted — a genuinely diagnostic question. The follow-up pairing of task count with version timing was well-constructed. The multi-part third turn was slightly sprawling (device test, local-vs-hosted, title-speed confirmation) but each sub-question had merit."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it provides specific reproduction steps with task counts and search types, names FTS5 and sequential scans as the mechanism to investigate, recommends EXPLAIN/ANALYZE profiling, and includes a concrete performance regression test case. A developer could open the v2.3 diff and start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The agent synthesized both acceptable diagnostic paths simultaneously — version regression and index asymmetry — arriving at a hypothesis very close to the actual root cause without being given the changelog",
+    "Explicitly naming FTS5 for SQLite in the recommended fix demonstrates strong domain knowledge and gives developers an immediate search target",
+    "Reproduction steps are specific and verifiable, including the v2.2 baseline comparison suggestion",
+    "The proposed performance test case with a concrete threshold (under 2 seconds) is unusually actionable for a triage summary"
+  ],
+  "notable_weaknesses": [
+    "Task description length (2000+ words from pasted meeting notes) was never asked about, leaving out a detail that directly explains the magnitude of the LIKE-scan cost",
+    "The '~2 weeks ago' timing detail was captured in conversation but dropped from the final summary, weakening the regression timeline evidence",
+    "The third agent turn was multi-part and included a device-test suggestion that added no value once local desktop app was established"
+  ],
+  "most_insightful_question": "That's really helpful — the distinction between title and description search is a great clue. A couple of things that would help us pin this down: roughly how many tasks do you have in your TaskFlow instance? And do you recall approximately when the slowdown started — for example, did it coincide with an update to TaskFlow, or with your task count growing past a certain point?",
+  "missed_opportunities": [
+    "Ask about the length or content of task descriptions — whether any tasks contain very long text (e.g., pasted meeting notes or documents), since description size directly multiplies the cost of a full-table LIKE scan",
+    "Ask whether the slowness scales with the search term length or specificity, which could have hinted at whether ranking/scoring logic was the culprit vs. a raw scan",
+    "Confirm the exact timing of the slowdown relative to the upgrade (the reporter said 'not 100% sure if it was right after') to tighten the regression window"
+  ]
+}

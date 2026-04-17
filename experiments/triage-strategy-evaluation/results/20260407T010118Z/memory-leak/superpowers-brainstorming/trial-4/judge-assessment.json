@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: linear memory growth pattern, v2.3 upgrade as trigger (~1 week ago), 200 active users, consistent day-to-day pattern, restart as workaround, and v2.3 changelog mentioning notification changes. The one missing item is the server hardware spec (8GB RAM VM), which was never asked about and does not appear in the summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage hypothesis lands squarely on the canonical root cause: the agent explicitly names 'registering event listeners per request without cleanup' as the likely mechanism, identifies the v2.3 notification system as the source, and correctly characterizes the leak as per-request rather than per-connection after the reporter's WebSocket count data. This matches both the canonical cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Two questions were asked before resolving. The agent acknowledged key information gaps (runtime/language, ability to disable notifications, heap profile) but did not ask about them. Server specs, whether notifications could be toggled off to isolate the cause, and OS/runtime details were all obvious follow-ups left on the table. The basis for resolution was solid, but a third question could have meaningfully narrowed the investigation."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were well-targeted and non-redundant. The first efficiently established regression timing and surfaced the upgrade. The second tested a plausible hypothesis about persistent connections. No wasted turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-structured with multiple-choice options and directly led to the most diagnostic information in the conversation (the v2.3 upgrade). The second question tested a reasonable but ultimately wrong hypothesis about WebSocket connection accumulation; however, the reporter's rebuttal provided even richer signal (request-volume correlation), which the agent used effectively. The questions showed genuine diagnostic reasoning rather than generic bug-report prompts."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: diff v2.2→v2.3 notifications code, take a heap snapshot, look for specific patterns (unremoved listeners, growing caches, closures capturing request context). A proposed regression test is included. Information gaps are explicitly listed. A developer could begin coding a fix or writing a reproducer without further context-gathering."
+    }
+  },
+  "weighted_total": 4.30,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly identified the per-request (not per-connection) nature of the leak after the reporter's WebSocket count data disproved the initial hypothesis — demonstrating good in-flight reasoning",
+    "The final summary explicitly names 'event listeners registered per request but never removed' as the top candidate, matching the actual root cause almost exactly",
+    "Actionable fix guidance with specific investigation steps (heap snapshot, changelog diff, patterns to look for) and a proposed regression test"
+  ],
+  "notable_weaknesses": [
+    "Server hardware specs (8GB RAM VM) were never captured — relevant for assessing swap pressure and OOM risk",
+    "Did not ask whether the real-time notifications feature could be disabled via config to definitively confirm it as the source before resolving",
+    "Server runtime/language (Node.js, Go, Python) was identified as a gap but not pursued, even though it would focus the fix approach considerably"
+  ],
+  "most_insightful_question": "The first question — asking whether this was a recent regression versus gradual onset versus always present — efficiently surfaced the v2.3 upgrade as the trigger and caused the reporter to volunteer the changelog clue about 'improved real-time notifications', which was the single most diagnostic fact in the conversation.",
+  "missed_opportunities": [
+    "Ask for total server RAM to understand headroom and whether OOM kills are a risk",
+    "Ask whether the real-time notifications feature can be toggled off to confirm it as the leak source (a cheap isolation step)",
+    "Ask for the server runtime/language to focus heap-analysis and fix recommendations",
+    "Ask for approximate request volume (requests/hour) to let the agent calculate the per-request leak size and validate the hypothesis quantitatively"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "title": "PDF attachments corrupted after upload — likely file-size-dependent",
+  "problem": "PDF files uploaded to tasks via the attachment button or drag-and-drop are corrupted when downloaded. The PDF viewer reports the file as damaged. This affects multiple customers and has been occurring for approximately one week. No errors are shown during the upload process itself.",
+  "root_cause_hypothesis": "A recent change (approximately one week ago) likely introduced a bug in the file upload or storage pipeline that truncates or corrupts larger files. Possible causes include: a misconfigured multipart upload threshold or chunk size, a timeout on the upload endpoint that silently truncates large request bodies, or an encoding issue (e.g., base64 vs binary) that only manifests when file size exceeds a buffer boundary.",
+  "reproduction_steps": [
+    "Open a task in the task detail view",
+    "Click the attachment button (or drag-and-drop a file)",
+    "Select a multi-page PDF (e.g., >1 MB — a report or contract)",
+    "Wait for the upload to complete (should show success, no errors)",
+    "Download the uploaded file",
+    "Attempt to open the downloaded PDF — it should be reported as damaged/corrupted",
+    "Repeat with a small single-page PDF for comparison — this may succeed"
+  ],
+  "environment": "Chrome on Windows 10 (but reported across multiple browsers and team members). TaskFlow version unknown.",
+  "severity": "high",
+  "impact": "Multiple customers are unable to use the file attachment feature for larger PDF documents. Teams that rely heavily on attachments are blocked. The issue has persisted for approximately one week.",
+  "recommended_fix": "1. Check deployment history for changes ~1 week ago to the file upload pipeline, storage layer, or any proxy/gateway configuration (e.g., request body size limits, timeout changes). 2. Upload a large PDF and compare the byte size and checksum of the original file vs. the stored file to determine where corruption occurs (upload, storage, or download). 3. Inspect whether multipart upload chunking or encoding (binary vs. base64) was recently changed. 4. Check for any reverse proxy or CDN configuration changes that may truncate large responses.",
+  "proposed_test_case": "Upload PDFs of varying sizes (e.g., 100 KB, 1 MB, 5 MB, 20 MB) via both the attachment button and drag-and-drop. Download each and verify the file checksum matches the original. Assert that all downloaded files open without corruption in a PDF reader.",
+  "information_gaps": [
+    "Exact TaskFlow version in use",
+    "Precise file size threshold at which corruption begins (reporter was uncertain)",
+    "Whether non-PDF file types are also affected",
+    "Whether the stored file on the server is already corrupted or only the downloaded copy"
+  ]
+}

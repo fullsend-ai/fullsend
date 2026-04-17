@@ -1,0 +1,7 @@
+{
+  "scenario": "flaky-ci",
+  "strategy": "omc-deep-interview",
+  "reporter_profile": "difficult",
+  "turns": 4,
+  "parse_failures": 0
+}

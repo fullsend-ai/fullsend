@@ -1,0 +1,38 @@
+# Triage Summary
+
+**Title:** Search status filter is inverted since v2.3.1 — 'active only' returns archived tasks and vice versa
+
+## Problem
+The search feature's task status filter is returning inverted results. Searching with the 'active tasks only' filter returns archived tasks, while searching with 'archived tasks only' returns active tasks. The 'all tasks' filter works correctly, showing both. Task status labels are correct on the tasks themselves, and browsing tasks without search works fine. Multiple users are affected.
+
+## Root Cause Hypothesis
+The v2.3.1 update included a database migration that most likely inverted the boolean or enum value representing task status in the search index or query layer. The filter predicate for active/archived status is applying the opposite condition — e.g., a boolean flag was flipped, an enum mapping was swapped, or a NOT condition was introduced/removed in the search query. The task records themselves are correct (browsing works, labels are accurate), so this is isolated to the search query filtering logic, not the underlying data.
+
+## Reproduction Steps
+  1. Log into the TaskFlow web app (any user account)
+  2. Ensure the search filter is set to 'active tasks only' (the default)
+  3. Search for a term that matches both an active and an archived task (e.g., 'Q2 planning')
+  4. Observe that the archived task appears and the active task does not
+  5. Switch the filter to 'archived tasks only' and repeat the search
+  6. Observe that the active task now appears instead
+  7. Switch the filter to 'all tasks' — both appear correctly
+
+## Environment
+Web app, post v2.3.1 update (deployed ~3 days ago). Confirmed by at least two users.
+
+## Severity: high
+
+## Impact
+All users relying on search are affected. The default search experience ('active tasks only') hides all active tasks and surfaces archived ones instead. This undermines basic usability — users cannot find their current work through search. Workaround exists: users can set the filter to 'all tasks' and visually scan results.
+
+## Recommended Fix
+Examine the v2.3.1 changeset, focusing on the database migration and any changes to the search query layer's status filter logic. Look for an inverted boolean, a swapped enum mapping, or a flipped conditional (e.g., `status = 'archived'` where it should be `status = 'active'`, or a negation that was added/removed). The fix is likely a one-line correction in the search query builder or a migration fix to correct the indexed values. Verify that direct task browsing uses a different query path (since it works correctly).
+
+## Proposed Test Case
+Create one active task and one archived task with the same keyword in their title. Execute a search with the 'active only' filter and assert only the active task is returned. Execute a search with 'archived only' and assert only the archived task is returned. Execute with 'all tasks' and assert both are returned. This test should cover the search query builder's filter application.
+
+## Information Gaps
+- Whether the API search endpoint exhibits the same inverted behavior (likely, but unconfirmed)
+- Whether other search filters (e.g., by assignee, priority, date) are also affected or only the status filter
+- The exact nature of the v2.3.1 database migration (the dev team has this information)
+- Whether mobile app search is also affected

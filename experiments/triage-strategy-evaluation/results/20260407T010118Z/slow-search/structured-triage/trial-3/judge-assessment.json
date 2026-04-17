@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description performance difference, v2.2-to-v2.3 regression, approximate 2-week timeline, and 10-15 second latency. Missing: CPU spike behavior during searches and the presence of unusually long descriptions (copy-pasted meeting notes). These two gaps are meaningful — CPU behavior could confirm a compute-bound scan, and long descriptions are a key factor in the performance impact."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis correctly identifies the v2.2-to-v2.3 upgrade as the trigger and suspects a shift from indexed to unoptimized full-text scanning on descriptions. This matches acceptable diagnostic path #1 (upgrade as trigger, search regression) and partially overlaps with path #2 (indexing difference between title and description). The summary explicitly calls out reviewing migration scripts and full-text search configuration, which directly points toward the FTS5→LIKE regression even without naming it."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after two rounds of questions with a reasonable basis — the title/description split and version upgrade were both surfaced. However, obvious follow-ups were left on the table: CPU/resource behavior during slow searches, whether task descriptions are unusually long or large, and whether the reporter had tried workarounds like cache clearing or reindexing. These would have strengthened the diagnosis considerably."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both questions were substantive and productive. The first gathered reproduction context; the second gathered environment details and surfaced the version upgrade. Minor inefficiency: the second question asked about browser/version, which turned out to be irrelevant for a desktop app — a small wasted slot that could have asked about CPU behavior or description sizes instead."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was generic (standard 'how to reproduce' framing) but did prompt the reporter to volunteer the critical title-vs-description distinction unprompted. The second question was well-targeted toward environment and version but included the browser question, which signals the agent hadn't yet confirmed whether this was a web or desktop app. Neither question demonstrated deep diagnostic reasoning about what specifically could cause a search regression — no probing about data characteristics, resource usage, or recent changes beyond version number."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is well-structured and actionable: it includes clear reproduction steps, environment details, a pointed root cause hypothesis directing attention to migration scripts and description indexing, and a proposed test case. A developer could begin investigating the v2.3 migration immediately. Slight limitation: missing CPU behavior data means the developer can't confirm compute vs. I/O bound without profiling first, and the absence of description-length data means the scale of the problem isn't fully characterized."
+    }
+  },
+  "weighted_total": 3.70,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Rapidly zeroed in on the title-vs-description performance split as a diagnostic signal and correctly elevated it in the summary",
+    "Connected the v2.3 upgrade to the regression timeline and directed the developer toward migration scripts and full-text search configuration",
+    "Summary is well-structured with reproduction steps, environment, hypothesis, and proposed test case — a developer can act on it immediately"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU or resource usage during slow searches, missing a key confirming signal for a full-table-scan hypothesis",
+    "Never asked about task description content or size, missing the 'long descriptions' factor that amplifies the performance impact",
+    "Asked about browser type before confirming whether the app was web or desktop, wasting a slot that could have gathered more diagnostic data"
+  ],
+  "most_insightful_question": "The second question's pivot to environment and version number was the most productive, surfacing the v2.2→v2.3 upgrade — though this was somewhat lucky since the reporter connected the timing unprompted rather than being directly asked about recent changes.",
+  "missed_opportunities": [
+    "Asking whether CPU or memory usage spikes during slow searches (would confirm compute-bound full scan)",
+    "Asking whether any task descriptions are unusually long (e.g., copy-pasted documents) to characterize data scale",
+    "Asking whether the reporter had tried any workarounds such as reindexing or clearing cache",
+    "Asking whether the slowness affects all users or just this account/dataset"
+  ]
+}

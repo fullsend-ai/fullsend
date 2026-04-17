@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Hi, sorry you're dealing with this — losing work is really frustrating.\n\nTo get this routed to the right person quickly, I need a few specifics:\n\n1. **What exactly are you saving?** (e.g., a new task, edits to an existing task, project settings, something else?)\n2. **What exactly happens when it crashes?** Does the app freeze, close entirely, show an error message, or something else? If there's an error message, can you share the exact text or a screenshot?\n3. **What platform are you on?** (web browser, desktop app, mobile — and which OS/browser version?)\n\nThat will help us narrow this down fast."
+    },
+    {
+      "author": "reporter",
+      "body": "I'm editing a task list — it's got like 200 tasks in it. When I hit Save the whole app just closes. Gone. No warning, nothing. I think there's some kind of error dialog that flashes for a split second but I can't read it before everything disappears. I'm on Mac."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that's really helpful. A task list with 200 items closing the app on save sounds like it could be size-related.\n\nCan you try something quick: **create a new task list with just 2-3 tasks and hit Save.** Does that work, or does it also crash?\n\nAlso, which version of TaskFlow are you running, and did saving this same list ever work before (i.e., did it start crashing after an update or after the list grew to a certain size)?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah small lists save fine. Look, it was working before — it started crashing after I imported a bunch of tasks from a CSV file. I don't remember the exact version, 2.3 something. Can you just fix the save? I've already lost work over this."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks — the CSV import detail is a strong lead. One more thing to nail down:\n\n**If you select, say, 50 of the imported tasks and delete them (so the list is ~150), does saving still crash?** I'm trying to figure out if it's the sheer number of tasks or if something *in the imported data* (a special character, an extra-long field, etc.) is triggering the crash.\n\nAlso — since you're on Mac, the crash log is probably captured automatically. Could you open **Console.app** (Spotlight → type \"Console\"), search for **TaskFlow** in the search bar, and see if there's a crash report or error around the time it last crashed? Even a screenshot of the first few lines would help us pinpoint the exact failure."
+    },
+    {
+      "author": "reporter",
+      "body": "I'm not deleting 50 tasks just to test this for you — I already told you it works fine without the imported ones. I tried removing them before and it saved fine, then I re-imported and it broke again. So yeah it's something about the import. I'm not going to dig through Console.app either, I don't have time for that. The CSV had a bunch of task names with weird punctuation in it if that matters — dashes and smart quotes and stuff from whatever tool exported it. Can someone just look at the CSV import code?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save when task list contains CSV-imported tasks with special characters (smart quotes, dashes)\",\"problem\":\"TaskFlow crashes immediately on save (app closes, brief unreadable error dialog) when a task list contains tasks imported from a CSV file. The CSV data includes special punctuation such as smart quotes and em-dashes. Small lists and non-imported tasks save without issue. The crash is 100% reproducible by the reporter: removing imported tasks allows save; re-importing breaks it again.\",\"root_cause_hypothesis\":\"The CSV import path likely preserves raw Unicode characters (smart quotes U+2018/U+2019, em-dashes U+2014, etc.) that the save/serialization code does not handle correctly. This could be an encoding issue in the serializer (e.g., assuming ASCII-safe input), an unescaped character breaking a structured format (JSON/XML), or a buffer size issue when serializing large lists with multi-byte characters. The crash (app closes entirely rather than showing an error) suggests an unhandled exception in the save path with no top-level catch.\",\"reproduction_steps\":[\"Create or open a task list in TaskFlow on Mac (version 2.3.x)\",\"Prepare a CSV file with ~200 tasks containing special punctuation: smart quotes (‘ ’ “ ”), em-dashes (—), and similar non-ASCII characters\",\"Import the CSV into the task list\",\"Click Save\",\"Observe: app crashes immediately (closes with a brief error flash)\"],\"environment\":\"macOS, TaskFlow version 2.3.x (exact minor version unknown)\",\"severity\":\"high\",\"impact\":\"Any user who imports CSV data containing non-ASCII punctuation into a task list will experience a hard crash on save, with potential data loss. This is especially likely for users migrating from other tools, as exported CSVs commonly contain smart quotes and typographic characters.\",\"recommended_fix\":\"1. Inspect the save/serialization code path for encoding assumptions — look for places where task text is written without proper Unicode handling. 2. Inspect the CSV import code for whether it sanitizes or normalizes special characters on ingest. 3. Add a top-level exception handler around the save operation so unhandled errors display a proper error dialog instead of crashing the app. 4. Consider normalizing smart quotes and typographic dashes to their ASCII equivalents during CSV import, or ensuring the serializer handles the full Unicode range.\",\"proposed_test_case\":\"Import a CSV containing task names with smart quotes (‘example’), em-dashes (task — description), and other non-ASCII punctuation into a list of 200+ tasks. Verify that saving completes successfully without crashing, and that the saved data round-trips correctly (special characters are preserved or consistently normalized).\",\"information_gaps\":[\"Exact TaskFlow version (reporter said '2.3 something')\",\"Actual crash log from Console.app (reporter declined to check)\",\"Sample CSV file for exact reproduction (not provided, but character types are described)\",\"Whether the crash threshold is count-dependent (e.g., 100 imported tasks vs. 200) or purely character-dependent\"]}"
+    }
+  ]
+}

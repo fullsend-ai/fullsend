@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected items are clearly captured: archived tasks appearing in active filter, active tasks missing from default results, timing (~3 days ago, v2.3.1), multi-user impact, correct status on individual task pages, and inverted filter behavior. The seventh item — that the issue is related to the search index rather than application logic — is absent; the agent attributes the cause to application code, not the index layer."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly identifies the v2.3.1 migration as the trigger and the archive filter as the broken component, satisfying the second acceptable diagnostic path. However, the root cause hypothesis points to a code-level boolean inversion rather than a search index field mapping issue. The recommended fix ('diff the search filter logic') would direct developers to the wrong layer, potentially wasting significant investigation time before they discover the issue is in index configuration."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions were asked before resolving. The reporter voluntarily disclosed the individual-task-page status check, which was the key clue about UI vs. index-level correctness. The only obvious unasked question was whether any database migrations or admin operations (not just app updates) ran around the same time — but the v2.3.1 timing was sufficient to move forward, and asking a non-technical reporter about schema migrations would likely yield little."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both questions were useful and non-redundant. The first question could have been slightly tighter — it asked about both the search scope and applied filters in one turn, and the filter question was the more valuable one — but neither question wasted a turn."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The timing question (turn 2) was genuinely insightful and directly elicited the version number, the correlation with the update, and — crucially — the reporter's own observation that individual task pages showed correct status. That's a high-value question that a less experienced triager might have skipped. The first question was more generic but still useful for ruling out scoped/filtered search as a confound."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is comprehensive: it includes clear reproduction steps, severity, multi-user impact, a workaround, proposed test cases, and a recommended fix direction. A developer could start investigating immediately. The fix recommendation is aimed at the wrong layer (application code vs. index configuration), which would cost some investigation time, but the overall framing is solid enough that a developer familiar with the stack would likely check the index layer as part of the diff anyway."
+    }
+  },
+  "weighted_total": 3.75,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The timing question was well-placed and immediately productive — it surfaced the version number, the update correlation, and the reporter's own discovery about individual task pages all in a single reply.",
+    "The triage summary is unusually thorough: it includes reproduction steps, a workaround, severity assessment, proposed unit and integration tests, and explicit information gaps — a developer or PM could act on this immediately.",
+    "The agent correctly identified that the archive filter logic is the broken component and that the bug is server-side/shared rather than client-specific."
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis points to application code (a flipped conditional or negation bug) rather than the search index layer. This is a meaningful directional error — the fix involves correcting index field mapping and rebuilding the index, not patching source code.",
+    "The recommended fix ('diff the search filter logic between v2.3.0 and v2.3.1') would lead developers to look at the wrong artifact, potentially delaying resolution."
+  ],
+  "most_insightful_question": "Do you remember roughly when this started? Was it working correctly at some point recently and then flipped, or has it been like this as long as you can remember?",
+  "missed_opportunities": [
+    "Asking whether any database migrations or index rebuilds ran alongside the v2.3.1 update — this would have pointed toward the index layer rather than application code.",
+    "Asking whether searching without the active/archived filter (i.e., showing all tasks) returns correct results — this would have helped distinguish a filter logic bug from a broader index consistency issue."
+  ]
+}

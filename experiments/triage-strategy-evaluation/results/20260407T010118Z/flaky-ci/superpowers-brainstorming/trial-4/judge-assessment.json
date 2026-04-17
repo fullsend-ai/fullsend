@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The summary captures: intermittent failures, task ordering module, ~4 days / recent PR, passes locally / fails in CI, non-deterministic ordering, and environment difference. Missing: the CI logs visibly show specific test names (mentioned by reporter but not surfaced in summary), and the OS-level difference (macOS vs Ubuntu) was never established — the agent never asked about platform."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identifies non-deterministic ordering as the root cause, matching acceptable diagnostic path #2 ('even if attributed to a different mechanism'). The mechanism it proposes — missing tiebreaker in a database sort — is wrong (actual cause is Go map iteration randomization via GOFLAGS seed difference), but the overall diagnostic framing (ordering non-determinism, environment-sensitive, tests too strict for undefined ordering) is sound and actionable. Not penalized for missing the exact mechanism per the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two question rounds with reasonable basis. However, several obvious follow-ups were skipped: it never asked about environment differences (OS, Go config, env variables, GOFLAGS), never asked whether the CI runner config differed from local, and never asked to see the actual failure output or error message from CI. These questions would likely have surfaced the hash seed discrepancy."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two rounds of questioning before a well-supported resolution. No redundant or low-value questions. Both questions were direct and efficiently structured to narrow the problem space."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was notably strong — categorizing failure types including 'order-dependent failures' as a distinct option showed genuine diagnostic reasoning and primed the reporter to recognize the pattern. The second question formed a concrete hypothesis and asked the reporter to confirm or disambiguate. The main weakness is neither question targeted environment configuration specifics (OS, runtime flags), which was the crux of the actual cause."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is detailed and well-structured: it includes a clear problem statement, root cause hypothesis, reproduction steps, severity, impact, two concrete fix options, a proposed test case, and noted information gaps. A developer could start investigating immediately. Slightly docked because the root cause attribution (database non-determinism vs. Go runtime) could send them down a mildly wrong path initially."
+    }
+  },
+  "weighted_total": 3.70,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The initial failure-type categorization question (including 'order-dependent failures' as a named option) was diagnostically sharp and efficiently guided the reporter to the right framing",
+    "The hypothesis-confirmation structure in the second question (options 1/2/3) was an efficient way to validate the theory without requiring the reporter to articulate it from scratch",
+    "The final summary is unusually actionable — includes reproduction steps, two fix strategies, a proposed test case, and explicit information gaps",
+    "Correctly identified non-deterministic ordering as the root cause within two exchanges"
+  ],
+  "notable_weaknesses": [
+    "Never asked about environment configuration differences (OS, Go env variables, GOFLAGS, CI runner config) — this is the actual root cause and a natural follow-up given 'passes locally, fails in CI'",
+    "Attributed the non-determinism to database engine behavior rather than Go runtime behavior, which could initially misdirect a developer investigating the fix",
+    "Did not capture in the summary that the CI logs already show the failing test names (reporter stated this explicitly), which is actionable information",
+    "Resolved without establishing OS or platform details (macOS vs Ubuntu), a standard environmental diagnostic"
+  ],
+  "most_insightful_question": "The first question's categorization of failure types — particularly naming 'order-dependent failures' (different tests fail each run, but pass individually) as a distinct option — demonstrated real diagnostic reasoning and gave the reporter a precise vocabulary to identify their pattern.",
+  "missed_opportunities": [
+    "What is different between your local setup and CI in terms of environment variables, config files, or Go flags (e.g., GOFLAGS)?",
+    "Can you paste the actual assertion failure message from a failed CI run?",
+    "Are the failing tests new tests added by the PR, or do they modify existing tests?",
+    "What OS and Go version does your CI runner use compared to your local machine?"
+  ]
+}

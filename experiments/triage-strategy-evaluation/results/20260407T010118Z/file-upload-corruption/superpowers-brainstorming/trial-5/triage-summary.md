@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** PDF attachments corrupted on upload — size-dependent, regression from ~1 week ago
+
+## Problem
+PDF files uploaded as task attachments are completely unreadable when downloaded. The corruption is size-dependent: small single-page PDFs appear unaffected, while larger multi-page PDFs are fully damaged (PDF viewer reports file as damaged and refuses to open). Multiple customers are affected. The issue began approximately one week ago, indicating a regression rather than a long-standing bug.
+
+## Root Cause Hypothesis
+A recent change (deployed ~1 week ago) to the file upload pipeline is corrupting larger files. Since the files are completely unreadable rather than truncated or partially rendered, this points to a data-mangling issue rather than a simple size-limit cutoff — likely a bug in chunked/multipart upload handling, an encoding or content-type issue applied only when uploads exceed a single-chunk threshold, or a misconfigured upload middleware (e.g., treating binary data as text, or double-encoding).
+
+## Reproduction Steps
+  1. Upload a small (single-page, ~100KB) PDF to a task — confirm it downloads and opens correctly
+  2. Upload a larger (multi-page, >1MB) PDF to a task
+  3. Download the larger PDF and attempt to open it
+  4. Expected: PDF opens normally. Actual: PDF viewer reports file as damaged
+  5. Compare the byte size and binary content of the original file with the downloaded file to identify where corruption occurs
+
+## Environment
+Web application (TaskFlow), file attachment feature. No specific browser/OS indicated — affects multiple customers across the organization, suggesting a server-side issue.
+
+## Severity: high
+
+## Impact
+Support team workflow is blocked. Multiple customers are unable to receive documents attached to tasks. Team relies heavily on PDF attachments for daily operations. Customers have been waiting on documents for days.
+
+## Recommended Fix
+1. Identify what changed in the upload/storage pipeline approximately one week ago (check deploy history). 2. Compare binary content of an original large PDF with the stored/downloaded version to pinpoint where corruption is introduced (upload endpoint, storage layer, or download endpoint). 3. Check for chunked upload threshold — if uploads above a certain size use a different code path (multipart, chunked, streaming), that path is the likely culprit. 4. Look for encoding issues: binary data being processed as UTF-8 text, incorrect Content-Type handling, or middleware transforming the file body. 5. Verify the fix by uploading PDFs of various sizes and confirming byte-for-byte integrity.
+
+## Proposed Test Case
+Upload PDFs of increasing sizes (100KB, 500KB, 1MB, 5MB, 10MB), download each, and assert that the downloaded file is byte-identical to the original (SHA-256 hash comparison). This should be an automated integration test against the upload/download endpoints.
+
+## Information Gaps
+- Exact size threshold where corruption begins (developer can determine via testing)
+- Whether previously uploaded PDFs that used to work are now also corrupted (would distinguish upload-time vs storage/download-time corruption)
+- Specific deployment or config change made ~1 week ago (internal investigation needed)

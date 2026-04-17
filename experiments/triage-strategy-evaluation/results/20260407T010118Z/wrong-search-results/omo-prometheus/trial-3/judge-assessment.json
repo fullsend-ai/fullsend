@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: archived tasks returning when filtering for active, active tasks missing from default results, onset tied to the v2.3.1 migration ~3 days ago, multi-user impact confirmed (teammate + 'all users' scope), individual task pages showing correct archive status, filter behavior confirmed inverted through direct testing, and the issue isolated to the search/filter layer rather than application data. The summary also captured the task counts (150 active, 300 archived) and provided reproduction steps not explicitly expected."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identified the v2.3.1 migration as the trigger, confirmed the inversion through direct filter toggling, and isolated the bug to the search index layer rather than the data layer. The root cause hypothesis specifically names 'is_archived written as true for active tasks and false for archived' — which is essentially the canonical cause. This also satisfies both acceptable paths: identifying the schema migration as the trigger and the archive filter as the broken component, and pointing toward a reindex as the fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The three questions asked were all decisive and necessary. Resolving after the filter toggle confirmed the inversion was well-justified — at that point the hypothesis was empirically validated. The agent appropriately flagged remaining unknowns (search index technology, whether other filter dimensions are affected) as information gaps rather than pretending to know them. A fourth question probing those gaps could have elevated this further, but leaving them as documented gaps is reasonable rather than blocking resolution."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, three essential data points: temporal correlation to the migration, isolation of the search layer from the data layer, and direct empirical confirmation of the inversion. No question was redundant, overlapping, or low-value. The questions form a tight logical chain from initial signal to confirmed hypothesis."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q2 — asking what status an archived task shows when opened directly from search results — is a standout diagnostic move. It cleanly separated 'data corruption' from 'search-layer bug' in a single step that the reporter would not have thought to test independently. Q3 then turned the reporter's intuition ('like the filter is flipped') into a directly falsifiable experiment. Both questions demonstrate genuine diagnostic reasoning rather than generic checklist-following."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could go directly to the v2.3.1 migration script and audit the boolean field mapping for the archived flag in the search index. The summary specifies the exact mechanism to look for (inverted boolean, e.g., is_archived=true written for active tasks), names both the index data and the query predicate as candidate locations, proposes a corrective reindex, and includes a regression test specification. Information gaps are clearly delineated so the developer knows exactly what to discover next."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q2 is a diagnostically elegant question that isolated the search layer from the database in a single reporter-executable test, without requiring any technical access",
+    "The agent converted the reporter's casual observation ('almost like the filter is flipped') into a structured hypothesis and then immediately designed Q3 to empirically confirm it",
+    "The triage summary is unusually complete: it includes reproduction steps, severity, impact, a specific recommended fix, a proposed regression test, and clearly scoped information gaps — a developer could act immediately"
+  ],
+  "notable_weaknesses": [
+    "The search index technology (Elasticsearch per ground truth) was not confirmed and is listed only as an information gap — this is the most critical piece a developer would want before writing a fix",
+    "Whether other filter dimensions are affected was not explored, leaving open the possibility of a wider schema mapping problem"
+  ],
+  "most_insightful_question": "When you click on one of those old archived tasks that appears in search results, what status does it show? Is it still marked as 'archived' in the task detail view, or does it appear as 'active'?",
+  "missed_opportunities": [
+    "Ask what search technology the product uses (e.g., 'Is there a separate search service, or does search query the database directly?') — would have confirmed Elasticsearch and narrowed the fix location",
+    "Ask whether other filter types (by project, assignee, date) are also behaving strangely — would reveal if the inversion is isolated to the archived flag or systemic across the index schema"
+  ]
+}

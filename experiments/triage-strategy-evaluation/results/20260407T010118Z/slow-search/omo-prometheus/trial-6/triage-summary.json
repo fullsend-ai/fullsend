@@ -1,0 +1,22 @@
+{
+  "title": "Full-text search on task descriptions regressed to brute-force scan in v2.3 (~10-15s latency)",
+  "problem": "After upgrading from v2.2 to v2.3, searching for text that appears in task descriptions takes 10-15 seconds and pegs a CPU core at 100%. Title-based searches remain fast. The slowdown is consistent across repeat queries (no caching benefit). The user has ~5,000 tasks, some with lengthy descriptions containing pasted meeting notes.",
+  "root_cause_hypothesis": "The v2.3 release likely altered how description content is searched — most probably by dropping or failing to create a full-text search index on the descriptions column, or by switching from an indexed FTS query to a LIKE/sequential scan. With ~5,000 rows containing large text blobs, a sequential scan would explain both the 10-15 second latency and the single-core CPU spike. The lack of caching improvement on repeat queries further supports a per-query full scan rather than a missing warm-up.",
+  "reproduction_steps": [
+    "Install TaskFlow v2.3 with default (likely SQLite) database configuration",
+    "Populate the database with ~5,000 tasks, including several with long description text (e.g., pasted meeting notes)",
+    "Perform a search using a term that appears only in task descriptions (not titles)",
+    "Observe 10-15 second response time and high CPU usage on one core",
+    "Compare: perform a search for a term that appears in a task title — this should return quickly"
+  ],
+  "environment": "TaskFlow v2.3 (upgraded from v2.2), self-hosted local install with default settings (likely SQLite), Ubuntu on ThinkPad T14, 32GB RAM",
+  "severity": "high",
+  "impact": "Any self-hosted user with a non-trivial number of tasks (~thousands) will experience severely degraded search performance on description content. This is a core workflow feature. Partial workaround exists (searching by title still works), but users who rely on description search are effectively blocked.",
+  "recommended_fix": "1. Diff the search query logic between v2.2 and v2.3 — look for changes to how description fields are queried (FTS index usage, LIKE vs. FTS, query planner hints). 2. Check database migrations in v2.3 for any dropped or missing full-text index on the descriptions column. 3. If using SQLite, verify that the FTS5 virtual table for descriptions is being created and queried correctly. 4. Add an EXPLAIN QUERY PLAN check to confirm whether the description search is using an index or performing a full table scan. 5. If the index was inadvertently dropped, add a migration to recreate it; if the query changed, revert to the indexed query path.",
+  "proposed_test_case": "Create a database with 5,000 tasks (descriptions averaging 500+ words each). Run a description-content search and assert that results return in under 2 seconds. Run the same test against v2.2 as a baseline to confirm the regression. Additionally, verify via EXPLAIN QUERY PLAN that the description search uses an FTS index rather than a sequential scan.",
+  "information_gaps": [
+    "Exact database engine not confirmed (assumed SQLite based on default local install)",
+    "Exact v2.3 changelog or migration diff not reviewed — root cause is inferred from symptoms",
+    "Whether the issue reproduces on a clean v2.3 install (vs. upgrade path only) is unknown"
+  ]
+}

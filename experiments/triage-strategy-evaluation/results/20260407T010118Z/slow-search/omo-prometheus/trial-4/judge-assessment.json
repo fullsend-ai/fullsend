@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: ~5,000 tasks, title-fast/description-slow distinction, v2.2→v2.3 regression, ~2 weeks ago onset, 10-15 second timing, CPU spike (fan noise → 'elevated CPU usage'), and long descriptions with meeting notes. The summary additionally captures UI freeze and proposes a test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage hits both acceptable diagnostic paths simultaneously: it identifies the v2.2→v2.3 upgrade as the trigger and explicitly suspects 'a full-text index on the description field was dropped or altered, falling back to a sequential scan' — which is the actual cause (FTS5 → LIKE). The root cause hypothesis is essentially correct even without naming FTS5 specifically."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent methodically covered timing/trigger, task count, query type variation, and UI behavior in three focused turns. All key diagnostic signals were elicited. The main gap is that the agent never asked for OS/hardware details, which it correctly lists as an information gap. Not a critical miss for diagnosis, but a straightforward question skipped."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three agent turns with generally well-targeted questions. The 'first search vs subsequent' sub-question in turn 3 had low diagnostic value (caching hypothesis is minor here) and could have been dropped or folded into turn 4. Otherwise no wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The turn 3 question about query complexity and search consistency was particularly clever — by asking whether 'one keyword' behaves differently from 'a more complex query,' it prompted the reporter to introspect and volunteer the title-vs-description distinction, which the reporter hadn't considered. Turn 4's UI behavior question surfaced the CPU spike. Both questions drew out information the reporter would not have volunteered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes precise reproduction steps, a specific root cause hypothesis (FTS index dropped → sequential scan), a three-point recommended fix with concrete diffs to check, a proposed test case with measurable acceptance criteria, and explicit information gaps. A developer could begin a targeted code diff immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Elicited the title-vs-description distinction through a question about query complexity, without asking the question directly — the reporter surfaced it organically",
+    "Root cause hypothesis correctly identifies FTS index regression as the prime suspect, matching the actual cause without being told",
+    "Reproduction steps and proposed test case are specific and actionable, not boilerplate"
+  ],
+  "notable_weaknesses": [
+    "Never asked for OS/hardware details despite it being present in ground truth and listed as an information gap — a single follow-up would have closed it",
+    "The 'first vs subsequent search' sub-question in turn 3 was low value and added noise to an otherwise tight question"
+  ],
+  "most_insightful_question": "Is the slowness consistent across all searches, or does it depend on what you're searching for? For example, is searching for a single keyword just as slow as a more complex query?",
+  "missed_opportunities": [
+    "Ask for OS and hardware details (Ubuntu 22.04 / ThinkPad T14 / 32GB RAM) — all present in ground truth and missing from the summary",
+    "Ask whether the reporter had tried reindexing or clearing the app cache, which would both inform diagnosis and potentially offer an immediate workaround"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured: search returns archived tasks, active tasks missing, started after recent update (~3 days ago), affects multiple users, and partially that the filter behavior is inverted (as hypothesis). Missing: whether individual task pages show the correct archive status (a key diagnostic clue that would distinguish index vs. app logic), and whether the behavior is strictly inverted vs. just broken. The inversion hypothesis appears in the summary but was never confirmed by the reporter."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis explicitly includes option (3): 'a query-layer change removed or inverted the status filter that excludes archived tasks' — which aligns with the actual inversion. The agent also correctly identified the v2.3.1 upgrade as the trigger and the archive filter as the broken component, matching acceptable diagnostic path 2. The hypothesis is framed as multiple possibilities rather than a confident single cause, but this is calibrated given the limited information gathered."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after only one question exchange. Multiple obvious follow-ups were skipped: (1) whether individual task pages display the correct archive status — a critical question that would immediately distinguish search index from application logic; (2) whether toggling the archive filter inverts the problem, which would confirm the inversion hypothesis; (3) whether searching without any filter returns all tasks; (4) whether any tasks created before the update are also missing. The information_gaps section acknowledges the search backend question but it was never asked of the reporter."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "The single question was bundled efficiently and mostly well-targeted. However, asking for Chrome version was low-value — the agent itself later noted it was 'unlikely to be relevant given this is a server-side search issue.' That sub-question wasted a small amount of reporter attention."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The question asked was standard environment triage — applicable to virtually any bug report. It yielded useful information (version number, timing correlation) but did not reflect specific diagnostic reasoning about search indexing, archive filter behavior, or index-vs-application-logic distinction. A more insightful question would have probed whether task detail pages showed correct archive status, or whether disabling the archive filter changed the results."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary gives a developer a solid starting point: v2.3.1 as trigger, three specific hypotheses to investigate (including the inversion), a reproduction script, and a suggested fix (reindex with correct filtering). A developer could begin investigating the diff between v2.3.0 and v2.3.1 search logic immediately. Slightly weakened by the absence of the key clue about individual task pages showing correct status, which would have immediately directed the developer toward the index rather than application code."
+    }
+  },
+  "weighted_total": 3.30,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Correctly identified the v2.3.1 upgrade as the likely trigger after a single exchange",
+    "Root cause hypothesis explicitly includes the inversion scenario, matching the actual cause",
+    "Reproduction steps are specific and actionable",
+    "Summary is well-structured with clear severity, impact, and recommended fix sections"
+  ],
+  "notable_weaknesses": [
+    "Resolved after only one question — multiple important diagnostic questions left unasked",
+    "Never asked whether individual task pages show correct archive status, which would have been the single most diagnostic question for distinguishing index vs. application logic",
+    "Never asked the reporter to toggle the archive filter, which would have confirmed or denied the inversion hypothesis directly",
+    "Chrome version question was low-value for what is clearly a server-side issue"
+  ],
+  "most_insightful_question": null,
+  "missed_opportunities": [
+    "Do individual task detail pages show the correct archive status, or is the wrong status shown there too? (Would immediately point to index vs. app logic)",
+    "If you manually toggle the archive filter to show archived tasks, do you instead see your active tasks? (Would confirm the inversion hypothesis)",
+    "Does the problem affect tasks that existed before the v2.3.1 update, or only tasks created after it? (Would help distinguish full reindex failure from incremental indexing failure)",
+    "Does searching without any filters return a mix of archived and active tasks, or is search broken in all modes?"
+  ]
+}

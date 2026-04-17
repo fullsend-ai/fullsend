@@ -1,0 +1,7 @@
+{
+  "scenario": "auth-redirect-loop",
+  "strategy": "omo-prometheus",
+  "reporter_profile": "typical",
+  "turns": 5,
+  "parse_failures": 0
+}

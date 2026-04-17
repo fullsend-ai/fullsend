@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** SSO redirect loop after Okta-to-Entra migration for users with plus-sign or alias emails
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. Authentication at the Entra side succeeds, but the session cookie returned by TaskFlow does not persist, causing the app to redirect back to Entra repeatedly. The affected population correlates strongly with users who have plus signs in their email addresses (e.g., jane+taskflow@company.com) or whose emails were set up as aliases during the Entra migration.
+
+## Root Cause Hypothesis
+TaskFlow's authentication callback likely performs a user lookup or session binding using the email claim from the OIDC token. When Entra returns an email with a plus sign or an alias form, TaskFlow either fails to match it to the existing user record (causing session creation to silently fail) or incorrectly encodes the email in the session cookie value (causing cookie rejection). The Set-Cookie header is present but the cookie does not persist, suggesting the cookie value or attributes may be malformed — possibly due to unencoded special characters from the plus-sign email leaking into the cookie path or value.
+
+## Reproduction Steps
+  1. Set up TaskFlow v2.3.1 with Microsoft Entra ID SSO
+  2. Create or use a user account whose email contains a plus sign (e.g., user+tag@company.com) or is an alias in Entra
+  3. Attempt to log in via SSO
+  4. Observe: authentication succeeds at Entra, redirect back to TaskFlow occurs, but session cookie does not persist and user is immediately redirected back to Entra in a loop
+  5. Compare with a user whose email has no plus sign or alias — login should succeed normally
+
+## Environment
+TaskFlow v2.3.1, self-hosted. Server OS and runtime version unknown. Multiple browsers affected (Chrome, Edge, Firefox) — not browser-specific.
+
+## Severity: high
+
+## Impact
+Approximately 30% of users are completely unable to log in to TaskFlow. These users are locked out with no reliable workaround (incognito mode works intermittently). This is blocking daily work for a significant portion of the team.
+
+## Recommended Fix
+1. Inspect the authentication callback handler — check how the email claim from the Entra OIDC token is used for user lookup. Look for exact-match comparisons that would fail when the email format differs between Okta and Entra (e.g., plus-sign encoding, alias vs. primary email). 2. Check whether the session cookie value is being set with unencoded special characters from the email. 3. Add email normalization (case-insensitive, plus-sign-aware matching) or match on a stable claim like `sub` or `oid` rather than email. 4. Verify that the redirect URI callback properly handles all email formats returned by Entra.
+
+## Proposed Test Case
+Write an integration test that performs an SSO login flow with an email containing a plus sign (user+tag@domain.com). Assert that the session cookie is set correctly, persists across requests, and the user is not redirected back to the identity provider after the callback completes.
+
+## Information Gaps
+- Exact server OS and runtime version (reporter needs to check with dev team — unlikely to change the fix direction)
+- Server-side logs from a failed login attempt (would confirm whether the failure is in user lookup, token validation, or session creation)
+- Whether the emails stored in TaskFlow's user database still have the Okta-era format vs. the Entra-era format

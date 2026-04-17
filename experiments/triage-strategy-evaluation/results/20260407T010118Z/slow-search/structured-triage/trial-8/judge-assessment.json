@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "5 of 7 expected items are clearly captured: task count (~5,000), title-vs-description performance split, v2.2→v2.3 regression, ~2-week timeframe, and 10-15s latency. Long descriptions were mentioned in passing by the reporter ('meeting notes I've pasted in') but not explicitly surfaced or characterized in the summary. CPU spikes during search were never asked about and are entirely absent."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly calls out 'a switch from indexed search to unoptimized LIKE/scan-based search for description content' — which is essentially the actual cause (FTS5 → LIKE regression in v2.3). The triage also hits both acceptable diagnostic paths: identifying the v2.2→v2.3 upgrade as the trigger and identifying the title-vs-description indexing disparity. Nothing in the summary is factually wrong."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked two solid rounds before resolving, which was reasonable given the strong signal from the reporter. However, asking about CPU/resource usage during searches and application logs were obvious next steps that were skipped — both would have further confirmed the full-table-scan hypothesis. The agent noted logs as an information gap, acknowledging the incompleteness. Resolving after two rounds was defensible but left clear diagnostic avenues unexplored."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two question rounds, each well-targeted. The first focused on reproduction specifics and query type; the second focused on environment and version. No redundancy, no low-value questions, no information requested twice."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question's sub-question — 'Does it happen with every search query, or only certain ones (like broad queries vs. specific ones)?' — directly elicited the critical title-vs-description performance distinction that the reporter would not have volunteered unprompted. This single sub-question was the most diagnostically valuable moment in the conversation and demonstrates genuine search-performance reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis, detailed reproduction steps (including the contrast test between title and description queries), specific guidance to inspect v2.3 migration scripts and ORM/schema changes, a concrete proposed test case with a pass/fail threshold, and clearly noted information gaps. A developer could begin investigating the migration scripts and query plans immediately."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The first question's sub-question about query specificity directly surfaced the title-vs-description distinction — the single most diagnostic fact in the entire conversation",
+    "Root cause hypothesis accurately anticipated the FTS-to-LIKE regression without access to the codebase",
+    "Highly actionable summary with reproduction steps, a proposed regression test, and concrete investigative guidance"
+  ],
+  "notable_weaknesses": [
+    "CPU spike behavior during searches was never asked about and is absent from the summary — this would have strongly corroborated a full-table-scan hypothesis",
+    "Long description content (meeting notes, 2000+ words) was mentioned by the reporter but not explicitly probed or captured as a contributing factor in the summary"
+  ],
+  "most_insightful_question": "Does it happen with every search query, or only certain ones (like broad queries vs. specific ones)?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory spikes noticeably during slow searches (would confirm compute-bound full scan vs. network/IO issue)",
+    "Ask whether the application produces any logs or error output during the slow searches",
+    "Ask whether descriptions tend to be long or contain large blocks of pasted text — the reporter volunteered this but the agent didn't probe it explicitly, leaving it underweighted in the summary"
+  ]
+}

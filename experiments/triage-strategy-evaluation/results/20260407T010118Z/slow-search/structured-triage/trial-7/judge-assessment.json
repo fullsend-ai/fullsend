@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured 5 of 7 expected items: task count (~5,000), title-fast/description-slow distinction, v2.3 upgrade trigger, 2-week timeline, and 10-15s latency. Missing: CPU spikes during search and long task descriptions (copy-pasted meeting notes). Both are diagnostically significant — CPU spike pattern would have confirmed a compute-bound full-table scan, and long descriptions would have explained why the LIKE scan is so expensive."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary correctly identified the v2.2→v2.3 upgrade as the trigger and the title-vs-description split as the key diagnostic signal. The root cause hypothesis explicitly mentions 'change in query strategy (e.g., switching from indexed search to sequential scan)' — which is the actual cause (FTS5 index → LIKE full-table scan). This satisfies both acceptable diagnostic paths. Minor deduction for not pinpointing FTS5 specifically, but the hypothesis is directionally correct and actionable."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked two solid rounds of questions and drew out the most important signal (title vs. description) and the version upgrade. However, it resolved without asking about CPU behavior during searches, description length/content, whether reindexing had been attempted, or explicitly confirming the upgrade timing as the onset of slowness. These gaps are notable — CPU spike data in particular would have been easy to obtain and strongly diagnostic."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were well-grouped into two compact turns. The browser question in turn 2 was the one wasted slot — the reporter had already signaled the issue felt server-side, and it contributed nothing to the final summary (listed only as an 'information gap'). Otherwise questions were efficient and non-redundant."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first-turn question bundle was particularly effective — asking about query specifics, task count, and consistency prompted the reporter to volunteer the title-vs-description distinction unprompted, which was the most diagnostic finding. The second-turn version question was well-targeted. The browser question was a miss. Overall the questions showed genuine diagnostic thinking rather than generic troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is immediately actionable: it specifies EXPLAIN ANALYZE on the full-text query, diffing the search path between v2.2 and v2.3, checking for dropped indexes on description columns, and includes a concrete performance regression test case with seed size and threshold. A developer could open the v2.3 migration diff and run the suggested query analysis within minutes of reading this."
+    }
+  },
+  "weighted_total": 3.65,
+  "turn_count": 3,
+  "notable_strengths": [
+    "First-turn questions were structured to elicit the title-vs-description distinction without leading the reporter — a key diagnostic finding was surfaced organically",
+    "The recommended fix section is exceptionally concrete: EXPLAIN ANALYZE, migration diff, index verification, and a regression test case with measurable criteria",
+    "Root cause hypothesis correctly identified 'indexed search to sequential scan' as the likely mechanism, aligning with the actual FTS5→LIKE change"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU behavior during slow searches — a spike to 100% on one core would have been a strong signal confirming a compute-bound scan",
+    "Did not probe task description content or length — long descriptions are a key amplifier of the performance issue",
+    "Browser version question was wasted given the reporter's own framing that the issue felt server-side"
+  ],
+  "most_insightful_question": "What are you searching for when it's slow? (e.g., a keyword, a filter, a phrase) — this open-ended framing prompted the reporter to spontaneously surface the title-vs-description performance split, the most diagnostically valuable finding in the conversation",
+  "missed_opportunities": [
+    "Does your CPU spike noticeably during slow searches? (would confirm compute-bound full-table scan)",
+    "Do any of your tasks have very long descriptions — for example, copy-pasted notes or documents? (would explain why a full-table scan is so expensive)",
+    "Did the slowness start right after the v2.2→v2.3 upgrade, or was there a delay? (would tighten the regression timeline)",
+    "Have you tried anything to fix it, like clearing a cache or reindexing? (would surface the workaround and confirm no mitigation has been attempted)"
+  ]
+}

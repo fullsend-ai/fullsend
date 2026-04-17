@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I understand how frustrating it is to lose work.\n\nTo help us investigate, I need to get specific about what's happening. When you say the app \"crashes when I save\":\n\n1. **What exactly are you saving?** (e.g., a new task, editing an existing task, updating project settings, etc.)\n2. **What exactly happens when it crashes?** (e.g., does the app close entirely, do you see a white screen, an error message, a spinner that never stops?)\n\nIf you see any error message at all — even briefly — please share the exact text or a screenshot."
+    },
+    {
+      "author": "reporter",
+      "body": "I'm editing my task list, it's got like 200 tasks in it. When I hit Save in the toolbar the whole app just closes. There's some kind of error dialog that flashes for like a split second before it dies but I can't read it fast enough. Something about encoding maybe? I don't know, it just crashes."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that's really helpful. The brief error mentioning \"encoding\" is a strong clue.\n\nCould you tell me: **do any of your tasks contain special characters** — things like emojis, accented letters (é, ñ, ü), or characters copied from another application (like smart quotes or bullet points from Word/Google Docs)? \n\nAlso, does this happen every time you save that particular task list, or only sometimes? If you create a brand-new list with just a couple of plain tasks and save it, does that work fine?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah I imported a bunch of tasks from a CSV file a while back, they probably have weird characters in them — like fancy quotes or dashes or whatever from the spreadsheet. And yes it happens every single time I try to save. It's completely broken. I just need this fixed, I have a deadline coming up and I can't even save my work."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks — I'm fairly confident I know what's going on. The special characters from your CSV import (smart quotes, em dashes, etc.) are likely hitting an encoding bug in the save path, which matches the brief \"encoding\" error you saw.\n\nTo confirm and potentially unblock you right now: could you try **duplicating your task list, then deleting all but 5-10 tasks from the copy, and saving that?** If the small copy saves fine, try adding tasks back in batches until it crashes — whichever task you just added likely contains the problem character. You could then manually retype that task's text to replace the fancy characters with plain ones.\n\nAlso, so we can reproduce this on our end: **what platform are you on?** (e.g., Windows/Mac/Linux, browser or desktop app, and the app version if you know it)"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm on Mac, Sonoma, using the desktop app. Version 2.3 something I think. Look, I don't really have time to sit here duplicating lists and adding tasks back one by one — I have actual work to do. But I can tell you that I tried saving a smaller list before and that worked fine. It's only the big one with all the imported stuff that crashes. If I delete the imported tasks it saves, but then I lose all that data which kind of defeats the purpose. Can you guys just fix the save so it handles whatever characters are in there?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Desktop app crashes on save when task list contains non-ASCII characters from CSV import\",\"problem\":\"The desktop app crashes immediately when saving a task list that contains tasks imported from a CSV file. The CSV-imported tasks contain non-ASCII characters (smart quotes, em dashes, and similar typographic characters from spreadsheet software). A brief error dialog referencing 'encoding' flashes before the app force-closes. The user loses all unsaved work. Saving works correctly for lists without imported data or after manually removing imported tasks.\",\"root_cause_hypothesis\":\"The save/serialization path does not correctly handle non-ASCII characters (e.g., Unicode smart quotes U+201C/U+201D, em dashes U+2014) when writing task data to disk or to the backend. Likely the save function assumes ASCII-safe input or uses an encoding (e.g., Latin-1) that cannot represent the full range of characters introduced by CSV import, causing an unhandled encoding exception that crashes the app.\",\"reproduction_steps\":[\"Prepare a CSV file containing tasks with typographic characters (smart quotes, em dashes, curly apostrophes — characters typical of spreadsheet/word processor output)\",\"Import the CSV into TaskFlow to create a task list\",\"Ensure the list has a substantial number of tasks (~200, though the trigger is likely the character content, not the count)\",\"Click Save in the toolbar\",\"Observe: an encoding-related error dialog flashes briefly and the app crashes/closes\"],\"environment\":\"macOS Sonoma, TaskFlow desktop app version 2.3.x\",\"severity\":\"high\",\"impact\":\"Any user who imports task data from CSV (or other external sources containing non-ASCII characters) is completely unable to save their work. The user is blocked with no viable workaround short of manually re-entering all imported data. Data loss occurs on every save attempt.\",\"recommended_fix\":\"Investigate the save/serialization codepath in the desktop app. Ensure all text encoding uses UTF-8 throughout the pipeline — from in-memory representation through file/network serialization. Specifically check: (1) the file writer or API serializer used on save, (2) any intermediate string encoding conversions, (3) the CSV import path to see if it correctly tags imported text as UTF-8. Add defensive handling so encoding errors surface a user-friendly error message rather than crashing the app.\",\"proposed_test_case\":\"Create a task list containing tasks with smart quotes (“ ”), em dashes (—), accented characters (é, ñ), and emoji. Save the list and verify it persists correctly. Reload and verify characters are preserved. Also test with a large list (200+ tasks) containing mixed ASCII and non-ASCII content to rule out any size-dependent buffer issues.\",\"information_gaps\":[\"Exact app version (reporter said '2.3 something')\",\"Which specific characters in the CSV trigger the crash (developer can reproduce with any smart quotes/em dashes)\",\"Whether the issue also exists on Windows/Linux or is macOS-specific\",\"Exact text of the encoding error dialog (flashes too fast for user to read — may be capturable from app logs)\"]}"
+    }
+  ]
+}

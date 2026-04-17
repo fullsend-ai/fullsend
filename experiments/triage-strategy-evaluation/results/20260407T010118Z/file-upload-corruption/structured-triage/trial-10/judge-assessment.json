@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured: multiple customers affected, small PDFs may be fine, browser-independent (server-side), version (v2.3.1), possible size correlation, other file types uncertain. Missing: the 'approximately 1 week ago' timing was never pinned down (listed as a gap but never asked), the 1MB size threshold was not confirmed (only suspected), and whether other large file types are affected remained unresolved."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis explicitly names 'incorrect Content-Type handling' and 'middleware stripping/modifying binary data' as top candidates, and connects the size-correlation observation to 'chunked upload or streaming issues with larger payloads.' This aligns well with the acceptable diagnostic path of identifying size-dependent behavior and suspecting different upload paths. The hypothesis does not confidently land on the proxy, but it points squarely at the right area of the stack."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about reproduction steps, browser/OS/version, and file size/other-file-types. However, the reporter explicitly said 'something clearly broke recently' — the agent never followed up with 'when did this start?' or 'did anything change around that time?' Pinning down the regression window is a standard and important triage step that was skipped. This is a notable gap given the reporter volunteered that it is a recent change."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns were used efficiently overall. The browser question in turn 2 was somewhat misaligned for a clearly server-side issue (no client errors, multi-browser), but it did extract the version number, which is valuable. At most one question was suboptimally framed rather than wasted outright."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "Turn 1 was generic reproduction-steps boilerplate. Turn 2 led with browser/OS, which the reporter correctly dismissed as irrelevant — the version question buried within it was the only payoff. Turn 3 asking about file size pattern and other file types was the strongest question, directly eliciting the size-correlation signal that drove the best part of the hypothesis. Overall: one insightful question, two routine ones."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is highly actionable: reproduction steps include the >1MB hint, the hypothesis explicitly names Content-Type handling and middleware stripping binary content, and the recommended fix specifies checksum comparison, header inspection, and reviewing recent pipeline changes. The proposed test case with specific file sizes gives developers a clear starting experiment. A developer could begin investigating immediately."
+    }
+  },
+  "weighted_total": 3.45,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The size-correlation question in turn 3 was well-targeted and directly produced the key signal that smaller files may be unaffected, leading to the chunked-upload hypothesis",
+    "The root cause hypothesis explicitly named Content-Type handling and middleware stripping binary data, which is the actual mechanism of the bug",
+    "The triage summary is unusually actionable: checksum-based test cases, specific file size ranges to probe, and header inspection guidance give a developer a concrete starting point",
+    "The agent correctly inferred server-side corruption from the absence of client errors and multi-browser reproducibility"
+  ],
+  "notable_weaknesses": [
+    "The reporter volunteered that 'this wasn't happening before' and 'something clearly broke recently' — the agent never asked when the issue started or what changed, missing the 1-week regression window entirely",
+    "The size threshold (1MB) was suspected but never confirmed; no follow-up question tried to pin it down even approximately",
+    "Turn 2 led with browser/OS questions for what was already showing signs of a server-side issue, consuming goodwill with the frustrated reporter before extracting the version number"
+  ],
+  "most_insightful_question": "Does this happen with every PDF you upload, or only some? For example, have you noticed any pattern around file size (small vs. large PDFs)?",
+  "missed_opportunities": [
+    "When did this start — can you recall the first time you noticed it, or was there a specific date or update around when it began?",
+    "Could you try uploading the same PDF file at a very small size (e.g., a single-page document under 100KB) and confirm whether that also fails, to help us isolate whether size is the variable?",
+    "Have you tried uploading a non-PDF binary file of similar size (e.g., a large image or Word document) to see if those are also affected?"
+  ]
+}

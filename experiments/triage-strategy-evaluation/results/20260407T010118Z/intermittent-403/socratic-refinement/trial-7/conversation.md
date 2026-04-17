@@ -1,0 +1,53 @@
+# Conversation: intermittent-403 x socratic-refinement
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s affecting multiple people definitely sounds like something worth digging into.
+
+Can you walk me through what a typical session looks like when this happens? For example, when you first log in, does the dashboard load fine initially and then start throwing 403s after a while, or can it fail on the very first page load? And when it does fail, does refreshing the page eventually get you through, or do you have to do something else (like log out and back in) to recover?
+
+Also, you mentioned this started a couple of days ago — do you recall if anything changed around that time? A new deployment, a team membership change, any infrastructure work that was announced?
+
+---
+
+### reporter
+
+Yeah, so it can fail right on the first page load — I don't even have to be doing anything special. If I get a 403, I just refresh and it usually works after a couple tries. I don't need to log out or anything like that, just refreshing seems to do the trick eventually.
+
+As for what changed — I was actually assigned a new role recently, the 'analyst' role. That was around the same time this started, now that you mention it. I figured it was just network issues since it's so random. I think there might have been a deployment around then too but I'm not 100% sure on the timing. The other people on my team who are seeing it were also given the analyst role, so maybe that's related?
+
+---
+
+### triage-agent
+
+That's a really interesting connection with the analyst role — the timing lines up and the fact that everyone affected shares it is a strong signal.
+
+To help narrow this down: do you know if there's anyone on your team who has the analyst role and is *not* seeing these 403s? And conversely, is anyone *without* the analyst role hitting the same issue? That would help us confirm whether the role is actually the common thread or if it's coincidental.
+
+Also, when you get a 403 and then refresh successfully — does the page that loads look completely normal with full access, or are there parts of the dashboard that seem missing or restricted compared to what you'd expect?
+
+---
+
+### reporter
+
+Hmm, I don't think anyone with the analyst role is NOT seeing the issue — everyone on my team who got the role has complained about it. And I'm pretty sure the people with other roles like editor or admin aren't having any problems. My manager is an admin and she hasn't mentioned anything.
+
+When the page does load after refreshing, it looks totally normal — full access, everything works as expected. Nothing missing or restricted. That's what makes it so weird, it's like it either works perfectly or just flat out rejects me with a 403.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on dashboard for users with 'analyst' role","problem":"Users assigned the 'analyst' role experience random 403 Forbidden errors when loading the TaskFlow dashboard. The error occurs on initial page load and subsequent navigations alike. Refreshing the page 1-2 times resolves it temporarily. The issue affects all users with the analyst role and no users with other roles (admin, editor). When the page does load, it renders with full expected access — no partial restrictions.","root_cause_hypothesis":"The 'analyst' role was likely added recently and its permission mapping is inconsistent across the authorization layer. Most probable causes: (1) a permission/policy cache that intermittently serves stale data missing the analyst role's dashboard grant, (2) multiple application instances behind a load balancer where not all instances have the updated role definition (incomplete deployment rollout), or (3) a race condition in role resolution where the analyst role's permissions are loaded asynchronously and sometimes not available when the auth check runs.","reproduction_steps":["Assign a test user the 'analyst' role (and no other roles)","Attempt to load the TaskFlow dashboard repeatedly (10-20 times)","Observe that some requests return 403 Forbidden while others succeed","Compare with a user who has the 'editor' or 'admin' role — those should never 403"],"environment":"Affects multiple users across at least one team. Started approximately 2 days before report, coinciding with analyst role assignment and a possible deployment. Browser/OS not a factor given multiple affected users.","severity":"high","impact":"All users with the 'analyst' role are intermittently locked out of the dashboard, disrupting their workflow. The issue is organization-wide for that role, not isolated to one user.","recommended_fix":"Investigate the authorization path for the 'analyst' role: (1) Check if the analyst role's dashboard permission grant exists consistently across all app instances or permission store replicas. (2) Inspect any permission/role caching layer for stale entries or TTL issues. (3) Review recent deployments around the time the analyst role was introduced for incomplete rollouts. (4) Check the role definition itself — ensure 'analyst' has an explicit dashboard access grant rather than relying on an implicit or inherited permission that may resolve inconsistently.","proposed_test_case":"Create an integration test that assigns a user the 'analyst' role and makes 50 sequential authenticated requests to the dashboard endpoint, asserting that all return 200. Run this against a single instance and then behind the load balancer to isolate whether the inconsistency is intra-instance (caching) or inter-instance (deployment).","information_gaps":["Exact deployment history around the time the issue started (team can check CI/CD logs)","Whether the analyst role was added via a migration, config change, or admin UI (team can check audit logs)","Server-side authorization architecture details (caching layer, number of instances, role resolution mechanism)"]}
+
+---

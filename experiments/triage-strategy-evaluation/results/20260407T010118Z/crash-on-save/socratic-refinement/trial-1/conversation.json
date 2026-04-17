@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I can see how frustrating it must be to lose your work. To help us figure out what's going on, could you tell me a bit more about what you were working on when the crashes started? For example, what kind of task or document were you saving, and had saving been working fine for you before this started happening?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah it was working fine before. I have a big task list and now it just crashes every time I hit Save. I think it started after I imported some stuff from a CSV file but I'm not sure if that's related. Can you just fix the save button?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful context — the CSV import is a great clue. I'd love to follow that thread a bit. Can you tell me more about that import? For instance, roughly how large was the CSV file (number of rows or file size), and what kind of data was in it? Also, when the app crashes on save, what exactly happens — does it freeze up, close entirely, or do you see any kind of error message before it goes down?"
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know exactly how big the file was, maybe 200 rows or something? It was a list of tasks from another app. When it crashes it just closes - like the whole app just disappears. I think there's some kind of error dialog that flashes for a second but it's too fast to read, something about encoding maybe? I don't know. Look, I just need to be able to save my work."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That flashing error about encoding is a really valuable clue — it sounds like the CSV import may have brought in some characters the app isn't handling well during save. I'd like to try to narrow this down: if you create a brand-new, small task list from scratch (without any imported data) and hit Save, does that work fine? That would help us confirm whether the crash is tied specifically to the imported data. Also, if the error dialog flashes again, a screenshot or even a phone photo of the screen would be incredibly helpful — sometimes those brief messages are the fastest path to a fix."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah a new small list saves fine. It's only the big list that crashes. I don't really want to sit here trying to screenshot a dialog that flashes for half a second. Can you just look at the save code or whatever? It worked before I imported that CSV and now it doesn't."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save when task list contains CSV-imported data with non-standard character encoding\",\"problem\":\"After importing approximately 200 rows of tasks from a CSV file exported from another application, the app crashes (closes entirely) whenever the user attempts to save. A brief error dialog mentioning 'encoding' flashes before the crash. Saving works normally for task lists that do not contain imported data.\",\"root_cause_hypothesis\":\"The CSV import preserved characters in their original encoding (likely Latin-1, Windows-1252, or another non-UTF-8 encoding). The save/serialization path assumes UTF-8 (or another single encoding) and throws an unhandled encoding exception when it encounters these characters, causing the app to crash instead of failing gracefully.\",\"reproduction_steps\":[\"Create or obtain a CSV file with ~200 rows of task data containing non-ASCII characters (e.g., curly quotes, accented characters, em dashes) encoded in a non-UTF-8 encoding such as Windows-1252\",\"Import the CSV into TaskFlow using the CSV import feature\",\"Verify the imported tasks appear in the task list\",\"Click Save\",\"Observe: app crashes with a brief encoding-related error dialog\"],\"environment\":\"Not specified; likely reproducible across platforms since the issue is in the data layer, not platform-specific UI\",\"severity\":\"high\",\"impact\":\"Any user who imports CSV data containing non-UTF-8 characters is unable to save their work and loses unsaved changes on each crash. The reporter is actively blocked and losing work.\",\"recommended_fix\":\"Investigate the save/serialization code path for encoding assumptions. The fix likely involves either (1) normalizing imported data to UTF-8 at import time, or (2) handling encoding errors gracefully during save (e.g., with replacement characters or a user-facing error that doesn't crash the app). Also add a try/catch or equivalent around the save path so encoding errors surface as a recoverable error dialog rather than crashing the app.\",\"proposed_test_case\":\"Import a CSV file containing non-ASCII characters in Windows-1252 encoding (e.g., curly quotes U+2018/U+2019, em dash U+2014) into a task list, then save. Verify: (1) the save completes without crashing, (2) the characters are either preserved correctly or replaced with safe equivalents, and (3) if any encoding issue is detected, a clear, persistent error message is shown instead of a crash.\",\"information_gaps\":[\"Exact error message from the crash dialog (reporter unable to capture it)\",\"Operating system and app version\",\"Exact source application the CSV was exported from (may reveal specific encoding)\"]}"
+    }
+  ]
+}

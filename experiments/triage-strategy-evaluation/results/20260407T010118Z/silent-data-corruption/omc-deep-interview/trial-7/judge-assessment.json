@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "All major expected extracts are present: ~50-100 affected records, truncation pattern, ~2-week timeline, nightly batch import, 3+ digit country code pattern, US/UK numbers unaffected. The specific 'recent change to phone number normalizer' was not directly extracted, but the agent did ask and the reporter couldn't provide technical details. The root cause hypothesis does explicitly list 'parsing/normalization change' as a candidate, so the concept is captured if not confirmed."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage summary's root cause hypothesis #2 — 'a parsing/normalization change in the sync importer that incorrectly handles country codes longer than 2 digits' — is essentially the actual cause. The agent also confirmed the data is correct in Salesforce, isolating corruption to the TaskFlow sync side. Both acceptable diagnostic paths are satisfied: the nightly import as the corruption source, the country code length pattern, the 2-week timeline, and the connection to a recent change."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all logically reachable questions given a non-technical reporter: examples of corrupted numbers, data entry mechanism and timeline, upstream data integrity check, and change history. It resolved only after exhausting what the reporter could provide. One minor missed opportunity: asking whether manually corrected records get re-corrupted on the next sync cycle (noted as an information gap in the summary, but not asked during the conversation while the reporter was still engaged)."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Four questions in four turns, each targeting distinct and essential diagnostic information. No redundancy. Questions 2 and 3 were each efficiently combined where appropriate. No turn was wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The Salesforce spot-check question was genuinely insightful — it isolated the corruption point to the TaskFlow sync side with a single confirmable action, rather than inferring it indirectly. The first question's before/after framing (with redacted-digit example) was well-scaffolded. The second question efficiently combined data source and timeline. All questions demonstrated real diagnostic reasoning rather than generic troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary gives a developer an immediate starting point: check release/deployment history for changes ~2 weeks ago, inspect the phone normalization/parsing logic for country code length assumptions, review database column definitions, and re-sync from Salesforce once fixed. Specific reproduction steps are provided. A proposed unit test and integration test are spelled out. A developer could begin coding a fix or writing a failing test immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The Salesforce spot-check question was the single most efficient diagnostic move in the conversation — it definitively isolated the corruption to the TaskFlow sync side in one reporter action",
+    "Root cause hypothesis #2 precisely describes the actual bug (normalizer truncating country codes longer than 2 digits) even without access to the code",
+    "The triage summary is exceptionally actionable: it includes ranked hypotheses, step-by-step reproduction steps, a recommended fix sequence, and proposed test cases with concrete country code examples",
+    "The agent correctly identified that manually corrected numbers are likely re-corrupted each nightly sync — an insight with significant operational urgency"
+  ],
+  "notable_weaknesses": [
+    "The agent did not ask whether manually corrected numbers get re-corrupted on the next sync cycle during the conversation, only noting it as an information gap in the summary — this would have been a high-value question while the reporter was engaged",
+    "The agent could not confirm whether the normalizer change specifically was the cause because the reporter lacked technical knowledge, leaving the specific root cause unconfirmed (though correctly hypothesized)"
+  ],
+  "most_insightful_question": "Could you spot-check a couple of those affected records directly in Salesforce? — this single question definitively isolated the corruption to the TaskFlow sync side rather than upstream data, changing the entire scope of investigation",
+  "missed_opportunities": [
+    "Ask whether anyone who manually corrected a phone number noticed it reverting to the wrong value on a subsequent day — this would confirm the re-corruption-per-sync hypothesis and add urgency",
+    "Ask whether the reporter could identify the rough date of first occurrence more precisely (e.g., by checking call logs or CRM activity timestamps for the affected records) — would help pinpoint the exact deployment or schema change"
+  ]
+}

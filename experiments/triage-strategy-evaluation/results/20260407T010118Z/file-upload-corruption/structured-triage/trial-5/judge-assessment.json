@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: small PDFs fine, started ~1 week ago, size-dependent behavior suggesting different upload paths, binary content mangling hypothesis, multiple customers affected, and a good reproduction path. Missing: explicit confirmation that large files are the problem (the reporter only said 'smaller ones seem fine' without pinning down a threshold), and no investigation into whether other file types are affected."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the size-dependent behavior and suspected chunked upload / encoding issues as the root cause — this aligns with the first acceptable diagnostic path. The hypothesis explicitly mentions 'binary file being processed as text/UTF-8' and 'content-transfer-encoding' which is very close to the actual Content-Type stripping bug. The one-week regression timeline was correctly captured. Minor gap: didn't pin down proxy as the specific component, but the direction is sound."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about upload method and file size (good), then browser/OS (reasonable but lower value). It resolved without asking: whether other file types are affected (which would have helped confirm it's not PDF-specific), whether the reporter could share an example corrupted file, or what version of the app they're on. The reporter explicitly said 'look at your servers' and 'started a week ago' — the agent could have probed more on what changed a week ago before resolving."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "The browser/OS question was low-value — the reporter had already given signals pointing to a server-side issue (multiple customers, multiple setups implied). That turn could have been better spent asking about other file types or exact file sizes. Two questions in two turns is lean, but one was poorly targeted."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-structured and drew out the key insight about smaller files being fine plus the one-week timeline. The second question (browser/OS) was less insightful — it's a standard question that didn't leverage the clues already in the conversation. Overall the questioning demonstrated diagnostic awareness, particularly in the first turn."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it provides a clear root cause hypothesis, specific investigation steps (check deployment history, byte-compare files, look for size threshold, check encoding), a concrete test case with specific file sizes, and identifies information gaps. A developer could start investigating immediately with this summary."
+    }
+  },
+  "weighted_total": 3.8,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question immediately surfaced the key diagnostic clue: smaller files are fine, establishing size-dependent behavior",
+    "Root cause hypothesis correctly identifies encoding/content-type issues as a likely cause, very close to the actual bug",
+    "Triage summary is exceptionally detailed and actionable with concrete reproduction steps, test cases, and investigation guidance",
+    "Correctly identified the one-week regression timeline and flagged deployment history as the first investigation step"
+  ],
+  "notable_weaknesses": [
+    "Browser/OS question was low-value given the evidence already pointing to a server-side regression",
+    "Did not ask whether other file types (images, spreadsheets) over similar sizes are also affected — would have strongly confirmed the hypothesis",
+    "Did not attempt to narrow the size threshold by asking for approximate sizes of working vs. broken files",
+    "Resolved without probing what specifically changed server-side ~1 week ago, even after the reporter explicitly invited server investigation"
+  ],
+  "most_insightful_question": "Could you let us know roughly how large are the files that come through corrupted? / Does it happen with every PDF, or only certain ones? — This drew out the critical observation that smaller files seem fine, enabling the size-dependent hypothesis.",
+  "missed_opportunities": [
+    "Ask whether other file types (images, Word docs, spreadsheets) over ~1MB are also corrupted — would confirm it's not PDF-specific",
+    "Ask the reporter to share an approximate file size where corruption starts (e.g., 'do files under 500KB work? Under 2MB?') to pin down the threshold",
+    "Ask what version of the app or when the last update was deployed, leveraging the reporter's hint to 'look at your servers'"
+  ]
+}

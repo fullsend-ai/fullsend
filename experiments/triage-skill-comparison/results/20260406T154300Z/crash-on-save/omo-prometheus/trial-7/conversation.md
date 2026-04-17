@@ -1,0 +1,44 @@
+# Conversation: crash-on-save x omo-prometheus
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Hi, sorry you're hitting this — losing work to crashes is genuinely frustrating. I want to get this routed to the right person quickly, so could you help me with a few specifics?
+
+1. **What exactly are you saving?** A new task, edits to an existing task, project settings, something else?
+2. **What happens when it crashes?** Does the app window close entirely, do you see an error message or dialog, or does it freeze/hang?
+3. **What platform and version are you on?** (e.g., Windows/macOS/Linux, and the TaskFlow version from Help → About)
+4. **Is this new behavior?** Was saving working fine before, and if so, do you recall when it started failing — after an update, after a specific action, etc.?
+
+Even partial answers will help narrow this down.
+
+---
+
+### reporter
+
+Thanks for the quick response!
+
+1. I'm editing a task list — it's got about 200 tasks in it. The crash happens when I click the 'Save' button in the toolbar. Interestingly, auto-save doesn't seem to cause the same problem.
+
+2. The app window closes entirely. Right before it closes I see a brief flash of a dialog box — it goes by too fast to read the whole thing but I caught the word 'encoding' in it.
+
+3. macOS 14.2, TaskFlow v2.3.1.
+
+4. Yes, saving was working fine before. It started after I imported a bunch of tasks from a CSV file. The CSV had some special characters in the task names — things like em-dashes and curly quotes. If I remove those imported tasks, saving works again. Also, I tested with a smaller list (under 50 tasks) and it saves fine even with the imported data still in there. It only seems to blow up with the larger list.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"(forced - parse error)","problem":"Agent could not produce JSON","root_cause_hypothesis":"unknown","reproduction_steps":[],"environment":"unknown","severity":"medium","impact":"unknown","recommended_fix":"Manual triage required","proposed_test_case":"N/A","information_gaps":["All"]}
+
+---

@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items are present: affected record count (~50-100 of 2,000), truncation pattern, nightly batch import connection, country code pattern (3+ digits affected, US/UK fine), version v2.3.1, 2-week timeline, and the phone normalizer change. The agent also surfaced additional useful detail such as reproduction steps and specific country examples (Ireland +353, Lithuania +370)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly Salesforce sync as the corruption source, connects the 2-week timeline to the v2.3.1 release, and hypothesizes that the normalizer assumes a maximum 2-digit country code length — which precisely matches the actual regex bug (\\d{1,2}). This fully satisfies both acceptable diagnostic paths and closely approximates the canonical root cause without access to the source code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all critical diagnostic questions and reached a well-grounded conclusion. However, it did not ask about recovery options (can the sync be paused? are CRM backups available to restore corrupted records?), which are immediately relevant given the 'serious data integrity' framing. Sync job logs or error output were noted as information gaps but never requested. These are meaningful omissions that a developer would need to address."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, each purposeful and non-redundant. Question 1 established the data entry mechanism and elicited the country code pattern in a single turn. Question 2 established timeline and change context together. Question 3 followed a specific clue the reporter offered (a vague notification) and captured version info simultaneously. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question — asking both how numbers enter the system AND for concrete examples of truncation — was particularly effective: it drew out the country code pattern (+353 → +35 while US/UK numbers are fine) that the reporter would not have led with. The follow-up on the vague 'notification about an update to the import process' was sharp; it demonstrated active listening and led to the version confirmation. All questions reflected genuine diagnostic reasoning rather than a generic checklist."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a specific root cause hypothesis pointing directly to the normalizer's country code length assumption, detailed reproduction steps with control and test cases, a prioritized 4-step recommended fix, proposed unit and integration tests, and a clear list of information gaps. A developer could open the v2.3.1 diff and search the phone normalization function immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Extracted the critical country code length pattern (+353 → +35 while +1/+44 are fine) in a single turn by asking for concrete examples alongside the entry mechanism question",
+    "Root cause hypothesis (normalizer assumes ≤2-digit country codes) is essentially correct without access to source code",
+    "Triage summary is immediately developer-actionable: specific code path identified, test cases specified, remediation steps included",
+    "Efficient 3-turn conversation with no wasted questions and every turn yielding high-value information"
+  ],
+  "notable_weaknesses": [
+    "Never asked about recovery/workaround options — whether the nightly sync could be disabled and whether CRM backups exist to restore corrupted records, both critical given the stated severity",
+    "Did not request sync job logs or error output, which might have revealed warnings or stack traces pointing directly to the normalizer",
+    "The 2-week timeline, while present in the conversation, is not explicitly stated in the final summary fields (only implied via the v2.3.1 reference)"
+  ],
+  "most_insightful_question": "To start narrowing this down: how are these customer phone numbers getting into TaskFlow? ... And when you say the numbers look 'truncated or mangled,' could you share a couple of examples of what a correct number should look like versus what's actually stored?",
+  "missed_opportunities": [
+    "Can the nightly sync be paused or disabled while this is investigated to prevent further corruption?",
+    "Are the original phone numbers still available in Salesforce or a CRM backup, and roughly how many records would need to be restored?",
+    "Do the sync job logs show any warnings, errors, or skipped records during the imports over the past two weeks?",
+    "Can you check whether all countries with 3-digit country codes are affected, or only specific ones (to distinguish a regex vs. a lookup-table issue)?"
+  ]
+}

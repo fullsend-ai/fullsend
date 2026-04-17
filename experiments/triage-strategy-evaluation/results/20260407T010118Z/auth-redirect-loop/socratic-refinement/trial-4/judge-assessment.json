@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 8 expected information items are present in the triage summary: ~30% affected, plus-addressing and alias patterns, SameSite cookie issue, email claim mismatch, dev tools showing cookie set then dropped, incognito workaround, redirect URIs verified correct, and other SSO apps working fine. The summary also added useful extras like reproduction steps, proposed test cases, and SAML vs OIDC as an open question."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "Both root causes are correctly identified — email mismatch and SameSite cookie persistence issue. The causal hierarchy is inverted from the ground truth (email mismatch listed first, cookie second), but this is explicitly listed as an acceptable diagnostic path. The agent correctly theorized SameSite/Secure/Domain misconfiguration without pinning it to SameSite=Strict specifically. The email normalization mechanism (Entra stripping plus aliases) is accurately described. Minor deduction for not pinpointing SameSite=Strict as the specific attribute."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three focused questions before resolving, covering user pattern identification, email claim comparison, and cookie/session persistence. It appropriately followed the 'cookie set but not appearing' signal from the reporter's coworker. Remaining gaps (SAML vs OIDC, exact cookie attributes, full affected user list) are correctly flagged in information_gaps rather than left unaddressed. One missed follow-up: the agent could have asked the reporter to check the actual Set-Cookie header attributes before resolving, which would have confirmed SameSite=Strict specifically."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three agent questions were essential and non-redundant. The first established the affected user pattern, the second confirmed the email mismatch, and the third pursued the incognito anomaly which surfaced the critical cookie observation. No questions were repeated or could be meaningfully combined without losing diagnostic value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning at each step. The first question correctly hypothesized a differentiating characteristic among affected users and offered concrete examples. The second precisely targeted the email claim comparison needed to confirm the hypothesis. The third followed the incognito inconsistency as a diagnostic signal rather than dismissing it, and this questioning directly elicited the crucial 'cookie set but not appearing' observation that the reporter would not have volunteered otherwise. Each question built logically on the prior answer."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately. The summary provides prioritized investigation steps (cookie attributes first, email matching second), specific attributes to inspect (SameSite, Secure, Domain, Path), concrete code-level fixes (normalize email before lookup, use OIDC sub claim as stable identifier, add error path instead of silent redirect), reproduction steps with expected observable behavior in dev tools, and a proposed integration test. Information gaps are clearly scoped so a developer knows exactly what to confirm first."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Followed the incognito anomaly as a diagnostic signal rather than treating it as noise, which directly surfaced the critical cookie observation",
+    "Correctly identified both compounding root causes from a non-technical reporter with limited log access",
+    "Produced a highly actionable summary with specific fix recommendations, test cases, and clearly scoped information gaps",
+    "Excellent economy — three focused questions with no wasted turns"
+  ],
+  "notable_weaknesses": [
+    "Causal hierarchy is inverted from ground truth: email mismatch is listed as the primary cause, but the SameSite cookie issue is the more fundamental one (it alone would cause the loop even without email mismatch)",
+    "Did not ask the reporter to retrieve the actual Set-Cookie header attributes before resolving, which would have confirmed SameSite=Strict specifically and narrowed the fix",
+    "Did not ask whether TaskFlow uses SAML or OIDC, which affects which claims are available for a stable-identifier fix"
+  ],
+  "most_insightful_question": "The third question — following the incognito inconsistency thread and asking whether it hit a first-time-user code path — which led the reporter to recall their coworker's observation about a cookie being set in the response but not appearing in the browser afterward. This single observation is what confirmed the session cookie persistence issue.",
+  "missed_opportunities": [
+    "Ask the reporter (or their more technical coworker) to open browser dev tools and capture the exact Set-Cookie header attributes on the redirect response — this would have confirmed SameSite=Strict specifically",
+    "Ask whether TaskFlow uses SAML or OIDC with Entra ID, since it affects which stable identifier (sub vs. oid) is available for the recommended fix",
+    "Ask whether clearing cookies (not just incognito) also sometimes lets affected users in — this was mentioned in the ground truth as a workaround and would have reinforced the cookie hypothesis"
+  ]
+}

@@ -1,0 +1,51 @@
+# Conversation: flaky-ci x structured-triage
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI failures are really frustrating, especially when they block releases.
+
+To help narrow this down, could you share what the actual test failures look like? Specifically:
+- What error messages or stack traces do you see when tests fail in CI?
+- Are there specific test names that tend to fail, or is it truly random across the entire suite?
+
+Even a snippet from a recent failed CI run would be very helpful.
+
+---
+
+### reporter
+
+Look, I don't have the logs in front of me right now but it's the same tests every time they fail. They're in the task ordering module — the ones from that PR we merged last week that added new ordering tests. The old tests never had this problem. When they fail it's always some assertion about the order being wrong. I just don't get why they pass on my machine every single time but randomly fail in CI.
+
+---
+
+### triage-agent
+
+Thanks for that context — knowing it's specifically the task ordering module tests from last week's PR is really helpful, and the 'assertion about the order being wrong' pattern is a strong clue.
+
+To help pin down the reproduction path: when you run these tests locally, are you running the full test suite or just the task ordering tests? And do you know if your CI runs tests in a randomized order or in parallel? Sometimes tests that depend on a specific execution order or shared state (like database records from a previous test) will pass in one order but fail in another.
+
+If you're able to try running the task ordering tests locally with randomized seed or in parallel mode, that might reproduce the failure outside of CI.
+
+---
+
+### reporter
+
+I've run both — just the ordering tests and the full suite. They pass every time locally no matter what I do. I don't know off the top of my head if CI randomizes test order or whatever, but honestly I just need this fixed, it's been blocking us for days now. We're running Go 1.22 in both places so it's not a version mismatch. The CI is on Ubuntu and I'm on a Mac but that shouldn't matter for unit tests, right?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky task ordering tests in CI: non-deterministic assertion failures in recently added ordering tests","problem":"Tests added in a recent PR to the task ordering module intermittently fail in CI with assertions about incorrect ordering, while consistently passing on the developer's local machine. This has been blocking releases for several days.","root_cause_hypothesis":"The new ordering tests likely depend on a deterministic iteration or execution order that is not guaranteed. Go 1.22 randomizes subtest execution by default and map iteration order is always randomized. The tests may be asserting on slice/map output order without sorting, or they may depend on shared mutable state (e.g., database rows, in-memory collections) whose order varies by platform or parallelism. The Ubuntu (CI) vs macOS (local) difference may also surface different goroutine scheduling or sort stability behavior.","reproduction_steps":["Identify the task ordering module tests added in the recent PR","Run the tests with Go's race detector enabled: go test -race ./path/to/ordering/...","Run tests with explicit count to surface flakiness: go test -count=100 ./path/to/ordering/...","Run tests with shuffled order: go test -shuffle=on ./path/to/ordering/...","Compare CI test runner configuration (parallelism, flags) with local defaults"],"environment":"Go 1.22, CI runs on Ubuntu, developer runs on macOS. Both using same Go version.","severity":"high","impact":"Blocking the team's release pipeline for several days. All team members affected as CI failures prevent merging and shipping.","recommended_fix":"Review the recently added task ordering tests for order-dependent assertions. Likely fixes: (1) Sort results before asserting order, or use an order-independent assertion (e.g., ElementsMatch instead of Equal). (2) Check for shared test state — ensure each test sets up and tears down its own data. (3) If tests use maps or query results without ORDER BY, add deterministic ordering. (4) Run with -race to rule out a data race causing non-deterministic state.","proposed_test_case":"Add a test that runs the ordering logic N times (e.g., 100 iterations via -count=100 or a loop) and asserts consistent output, confirming the fix eliminates non-determinism. Additionally, run with -shuffle=on to verify tests are independent of execution order.","information_gaps":["Exact error messages and stack traces from a failed CI run","Whether CI runs tests in parallel or with specific flags not used locally","Whether the ordering tests use any shared database or in-memory state across test cases"]}
+
+---

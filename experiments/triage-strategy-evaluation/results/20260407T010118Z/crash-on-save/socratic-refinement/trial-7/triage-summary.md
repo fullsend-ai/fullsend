@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** App crashes on save when task list contains CSV-imported tasks with non-standard characters (encoding error)
+
+## Problem
+The application crashes (closes entirely) when the user clicks Save on a task list containing ~200 tasks imported from a CSV file originating from another application. A brief error referencing 'encoding' flashes before the crash. Manually created task lists and small lists save without issue. Removing the imported tasks resolves the crash, but the user needs those tasks.
+
+## Root Cause Hypothesis
+The save/serialization codepath does not handle non-UTF-8 or special characters present in CSV-imported task data. When the app attempts to serialize these tasks (likely to JSON, XML, or another text format), it hits an unhandled encoding error that crashes the application instead of being caught gracefully.
+
+## Reproduction Steps
+  1. Create a CSV file with task names containing special characters, mixed encodings, or non-ASCII characters (e.g., from a non-UTF-8 source application)
+  2. Import the CSV into TaskFlow to create a task list with a substantial number of tasks (~200)
+  3. Click Save in the toolbar
+  4. Observe the application crash with a brief encoding-related error
+
+## Environment
+Not specified — reporter has used the app for months; issue began around the time of CSV import. Platform and app version not provided but not critical given the clear reproduction path.
+
+## Severity: high
+
+## Impact
+Users who import tasks from external sources via CSV cannot save their work and lose data on each crash. The reporter has lost work at least twice. This blocks a core workflow (import + save) and there is no workaround that preserves the imported data.
+
+## Recommended Fix
+1. Examine the save/serialization codepath for how it encodes task data — look for implicit encoding assumptions (e.g., assuming ASCII or failing to specify UTF-8). 2. Add encoding normalization or sanitization during CSV import so that all imported text is converted to a consistent encoding (UTF-8) at ingest time. 3. Add error handling around the save operation so that encoding failures surface a user-visible error message instead of crashing the app. 4. Consider adding a fallback that preserves the user's work even when save fails (e.g., auto-save to a recovery file before attempting the full save).
+
+## Proposed Test Case
+Import a CSV file containing task names with non-ASCII characters (e.g., em dashes, curly quotes, accented characters, null bytes, and mixed Latin-1/UTF-8 encodings). Verify that: (a) the import completes without error, (b) saving the resulting task list succeeds, and (c) if any character cannot be saved, the app shows a clear error without crashing or losing data.
+
+## Information Gaps
+- Exact error message text (reporter cannot capture it safely)
+- Specific characters or encodings present in the original CSV
+- Application version and operating system
+- Whether the original CSV file is still available for developer reproduction

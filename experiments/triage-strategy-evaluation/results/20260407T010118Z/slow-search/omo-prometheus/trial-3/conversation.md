@@ -1,0 +1,67 @@
+# Conversation: slow-search x omo-prometheus
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this. A few things to help me zero in on the issue:
+
+When did you first notice the slowdown — was it after a specific update, or did it degrade gradually? And when you say search, what are you typically searching for — are you using the main search bar with text queries, or filtering/sorting within a project view?
+
+Also, roughly how many tasks are we talking about — hundreds, thousands, tens of thousands?
+
+---
+
+### reporter
+
+I think it started around 2 weeks ago, probably after I updated to v2.3 — though I'm not 100% sure the timing lines up exactly. I use the main search bar to search through task descriptions usually. I've got around 5,000 tasks built up over a couple years. It used to be pretty much instant, now it just crawls.
+
+---
+
+### triage-agent
+
+Thanks for that context — the v2.3 timing is a useful lead.
+
+A couple of specifics to narrow this down: is the slowness consistent (every search takes 10-15s), or does it vary — for example, is the *first* search after opening TaskFlow slow and then subsequent ones faster? And does it matter what you search for — like, is a one-word search just as slow as a longer phrase?
+
+Also, is your TaskFlow instance running locally on your laptop, or are you connecting to a hosted/server version?
+
+---
+
+### reporter
+
+It's pretty consistently slow every time, doesn't seem to matter if it's the first search or not. Length of the search term doesn't make a big difference either — even a single word takes ages. It's running locally on my laptop. Oh, one thing I just realized I should mention — searching by task title seems to still be fast, it's specifically when I search through the descriptions that it bogs down. Not sure if that helps.
+
+---
+
+### triage-agent
+
+That detail about title search being fast while description search is slow is really helpful — that narrows this down significantly.
+
+Here's my working theory: the v2.3 update likely changed how description search works under the hood — possibly dropping or failing to rebuild a full-text index on task descriptions, so it's now scanning all 5,000 descriptions on every query instead of using an index. That would explain the consistent ~10-15s delay regardless of search term.
+
+Two things that would help confirm this:
+1. When you run a slow description search, does your laptop's CPU or fan spike noticeably?
+2. Do you have access to TaskFlow's logs (usually in `~/.taskflow/logs/` or similar)? If so, could you check if there are any warnings or errors around search or database operations?
+
+---
+
+### reporter
+
+Yeah actually now that you mention it, I do notice the fan kicks in pretty hard when I'm doing a description search. I haven't looked at the logs honestly — I wouldn't really know where to find them. But the CPU thing tracks, it definitely feels like the laptop is working hard during those searches. Some of my tasks have really long descriptions too, like I paste meeting notes into them sometimes, so they can be pretty beefy. Does that help narrow it down?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description search regression in v2.3: ~10-15s latency due to probable missing full-text index","problem":"Since approximately the v2.3 update, searching task descriptions via the main search bar takes 10-15 seconds consistently. Title search remains fast. The user has ~5,000 tasks, some with very large descriptions (pasted meeting notes). CPU spikes noticeably during description searches, suggesting brute-force scanning.","root_cause_hypothesis":"The v2.3 update likely dropped, failed to rebuild, or stopped using the full-text index on the task descriptions column. Description searches are now performing a sequential scan across all ~5,000 rows, reading potentially large text blobs on every query. Title search is unaffected because it still has a working index.","reproduction_steps":["Set up a TaskFlow instance with ~5,000 tasks, some with large descriptions (multi-paragraph text)","Update to v2.3","Open the main search bar and search for any single word that appears in task descriptions","Observe ~10-15 second delay and elevated CPU usage","Repeat the same search using title-only search and observe it returns quickly"],"environment":"TaskFlow v2.3 (likely), running locally on a work laptop, ~5,000 tasks accumulated over ~2 years, some tasks with large descriptions containing pasted meeting notes","severity":"high","impact":"Any user with a non-trivial number of tasks is likely affected when searching by description. The main search bar — a core workflow feature — is effectively unusable for description queries. Title search still works as a partial workaround.","recommended_fix":"1. Diff the v2.3 database migration against v2.2 to identify changes to the descriptions table or its indexes. 2. Check whether a full-text index on the descriptions column exists in the current schema — if not, add a migration to recreate it. 3. If the index exists, check whether the search query planner is actually using it (run EXPLAIN ANALYZE on the search query). 4. If v2.3 changed the search implementation (e.g., switched from indexed FTS to LIKE/ILIKE scanning), revert to indexed search. 5. Consider whether large descriptions need special handling (e.g., indexing only first N characters, or async indexing).","proposed_test_case":"Create a test database with 5,000+ tasks where descriptions contain substantial text (500+ words each). Run a description search query and assert it completes in under 1 second. Run the same test with the full-text index dropped and confirm it reproduces the slow behavior. This validates both the fix and the root cause.","information_gaps":["Exact TaskFlow version — reporter said 'probably v2.3' but is not 100% certain","Server-side logs that could confirm sequential scan vs. index usage","Whether other users on v2.3 with fewer tasks also experience slowness (threshold unknown)"]}
+
+---

@@ -1,0 +1,41 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most key information: ~5,000 tasks, description search slow vs title search fast, v2.2→v2.3 regression, ~2 weeks ago, 10-15 second delays, long descriptions. Missed CPU spike detail, but that wasn't volunteered and would have required an additional question. 6 of 7 expected items captured."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The agent correctly hypothesized that the index was dropped/not migrated or that search switched to a non-indexed scanning approach like LIKE — which is exactly what happened (FTS5 index replaced by naive LIKE query, migration didn't migrate the index). The distinction between title and description search paths was correctly identified."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions asked before reaching a well-formed conclusion. Both questions were essential: the first established the timeline and upgrade correlation, the second distinguished the search pattern (title vs description) and dataset scale. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question smartly combined timeline with potential correlating events, which immediately surfaced the v2.3 upgrade. The second question was excellent — asking about search patterns (what kind of search is slow) drew out the critical title-vs-description distinction that the reporter hadn't considered. Both questions showed genuine diagnostic reasoning rather than generic troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, specific investigation path: diff search queries and migration scripts between v2.2 and v2.3, check the FTS index on descriptions, use EXPLAIN ANALYZE. The reproduction steps are concrete and testable. A developer could immediately start investigating the migration scripts and query paths."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted nearly all critical information in just 2 well-crafted questions",
+    "Root cause hypothesis almost exactly matches the actual cause (index dropped/not migrated, LIKE scan instead of FTS)",
+    "Second question was brilliantly structured to tease apart which search dimension was affected, surfacing the title-vs-description distinction the reporter hadn't initially noticed",
+    "Actionable fix recommendations that directly point to the right investigation path (migration scripts, query planner, index status)"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have added supporting evidence",
+    "Did not determine the database backend (SQLite), though this was noted as an information gap"
+  ],
+  "most_insightful_question": "When you search, is it consistently slow every time regardless of what you search for, or have you noticed it being worse with certain kinds of searches — like searching for specific words vs. filtering by tags, dates, or status?",
+  "missed_opportunities": [
+    "Could have asked about system resource behavior during searches (CPU spike would have further supported the full-table-scan hypothesis)",
+    "Could have asked about the database backend to narrow the indexing technology"
+  ]
+}

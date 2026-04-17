@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured most key items: inverted filter behavior, affected all users, started with v2.3.1 ~3 days ago, active tasks missing from default results, filter behavior inverted. However, two important items were never surfaced: (1) whether individual task pages show the correct archive status (a critical diagnostic distinguishing index vs. UI layer), and (2) the search index angle was never explored — the agent framed the issue as application code logic rather than a search index artifact."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified the v2.3.1 patch as the likely trigger, the archive filter as the broken component, and the server-side nature. The hypothesis that a 'boolean inversion or enum mapping' was introduced by the patch is directionally correct and consistent with the acceptable diagnostic path: 'identifying the schema migration as the trigger and the archive filter as the broken component.' The agent pointed toward application code rather than the search index configuration specifically, but the core characterization is not misleading enough to cost more than one point."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two questions. It did not ask whether individual task detail pages show the correct archive status — a key differentiator that would have pointed toward the search index rather than application logic. It also didn't ask whether the issue started immediately after the patch or slightly later (which could indicate an async index rebuild). The reporter volunteered the inverted filter observation and the version/timeline unprompted, reducing the investigation burden, but the agent still left an obvious follow-up on the table."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both questions were reasonably targeted. The first clarified the search path and filter usage, which was necessary. The second elicited the version and multi-user confirmation, though framed around browser/OS it still extracted the most important facts (v2.3.1, 3 days ago, multi-user). At most one question could have been restructured to more directly probe the index layer."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was well-structured and appropriately targeted the search pipeline. The second question was largely generic browser/OS triage that applies to any web bug; it happened to yield version and timeline information, but only because the reporter volunteered it. The agent didn't ask anything that required diagnostic intuition — no questions about whether task detail pages showed correct status, whether unfiltered searches returned a mix of both, or whether the issue appeared immediately after the patch. Questions were professional but not insightful."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is well-structured and actionable: clear reproduction steps, identified the patch as the likely regression source, suggested checking the search filter's boolean mapping, and included a proposed regression test. The recommendation to check 'search API endpoint filter handling' is slightly misdirected compared to the actual fix (search index field mapping configuration), but it gives a developer a concrete starting point and the information_gaps field honestly flags remaining unknowns."
+    }
+  },
+  "weighted_total": 3.45,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The agent immediately recognized and highlighted the inverted filter observation from the reporter's first reply as 'a really helpful clue that gives a clear direction' — showing good signal detection",
+    "The triage summary is exceptionally well-structured: includes severity, impact, reproduction steps, a proposed regression test, and honest information gaps — well above average actionability",
+    "Correctly connected multi-user reproduction to server-side causation and tied the onset to the v2.3.1 patch"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether individual task detail pages show the correct archive status — this single question would have strongly pointed toward the search index layer vs. application code and narrowed the investigation considerably",
+    "Recommended investigating 'application code boolean logic' rather than the search index configuration, which could send developers down a longer path",
+    "Second question was generic browser/OS triage; a more diagnostic alternative would have been to ask about unfiltered search behavior or task page correctness"
+  ],
+  "most_insightful_question": "The first question about search location and whether filters were manually applied — it set up the reporter to reveal the inverted filter behavior, which was the central diagnostic finding.",
+  "missed_opportunities": [
+    "Ask whether individual task detail pages (opened directly, not via search) show the correct archive status — this would distinguish a UI rendering bug from a search index bug",
+    "Ask whether searching without any archive filter (if possible) returns a confusing mix of both active and archived tasks — this would confirm total result set is intact and only filtering is broken",
+    "Ask whether the issue appeared immediately when the patch was deployed or with some delay — a delay would suggest an async index rebuild rather than a code change"
+  ]
+}

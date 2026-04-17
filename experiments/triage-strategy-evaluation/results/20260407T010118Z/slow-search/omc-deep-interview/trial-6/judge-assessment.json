@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items were captured: ~5,000 tasks (turn 2), title-fast/description-slow distinction (turn 4), v2.2→v2.3 upgrade trigger (turn 2), ~2 weeks ago onset (turn 2), 10-15 second latency (original issue + confirmed), CPU spike via fan noise (turn 6), and long descriptions from pasted meeting notes (turn 4). The summary also surfaced the 'uniform slowness regardless of match count' detail, which is additional diagnostic signal."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: the v2.3 upgrade as the regression trigger and the title-vs-description performance difference as evidence of an indexing issue. The root cause hypothesis ('removed or broke a search index, switched from indexed/optimized search to a naive full-text scan') is essentially the actual cause (FTS5 index dropped, replaced by LIKE full-table-scan). The CPU-bound characterization is also correct. No meaningful inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about timing/trigger, search modality, query type, consistency, and whether description length is a factor. It correctly identified all key diagnostic signals. One notable gap: OS and hardware were never asked (noted in summary as an information gap but ranked 'unlikely to affect fix direction'). A question about the v2.3 changelog or release notes could have been valuable but isn't a critical omission given the summary's strong hypothesis."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "Turn 5 asks two questions: search consistency and whether common vs. rare terms differ in speed. The common-vs-rare question has diagnostic merit for cache or frequency-indexed systems, but the reporter had already given enough signal (uniform slowness) that it didn't yield new information. Turn 7 asks whether long-description tasks vs. short ones differ — a reasonable hypothesis but one that also didn't produce useful new information, and the reporter had already implied uniform slowness. Two questions across two turns were low-yield."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 3's question about search modality and query type was the standout — it surfaced the critical title-vs-description distinction the reporter wouldn't have volunteered unprompted, directly enabling the indexing regression hypothesis. Turn 1 efficiently established the temporal context. Turn 5 and 7 were reasonable but more generic; the question about description length vs. search latency in turn 7 was a plausible hypothesis but framed in a way that made it hard for a non-technical reporter to answer definitively."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names the specific version transition, pinpoints the search path to investigate (description vs. title), characterizes the failure mode (CPU-bound full scan vs. indexed lookup), gives concrete reproduction steps with dataset size, recommends diffing v2.2→v2.3 search implementation, suggests profiling, and proposes a regression test with specific thresholds. A developer could open the v2.3 diff and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Turn 3's question about search type and query kind was the pivotal diagnostic move — it uncovered the title-vs-description performance split, which is one of the two acceptable diagnostic paths and leads directly to the correct root cause hypothesis.",
+    "The final summary is exceptionally detailed and actionable: specific reproduction steps, investigation paths keyed to the actual code change (index vs. full-scan), and a proposed regression test with concrete latency thresholds.",
+    "The agent correctly interpreted the fan-spin-up detail as CPU-bound computation rather than I/O wait, sharpening the root cause hypothesis."
+  ],
+  "notable_weaknesses": [
+    "OS and hardware were never asked during the conversation, only noted as an information gap in the summary. While the agent is right that it's unlikely to affect the fix, it's a missing environmental data point from the expected extracts.",
+    "Turn 7's question about long-description vs. short-description search latency was well-intentioned but didn't yield useful information — the reporter had already signaled uniform slowness, and the question was framed in a way that made it hard for a non-technical user to answer definitively, consuming a turn without payoff."
+  ],
+  "most_insightful_question": "Could you walk me through what a typical slow search looks like for you? For instance: are you using the main search bar, a filtered view, or something else? And does it happen with every search, or only with certain kinds of queries (like searching by keyword vs. filtering by tag or status)?",
+  "missed_opportunities": [
+    "Ask about OS and hardware specs (Ubuntu 22.04, ThinkPad T14, 32GB RAM were all in the ground truth but not captured in the conversation)",
+    "Ask whether they had checked the v2.3 release notes or changelog — could have confirmed or denied whether the search change was intentional",
+    "Ask whether searching with a fresh/empty query or using different search terms consistently reproduced the issue, to rule out any caching effects more cleanly"
+  ]
+}

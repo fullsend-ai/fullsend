@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: task count (~5,000), title-fast/description-slow distinction, v2.2-to-v2.3 regression, ~2 weeks ago onset, 10-15 second timing, and long descriptions. CPU spiking to 100% during searches was never asked about and is absent from the summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths simultaneously: the v2.3 upgrade as the trigger and the title-vs-description performance gap pointing to an indexing issue. The root cause hypothesis explicitly names 'a change from indexed full-text search to unindexed LIKE/regex scanning' — which is precisely the actual cause. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered the key diagnostic dimensions: search type, scale, version correlation, query variation, consistency, and description length. CPU behavior during search — a natural follow-up for a performance regression — was skipped. OS and database backend were noted as gaps but not asked. These omissions are acknowledged in information_gaps, so the agent was self-aware, but the CPU question in particular was an obvious missed probe."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns, all productive. The workaround question in turn 3 added mild value to the report but wasn't strictly diagnostic. Everything else was well-targeted. No redundancy or repeated asks."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 2 was the standout: asking whether 'certain kinds' of searches are slow — specifically single-word vs. complex — prompted the reporter to notice the title/description distinction entirely on their own. This is genuine diagnostic reasoning that surfaced the key insight without leading the witness. Turn 3 then correctly probed whether description length was a compounding factor."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: diff search implementation between v2.2 and v2.3, run EXPLAIN/ANALYZE on description-matching queries, check for a missing FTS index. Reproduction steps are specific and realistic. A proposed regression test case is included. A developer could open the codebase and begin investigating right now."
+    }
+  },
+  "weighted_total": 4.5,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Turn 2 question about 'certain kinds' of searches was genuinely insightful — it prompted the reporter to independently discover the title-vs-description distinction, which is the crux of the bug",
+    "Root cause hypothesis names the exact mechanism (FTS index replaced by LIKE/regex scanning) without the agent having direct access to the code",
+    "The triage summary is exceptionally well-structured: problem, hypothesis, reproduction steps, fix guidance, proposed test, and acknowledged gaps all in one artifact"
+  ],
+  "notable_weaknesses": [
+    "CPU behavior during search was never asked about — a natural probe for any performance regression that would have confirmed a computational bottleneck",
+    "OS and database backend were recognized as gaps but not pursued during questioning; asking early could have sharpened the hypothesis"
+  ],
+  "most_insightful_question": "Does it happen with every search you run, or only certain kinds? For example, is a single-word search like 'meeting' just as slow as a longer or more complex query?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory usage spikes visibly during slow searches (would confirm computational bottleneck vs. network/IO)",
+    "Ask what OS and TaskFlow client (desktop app, browser, mobile) they are using — noted as a gap but never asked",
+    "Ask whether they had tried any cache clearing or reindexing since the upgrade — the ground truth confirms they hadn't, which is relevant for a workaround"
+  ]
+}

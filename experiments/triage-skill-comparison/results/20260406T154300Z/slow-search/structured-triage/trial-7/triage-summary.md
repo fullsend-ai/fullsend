@@ -1,0 +1,33 @@
+# Triage Summary
+
+**Title:** Search regression in v2.3: full-text description search takes 10-15s with large task count
+
+## Problem
+After upgrading from v2.2 to v2.3, keyword searches that match task descriptions take 10-15 seconds to return results. Searches matching task titles remain fast. The user has approximately 5,000 tasks, some with lengthy descriptions (pasted meeting notes). Search was performant on v2.2.
+
+## Root Cause Hypothesis
+The v2.3 release likely introduced a regression in full-text search over task descriptions — possibly a removed or broken index on the description field, a change from indexed search to naive string scanning, or a new search implementation (e.g., switching search backends) that doesn't handle large description text efficiently.
+
+## Reproduction Steps
+  1. Set up a TaskFlow workspace with ~5,000 tasks, including some with lengthy descriptions (multiple paragraphs of text)
+  2. Upgrade to or install TaskFlow v2.3 (desktop version)
+  3. Open the main search bar and search for a keyword that appears only in task titles — observe fast results
+  4. Search for a keyword that appears only in task descriptions (not titles) — observe 10-15 second delay
+
+## Environment
+Ubuntu 22.04, ThinkPad T14, TaskFlow desktop app v2.3 (regression from v2.2)
+
+## Severity: high
+
+## Impact
+Any user with a non-trivial number of tasks who relies on searching task descriptions is experiencing severe performance degradation. This likely affects power users and long-term users with large task histories most acutely.
+
+## Recommended Fix
+Diff the search implementation between v2.2 and v2.3. Investigate whether description indexing was dropped, altered, or bypassed. Check for changes to the query planner, search backend, or database schema affecting the description field. Profile the search query to confirm whether the bottleneck is query execution or result processing.
+
+## Proposed Test Case
+Create a performance test that seeds a workspace with 5,000 tasks (some with multi-paragraph descriptions), then asserts that a keyword search matching only description text completes within an acceptable threshold (e.g., under 2 seconds).
+
+## Information Gaps
+- No error messages or logs were collected — the search completes, just slowly
+- Unknown whether the issue also manifests on other platforms (macOS, Windows) or is Linux/desktop-specific

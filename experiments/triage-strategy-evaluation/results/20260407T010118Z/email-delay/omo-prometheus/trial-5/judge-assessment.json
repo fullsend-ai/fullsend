@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Nearly all expected extracts are present: 2-4 hour delay, ~1 week onset, morning/afternoon pattern, digest batch as cause, queue congestion, shared pipeline for transactional and bulk email. The one minor miss is that the triage summary doesn't explicitly restate the pre-regression baseline of '1-2 minutes' — this is in the original issue but not surfaced in the summary fields."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identified the digest email batch as the cause of queue saturation, the shared pipeline as the mechanism, and the morning timing correlation. This maps cleanly to the acceptable diagnostic path: 'identifying the digest email feature as the cause and queue congestion, even without understanding the priority system.' The recommended fix explicitly lists priority queues as option 1, and the information gaps include whether a prioritization mechanism already exists — which is exactly what the root cause involves."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent covered all key diagnostic angles: user scope (all vs. one), channel isolation (email vs. in-app), change detection (what launched ~1 week ago), timing correlation (when does the digest arrive), pipeline isolation (in-app test), and impact sizing (org size). No obvious follow-ups were left on the table before resolving."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three rounds of questions, each building directly on the previous answer. No redundant questions, no information asked for twice. The org-size question in the final round is the only one that could be considered lower-value, but it served a concrete purpose in sizing the fix recommendation."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The in-app notification test (turn 2) was particularly sharp — it's a non-obvious diagnostic step that isolated the email pipeline as the specific bottleneck, something the reporter wouldn't have volunteered. The change-detection question in turn 1 directly surfaced the digest feature. The timing correlation question in turn 2 closed the loop on causation. All questions demonstrated genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear root cause hypothesis, step-by-step reproduction instructions, a multi-option recommended fix (priority queue, separate pipelines, rate limiting, off-peak scheduling), a concrete proposed test case, and explicit information gaps for the engineering team to resolve. A developer could begin investigating and coding a fix immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The in-app notification isolation test was a non-obvious, high-value diagnostic move that cleanly separated email-pipeline issues from notification-generation issues",
+    "The agent connected the reporter's offhand mention of 'new daily digest emails' to the timing pattern in the same turn, showing active synthesis rather than rote questioning",
+    "The final summary is exceptionally actionable: it includes reproduction steps, multiple fix options with a clear recommended path, a proposed test case, and scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "The triage summary does not explicitly restate the pre-regression baseline (notifications arriving within 1-2 minutes), which is useful context for developers setting an SLA target for the fix",
+    "The email service provider was flagged as an information gap but never asked — a single question earlier could have yielded it while the reporter was engaged"
+  ],
+  "most_insightful_question": "Could you do a quick test on the in-app notifications? Next time someone assigns you a task, check whether the in-app notification appears right away even though the email is delayed. That would tell us whether the problem is in the email pipeline specifically or something deeper in the notification system.",
+  "missed_opportunities": [
+    "Asking which email service or SMTP relay is in use (SendGrid, SES, etc.) — this was flagged as an information gap but never solicited from the reporter, who may have known",
+    "Confirming the exact launch date of the digest feature to tighten the correlation with when delays began (reporter said 'about a week ago' for both, but an exact date would be more useful)"
+  ]
+}

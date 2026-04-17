@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, started ~1 week ago, worse at 9-10am/better in afternoon, related to the marketing digest batch, queue congestion identified, transactional and bulk emails competing for the same pipeline (explicitly called out in the fix recommendations), and the prior 1-2 minute baseline. The summary also adds value beyond the expected extracts: reproduction steps, a proposed test case, and a clear list of information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage matches acceptable path #2 (identifying the digest email feature as the cause and queue congestion without needing to understand the priority mechanism). The agent correctly identified the digest feature, the 9am timing, the ~200-user org size, and the queue drain pattern explaining afternoon improvement. The recommended fix even anticipates the canonical solution — separating transactional emails into a higher-priority queue — demonstrating the agent was reasoning toward the actual root cause."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the right questions to isolate the email path (in-app vs. email), correlate the digest feature timing, and gauge volume. One obvious follow-up was skipped: whether other transactional emails (password resets, comment notifications) are also delayed, which would confirm the queue-wide scope rather than a task-assignment-specific issue. The agent did flag this as an information gap, which mitigates the omission somewhat."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each well-spent. The first turn asked two complementary questions (recent changes + in-app vs. email isolation). The second turn followed up to confirm in-app timing. The third turn pinned down the digest send time and org size to validate the volume hypothesis. No question was redundant or low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The in-app notification question was the standout: it cleanly separated the email delivery path from the broader notification pipeline, a distinction the reporter would never have volunteered unprompted. The digest timing question and org-size question both demonstrated active hypothesis testing rather than generic checklist questioning. Each question narrowed the diagnostic space meaningfully."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a specific root cause hypothesis, step-by-step reproduction instructions with times, four concrete fix recommendations (separate queues, rate limiting, staggered sends, provider quota review), a proposed regression test case, and explicitly listed information gaps. A developer could open the email infrastructure code and queue configuration immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The in-app notification question elegantly isolated the email delivery layer without requiring any backend access, turning the reporter into a diagnostic instrument",
+    "The agent connected the digest timing, org size, and queue drain pattern into a coherent, testable hypothesis before resolving",
+    "The triage summary is unusually complete: it includes reproduction steps, a proposed test case, and explicitly scoped information gaps — giving a developer both a starting point and a clear research agenda"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other transactional email types (password resets, comment notifications) are also delayed, which would confirm queue-wide scope versus task-assignment-specific routing",
+    "Did not ask whether the reporter or an admin can view a TaskFlow dashboard or admin panel that might show queue depth or email delivery metrics directly"
+  ],
+  "most_insightful_question": "Next time you get a late email notification, could you look at whether the same notification showed up in the app earlier? That would tell us whether the delay is in the email system specifically or in the notification pipeline as a whole.",
+  "missed_opportunities": [
+    "Are other transactional emails (password resets, due-date reminders, comment notifications) also delayed, or is it only task-assignment emails?",
+    "Does your TaskFlow admin dashboard or email delivery logs show any queue depth or backlog metrics that spiked around a week ago?"
+  ]
+}

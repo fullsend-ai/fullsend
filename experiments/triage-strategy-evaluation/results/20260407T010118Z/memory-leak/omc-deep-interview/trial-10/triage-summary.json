@@ -1,0 +1,22 @@
+{
+  "title": "Memory leak in TaskFlow v2.3 causes progressive slowdown — likely per-request allocation in real-time notification system",
+  "problem": "Self-hosted TaskFlow instance exhibits a steady memory leak, climbing from ~500MB at startup to 4GB+ over an 8-hour workday with ~200 active users. This causes page loads exceeding 10 seconds and API timeouts by late afternoon, requiring a daily server restart. The issue began immediately after upgrading from v2.2 to v2.3.",
+  "root_cause_hypothesis": "The v2.3 'improved real-time notifications' feature is the most likely culprit. Memory growth is linear and proportional to request volume (not connection count), suggesting something is being allocated on every request within the notification code path and never released — e.g., event listeners, subscription objects, or notification payloads accumulating in memory per-request rather than being garbage collected.",
+  "reproduction_steps": [
+    "Deploy TaskFlow v2.3 on a server with real-time notifications enabled (default)",
+    "Simulate normal usage with ~200 concurrent users making ~25 requests/hour each",
+    "Monitor memory usage over several hours via Grafana or process metrics",
+    "Observe steady linear memory growth correlating with request volume, reaching 3-4GB within 8 hours from a ~500MB baseline"
+  ],
+  "environment": "TaskFlow v2.3, Ubuntu 22.04 VM with 8GB RAM, ~200 active users, real-time notifications and webhook integrations enabled",
+  "severity": "high",
+  "impact": "All ~200 users experience degraded performance by mid-afternoon and complete unusability by end of day. Team is forced to restart the server daily. No data loss reported, but productivity is significantly affected.",
+  "recommended_fix": "1. Diff the real-time notification code between v2.2 and v2.3, focusing on request-scoped allocations — look for event listeners, subscriptions, or middleware that attaches per-request objects without cleanup. 2. Check whether notification event emitters or subscription registrations are being added on each request but never removed. 3. Run the application under load with `--inspect` and take heap snapshots at intervals to identify the accumulating object type. 4. As an immediate mitigation, users can set `TASKFLOW_REALTIME_ENABLED=false` to confirm the hypothesis and stop the leak while a fix is developed.",
+  "proposed_test_case": "Load test v2.3 with real-time notifications enabled: simulate 200 users at 25 req/hour for 4 hours and assert that memory growth stays below a threshold (e.g., <200MB total growth). Compare the same test with `TASKFLOW_REALTIME_ENABLED=false` to confirm the notification system is the source. Additionally, unit test the notification subscription lifecycle to verify that per-request listeners are properly deregistered.",
+  "information_gaps": [
+    "Reporter is running a toggle test tomorrow (TASKFLOW_REALTIME_ENABLED=false) — results will confirm or refute the notification hypothesis",
+    "WebSocket connection count and notification subscription/listener count from /admin/status not yet collected",
+    "Heap dump not yet captured — would pinpoint the exact leaking object type and code path",
+    "Unknown whether the leak exists in the notification middleware, the event emitter layer, or a new dependency introduced in v2.3"
+  ]
+}

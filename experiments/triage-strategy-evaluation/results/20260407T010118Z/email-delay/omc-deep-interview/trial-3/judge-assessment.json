@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of the seven expected items are clearly present in the summary: delay duration (2-4 hours), onset (~1 week ago), morning-worse/afternoon-better pattern, connection to marketing digest batch emails, queue congestion hypothesis, and transactional vs. bulk email competition. The one gap is the baseline performance ('used to arrive within 1-2 minutes') is not explicitly restated in the summary, though it appeared in the original issue. The agent also surfaced useful additional information (email headers confirming pre-send delay, no third-party filtering, team-wide scope) beyond the expected extracts."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage hypothesis matches acceptable diagnostic path 2 almost exactly: it identifies the digest email feature as the cause, queue congestion as the mechanism, and correctly characterizes transactional and bulk emails competing for the same pipeline. The recommended fix ('Separate transactional emails into a high-priority queue distinct from bulk digest sends') is functionally identical to the actual fix (assigning digest emails a lower priority). The agent reached this without knowing the internal priority queue mechanism, which is precisely what the acceptable path permits."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Three questions, each one closing a meaningful diagnostic gap: (1) temporal correlation — uncovered the digest email feature; (2) scope confirmation — established team-wide impact across notification types; (3) header inspection — pinned the delay to the pre-send stage on TaskFlow's side rather than external mail routing. No obvious follow-up was left unasked; the agent acknowledged remaining unknowns (digest volume, sending infrastructure) as explicit information gaps rather than dropping them."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Every question was load-bearing. The first question opened the causal thread (digest emails). The second confirmed scope to rule out user-specific or notification-type-specific issues. The third localized the failure to TaskFlow's send pipeline. No question was redundant, and none could have been safely skipped without leaving a significant diagnostic gap."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The email headers question (turn 3) was the standout — it's non-obvious to a non-technical reporter, required the agent to anticipate a specific diagnostic branch (pre-send vs. post-send delay), and it yielded the single most important piece of evidence in the conversation. The first question ('did anything change a week ago') was broad but precisely targeted at the change-correlation hypothesis and directly surfaced the digest feature. Questions demonstrated genuine causal reasoning rather than generic checklist behavior."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is developer-ready: it includes a clear problem statement, a specific root cause hypothesis, step-by-step reproduction instructions (including the critical 9am timing), a concrete recommended fix (priority queue separation), a proposed regression test case, and an explicit list of information gaps. A developer could open the email queue implementation and immediately begin investigating the priority assignment for digest vs. transactional email jobs."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The email headers diagnostic request was a sophisticated, non-obvious question that definitively localized the delay to TaskFlow's pre-send stage — ruling out external mail routing and giving developers a precise entry point.",
+    "The agent recognized the significance of the reporter's offhand mention of morning digest emails and immediately centered the investigation on that correlation, leading directly to the root cause in a single follow-up.",
+    "The final summary is unusually actionable: reproduction steps, a proposed test case, and explicit information gaps give a developer everything needed to start a fix and verify it."
+  ],
+  "notable_weaknesses": [
+    "The summary does not restate the baseline performance ('used to arrive within 1-2 minutes'), which is useful context for writing a regression test or SLA definition.",
+    "The agent did not ask about the volume of digest emails being sent, which would have helped confirm the queue saturation hypothesis and quantify the backlog; this was correctly flagged as an information gap but was within reach of the reporter to estimate."
+  ],
+  "most_insightful_question": "Could you check the headers on one of the delayed notification emails? We'd be looking at the `Date` header (when TaskFlow says it sent the email) versus when it actually landed in your inbox.",
+  "missed_opportunities": [
+    "Asking approximately how many users receive the daily digest emails — the reporter might have known this and it would have confirmed the queue saturation scale.",
+    "Asking whether the digest emails themselves arrive on time (they should, since they're first in the queue) — a 'yes' answer would have further confirmed the queue ordering hypothesis."
+  ]
+}

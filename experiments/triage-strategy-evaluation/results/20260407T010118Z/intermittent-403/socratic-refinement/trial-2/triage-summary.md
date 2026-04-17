@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent 403 errors for users with 'analyst' role — likely inconsistent permission state across app server instances
+
+## Problem
+Users assigned the 'analyst' role receive random 403 Forbidden errors on any page in TaskFlow. The errors are non-sticky (a simple page refresh resolves them) and occur on roughly 30-50% of requests. Multiple users who were recently assigned the analyst role are affected. The 403 is returned as a TaskFlow-branded error page with a JSON response body, confirming the rejection happens at the application layer, not infrastructure.
+
+## Root Cause Hypothesis
+The application runs behind a load balancer with multiple server instances. When the 'analyst' role was created or assigned, its permissions were not consistently propagated to all instances — likely due to a stale permissions cache, an incomplete role-permission configuration deployment, or a cache invalidation failure. Requests that land on an instance with the updated permissions succeed; requests routed to an instance with stale or missing analyst role mappings return 403.
+
+## Reproduction Steps
+  1. Log in as a user with the 'analyst' role
+  2. Navigate to any page in TaskFlow (dashboard, project view, reports, etc.)
+  3. Repeat navigation/refreshes — within a few attempts, a 403 Forbidden page should appear
+  4. Refresh the same page — it should load successfully within 1-2 retries
+
+## Environment
+TaskFlow web application accessed via Chrome. Multiple app server instances behind a load balancer. Issue began approximately 2 days before report, coinciding with users being assigned the new 'analyst' role.
+
+## Severity: high
+
+## Impact
+All users with the 'analyst' role are affected. The issue disrupts normal workflow on every page, requiring frequent refreshes. Multiple team members are impacted. While users can work around it by refreshing, the experience is degrading and the 403 rate (~30-50%) is high enough to significantly impair productivity.
+
+## Recommended Fix
+1. Check the permissions/role cache invalidation mechanism across app server instances — verify that all instances have the analyst role's permissions loaded. 2. Inspect whether a recent deployment or role configuration change was only partially rolled out. 3. If using in-memory permission caching, add a cache invalidation or refresh mechanism triggered on role changes. 4. As an immediate mitigation, restart all app server instances to force a fresh permission load, or manually clear the permissions cache on all nodes.
+
+## Proposed Test Case
+Deploy a new role with specific page permissions, assign it to a test user, and verify that 100% of requests across all server instances return 200 (not intermittent 403s). The test should make at least 50 sequential requests to confirm consistent behavior across all load-balanced instances.
+
+## Information Gaps
+- Whether users who were NOT assigned the analyst role experience any 403 errors (team can verify internally)
+- Exact number of app server instances and load balancer configuration
+- Whether the analyst role was newly created or is a pre-existing role with recently modified permissions
+- Specific fields in the JSON 403 response (e.g., error codes that might identify the authorization subsystem)

@@ -1,0 +1,69 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help us narrow things down: when you say the search is slow, are you using the main search bar at the top, or a filtered/advanced search? And does it happen with every search term you try, or only certain types of queries (e.g., searching by title vs. searching by description or tags)?
+
+---
+
+### reporter
+
+I'm using the main search bar at the top. Now that you mention it, I think searching by title is actually still pretty fast — it's when I search for something that would be in the task description that it gets really slow. I hadn't really thought about that distinction until you asked, but yeah, title searches seem fine.
+
+---
+
+### triage-agent
+
+That's a really helpful distinction — title vs. description search behaving differently is a strong clue.
+
+Could you give us a rough idea of how many tasks you have in your TaskFlow instance? (Ballpark is fine — hundreds, thousands, tens of thousands?) And when you do a slow description search, is it consistently slow for the same search term, or does it vary from search to search?
+
+---
+
+### reporter
+
+I have around 5,000 tasks — I've been using TaskFlow for about 2 years now so they've built up. And yeah, it's consistently slow for description searches. Doesn't matter what term I search for, it always takes a long time. I should also mention that I think this started maybe 2 weeks ago when I upgraded to v2.3, though I'm not 100% sure on the exact timing.
+
+---
+
+### triage-agent
+
+That timing with the v2.3 upgrade is a really useful data point. Before we zero in on that — did anything else change around the same time? For example, did you import or bulk-create a batch of tasks, change any settings or integrations, or switch to a different machine? Also, do you have a way to check your exact version? (Usually under Settings → About or Help → About.) I want to make sure we're looking at the right culprit.
+
+---
+
+### reporter
+
+No, I don't think anything else changed. I just did the upgrade and kept using it as usual. I didn't import anything new or change any settings. Same laptop I've always used. I just checked and it says v2.3.0 under Settings → About. Oh, one thing I'm not sure is relevant — some of my tasks have pretty long descriptions because I paste in meeting notes and stuff. But I've been doing that for a while so I don't think that's new.
+
+---
+
+### triage-agent
+
+Thanks for confirming all of that — this is looking very much like a v2.3.0 regression in description search.
+
+To help our developers reproduce this quickly: if you search for a word that you know only appears in one or two task descriptions, is it still just as slow as searching for a common word that would match many tasks? I'm trying to understand whether the slowness is in *scanning* all descriptions or in *returning* a large result set — that distinction will point us to the right part of the code.
+
+---
+
+### reporter
+
+Yeah, it's slow either way. Even if I search for something really specific that I know is only in one task, it still takes a long time. So it doesn't seem to matter how many results come back — it's the searching itself that's slow.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description search regression in v2.3.0: full-text scan takes 10-15s on moderate dataset (~5k tasks)","problem":"After upgrading to v2.3.0, searching via the main search bar is extremely slow (10-15 seconds) when the query matches content in task descriptions. Title-only searches remain fast. The slowness is consistent regardless of search term specificity or result set size, indicating the bottleneck is in scanning/indexing descriptions rather than assembling results.","root_cause_hypothesis":"v2.3.0 likely introduced a change to how description fields are searched — possibly dropping a full-text index, switching from indexed lookup to sequential scan, or adding unindexed text processing (e.g., new rich-text parsing or sanitization applied at query time). The fact that title search is unaffected and the slowness is independent of result count strongly points to a per-row scanning cost on the description column.","reproduction_steps":["Set up a TaskFlow v2.3.0 instance with ~5,000 tasks, some containing lengthy descriptions (pasted meeting notes, paragraphs of text)","Open the main search bar at the top of the application","Search for a term known to appear in only one task description","Observe that results take 10-15 seconds to return","Search for the same term when it appears only in a task title — observe that this returns quickly","Compare against v2.2.x with the same dataset to confirm the regression"],"environment":"TaskFlow v2.3.0, ~5,000 tasks accumulated over 2 years, some tasks with long descriptions (pasted meeting notes), running on a work laptop (OS/specs not specified)","severity":"high","impact":"Any user with a moderate-to-large task database is likely affected. Description search is effectively unusable at ~5k tasks. Users who rely on searching task content rather than titles are significantly impacted.","recommended_fix":"Diff the search/query layer between v2.2.x and v2.3.0. Look for: (1) dropped or altered full-text indexes on the description column, (2) new ORM query patterns that bypass indexes, (3) added per-row processing during search (e.g., stripping HTML/markdown at query time instead of at index time). Run EXPLAIN/ANALYZE on the description search query against a 5k-row dataset to confirm whether an index is being used.","proposed_test_case":"Performance test: with 5,000 tasks (including tasks with descriptions >1,000 characters), assert that a description search for a unique term completes in under 1 second. Run this test on both v2.2.x (baseline) and v2.3.0 to catch regressions.","information_gaps":["Exact OS and hardware specs of reporter's laptop (unlikely to be the cause given the version correlation)","Whether other v2.3.0 users with large datasets experience the same issue (would confirm it's not data-specific)","Whether the database backend was migrated or altered as part of the v2.3.0 upgrade (e.g., schema migration that dropped an index)"]}
+
+---

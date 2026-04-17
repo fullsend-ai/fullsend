@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most key information: ~5,000 tasks, description vs title search distinction, v2.2→v2.3 regression, ~2 weeks timing, 10-15 second delays, and environment details. Missed CPU spikes during search and the fact that some tasks have very long descriptions (2000+ word meeting notes), both of which are relevant to diagnosing the full table scan issue."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it specifically mentions the possibility of a change from indexed full-text search to unindexed LIKE/ILIKE queries, which is essentially exactly what happened (FTS5 index → naive LIKE query). The hypothesis that title indexing is intact while description indexing is not matches the ground truth precisely."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 agent turns to reach a well-formed summary, which is excellent. The first question about reproduction steps was well-targeted and yielded the critical title-vs-description distinction. The second question about environment was necessary and revealed the version upgrade timing. Could arguably have asked about CPU/resource usage or description lengths, but the conversation was tight."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-framed and open enough to let the reporter volunteer the crucial title-vs-description distinction. The second question was standard but necessary environment gathering. The agent acknowledged the title/description clue, showing diagnostic reasoning. However, no questions probed deeper into resource usage (CPU spikes) or data characteristics (description lengths), which would have strengthened the diagnosis."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it tells a developer exactly where to look (diff v2.2→v2.3 search/migration code), what to check (FTS index on descriptions), how to confirm (EXPLAIN/ANALYZE), and what to fix (restore the index). The reproduction steps are clear and specific. The proposed test case covers both the immediate fix and regression prevention."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Root cause hypothesis nearly perfectly matches the actual cause, specifically identifying the FTS-to-LIKE regression possibility",
+    "Excellent actionability with concrete debugging steps (EXPLAIN/ANALYZE, diff migrations)",
+    "Very efficient — only 2 turns to extract most critical information",
+    "Good acknowledgment of the title-vs-description distinction as a diagnostic clue"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches, which would have confirmed the full-scan hypothesis",
+    "Did not ask about task description sizes/lengths, missing the long-description factor that exacerbates the issue",
+    "Asked about browser despite the reporter mentioning it's a desktop app (minor)"
+  ],
+  "most_insightful_question": "What are you searching for (a keyword, a tag, a filter combination)? — This open-ended question let the reporter naturally reveal the critical title-vs-description performance difference.",
+  "missed_opportunities": [
+    "Asking about CPU or memory usage during slow searches would have confirmed the full-scan hypothesis",
+    "Asking about the nature/size of task descriptions could have revealed the long-description factor",
+    "Asking whether the reporter had tried any workarounds or noticed any patterns in which searches were slow vs fast"
+  ]
+}

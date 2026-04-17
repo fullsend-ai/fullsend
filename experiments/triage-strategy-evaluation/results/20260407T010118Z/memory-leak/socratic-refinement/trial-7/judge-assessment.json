@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected items were captured: linear memory growth from 500MB to 4GB+, v2.3 upgrade as trigger (~1 week ago), 200 active users, consistent day-to-day pattern, restart as workaround, and v2.3 changelog mentioning notification changes. The one miss is server specs (8GB RAM VM), which the agent correctly flagged as an information gap but never explicitly asked about."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely identifies 'event listeners or callbacks registered per-request that are never removed' as item #1 in the recommended fix — matching the actual cause exactly. The agent correctly triangulated from the reporter's observation that WebSocket connection count was stable while memory grew linearly, pointing to per-request accumulation rather than connection-level leakage. This aligns with both the canonical cause and the acceptable diagnostic path of identifying a per-request resource leak pattern."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two turns of questioning were sufficient to arrive at a well-grounded hypothesis. The agent asked about usage patterns (revealing real-time notifications reliance and the v2.3 upgrade), then about upgrade details and connection behavior (eliciting the stable WebSocket count observation). The main gap is not asking about server specs or prompting the reporter to look up the exact v2.3 changelog diff, both of which were flagged as information gaps in the summary."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both questions were productive. The first was somewhat broad (listing many possible features), but it efficiently elicited the critical v2.3 upgrade mention. The second question combined two related threads (upgrade details + connection behavior) and both sub-questions yielded useful information. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was particularly insightful — asking specifically whether memory growth might correlate with persistent WebSocket connections accumulating over the day. This framing prompted the reporter to check and report that connection count was stable while memory grew, which is the key diagnostic observation that ruled out connection-level leakage and pointed to per-request accumulation. The reporter would not have volunteered this distinction unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it provides a specific root cause hypothesis, a prioritized list of three concrete things to look for in the diff, a heap dump recommendation for quick confirmation, a proposed regression test with exact parameters (200 users, 25 req/user/hour, 8 hours, v2.2 control vs v2.3), and a quick diagnostic (disable real-time notifications and observe if growth halts). A developer could begin coding a fix or running diagnostics immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question's framing around WebSocket connection accumulation was diagnostically precise and elicited the reporter's key observation (stable connection count vs. growing memory), which unlocked the per-request leak hypothesis",
+    "The root cause hypothesis independently arrived at the same mechanism as the actual bug — per-request listener registration without cleanup — without access to the source code",
+    "Highly actionable summary with specific debugging steps, heap dump guidance, and a rigorous proposed regression test"
+  ],
+  "notable_weaknesses": [
+    "Never asked about server specs (RAM, OS), leaving an expected information item uncaptured",
+    "Did not ask the reporter to pull the exact v2.3 changelog or check for more detail beyond the 'improved real-time notifications' mention, which could have further confirmed the hypothesis"
+  ],
+  "most_insightful_question": "Do your users tend to keep TaskFlow open in a browser tab throughout the day, or do they open and close it frequently? I'm curious whether the memory growth might correlate with the number of persistent connections (like WebSockets) accumulating over the course of the day.",
+  "missed_opportunities": [
+    "Ask about server hardware specs (RAM, OS, runtime version) to complete the environment picture",
+    "Ask whether the reporter could pull the detailed v2.3 changelog or release notes to see if notification system changes are described more specifically",
+    "Ask whether any server-side memory profiling or heap dumps had been taken to identify the dominant object types in the leaked memory"
+  ]
+}

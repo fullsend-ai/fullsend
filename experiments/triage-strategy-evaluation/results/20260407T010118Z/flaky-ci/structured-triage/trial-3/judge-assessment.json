@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present in the summary: intermittent failures, specific to task ordering tests, started 4 days ago after a PR merge, macOS local vs Ubuntu CI, non-deterministic ordering, environment difference, and CI logs showing test names. The summary also adds useful extras like reproduction commands and a structured fix recommendation."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary correctly identifies the ordering tests, the environment difference (macOS vs Ubuntu 22.04), and explicitly lists 'reliance on map iteration order in Go' as a candidate root cause — which matches the actual cause and falls squarely within the acceptable diagnostic paths. The hash seed / GOFLAGS mechanism is not identified, so the pinpoint accuracy isn't perfect, but the hypothesis is directionally correct and actionable."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked three well-chosen rounds of questions and obtained most of the critical information. However, it never asked about configuration differences between local dev and CI — environment variables, GOFLAGS, test flags, or whether CI uses a different config profile. Given the agent's own hypothesis about environment differences, asking about CI-specific Go flags or env vars was an obvious follow-up that was skipped."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three question turns, all targeted. The third turn (requesting exact failure output) was marginally redundant since the reporter had already indicated the failures were ordering assertions — the agent could have resolved after the second exchange or combined the environment and output requests. But no significant waste."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was excellent — asking whether it's always the same tests that fail immediately surfaced the key fact about the ordering tests. The second question correctly probed parallelism and OS/runtime differences. The third was reasonable but could have been more targeted (e.g., 'do your CI and local environments use different Go flags or config files?'). Questions were professional and led to concrete diagnostic information."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names the specific PR to examine, provides `go test -count=10` and `go test -count=100 -race` reproduction commands, lists the exact failure pattern (wrong ordering assertion), and gives concrete fix options (order-independent assertions, explicit sort, stable tiebreaker). A developer could begin a fix immediately."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 3,
+  "notable_strengths": [
+    "First question immediately surfaced the critical narrowing detail — that it's always the same ordering tests — by asking whether failures are consistent or random subsets",
+    "Summary explicitly lists Go map iteration order as a candidate cause, landing within the acceptable diagnostic path even without knowing about GOFLAGS",
+    "Reproduction commands (go test -count=10, go test -count=100 -race) are specific and immediately usable",
+    "All seven expected information items captured despite the reporter being reluctant to provide details"
+  ],
+  "notable_weaknesses": [
+    "Never asked about configuration differences between local dev and CI (environment variables, GOFLAGS, config profiles) — the most direct path to the actual root cause",
+    "Map iteration order is listed as one of four possible causes rather than elevated as the primary hypothesis given the Go context",
+    "Did not ask whether the developer uses a specific dev config or dotenv that differs from CI, which would have pointed directly at the hash seed issue"
+  ],
+  "most_insightful_question": "when the failures happen, is it always the same tests that fail, or a different subset each time?",
+  "missed_opportunities": [
+    "Do your local and CI environments use different Go flags, environment variables, or config files? For example, is GOFLAGS or any seed/randomization setting different?",
+    "Does the PR that added these tests also change any test configuration or introduce any go:build tags that might behave differently across platforms?",
+    "Are the ordering tests asserting on the output of a function that uses Go maps internally, or are they testing a sort operation directly?"
+  ]
+}

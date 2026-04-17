@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Memory leak in v2.3: per-request memory growth likely introduced by real-time notifications feature
+
+## Problem
+After upgrading from TaskFlow v2.2 to v2.3, the server exhibits a steady memory leak — climbing from ~500MB at startup to 4GB+ over a workday — causing progressive slowdown (10+ second page loads, API timeouts) and requiring daily restarts. The issue began exactly with the v2.3 upgrade after months of stability on v2.2.
+
+## Root Cause Hypothesis
+The v2.3 'improved real-time notifications' feature likely introduces a per-request memory allocation (e.g., event objects, notification payloads, middleware state, or subscriber lookups) that is never released. The leak is proportional to total API request volume (~200 users × 20-30 requests/hour = ~4,000-6,000 requests/hour), not to the number of persistent connections, which rules out a WebSocket/SSE connection leak and points to something allocated in the per-request hot path — possibly notification fan-out logic, event history buffering, or a listener/callback registered on each request but never deregistered.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 on a self-hosted instance (single server VM)
+  2. Connect ~200 active users (or simulate equivalent load of ~4,000-6,000 API requests/hour)
+  3. Monitor server memory via Grafana or similar over 6-8 hours
+  4. Observe steady linear memory growth from ~500MB toward 4GB+ with no plateau or release
+  5. Confirm memory stops climbing when request volume drops (e.g., after hours) but does not reclaim
+
+## Environment
+Self-hosted TaskFlow v2.3, ~200 active users, single VM. Previously stable on v2.2 for months. Same infrastructure, user base, and integrations before and after upgrade.
+
+## Severity: high
+
+## Impact
+All 200 users experience progressively degraded performance throughout the day, with API timeouts and 10+ second page loads by afternoon. Requires daily manual server restarts to maintain usability.
+
+## Recommended Fix
+Diff the v2.3 real-time notifications code against v2.2, focusing on any per-request middleware or event-handling code paths. Look for: (1) event listeners or callbacks registered per request but never removed, (2) notification payloads or event objects appended to in-memory collections without eviction, (3) per-request context or state captured in closures that prevent garbage collection. A heap dump comparison between startup and after several hours of load should confirm which object types are accumulating. As an immediate mitigation, the reporter could consider rolling back to v2.2 or disabling the real-time notifications feature if a feature flag exists.
+
+## Proposed Test Case
+Load test that simulates 200 concurrent users making 25 requests/hour each against a v2.3 instance over a 4-hour window, asserting that resident memory stays within a bounded range (e.g., does not exceed startup memory + 500MB). Compare the same test against v2.2 as a baseline. Additionally, a unit test for the notification middleware verifying that per-request allocations are properly released after response completion.
+
+## Information Gaps
+- Server runtime and language (Node.js, Java, Python, etc.) — determines which profiling tools to use for heap analysis
+- Whether a feature flag or configuration option exists to disable real-time notifications in v2.3, which would confirm the feature as the source
+- Whether the memory growth rate is strictly linear or accelerating (could indicate cascading retention)

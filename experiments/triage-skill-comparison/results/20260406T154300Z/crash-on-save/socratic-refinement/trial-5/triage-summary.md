@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** App crashes on manual Save with encoding error after CSV task import
+
+## Problem
+When a user manually clicks the Save button after importing tasks from a CSV file, the application displays a brief encoding-related error dialog and then terminates. Auto-save continues to work correctly. The user loses any unsaved work beyond the last auto-save point.
+
+## Root Cause Hypothesis
+The CSV import introduced task data containing characters in a non-UTF-8 encoding (or invalid byte sequences). The manual Save code path attempts a stricter or different serialization/encoding process than auto-save, encounters characters it cannot encode, throws an unhandled exception, and the application crashes. Auto-save likely uses a different serialization method, writes in binary/raw mode, or has error handling that the manual save path lacks.
+
+## Reproduction Steps
+  1. Create or obtain a CSV file containing tasks with non-ASCII or mixed-encoding characters (e.g., curly quotes, accented characters, or data originating from a non-UTF-8 locale)
+  2. Import the CSV file into TaskFlow
+  3. Observe that auto-save functions normally
+  4. Click the 'Save' button in the toolbar
+  5. Observe the brief encoding error dialog followed by application termination
+
+## Environment
+Not specified — reproduced with ~200 tasks imported from CSV. Platform and OS version not confirmed but likely relevant if the CSV originated from a system with a different default encoding (e.g., Windows CP-1252 vs UTF-8).
+
+## Severity: high
+
+## Impact
+Any user who imports tasks from CSV files with non-UTF-8 characters is unable to manually save and risks data loss. The crash is deterministic and repeatable, blocking a core workflow.
+
+## Recommended Fix
+1. Compare the manual Save and auto-save code paths to identify how they differ in encoding/serialization handling. 2. Add explicit encoding handling (e.g., UTF-8 with error replacement or transcoding) to the manual Save path. 3. Wrap the save operation in proper error handling so encoding failures surface as a user-facing error message rather than an unhandled crash. 4. Consider sanitizing or normalizing encoding at CSV import time so downstream saves are safe regardless of path.
+
+## Proposed Test Case
+Import a CSV file containing tasks with mixed encodings (e.g., Latin-1 accented characters, UTF-8 multibyte characters, and invalid byte sequences). Verify that clicking the manual Save button either succeeds or displays a recoverable error dialog — the application must not terminate. Also verify the saved file is readable on reload.
+
+## Information Gaps
+- The exact encoding of the source CSV file (CP-1252, Latin-1, Shift-JIS, etc.)
+- The full text of the encoding error dialog
+- Operating system and TaskFlow version
+- Whether removing the CSV-imported tasks and re-saving resolves the crash (would confirm the imported data is the trigger)

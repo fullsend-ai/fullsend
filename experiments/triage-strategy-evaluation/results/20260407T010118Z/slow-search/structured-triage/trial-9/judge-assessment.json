@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured most expected information: ~5,000 tasks, description vs title search distinction, v2.2-to-v2.3 regression, ~2 weeks ago, 10-15 second timing, and the indexing hypothesis. Missing: CPU spike during search and long task descriptions (copy-pasted meeting notes). These are notable omissions but not fatal."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches an acceptable diagnostic path — identifying both the v2.2-to-v2.3 upgrade as the trigger AND the title-vs-description performance difference, suspecting a missing index or switch to sequential scan. The hypothesis even mentions 'LIKE/sequential scan' which is exactly the actual cause. Fully consistent with ground truth."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Asked well-targeted questions covering task count, query type, OS, version, and elicited the version upgrade connection. Missed asking about CPU behavior during searches and the nature of task descriptions (length/content), which were in the ground truth. One obvious follow-up missed, but the triage had a solid basis to resolve."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two rounds of questions before resolution. Each question batch was well-grouped and non-redundant. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question cleverly asked about query type (which surfaced the title-vs-description distinction the reporter wouldn't have volunteered unprompted). The second round efficiently gathered environment details. The title/description distinction was a key diagnostic insight that the agent proactively elicited."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary includes a specific recommended fix (diff v2.2 vs v2.3 search path, check FTS index, profile query), concrete reproduction steps, a proposed test case, and environment details. A developer could begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.65,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Proactively asked about search query type in the first turn, which surfaced the critical title-vs-description performance distinction the reporter hadn't volunteered",
+    "Root cause hypothesis accurately identified the LIKE/sequential scan regression pattern and connected it to the version upgrade",
+    "Triage summary is exceptionally actionable — includes reproduction steps, recommended fix approach, and a proposed regression test"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU behavior during searches, missing the 'CPU spikes to 100% on one core' data point",
+    "Did not ask about the nature or length of task descriptions, missing the 'long descriptions with meeting notes' context that explains why the full table scan is especially costly"
+  ],
+  "most_insightful_question": "What search term or type of query are you running when it's slow? — This open-ended question about query type led the reporter to volunteer the title-vs-description distinction, which was the most diagnostic signal in the entire conversation.",
+  "missed_opportunities": [
+    "Ask whether CPU usage spikes during slow searches (would confirm client-side processing bottleneck)",
+    "Ask about the typical length or content of task descriptions (would surface the long-description factor amplifying the full table scan)"
+  ]
+}

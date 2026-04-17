@@ -1,0 +1,32 @@
+# Triage Summary
+
+**Title:** Nightly Salesforce sync truncates phone country codes longer than 2 digits
+
+## Problem
+The nightly batch import from Salesforce is truncating international phone number country codes to exactly 2 digits. Numbers with 1- or 2-digit country codes (US +1, UK +44) are unaffected, but longer codes are corrupted (e.g., Ireland +353 → +35, Antigua +1268 → +12). Approximately 50-100 of ~2,000 customer records are affected.
+
+## Root Cause Hypothesis
+A code change approximately 2 weeks ago related to 'phone number formatting for international numbers' introduced a bug that parses or stores the country code portion of phone numbers using a fixed 2-character substring or similar truncation. This change is applied during the Salesforce sync/import pipeline, corrupting numbers as they are written into TaskFlow.
+
+## Reproduction Steps
+  1. Identify a customer record in Salesforce with a country code longer than 2 digits (e.g., +353 for Ireland)
+  2. Wait for the nightly sync to run (or trigger it manually)
+  3. Check the same customer record in TaskFlow — the country code will be truncated to 2 digits
+
+## Environment
+Salesforce-to-TaskFlow nightly batch sync job. Specific runtime environment unknown but the bug is in the sync/import code path, likely in a phone number formatting or normalization function.
+
+## Severity: high
+
+## Impact
+50-100 customer records have corrupted phone numbers, causing support team to reach wrong numbers. Data integrity issue affecting all customers in countries with 3+ digit country codes. Ongoing — each nightly sync re-corrupts the data.
+
+## Recommended Fix
+1. Identify the commit from ~2 weeks ago that changed phone number formatting in the sync/import pipeline. 2. Find the truncation logic (likely a fixed-width substring on the country code). 3. Fix to handle variable-length country codes (1-3 digits per E.164). 4. Re-run the sync to restore all records from Salesforce (reporter indicates the sync overwrites all records each run, so a corrected sync should restore correct data). 5. Add validation to flag phone numbers that change length during sync as a safety check.
+
+## Proposed Test Case
+Unit test the phone number formatting function with country codes of varying lengths: +1 (US, 1 digit), +44 (UK, 2 digits), +353 (Ireland, 3 digits), +1268 (Antigua, 4 digits with shared +1 prefix). Assert that the full country code and subscriber number are preserved in each case.
+
+## Information Gaps
+- Exact commit or code change that introduced the truncation (developer can find via git log from ~2 weeks ago)
+- Whether the nightly sync truly overwrites all records or is selective (reporter believes it overwrites all, but developer should confirm before relying on re-sync for recovery)

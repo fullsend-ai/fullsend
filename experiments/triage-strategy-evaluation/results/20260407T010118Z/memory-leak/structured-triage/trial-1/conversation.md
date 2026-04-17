@@ -1,0 +1,52 @@
+# Conversation: memory-leak x structured-triage
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana dashboard — the consistent memory climb pattern is very helpful and strongly suggests a memory leak.
+
+To help us narrow down the investigation, could you share your environment details? Specifically:
+- **TaskFlow version** you're running
+- **OS** on the server (e.g., Ubuntu 22.04)
+- **Runtime version** (e.g., Node.js 18.x)
+- **Database** type and version (e.g., PostgreSQL 15)
+- **How you're running it** (bare metal, Docker, Kubernetes, etc.)
+
+---
+
+### reporter
+
+We're running TaskFlow v2.3 on Ubuntu 22.04. It's a VM with 8GB RAM, running bare metal (no Docker or Kubernetes). I'm not sure off the top of my head about the exact runtime or database versions — I'd have to check. I do know the memory issues started right after we upgraded from v2.2 to v2.3 about a week ago. Before that upgrade, we never had this problem.
+
+---
+
+### triage-agent
+
+Thanks for confirming the version and environment details — and that's a really useful data point that the memory issues started immediately after the v2.2 → v2.3 upgrade.
+
+One more thing that would help the developer investigating this: are there any **error messages or warnings in the server logs** as the memory climbs? For example, entries about failed garbage collection, connection pool exhaustion, or out-of-memory warnings. Even a snippet from the logs around the time performance starts degrading would be helpful. If you're not seeing any errors in the logs, that's useful to know too.
+
+---
+
+### reporter
+
+I've checked the logs and there's nothing obvious — no explicit error messages or crash dumps during the gradual slowdown. The logs just show normal request handling. We do eventually see some timeout errors and out-of-memory warnings, but only once it's already gotten really bad (usually late in the day when memory is above 3-4GB). There's nothing in the logs that points to a specific cause. One thing I did notice is that the logs show a lot of activity related to the real-time notification system — it seems much more verbose than it was on v2.2. I figured that was just because of the 'improved real-time notifications' feature mentioned in the v2.3 changelog.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in TaskFlow v2.3 causes progressive server slowdown requiring daily restart","problem":"A self-hosted TaskFlow v2.3 instance experiences a steady memory leak, climbing from ~500MB at startup to 4GB+ over the course of a day. This causes progressive performance degradation (10+ second page loads, API timeouts) and requires a daily server restart. The issue affects approximately 200 active users.","root_cause_hypothesis":"The real-time notification system introduced or reworked in v2.3 is likely leaking memory — possibly through accumulated WebSocket connections, event listeners, or notification state that is never garbage collected. The reporter noted significantly more verbose logging from this subsystem compared to v2.2, which aligns with the 'improved real-time notifications' feature in the v2.3 changelog.","reproduction_steps":["Deploy TaskFlow v2.3 on a server (Ubuntu 22.04, bare metal)","Allow ~200 users to use the application throughout a normal workday","Monitor memory usage over the course of the day","Observe memory climbing steadily from ~500MB at startup to 4GB+ by end of day","Observe page load times degrading to 10+ seconds and API timeouts as memory grows"],"environment":"TaskFlow v2.3 (upgraded from v2.2), Ubuntu 22.04, 8GB RAM VM, bare metal deployment, ~200 active users","severity":"high","impact":"All ~200 users on the instance experience progressively degrading performance throughout each workday, with the application becoming effectively unusable by late afternoon. Requires manual daily restart as a workaround.","recommended_fix":"Investigate the real-time notification system changes between v2.2 and v2.3. Look for: (1) WebSocket connections or event listeners that are opened but never closed/cleaned up, (2) in-memory notification state or caches that grow without bounds, (3) subscription handlers that accumulate per-user without deregistration. A heap snapshot comparison between startup and several hours of operation should pinpoint the leaking objects.","proposed_test_case":"Run a load test simulating 200 users connecting and disconnecting over a simulated 8-hour period. Assert that memory usage remains within a bounded range (e.g., stays below 1.5x the startup baseline) and does not exhibit monotonic growth. Additionally, verify that WebSocket/notification listener counts do not grow unboundedly over time.","information_gaps":["Exact Node.js runtime version on the server","Exact database type and version","Whether the memory leak occurs with fewer users or under idle conditions (to distinguish per-request vs. connection-based leak)"]}
+
+---

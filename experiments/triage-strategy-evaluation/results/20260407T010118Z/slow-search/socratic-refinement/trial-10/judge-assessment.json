@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items were captured: ~5,000 tasks, description-slow/title-fast split, v2.2→v2.3 regression, 2-week onset, 10-15s latency, CPU spike (surfaced from reporter's volunteer), and long descriptions with meeting notes. The agent also extracted additional useful detail: that slowness is consistent across all description searches (not project-specific), and that results appear correct (ruling out a correctness regression)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis directly names 'removed or broken full-text index on the descriptions column/field' and 'migration steps that may have failed to rebuild an index on upgrade' — both precisely matching the actual cause (FTS5 index dropped during migration, replaced with a LIKE full-table scan). The agent also correctly identifies that title search uses a different (still-indexed) path. This satisfies both acceptable diagnostic paths and is essentially the canonical root cause without access to the source."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-structured rounds of questions before resolving. CPU usage emerged from the reporter volunteering it, not from a direct ask — a missed opportunity, though inconsequential since it was captured. The agent did not ask about cache/reindex attempts or OS details, but correctly flagged these as low-priority gaps in the summary. No important questions were left unasked that would have changed the diagnosis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three question rounds, all productive. Turn 1 surfaced the version upgrade. Turn 2 surfaced task count and the title-vs-description split. Turn 3 confirmed the summary and checked result correctness — the result-correctness question was somewhat low-value (the issue was clearly about latency, not correctness), but it was brief and combined with the confirmation summary rather than wasting a standalone turn."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The turn 2 question asking about what types of searches (titles, descriptions, tags) the reporter performs was exceptionally insightful — the reporter would not have volunteered the title-vs-description performance difference without that prompt, and it became the single most diagnostic finding in the conversation. Turn 1's open-ended 'gradual or sudden?' framing also efficiently surfaced the version upgrade without leading the reporter."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it includes a specific hypothesis (broken FTS index on descriptions, possible migration failure), a concrete investigation path (diff the description search code path between 2.2 and 2.3, look for index removal or LIKE-query substitution), reproduction steps, a proposed regression test for CI, and a clear reproduction comparison (title search vs. description search). A developer could open the relevant files immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The question about search type (titles vs. descriptions vs. tags) directly unlocked the most diagnostic clue in the entire conversation — the title-fast/description-slow split that points squarely at an indexing regression.",
+    "The root cause hypothesis is remarkably close to the actual cause, naming full-text index removal and migration failure as specific candidates without access to the source code.",
+    "The triage summary is developer-ready: it includes reproduction steps, a recommended fix with four specific investigation points, a proposed CI regression test, and correctly scoped information gaps."
+  ],
+  "notable_weaknesses": [
+    "CPU usage was not explicitly asked about — it emerged only because the reporter volunteered it in the final message. A direct question about system resource usage during slow searches would have been appropriate after the version regression was identified.",
+    "The result-correctness question in turn 3, while not harmful, added little diagnostic value given the latency pattern was already clearly established."
+  ],
+  "most_insightful_question": "Can you tell me more about what a typical search looks like for you? For example, what kinds of things are you searching for (task titles, descriptions, tags?), and does the slowness happen with every search, or only certain ones?",
+  "missed_opportunities": [
+    "Explicitly asking whether the reporter noticed any CPU or fan activity during slow searches (though it was volunteered anyway)",
+    "Asking whether the slowness appeared immediately after the upgrade or took a few days to manifest (could indicate a gradual data growth trigger vs. a hard code-path change)"
+  ]
+}

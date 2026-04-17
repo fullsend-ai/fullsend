@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captures 5 of 7 expected items clearly: filter inversion behavior, archived tasks appearing in active results, active tasks missing, version/timing (~3 days, v2.3.1), and multi-user scope. The workaround was also identified. Missing: whether individual task pages show the correct archive status (a key discriminator between index and app logic issues), and no explicit confirmation that unfiltered search returns mixed results."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the archive/active filter as the broken component and the v2.3.1 update as the trigger, matching acceptable diagnostic path #2. The root cause hypothesis explicitly names 'index mapping' as one of several plausible locations — which is the actual cause. The fix recommendation mentions Elasticsearch and database queries. The hypothesis is broader than the specific field-mapping inversion but is directionally correct and includes the right answer among its candidates."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Asked about reproduction steps, filter state, and environment (version, browser, OS). The reporter volunteered the timing correlation with the v2.3.1 update unprompted. The one clear missed question: whether individual task pages display the correct archive status, which would have distinguished an index-layer bug from an application-logic bug — a meaningful diagnostic step. Otherwise had reasonable basis to resolve."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two rounds of questioning before resolving. Both turns targeted distinct and necessary information: first establishing the exact reproduction path and filter behavior, second pinning down the version and environment. No redundant or low-value questions. The first question's focus on filters was particularly efficient, immediately surfacing the inversion behavior."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-constructed and led directly to the reporter revealing the filter inversion ('if I switch to show archived, I see my active tasks') — information the reporter likely would not have volunteered without the filter-specific prompt. The second question was standard environment triage, appropriate given the suspected version regression. Asking for browser and OS was somewhat lower value given the multi-user, multi-platform signal already present, but it did confirm the issue is not browser-specific."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: clear reproduction steps, a specific recommended fix path (diff between v2.3.0 and v2.3.1, check search query builder / ORM filter / Elasticsearch query for boolean inversion), an identified workaround, and a proposed regression test case. A developer could immediately pull the diff and look for the archived predicate change. Severity and impact are also clearly characterized."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Prompted the reporter to describe filter behavior, which surfaced the exact inversion symptom ('show archived shows my active tasks') — the most diagnostically valuable finding in the conversation",
+    "Correctly identified the v2.3.1 update timing as a likely trigger and scoped the investigation to recent changes",
+    "Produced a highly actionable summary with specific fix guidance, a proposed test case, and a documented workaround",
+    "Efficiently confirmed the issue is not browser- or OS-specific by collecting cross-platform evidence"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether individual task pages display the correct archive status — this would have confirmed the bug is in the search/index layer rather than core data, sharpening the root cause hypothesis significantly",
+    "Root cause hypothesis spreads across application code, index mapping, and query parameters without narrowing further, leaving the developer to search a broader surface than necessary"
+  ],
+  "most_insightful_question": "Do you have any filters or sorting applied when you search? — This prompted the reporter to describe the filter inversion behavior in detail ('switching to show archived shows my active tasks'), which is the single most diagnostic finding in the entire conversation.",
+  "missed_opportunities": [
+    "Ask whether viewing an individual task directly (outside of search) shows the correct archived/active status — this would distinguish an index-layer bug from an application-logic bug",
+    "Ask whether searching with all filters removed (showing all tasks, not just active) returns results that appear correct but unsorted — this would confirm the filter is the broken component rather than the indexing of the records themselves",
+    "Ask whether any system notification, maintenance window, or migration message was displayed around the time of the v2.3.1 update — could surface the schema migration as the proximate cause"
+  ]
+}

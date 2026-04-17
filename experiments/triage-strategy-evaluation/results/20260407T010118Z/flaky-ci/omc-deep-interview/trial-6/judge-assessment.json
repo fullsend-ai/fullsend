@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "All 7 expected items are captured: intermittent failures, task ordering tests specifically, PR merge timing ('last week', close to the actual 4 days), macOS vs Ubuntu, non-deterministic ordering, environment difference, and CI log visibility (noted in information_gaps). The hash seed mechanism is not captured, but that is not required per acceptable paths."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The primary hypothesis — Go map iteration randomization causing non-deterministic ordering — correctly identifies the mechanism of failure and aligns with acceptable diagnostic path #2. The actual cause adds the GOFLAGS=-race fixed-seed detail, which the agent did not reach, but the agent's core hypothesis is directionally correct and actionable. No significant inaccuracies present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about failure type, test structure, environment differences, and sort internals before resolving. One obvious gap: it never asked about CI-specific configuration (environment variables, build flags, GOFLAGS) that might differ from local dev config. Given the reporter mentioned a config difference was plausible, this was a missed follow-up, but the agent still resolved with a reasonable basis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "The second question about database ORDER BY was off-target once the agent knew it was Go in-memory code — but that information wasn't available yet, so the question was reasonable given state at that turn. The remaining questions were well-targeted and non-redundant. At most one question could be criticized in hindsight."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The question asking whether tests explicitly sort results before asserting versus relying on return order was genuinely insightful — it surfaced the insertion-order expectation which was the key diagnostic clue. The follow-up about sort field and whether duplicate values exist showed good reasoning about unstable sort behavior. Questions were specific to Go, not generic."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names the specific data structure to inspect (map vs slice), provides a concrete reproduction command ('go test -run TestTaskOrder -count=100'), gives prioritized fix options (switch to slice, use SliceStable, add tiebreaker), and identifies exactly which code paths to examine. A developer could begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.1,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Correctly hypothesized Go map iteration randomization as the root cause, matching an acceptable diagnostic path without being given any explicit hint",
+    "Provided concrete, Go-specific reproduction steps (go test -count=100) and fix recommendations rather than generic advice",
+    "Structured the summary with clear information_gaps so a developer knows exactly what to look up rather than encountering surprise unknowns"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CI-specific environment variables or build flags (e.g., GOFLAGS), which was the actual distinguishing factor between local and CI behavior",
+    "Did not ask to see a sample CI log or failing test output directly, even though the reporter confirmed test names are visible in CI logs — this would have grounded the summary more firmly",
+    "The initial database-oriented question, while reasonable, slightly delayed the pivot to Go in-memory semantics"
+  ],
+  "most_insightful_question": "Do those task ordering tests explicitly sort the results before asserting, or do they rely on the order the database returns them? — this question surfaced the critical detail that tests expect insertion order without an explicit sort, which directly led to the map iteration hypothesis.",
+  "missed_opportunities": [
+    "Ask whether the local dev config sets any Go-related environment variables (GOFLAGS, GOENV, GOMAXPROCS) that differ from CI",
+    "Ask the reporter to paste a failing CI log excerpt — they confirmed test names appear there, and seeing the exact output would have confirmed the ordering assertion failure pattern",
+    "Ask whether the same retrieval path is used in production code, which the agent correctly flagged in the summary but could have confirmed earlier to assess severity"
+  ]
+}

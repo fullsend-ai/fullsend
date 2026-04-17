@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** App crashes on save for projects containing CSV-imported tasks with typographic characters (macOS)
+
+## Problem
+TaskFlow crashes (abrupt close, no recovery) every time the user saves a specific project. The project contains tasks bulk-imported from a CSV file. The crash does not occur on smaller projects or projects without imported data. A brief error message mentioning 'encoding' flashes before the app closes.
+
+## Root Cause Hypothesis
+The CSV import ingested text containing typographic/smart punctuation (curly quotes, em dashes) that are likely encoded in a different character set (e.g., Windows-1252 or MacRoman) than what the save serializer expects (likely UTF-8). When the save function attempts to serialize these characters, it hits an encoding error and crashes instead of handling it gracefully.
+
+## Reproduction Steps
+  1. Create or obtain a CSV file containing task names with typographic characters (smart/curly quotes, em dashes — e.g., copied from Word or a spreadsheet)
+  2. Import the CSV into a new TaskFlow project on macOS
+  3. Add enough tasks to make the project non-trivial (reporter described 'a ton')
+  4. Click Save
+  5. Observe: app crashes with a brief encoding-related error
+
+## Environment
+macOS, TaskFlow approximately version 2.3
+
+## Severity: high
+
+## Impact
+User loses all unsaved work on every save attempt for affected projects. The project is effectively unusable — they cannot save any changes. No workaround is available to the reporter. Any user who imports CSV data with non-ASCII punctuation is likely affected.
+
+## Recommended Fix
+1. Investigate the save/serialization path for encoding handling — it likely assumes pure ASCII or UTF-8 and throws an unhandled exception on malformed sequences. 2. Add encoding normalization (e.g., force UTF-8 with replacement or transliteration) during CSV import so bad data doesn't enter the system. 3. Add a try/catch around the save serializer so encoding errors surface as user-visible error dialogs instead of crashes. 4. Consider a data migration or repair tool for existing projects with bad encoding.
+
+## Proposed Test Case
+Import a CSV containing tasks with Windows-1252 encoded smart quotes (\u2018, \u2019, \u201C, \u201D) and em dashes (\u2014). Verify that the project saves successfully without crashing, and that the characters are either preserved correctly or gracefully transliterated.
+
+## Information Gaps
+- Exact TaskFlow version (reporter said 'v2.3 or something')
+- Original program that produced the CSV (could reveal source encoding)
+- Exact macOS version
+- Whether the crash also occurs on export or other write operations, not just save

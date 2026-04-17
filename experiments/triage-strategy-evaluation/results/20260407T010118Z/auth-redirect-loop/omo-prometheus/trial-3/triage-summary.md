@@ -1,0 +1,45 @@
+# Triage Summary
+
+**Title:** SSO redirect loop after Okta-to-Entra migration caused by SameSite=Strict session cookie and email claim mismatch
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop: they authenticate successfully at Entra, get redirected back to TaskFlow, but are immediately sent back to Entra. The session is never established. Clearing cookies helps temporarily but the loop recurs.
+
+## Root Cause Hypothesis
+Two compounding issues: (1) PRIMARY — TaskFlow's session cookie is set with SameSite=Strict, which causes browsers to drop the cookie on cross-site redirects from Entra back to TaskFlow. This means TaskFlow never sees the session cookie on the first post-auth request, treats the user as unauthenticated, and redirects them back to the IdP. This likely affects all users intermittently but some succeed due to browser-specific handling or navigation patterns (e.g., incognito works because there's no pre-existing cookie state interfering). (2) SECONDARY — For users with plus-addressed emails (jane+taskflow@company.com) or aliased/migrated emails, Entra ID likely returns a normalized email (jane@company.com) in the identity claim, which fails to match the stored email in TaskFlow's user database. Even if the cookie issue is fixed, these users would still fail authentication due to the identity mismatch.
+
+## Reproduction Steps
+  1. 1. Configure TaskFlow SSO with Microsoft Entra ID (migrated from Okta)
+  2. 2. Ensure TaskFlow's session cookie has SameSite=Strict
+  3. 3. Have a user with a plus-addressed email (e.g., jane+taskflow@company.com) attempt to log in
+  4. 4. User authenticates successfully at Entra ID
+  5. 5. User is redirected back to TaskFlow's callback URL
+  6. 6. Observe: Set-Cookie header is present in the response but the cookie is not included in the subsequent request (dropped due to SameSite=Strict on cross-site redirect)
+  7. 7. TaskFlow sees no session, redirects back to Entra — loop begins
+
+## Environment
+TaskFlow web application accessed over HTTPS, SSO via Microsoft Entra ID (recently migrated from Okta), session cookie configured with SameSite=Strict and Secure flag. Affects approximately 30% of users, with a correlation to plus-addressed or aliased email addresses.
+
+## Severity: high
+
+## Impact
+~30% of the team is unable to log into TaskFlow reliably. No permanent workaround exists — clearing cookies provides only temporary relief. This blocks affected users from accessing the application entirely.
+
+## Recommended Fix
+Two fixes needed, in priority order:
+
+1. **Change session cookie SameSite attribute from Strict to Lax.** SameSite=Lax permits cookies on top-level navigational redirects (like SSO callbacks) while still protecting against CSRF on sub-requests. This is the standard setting for applications using SSO. Find where the session cookie is configured (likely in the auth middleware or session config) and set SameSite=Lax. Do NOT set SameSite=None unless cross-origin iframe embedding is required, as None is more permissive than necessary.
+
+2. **Fix email claim matching.** Verify which OIDC/SAML claim is configured as the user identifier (check the SSO admin panel). If it's `email`, implement email normalization: strip plus-addressing suffixes before matching against the user database, or switch the identifier claim to a stable, non-email identifier like `sub` (OIDC subject) or `oid` (Entra Object ID). If sticking with email, also audit the user database for any accounts whose stored email doesn't match what Entra returns and reconcile them.
+
+## Proposed Test Case
+1. **Cookie fix verification:** After changing SameSite to Lax, confirm that a previously-affected user can log in without redirect loop. Verify the session cookie is present in requests following the SSO callback redirect. Test in both normal and incognito browser sessions.
+
+2. **Email matching verification:** For a user with a plus-addressed email, confirm login succeeds after the fix. Verify by checking that the identity claim value from the token matches (or is normalized to match) the stored user record. Add a unit test for the email normalization/matching logic covering: plus-addressing, case differences, and aliased emails.
+
+## Information Gaps
+- Exact OIDC/SAML claim currently mapped as user identifier in TaskFlow (reporter is checking but hasn't confirmed yet)
+- Whether the email change test (removing plus-address) resolves the loop for a specific user (reporter is testing)
+- Whether the SameSite=Strict issue affects the 70% 'unaffected' users intermittently (they may succeed due to browser quirks but still be at risk)
+- Whether there are other cookie attributes (Domain, Path) that could cause issues for users on subdomains
+- The exact distribution of affected users between the cookie issue and the email mismatch issue

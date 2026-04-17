@@ -1,0 +1,33 @@
+# Triage Summary
+
+**Title:** Flaky task-ordering tests in CI due to unstable sort (sort.Sort vs sort.Stable)
+
+## Problem
+Five tests introduced in the recent task-ordering PR fail intermittently on GitHub Actions Ubuntu runners but pass consistently on the developer's Mac. The tests insert tasks, pass them through an ordering function, and assert exact insertion order is preserved. A variable subset (0-4 of 5) fail on any given CI run.
+
+## Root Cause Hypothesis
+The ordering function uses Go's sort.Sort, which is an unstable sort (introsort). When multiple tasks have equal sort keys, their relative order is undefined and varies across runs. On the reporter's Mac, consistent memory layout produces a deterministic (but not guaranteed) order, masking the bug. CI runners have enough environmental variation to surface the instability. The tests assert exact output order, which depends on sort stability that sort.Sort does not provide.
+
+## Reproduction Steps
+  1. Check out the task-ordering PR (merged ~4 days ago)
+  2. Identify the sort call in the ordering function — expected to be sort.Sort or sort.Slice
+  3. Run the 5 ordering tests in a loop (e.g., `go test -run TestTaskOrder -count=100`). On most machines this will surface at least one failure
+  4. If the sort key allows ties (e.g., tasks with the same priority or timestamp), the order of tied elements will vary across runs
+
+## Environment
+GitHub Actions, Ubuntu runners, Go (same version locally and in CI). No CI config changes; only the task-ordering PR was merged.
+
+## Severity: medium
+
+## Impact
+Blocks the release pipeline. All team members are affected — CI must be re-run until tests happen to pass. No production impact (the flakiness is in tests, though the underlying unstable sort could also affect user-facing ordering).
+
+## Recommended Fix
+Replace sort.Sort (or sort.Slice) with sort.Stable (or sort.SliceStable) in the task-ordering function. Alternatively, add a deterministic tiebreaker to the sort comparator (e.g., sort by primary key as a secondary key) so that no two elements are considered equal. The latter approach is preferred as it makes ordering deterministic regardless of sort algorithm. Also consider whether the production ordering should be stable for UX consistency, not just for tests.
+
+## Proposed Test Case
+Add a test that creates multiple tasks with identical sort keys (e.g., same priority and timestamp) and asserts that the output order is deterministic across 100 consecutive runs. This directly tests sort stability and would have caught the original bug.
+
+## Information Gaps
+- Exact sort key field(s) used in the ordering function (reporter did not have code open, but a developer can inspect the PR)
+- Whether the unstable sort also affects user-facing behavior in production, not just tests

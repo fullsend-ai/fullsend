@@ -1,0 +1,59 @@
+# Conversation: silent-data-corruption x structured-triage
+
+## Issue
+
+**Some customer phone numbers are wrong in TaskFlow**
+
+We noticed that some of our customer contact records have incorrect phone numbers. The numbers look truncated or mangled. Our support team caught it because they tried calling a few customers and got wrong numbers. We have about 2,000 customer records and I'd estimate maybe 50-100 have wrong numbers. This is a serious data integrity issue for us.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — data integrity issues like this are definitely something we want to get to the bottom of quickly.
+
+Could you share a couple of examples of what the incorrect phone numbers look like compared to what they should be? For instance, if a number should be `+1 (555) 123-4567`, what does TaskFlow show instead? Knowing the specific pattern of corruption (truncated, missing digits, extra characters, etc.) will help us narrow down where the problem is occurring.
+
+---
+
+### reporter
+
+Yeah, so for example we have a customer in Ireland whose number should be +353 1 234 5678 but in TaskFlow it shows as +35 1 234 5678 — the country code got cut short. Similarly, we have a customer in Antigua and Barbuda, their number starts with +1268 but it's showing as +12 followed by the rest of the digits. But our US and UK customers seem fine — numbers starting with +1 or +44 look correct. So it seems like the longer country codes are getting truncated to just 2 digits or something like that.
+
+---
+
+### triage-agent
+
+Thanks for those examples — that's a really clear pattern. Country codes longer than 2 digits are getting truncated to exactly 2 digits, which explains why US (+1) and UK (+44) numbers look fine.
+
+To help us track down where the truncation is happening: how were these customer phone numbers entered into TaskFlow? For example, were they imported in bulk (e.g., CSV upload), entered one-by-one through the UI, added via an API integration, or some combination? And if you recall, did the numbers look correct right after entry, or were they already wrong at that point?
+
+---
+
+### reporter
+
+They come in through a nightly batch import — we sync from our Salesforce CRM automatically. I'm pretty sure the numbers were fine until maybe two weeks ago? I remember checking some of these records before and they looked correct. I think something might have changed in the import process recently but I'm not sure what. The numbers are definitely correct in Salesforce, I've checked a few of them there.
+
+---
+
+### triage-agent
+
+That timing is really helpful — knowing it started roughly two weeks ago gives us a solid window to investigate.
+
+Could you tell us what version of TaskFlow you're currently running, and whether there were any updates or changes around two weeks ago? For example, did TaskFlow get upgraded, was the import job or its configuration modified, or did anything change on the Salesforce side (API version, field formats, etc.)? Even something that seemed unrelated at the time could be the trigger.
+
+---
+
+### reporter
+
+We're on TaskFlow v2.3.1. I don't remember exactly what changed two weeks ago — I'm not the one who manages the updates. I think one of our developers mentioned something about updating how phone numbers are processed or formatted, but I don't know the specifics. Nothing changed on the Salesforce side as far as I know. It does line up timing-wise though, the numbers were definitely fine before that.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Nightly Salesforce import truncates phone country codes longer than 2 digits","problem":"Customer phone numbers imported from Salesforce via the nightly batch sync are having their country codes truncated to exactly 2 digits. Numbers with 1- or 2-digit country codes (e.g., US +1, UK +44) are unaffected, but longer codes like Ireland (+353) and Antigua and Barbuda (+1268) are corrupted. An estimated 50-100 out of ~2,000 customer records are affected.","root_cause_hypothesis":"A recent change (~2 weeks ago) to phone number processing or formatting logic likely introduced a hard limit or substring operation that caps the country code field at 2 characters. This could be a parsing regex, a database column width change, or a formatting function that assumes all country codes are at most 2 digits.","reproduction_steps":["Ensure a Salesforce record exists with a phone number whose country code is 3+ digits (e.g., +353 1 234 5678 for Ireland)","Run the nightly batch import (or trigger it manually)","Check the imported record in TaskFlow — the country code should be truncated to 2 digits (e.g., +35 1 234 5678)"],"environment":"TaskFlow v2.3.1, nightly batch import from Salesforce CRM","severity":"high","impact":"50-100 customer contact records have corrupted phone numbers, preventing support staff from reaching those customers. Affected customers are those in countries with 3+ digit country codes. The corruption is ongoing with each nightly import, so corrected records would be re-corrupted.","recommended_fix":"Review commits from approximately 2 weeks ago related to phone number processing or formatting. Look for changes that parse or store the country code portion of international phone numbers — specifically any logic that limits country code length to 2 characters (e.g., substring(0,2), a regex like /^\\+(\\d{1,2})/, or a database column resized to 2 characters). Fix the truncation, then run a one-time repair to re-import affected records from Salesforce.","proposed_test_case":"Create a unit test for the phone number import/formatting function that passes numbers with 1-digit (+1), 2-digit (+44), 3-digit (+353), and 4-digit (+1268) country codes, and asserts all are stored without truncation.","information_gaps":["Exact commit or change made ~2 weeks ago to phone number processing (discoverable via git history)","Whether the truncation occurs during import parsing, storage, or display (developer can check by inspecting the database directly)","Import job logs from the past two weeks that might show warnings or errors"]}
+
+---

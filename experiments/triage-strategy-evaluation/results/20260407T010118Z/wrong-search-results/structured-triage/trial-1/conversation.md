@@ -1,0 +1,34 @@
+# Conversation: wrong-search-results x structured-triage
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the clear description — the 'Q2 planning' example is really helpful for reproducing this.
+
+Could you share some environment details? Specifically:
+- Are you using the web app or the mobile app?
+- Which browser (and version) if it's the web app?
+- Do you know which version of TaskFlow you're on? (You can usually find this in Settings → About.)
+
+---
+
+### reporter
+
+I'm using the web app, Chrome browser — I don't know the exact version off the top of my head but it's up to date. TaskFlow version is 2.3.1, we just updated a few days ago actually. That's when I started noticing the problem, now that I think about it. The search was working fine before the update.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search index includes archived tasks and misses recently created active tasks after v2.3.1 upgrade","problem":"After upgrading to TaskFlow v2.3.1, search results include archived tasks that should be filtered out and omit active tasks that exist. The issue is consistent across all searches and has been confirmed by at least two users.","root_cause_hypothesis":"The v2.3.1 upgrade likely introduced a regression in the search indexing or query filtering logic. Possible causes: (1) a search index rebuild during the upgrade failed to apply the archived-task filter, (2) newly created tasks post-upgrade are not being indexed, or (3) a query-layer change removed or inverted the status filter that excludes archived tasks.","reproduction_steps":["Log into TaskFlow web app (v2.3.1)","Create a new task with 'Q2 planning' in the title","Ensure at least one archived task also contains 'Q2 planning'","Use the search feature to search for 'Q2 planning'","Observe that the archived task appears in results and the newly created active task does not"],"environment":"TaskFlow v2.3.1 (upgraded a few days ago), web app, Chrome (latest), issue confirmed by multiple users","severity":"high","impact":"All users performing searches are affected. Search returns misleading results — surfacing irrelevant archived tasks and hiding active ones — undermining core task-finding functionality.","recommended_fix":"Investigate changes to search indexing and query filtering in the v2.3.1 release. Check whether (1) the search index was properly rebuilt post-upgrade with correct status filters, (2) new tasks created after the upgrade are being added to the index, and (3) the query layer correctly filters on task status. Compare the search query logic between v2.3.0 and v2.3.1. A search index rebuild with correct filtering may resolve the issue.","proposed_test_case":"Create an archived task and an active task with the same keyword. Perform a search for that keyword. Assert that only the active task appears in results and the archived task is excluded. Additionally, verify that tasks created after an upgrade are indexed and searchable within a reasonable timeframe.","information_gaps":["Exact Chrome version (unlikely to be relevant given this is a server-side search issue)","Whether the search backend uses a separate index (e.g., Elasticsearch) that may need manual reindexing after upgrades","Whether the issue affects API-level search or only the UI search"]}
+
+---

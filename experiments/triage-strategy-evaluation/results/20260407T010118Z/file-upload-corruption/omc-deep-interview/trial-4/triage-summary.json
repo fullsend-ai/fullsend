@@ -1,0 +1,25 @@
+{
+  "title": "File uploads corrupted for larger files (PDFs, possibly other types) since ~March 31 deployment",
+  "problem": "Files uploaded via the task attachment feature are silently corrupted. Downloaded files are non-empty but unreadable/damaged. The issue is size-dependent: smaller files (e.g., simple PDFs, most images) upload correctly, but larger business documents (multi-page reports, contracts — likely several MB+) are consistently corrupted. At least one spreadsheet was also affected, suggesting this is not PDF-specific but a general large-file upload problem.",
+  "root_cause_hypothesis": "A deployment around Tuesday–Wednesday of last week (~March 31–April 1) likely introduced a regression in the file upload pipeline. Probable causes: (1) a change to multipart upload chunking that truncates or misassembles chunks for files exceeding a threshold, (2) a misconfigured request body size limit (e.g., nginx/proxy layer) that silently truncates payloads, or (3) an encoding/content-type handling change that corrupts binary data in larger payloads where chunked transfer is triggered.",
+  "reproduction_steps": [
+    "Open any task in TaskFlow",
+    "Click the 'Attach' button",
+    "Select a PDF file that is several megabytes (e.g., a 5+ page report or contract)",
+    "Wait for upload to complete",
+    "Download the uploaded file",
+    "Attempt to open it — the PDF viewer will report the file as damaged/corrupted",
+    "Repeat with a small/simple PDF (1 page, < 1 MB) to confirm it uploads correctly"
+  ],
+  "environment": "Affects multiple customers across unknown browsers/OS. No specific environment dependency reported — appears to be a server-side issue. The attach-button upload flow is the confirmed vector.",
+  "severity": "high",
+  "impact": "Multiple customers are affected. The file attachment feature is heavily used for business-critical documents (contracts, reports). Teams have been unable to reliably share key documents for approximately one week, forcing workarounds or blocking workflows entirely.",
+  "recommended_fix": "1. Check deployment logs for changes shipped Tuesday March 31 – Wednesday April 1. Focus on file upload handling, storage layer, proxy/gateway config, and any dependency updates. 2. Compare uploaded file bytes vs. original file bytes for a large test PDF to identify where corruption occurs (truncation, encoding, chunk reassembly). 3. Check for size-related thresholds in the upload path (proxy body limits, chunk size configs, streaming vs. buffered handling). 4. Test uploads at varying file sizes to identify the exact breakpoint.",
+  "proposed_test_case": "Upload files of increasing sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB, 20 MB) across multiple file types (PDF, XLSX, PNG). Download each and verify byte-for-byte integrity against the original using checksums. The test should assert that the downloaded file's hash matches the uploaded file's hash for all sizes and types.",
+  "information_gaps": [
+    "Exact file size threshold where corruption begins (developer can determine via systematic testing)",
+    "Whether the corruption is truncation, byte mangling, or encoding-related (developer can compare uploaded vs. downloaded bytes)",
+    "Exact deployment or commit that introduced the regression (check deployment logs for March 31–April 2)",
+    "Browser and OS details of affected users (unlikely to matter given server-side hypothesis, but not confirmed)"
+  ]
+}

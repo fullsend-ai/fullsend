@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured: small PDFs fine, started ~1 week ago, multiple customers affected, and the likely size-dependent nature. However, it missed: explicit confirmation that the threshold is ~1MB, that binary content is being mangled (not just metadata), and whether other large file types are affected (noted as an information gap rather than investigated). Five of seven expected extracts were partially or fully captured."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified the size-dependent behavior (small files fine, large files corrupted) and explicitly hypothesized different upload paths, chunk sizing, and encoding issues for larger files — which aligns closely with acceptable path 1. It also correctly flagged checking proxy/gateway configuration changes from ~1 week ago, aligning with acceptable path 2. The hypothesis of 'encoding issue that only manifests when file size exceeds a buffer boundary' is directionally correct though it doesn't name the Content-Type header issue specifically."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about upload method, success/error indicators, browser/OS, version, and crucially file size — which drew out the key size-dependent observation. It resolved after two rounds, which was reasonable given reporter impatience. The main gap is not following up on whether other file types are also affected, which would have been an important diagnostic question to distinguish PDF-specific vs. size-specific corruption."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Most questions were well-targeted. The browser/OS question in turn 2 was somewhat low-value since the reporter had already indicated it was happening across the whole team, suggesting a server-side issue. However, it was bundled efficiently with higher-value questions (version, file size) and didn't waste a full turn. The file size question was the key unlock."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The file size question was genuinely insightful and not something the reporter would have volunteered — it surfaced the critical pattern that small PDFs were fine. The upload method and error-vs-success questions were also well-targeted for pinpointing where in the pipeline corruption occurs. Questions were professionally framed and appropriately scoped to a non-technical reporter."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary includes clear reproduction steps with size variations, a specific hypothesis about upload path differences for large files, concrete debugging recommendations (checksum comparison, deploy history review, proxy config inspection), and a test case. A developer could start investigating immediately. The recommended fix correctly calls out reverse proxy configuration, which is where the actual bug lives."
+    }
+  },
+  "weighted_total": 3.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The file size question in turn 2 was the key diagnostic move — it surfaced the small-vs-large pattern that the reporter hadn't explicitly connected",
+    "The recommended fix correctly identifies the upload proxy / reverse proxy configuration as a likely culprit and suggests checking deploy history from ~1 week ago",
+    "The proposed test case (upload PDFs of varying sizes and checksum-verify each) is immediately actionable and well-specified",
+    "The root cause hypothesis, while not naming the Content-Type issue, correctly frames the problem as an encoding/chunking boundary issue affecting files above a size threshold"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other large file types (images, spreadsheets) are also affected — this would have quickly distinguished PDF-specific bugs from a general large-file pipeline issue",
+    "Binary content mangling (vs. metadata corruption) was not captured or explored",
+    "The browser/OS question was low-value given the reporter had already implied server-side causation by noting it affects everyone regardless of browser",
+    "The exact ~1MB threshold was listed as uncertain rather than probed further"
+  ],
+  "most_insightful_question": "Roughly how large are the PDFs that are getting corrupted? And does it happen with all PDFs, or only certain ones (e.g., larger files, or files with specific content like images or forms)?",
+  "missed_opportunities": [
+    "Are other file types (images, Word documents, spreadsheets) over a certain size also affected, or is this strictly a PDF issue?",
+    "Did the problem start suddenly on a specific date, or did it ramp up gradually? Has anything changed in your workflow around that time?",
+    "If you re-upload one of the corrupted PDFs and download it again, is the file size the same as the original?"
+  ]
+}

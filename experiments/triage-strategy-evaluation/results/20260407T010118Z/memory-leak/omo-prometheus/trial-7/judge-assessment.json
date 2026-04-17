@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: linear memory growth pattern, v2.3 upgrade trigger (~1 week ago), ~200 active users, consistent daily pattern, restart as workaround, and changelog mention of notification system changes. The server specs (8GB RAM VM, Ubuntu 22.04) were never asked about and are absent from the summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — a listener/subscriber registered per request in the notification hub that is never deregistered — maps directly onto the actual cause (event listener leak in the WebSocket notification system). The agent correctly identified v2.3 and the notification subsystem as the trigger and correctly reasoned that the stable connection count rules out a connection-level leak, pointing to an internal per-request registration. This satisfies both the canonical cause and acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the two most diagnostic questions and reached a well-supported conclusion in only two turns. The one clear gap is server specs (RAM, OS) which would be relevant for environment documentation and severity assessment. Goroutine profiling was recommended to the developer rather than requested from the reporter, which is appropriate given it requires a running instance. No other obvious questions were skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked and both were tightly targeted. The first efficiently bundled process identification, runtime, version, and upgrade timing. The second was a precise diagnostic probe (netstat + goroutine count) that directly resolved the connection-leak vs. per-request-leak ambiguity. No redundancy or low-value turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question is genuinely excellent: asking for both netstat connection count and Grafana goroutine count simultaneously was a well-constructed differential diagnosis. It let the reporter independently distinguish between two plausible leak mechanisms, and the reporter's answer ('connections stable, goroutines climbing linearly') was the key insight that drove the precise root cause hypothesis. The reporter even articulated the correct mechanism themselves as a result of this question."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it names the subsystem (real-time notifications, v2.3), lists three specific candidate code patterns to inspect, provides an exact debugging command (`/debug/pprof/goroutine?debug=1`), describes a validation approach (disable the feature flag), and includes a proposed regression test. A developer could open the v2.3 notification diff and start auditing request-scoped registrations without any additional context gathering."
+    }
+  },
+  "weighted_total": 4.65,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question was a textbook differential diagnosis: by asking for both connection count and goroutine count simultaneously, the agent enabled the reporter to rule out a connection-level leak and confirm a per-request internal leak in a single exchange.",
+    "The final summary is exceptionally actionable — specific candidate code patterns, an exact pprof URL, a feature-flag validation strategy, and a proposed regression test are all included.",
+    "The agent correctly recognized the reporter's changelog observation as a strong signal and made it a central part of the hypothesis rather than dismissing it."
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM VM, Ubuntu 22.04) were never elicited and are absent from the environment section of the summary — relevant for reproducibility and severity context.",
+    "The Go runtime version was listed as an information gap but was never actually asked; a single follow-up or inclusion in the first question would have closed it."
+  ],
+  "most_insightful_question": "Can you check one thing for me? Real-time notification systems typically use persistent connections (WebSockets or Server-Sent Events). If you run `netstat -an | grep <taskflow-port> | grep ESTABLISHED | wc -l` on your server, how many established connections do you see during the morning vs. late afternoon when things are slow? And does your Grafana setup track goroutine count for the TaskFlow process — if so, does that climb throughout the day too?",
+  "missed_opportunities": [
+    "Ask about server specs (RAM, OS/distro, VM vs bare metal) — relevant for environment documentation and ruling out OS-level memory pressure",
+    "Ask whether the real-time notifications feature can be disabled via a config flag — would have enabled the reporter to perform a quick validation before the developer engages"
+  ]
+}

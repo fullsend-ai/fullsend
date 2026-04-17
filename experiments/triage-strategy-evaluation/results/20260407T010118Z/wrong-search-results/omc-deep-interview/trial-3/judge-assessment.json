@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent captured: filter inversion behavior, active tasks missing from default search, multi-user impact, and the specific query affected. However, it never extracted when the problem started (missing the 3-day timeline tied to the migration), never asked whether individual task pages display correct archive status, and did not capture that the issue is in the search index layer rather than application logic. Three of seven expected extracts are absent or incomplete."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly identified that the archive filter behavior is inverted and that active tasks are excluded while archived tasks are returned — which aligns with the symptom description in both the canonical cause and acceptable paths. However, the root cause hypothesis points squarely at application-layer logic (a boolean negation error in a query builder or WHERE clause) rather than the search index field mapping. The acceptable paths allow for identifying the archive filter as the broken component without the specific inversion mechanism, which the agent achieves, but the recommended fix directs developers to the wrong layer (application code instead of the Elasticsearch index configuration)."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single round of questions. Multiple important follow-ups were skipped: no question about when the problem started (which would have surfaced the recent migration), no question about whether browsing or viewing individual task pages shows the correct archive status (which would have helped isolate the search index vs. application logic), and no question about whether unfiltered searches behave differently. The reporter's first response was rich and did reveal the inversion pattern, but the agent closed without probing the diagnostic gaps that remained."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked, and it covered multiple relevant dimensions concisely: search location, whether archived results were additive or substitutive, and active filter/sort state. No redundancy."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The question 'are the archived tasks showing up instead of active ones or in addition to them' was genuinely diagnostic — it probed the inversion pattern rather than just the presence of wrong results, and the reporter confirmed the inversion directly. The question about API vs. dashboard UI was also a useful scope-limiter. What the question lacked was any temporal component (when did this start?) and any probe about whether individual task pages are consistent with search results."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary includes clear reproduction steps, a proposed regression test, severity rating, and a structured recommended fix. However, the fix directs developers to inspect the application query builder for a boolean negation error — the actual bug is in the Elasticsearch index field mapping. A developer following this guidance would spend time auditing application code before eventually discovering the issue lies in the index layer. Actionable in structure, but the direction is off."
+    }
+  },
+  "weighted_total": 3.2,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Identified the filter inversion pattern precisely from a single response, producing a well-structured summary with reproduction steps and a proposed regression test",
+    "The compound first question efficiently established search location, filter state, and the additive-vs-substitutive distinction in one turn",
+    "Correctly flagged multi-user scope and 'high' severity given the impact on default search"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the problem started, missing the 3-day timeline that would point to the recent migration as the trigger",
+    "Never asked whether individual task pages display the correct archive status, which would have isolated the bug to the search layer rather than the data layer",
+    "Root cause hypothesis and recommended fix target application code (query builder) rather than the search index configuration, misdirecting the developer"
+  ],
+  "most_insightful_question": "Are the archived tasks showing up instead of active ones or in addition to them?",
+  "missed_opportunities": [
+    "When did this problem first appear — was there a recent update, deployment, or maintenance window?",
+    "If you open an individual task that search returns as 'active', does its detail page show it as active or archived?",
+    "Does searching without any status filter (showing all tasks) return results that look correct, or is the full result set also wrong?",
+    "Is the issue consistent across different search queries or only certain keywords?"
+  ]
+}

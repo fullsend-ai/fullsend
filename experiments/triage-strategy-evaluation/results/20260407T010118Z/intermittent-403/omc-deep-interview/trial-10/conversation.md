@@ -1,0 +1,73 @@
+# Conversation: intermittent-403 x omc-deep-interview
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s are frustrating, especially when permissions haven't changed.
+
+To help us narrow this down: when you get the 403, is it on the initial page load of the dashboard, or does the dashboard partially load and then some sections/API calls fail with 403? Also, have you noticed any pattern at all — for example, does it happen more after you've been idle for a while, or right after logging in, or at certain times of day?
+
+---
+
+### reporter
+
+It's the whole page — when I get the 403, nothing loads at all. It's not like part of the dashboard works and part doesn't. I just get a full 403 Forbidden page. And I haven't noticed a pattern with timing really, it seems pretty random. I'll click refresh and sometimes it works on the next try, sometimes it takes a couple refreshes. I kind of assumed it was a network thing on our end but my coworker mentioned she's seeing the same thing so I figured I'd report it.
+
+---
+
+### triage-agent
+
+That's really helpful, thanks. Since it started a couple days ago and affects multiple people, it sounds like something changed on the server side rather than a local issue.
+
+Could you do me a quick favor? Next time you hit the 403, open your browser's developer tools (Network tab) and check two things about the failed request: (1) what URL is the 403 actually coming from — is it the dashboard page itself, or is it a redirect to an auth/SSO endpoint that's returning 403? And (2) are there any interesting response headers, like a `Server` or `X-Served-By` header that might tell us which backend instance served the error?
+
+Also — do you know if your team's TaskFlow deployment runs behind a load balancer with multiple instances, or if there were any deployments/infrastructure changes around the time this started?
+
+---
+
+### reporter
+
+Honestly I'm not super familiar with the developer tools stuff but I'll try to check next time it happens. I do know we run behind a load balancer — I think we have a few servers, maybe 3? Our IT guy set that up. And yeah, now that you mention it, there was a deployment a couple days ago — they added a new role type. I actually just got switched to the new 'analyst' role right around that time. I hadn't connected those two things but the timing does line up. I'll try to grab those headers next time I get the error.
+
+---
+
+### triage-agent
+
+Oh, that's a really important detail — the timing of the new 'analyst' role lining up with when the 403s started is suspicious. Quick question: does your coworker who's also seeing the 403s happen to have been switched to the new 'analyst' role too? And do you know if anyone on your team who's still on an older role (like a regular 'user' or 'admin' role) is also hitting these errors, or is it just the folks on the new role?
+
+---
+
+### reporter
+
+Yeah, I think she was switched to the analyst role too — we're both on the same team and we all got moved over. I'm not 100% sure about people on other roles, but I haven't heard any complaints from the managers or admins on our team. It really does seem like it might be related to the new role now that I think about it. But what's weird is it's not every time — if the role was broken I'd expect it to fail always, right?
+
+---
+
+### triage-agent
+
+That's a great observation — you're right that if the role were completely broken it would fail every time. The fact that you're behind a load balancer with multiple servers is actually a plausible explanation for the intermittent part: it's possible not all of the backend instances were updated to recognize the new 'analyst' role, so you get a 403 when your request lands on one that doesn't know about it, and it works fine when it hits one that does.
+
+To help confirm this: is there any way for you (or your IT person) to temporarily switch your account back to whatever role you had before 'analyst'? If the 403s completely stop when you're on the old role, that would pretty much confirm the new role is the culprit and give the development team a clear direction to investigate.
+
+---
+
+### reporter
+
+That actually makes a lot of sense — I hadn't thought about it that way but yeah, if one of the servers doesn't know about the analyst role that would explain why it's hit or miss. I could probably ask our IT guy to switch me back to editor or whatever I was before, but I kind of need the analyst permissions for my work. I guess I could try it temporarily just to test? In the meantime I've just been refreshing until it works, which is annoying but gets the job done eventually. I'll check with IT about switching back to confirm.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on dashboard for users with new 'analyst' role — likely inconsistent deployment across load-balanced instances","problem":"Users assigned to the newly introduced 'analyst' role receive intermittent full-page 403 Forbidden errors when accessing the TaskFlow dashboard. Refreshing sometimes resolves the issue. Multiple users on the same team are affected. Users on older roles (editor, admin) do not appear to be affected. The issue began shortly after a deployment that introduced the analyst role.","root_cause_hypothesis":"The deployment that added the 'analyst' role was not applied consistently across all backend instances behind the load balancer (reportedly ~3 servers). Requests routed to an unpatched instance fail with 403 because that instance does not recognize the 'analyst' role in its authorization logic. Requests hitting a patched instance succeed normally, producing the intermittent pattern.","reproduction_steps":["Log in as a user assigned the 'analyst' role","Navigate to the TaskFlow dashboard","If the page loads successfully, refresh repeatedly (the 403 appears intermittently depending on which backend instance serves the request)","Observe that the 403 is a full-page failure, not a partial API error"],"environment":"TaskFlow deployment behind a load balancer with approximately 3 backend instances. A recent deployment added a new 'analyst' role type.","severity":"high","impact":"All users assigned the new 'analyst' role experience intermittent complete loss of dashboard access. Workaround is refreshing until a working instance is hit, but this is disruptive to productivity. Admins and editors appear unaffected.","recommended_fix":"1. Verify deployment status across all load-balanced instances — check whether the analyst role authorization configuration is present on every instance. 2. Redeploy or sync the role/permission configuration to any lagging instances. 3. Review the deployment process to ensure future deployments are applied atomically across all instances (rolling deploy verification). 4. Check the authorization middleware/RBAC config to confirm the analyst role is correctly mapped to dashboard access permissions.","proposed_test_case":"With all instances confirmed updated: authenticate as an analyst-role user and make 50+ sequential requests to the dashboard endpoint. Verify 0 responses return 403. Additionally, add an integration test that asserts all defined roles (including analyst) are authorized for the dashboard route.","information_gaps":["No dev-tools network capture confirming which URL returns the 403 or which backend instance serves the error (reporter is not technical enough to easily provide this)","No confirmation yet from a role-switchback test (reporter offered to try but hasn't done so yet)","Exact number and deployment state of backend instances not confirmed by IT/ops"]}
+
+---

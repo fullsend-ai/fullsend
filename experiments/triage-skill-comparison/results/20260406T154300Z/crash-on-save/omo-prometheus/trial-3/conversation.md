@@ -1,0 +1,55 @@
+# Conversation: crash-on-save x omo-prometheus
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I understand how frustrating it is to lose work. To help us track this down, could you tell me:
+
+1. What exactly happens when it crashes? (Does the app close entirely, do you see an error message or dialog, does it freeze/hang?)
+2. What are you saving when this happens? (A new task, editing an existing task, project settings, etc.)
+3. What version of TaskFlow are you on, and what platform (web, desktop, mobile)?
+
+Any of these details will help us narrow this down quickly.
+
+---
+
+### reporter
+
+When I hit Save, there's a brief flash of some kind of error dialog — I think it mentions something about 'encoding' — and then the whole app just closes. No freeze, it just shuts down instantly.
+
+I'm saving a task list that has about 200 tasks in it. I recently imported a bunch of tasks from a CSV file, and I think that's when the problem started. I'm editing existing tasks mostly.
+
+I'm on TaskFlow v2.3.1, desktop app on macOS 14.2.
+
+---
+
+### triage-agent
+
+Thanks for those details — the combination of the CSV import and the 'encoding' error message is a strong lead.
+
+To confirm my working theory: did the CSV file you imported contain any non-ASCII characters — things like accented letters (é, ñ, ü), emoji, or other special symbols in task names or descriptions? Also, if you create a brand-new task list with just a couple of manually-typed tasks (no imported ones), does saving work fine?
+
+This will help us determine whether the issue is in how the CSV data was imported or in the save process itself.
+
+---
+
+### reporter
+
+Yeah, the CSV had em-dashes and curly quotes in a lot of the task names — my team uses Google Docs and when I exported to CSV those fancy characters came along. And yes, if I make a small test list with just a few tasks typed in manually, saving works perfectly fine. Even weirder, I tried saving the list after deleting most of the imported tasks (got it down to maybe 40-50 tasks) and it actually saved okay. It only seems to crash when the list is bigger with those imported tasks in it.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Desktop app crashes on save when task list contains many CSV-imported tasks with non-ASCII characters","problem":"The desktop app (macOS) crashes immediately on save — the app closes after briefly flashing an error dialog mentioning 'encoding'. The crash occurs when saving a task list containing ~200 tasks imported from a CSV file. The CSV data contains non-ASCII characters (em-dashes, curly quotes) originating from Google Docs export.","root_cause_hypothesis":"The save/serialization path mishandles multi-byte UTF-8 characters (such as em-dashes U+2014 and curly quotes U+201C/U+201D) when processing a large number of entries. The likely failure mode is a buffer size calculation that assumes single-byte characters, leading to a buffer overflow or truncation that corrupts the serialized data and triggers a fatal encoding error. The fact that ~40-50 imported tasks save fine but ~200 do not suggests the bug is size-dependent — possibly a fixed-size buffer or an integer overflow in a length calculation that only manifests above a certain payload size.","reproduction_steps":["Install TaskFlow v2.3.1 desktop app on macOS 14.2","Create a CSV file containing ~200 tasks with non-ASCII characters (em-dashes, curly quotes) in task names — exporting from Google Docs produces these naturally","Import the CSV file into a new task list via TaskFlow's CSV import feature","Attempt to save the task list","Observe: brief error dialog mentioning 'encoding', then app closes/crashes"],"environment":"TaskFlow v2.3.1, desktop app, macOS 14.2","severity":"high","impact":"Any user who imports CSV data containing non-ASCII characters (extremely common with Google Docs, Microsoft Office, and international users) risks data loss when their task list grows beyond a certain size. The crash causes complete loss of unsaved work. This likely affects all desktop platforms, not just macOS.","recommended_fix":"Investigate the save/serialization code path for incorrect string length or buffer size calculations that don't account for multi-byte UTF-8 characters. Specifically: (1) check if any buffer allocation uses character count instead of byte length, (2) check if the serialization format has a size field that overflows or is computed incorrectly for multi-byte strings, (3) review the CSV import path to confirm data is stored as valid UTF-8 internally. Add explicit UTF-8 encoding validation at both CSV import time and save time.","proposed_test_case":"Create a task list with 200+ tasks where every task name contains multi-byte UTF-8 characters (em-dashes, curly quotes, accented letters, emoji). Verify that save completes successfully and that reloading the file preserves all characters exactly. Additionally, test boundary sizes (50, 100, 150, 200, 500 tasks) to identify the exact threshold.","information_gaps":["Exact error message in the dialog (reporter only caught the word 'encoding' before it dismissed)","Whether the crash also occurs on Windows/Linux desktop or is macOS-specific","Whether the crash log/crash report contains a stack trace (macOS Console.app or ~/Library/Logs/DiagnosticReports)","The exact size threshold where the crash begins occurring (reporter confirmed ~40-50 works, ~200 does not)"],"confidence":{"root_cause":"medium","reproduction":"high","severity_assessment":"high"}}
+
+---

@@ -1,0 +1,59 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — slow search is definitely frustrating. To help us narrow down what's happening: when you say search is slow, are you using the main search bar at the top, or a filter/search within a specific project or list? And roughly how many tasks do you have in TaskFlow (hundreds, thousands, tens of thousands)? That will help us figure out whether this is a scaling issue or something else.
+
+---
+
+### reporter
+
+I use the main search bar at the top. I have around 5,000 tasks — I've been using TaskFlow for about 2 years now so they've built up. It was always fast before though, so I don't think it's just the number of tasks. I think it started being slow maybe 2 weeks ago? I recently upgraded to v2.3 around that time too, not sure if that's related.
+
+---
+
+### triage-agent
+
+That timing lines up interestingly with the v2.3 upgrade — good catch noting that. Quick follow-up: does it happen with every search you run, or only certain kinds? For example, is a single-word search like "meeting" just as slow as a longer or more complex query? And is it consistently slow every time, or does it sometimes come back fast?
+
+---
+
+### reporter
+
+Hmm, good question. Now that I think about it, it seems like it's slow when I'm searching for something that would be in the task descriptions — like searching for a phrase from meeting notes I pasted in. But actually, when I search for a task by its title, it comes back pretty quick. I hadn't really connected those dots until you asked. It's consistently slow for the description-type searches though, not intermittent.
+
+---
+
+### triage-agent
+
+That's a really useful distinction — title searches being fast while description searches are slow points us in a helpful direction.
+
+One thing I want to make sure we're not overlooking: you mentioned pasting meeting notes into task descriptions. Do you have many tasks with large blocks of text in the description field? I'm wondering whether the slowness is specifically about *searching through large description content* versus descriptions that are just a sentence or two. If you search for a word you know only appears in a short description, is that also slow?
+
+Also — have you found any workaround in the meantime, like using filters or scrolling to find what you need instead of search?
+
+---
+
+### reporter
+
+Yeah, I do have a lot of tasks with really long descriptions — I tend to paste in meeting notes and sometimes those are like pages long. I haven't specifically tested whether searching for something in a short description is faster vs a long one, but I think even searching for a common word is slow as long as it's hitting descriptions. I'm not sure though, I haven't really done controlled experiments on it.
+
+For now I've just been searching by the task title when I can remember it, since that's still fast. It's annoying but it works for the moment.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search regression in v2.3: description/full-text searches take 10-15s with large task counts","problem":"Since upgrading to v2.3 approximately two weeks ago, main search bar queries that match task description content take 10-15 seconds to return results. Title-only searches remain fast. The user has ~5,000 tasks, many with very long descriptions (pasted meeting notes). The slowdown is consistent and reproducible, not intermittent.","root_cause_hypothesis":"v2.3 likely introduced a regression in how description content is searched — possibly a removed or broken full-text index on the descriptions column, a change from indexed full-text search to unindexed LIKE/regex scanning, or a new search code path that performs per-row description scanning instead of using an index. The title search remaining fast suggests title indexing is intact while description indexing is not.","reproduction_steps":["Set up TaskFlow v2.3 with a user account containing ~5,000 tasks","Ensure many tasks have large description fields (multi-paragraph text)","Use the main search bar to search for a term that appears in task descriptions but not titles","Observe 10-15 second response time","Search for a term that matches a task title — observe fast response for comparison"],"environment":"TaskFlow v2.3, work laptop (OS and browser not specified), ~5,000 tasks accumulated over 2 years, many tasks with long-form description content","severity":"medium","impact":"Affects users with large task counts who rely on searching description content. Power users and long-term users are most impacted. Workaround exists: searching by task title still returns quickly.","recommended_fix":"Diff the search implementation between v2.2 and v2.3 — look for changes to how description fields are queried (index removal, query plan changes, ORM changes). Check whether a full-text index on the task descriptions table exists and is being used. Run EXPLAIN/ANALYZE on the search query with description matching to confirm whether it's doing a sequential scan. If an index was dropped or a migration missed it, restore it. If the search code path changed, compare query plans between title-only and description-inclusive searches.","proposed_test_case":"Performance test: with a dataset of 5,000+ tasks (including tasks with 1KB+ descriptions), assert that a full-text search query matching description content returns results in under 2 seconds. Run this test against both v2.2 (baseline) and v2.3 to confirm regression and verify fix.","information_gaps":["Exact OS and browser/client being used","Whether other v2.3 users with large task counts experience the same issue (isolated vs. widespread)","Database backend type and version (SQLite, PostgreSQL, etc.)","Whether searching for a term in a short description is also slow (would confirm it's about the search path, not content size)"]}
+
+---

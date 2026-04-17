@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present in the summary: linear memory growth from ~500MB to 4GB+, v2.3 upgrade as trigger (~1 week ago), 200 active users, consistent day-to-day pattern, restart as workaround, v2.3 changelog noting notification changes, and 8GB RAM VM. The summary also captures additional useful details like the Go runtime, goroutine count trajectory, and the acceleration pattern late in the day."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies v2.3 as the trigger and the real-time notification system as the source — satisfying both acceptable diagnostic paths. The root cause hypothesis (goroutines leaked per WebSocket connection) is directionally correct, though the actual mechanism is event listeners leaked per API request rather than per WebSocket connection. The fix direction (context cancellation, cleanup on disconnect) is sound and actionable. The minor misidentification of the attachment point (connection vs. request) keeps this from a 5."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked exactly the right questions at each stage: first surfacing version, runtime, and feature usage to identify the trigger and scope; then requesting pprof data to confirm the leak mechanism. After the reporter confirmed thousands of goroutines accumulating in the notification subsystem, resolving was fully justified. No obvious follow-up was skipped that would have changed the diagnosis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two turns were used, both essential. The first question efficiently covered version, runtime type, and feature usage in one ask. The second precisely requested the pprof data that confirmed the diagnosis. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question probed for features that could 'accumulate state over time' — a framing that naturally surfaced the notification system without leading the witness. The second question requesting pprof goroutine and heap profiles showed genuine platform-specific diagnostic reasoning (Go runtime tooling), and directly produced the confirming evidence. Both questions elicited information the reporter would not have volunteered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a clear root cause hypothesis, step-by-step reproduction instructions, a specific diff target (v2.2 vs v2.3 notification subsystem), concrete fix guidance (context cancellation, channel cleanup on disconnect), a proposed regression test, and explicitly scoped information gaps. A developer could open the diff and begin a fix without any additional investigation."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The pprof goroutine question demonstrated precise Go runtime knowledge and directly produced confirming evidence — a textbook diagnostic move",
+    "The first question's framing around features that 'accumulate state over time' naturally surfaced the notification system without leading the reporter",
+    "The final summary is exceptionally complete: includes reproduction steps, a proposed test case, a specific fix strategy, and honestly scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis identifies goroutines leaked per WebSocket connection, while the actual mechanism is event listeners leaked per API request — a meaningful distinction a developer would eventually correct during investigation",
+    "The reporter mentioned having the pprof goroutine dump in hand but the agent did not ask them to share the stack trace output, leaving the exact function names as an information gap that could have been closed in the same turn"
+  ],
+  "most_insightful_question": "Could you grab a quick `pprof` snapshot late in the day when things are slow? Specifically, hitting `/debug/pprof/goroutine?debug=1` — the goroutine count in particular would help confirm whether the real-time notification connections are piling up rather than being cleaned up.",
+  "missed_opportunities": [
+    "Ask the reporter to paste or attach the goroutine pprof output they had in hand — this would have provided the exact stack traces and closed the 'exact function names' information gap",
+    "Ask whether the memory acceleration late in the day correlates with peak usage hours, which would help distinguish GC pressure compounding from a simple linear accumulation"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "title": "Description search performs full scan after v2.3 upgrade (~10-15s with 5k tasks)",
+  "problem": "After upgrading to approximately v2.3, searching task descriptions takes 10-15 seconds regardless of search term specificity. Title searches remain fast. The reporter has ~5,000 tasks with long descriptions (often containing pasted meeting notes).",
+  "root_cause_hypothesis": "v2.3 likely broke or removed the full-text index on the task descriptions column, or switched the description search code path from an indexed query (e.g., full-text search) to an unindexed sequential scan (e.g., SQL LIKE '%term%' or in-memory string matching). Evidence: (1) title search is still fast, suggesting title indexing is intact; (2) search time is constant regardless of how many results match, which rules out result-rendering overhead and points to a fixed-cost full-table scan; (3) timing correlates with the v2.3 upgrade.",
+  "reproduction_steps": [
+    "Have a workspace with ~5,000 tasks, many with long descriptions",
+    "Upgrade to v2.3",
+    "Perform a search that targets task descriptions (not just titles)",
+    "Observe 10-15 second response time regardless of search term commonality",
+    "Compare with a title-only search, which should return quickly"
+  ],
+  "environment": "TaskFlow v2.3 (approximately), work laptop, ~5,000 tasks accumulated over 2 years, many with long descriptions containing pasted meeting notes",
+  "severity": "high",
+  "impact": "Any user with a large task count who relies on description search is affected. The feature is effectively unusable for interactive use. Workaround exists (search by title only) but limits functionality significantly for users who store detailed information in descriptions.",
+  "recommended_fix": "Diff the search query path between v2.2 and v2.3 for description search specifically. Check whether a full-text index on the descriptions column was dropped or a migration failed to create one. If the search method was changed (e.g., from full-text search to LIKE/regex), restore indexed search. If using a database, run EXPLAIN on the description search query to confirm a sequential scan. Also verify the index exists and is not corrupted for large text fields.",
+  "proposed_test_case": "With a dataset of 5,000+ tasks with non-trivial descriptions, assert that a description search completes in under 2 seconds for both common and rare terms. Include a regression test that verifies the query plan uses an index (not a sequential scan) for the description search path.",
+  "information_gaps": [
+    "Exact v2.3 version number not confirmed (reporter said 'I believe')",
+    "Database backend type (SQLite, PostgreSQL, etc.) not known",
+    "Whether any other operations (filtering, sorting) are also slower post-upgrade"
+  ]
+}

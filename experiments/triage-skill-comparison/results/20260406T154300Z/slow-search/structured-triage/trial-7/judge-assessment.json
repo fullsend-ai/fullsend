@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most expected information: ~5,000 tasks, slow on description search vs fast on title search, v2.2 to v2.3 regression, ~2 weeks ago, 10-15 second delays, long descriptions. Missed CPU spike detail, but that's a system-level observation the reporter didn't volunteer and the agent didn't ask about."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is spot-on: 'a change from indexed search to naive string scanning' is essentially exactly what happened (FTS5 index to LIKE query). The summary correctly identifies it as a v2.3 regression, correctly distinguishes title vs description search behavior, and all facts match the ground truth."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 agent questions to reach a solid triage — very efficient. The browser question was slightly wasted (it's a desktop app, not browser-based), but the agent corrected course gracefully. Could have asked about CPU/memory behavior to get the CPU spike detail, but the conversation was lean overall."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "First question effectively separated search type, location, and dataset size — drawing out the critical title-vs-description distinction. Second question targeted environment and version, which directly revealed the v2.3 regression. The browser sub-question was a minor miss for a desktop app, but the overall diagnostic reasoning was strong."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it tells a developer exactly where to look (diff search implementation between v2.2 and v2.3, check description indexing), provides clear reproduction steps with specific data requirements, and even proposes a performance test. A developer could start investigating right away."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Excellent root cause hypothesis that closely matches the actual cause — identified indexing removal as a likely culprit",
+    "Very efficient: only 2 turns to extract nearly all critical information",
+    "Reproduction steps are specific and well-structured, including the differential test (title vs description)",
+    "Summary is well-organized with clear separation of problem, hypothesis, reproduction, and recommended fix"
+  ],
+  "notable_weaknesses": [
+    "Asked about browser version for what turned out to be a desktop application",
+    "Did not ask about system resource behavior (CPU/memory) during slow searches, missing the CPU spike signal",
+    "Did not ask whether the reporter had tried any workarounds or diagnostics (e.g., reindexing, cache clearing)"
+  ],
+  "most_insightful_question": "What are you searching for (e.g., a keyword, a tag, a filter combination)? ... Roughly how many tasks are in your workspace? — This compound question efficiently drew out the critical title-vs-description distinction and dataset size in a single turn.",
+  "missed_opportunities": [
+    "Asking about CPU or memory usage during slow searches would have revealed the 100% single-core CPU spike, further confirming sequential scanning",
+    "Asking whether the reporter had tried clearing cache or reindexing could have provided additional diagnostic signal and a potential workaround"
+  ]
+}

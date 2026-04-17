@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: archived tasks surfacing in active search, active tasks missing from results, onset tied to v2.3.1 migration ~3 days ago, multi-user impact confirmed, individual task pages showing correct status, inverted filter behavior confirmed, and search layer vs. data layer isolation. The summary also adds reproduction steps, a proposed test case, a workaround, and explicit information gaps — clearly above the baseline."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis correctly identifies the search index rebuild during the v2.3.1 migration as the trigger, explicitly suggests 'rebuilding the index with the corrected flag mapping,' and even anticipates a boolean negation error in the index build logic. This satisfies the acceptable path of identifying the schema migration as the trigger and the archive filter as the broken component. The hypothesis is close enough to the actual inversion that a developer would find the bug quickly."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Two questions were asked and both were load-bearing. The first disambiguated the symptom pattern and established the timeline. The second — asking whether browsing without search showed correct status — was the pivotal diagnostic question that isolated the fault to the search layer. No obvious follow-up was left unasked; additional details (exact migration script, full user scope) are correctly flagged as developer investigation items rather than things the reporter could answer."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two agent turns before resolution, and neither question was redundant or combinable without sacrificing clarity. Each question had a clear diagnostic purpose and returned decisive information."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — 'when you browse your task list without using search, do tasks show up in the correct categories?' — is a textbook isolation question that drew out exactly the information needed to distinguish a search-index problem from a data-layer problem. The reporter likely would not have volunteered this comparison unprompted. The first question efficiently bundled symptom clarification with timeline in a natural way."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes step-by-step reproduction instructions, a pointed root cause hypothesis naming the specific boolean field and the likely code path, a recommended fix (correct the flag mapping and reindex), a proposed regression test, and explicit information gaps. A developer could open the v2.3.1 migration diff and start searching for the inverted field immediately."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question precisely isolated the search layer from the primary data store in a single turn, which is the key diagnostic move for this class of bug.",
+    "The triage summary includes a proposed test case and a workaround — both additions that go beyond what was asked and provide immediate value to both developers and users.",
+    "The root cause hypothesis names concrete code artifacts ('WHERE clause, filter parameter, or index mapping related to archived/is_archived/status') that give a developer a specific starting point rather than just a general area."
+  ],
+  "notable_weaknesses": [
+    "The summary does not mention the workaround in a user-facing way — it is buried in the impact section rather than called out explicitly for the support team to share with affected users while the fix is developed.",
+    "The environment section does not capture the database type (PostgreSQL) or search backend (Elasticsearch), which are relevant to the fix and could have been surfaced by asking what the search infrastructure looks like — though this is a minor omission given the reporter may not have known."
+  ],
+  "most_insightful_question": "When you browse your task list or project board without using search, do tasks show up in the correct categories? Is it only search that has things backwards, or does the regular task list also show your active tasks under 'Archived' and vice versa?",
+  "missed_opportunities": [
+    "Asking whether the issue affects all projects/workspaces or just specific ones — could help narrow scope of the index corruption.",
+    "Asking whether unfiltered search (no archive filter at all) returns a correct mix of tasks — this would have further confirmed the inversion hypothesis and distinguished it from a total data loss scenario."
+  ]
+}

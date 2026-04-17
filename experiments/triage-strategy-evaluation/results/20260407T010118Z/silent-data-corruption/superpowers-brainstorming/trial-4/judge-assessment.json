@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were extracted: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import, 3+ digit country code pattern, US/UK unaffected, and a recent change hypothesis. The summary also adds a concrete reproduction path and a proposed test case covering 1-, 2-, 3-, and 4-digit country codes."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly Salesforce sync as the corruption source, the ~2-week onset tied to a code change, and the specific truncation-to-2-digits pattern. The root cause hypothesis ('a regex pattern that assumes country codes are at most 2 digits') directly matches the canonical cause (regex \\d{1,2} capture group) and satisfies both acceptable diagnostic paths. No factual errors are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered timing, entry mechanism, format pattern, and confirmed the exact truncation with a concrete example — all necessary diagnostic steps. It did not explicitly ask whether a deployment or code change occurred ~2 weeks ago (it inferred this), and it did not ask about available backups or an immediate workaround, which would have been useful given the severity. At most one obvious follow-up was missed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each essential and non-redundant. Q1 established the ingestion mechanism. Q2 efficiently combined timing and format in one message. Q3 obtained a concrete before/after example to confirm the hypothesis. No question was low-value or repeated information already given."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 (how do numbers enter TaskFlow?) is the right starting diagnostic question. Q2 uniquely paired timing with format pattern, proactively surfacing the international-number hypothesis before the reporter volunteered it. Q3 requested a specific before/after example that confirmed the exact truncation character position. The questions showed genuine diagnostic reasoning rather than generic checklists."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis, concrete reproduction steps, a step-by-step recommended fix (git bisect ~2 weeks ago, look for \\d{1,2} or substring(0,2), fix normalizer, re-sync from Salesforce), a parameterized unit test case, and clearly scoped information gaps. A developer could begin investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Proactively hypothesized the country-code-length pattern in Q2 before the reporter confirmed it, demonstrating genuine diagnostic reasoning",
+    "Efficiently resolved the issue in 3 turns with no wasted questions, extracting all expected information",
+    "The triage summary is exceptionally actionable: it includes a targeted git-history search strategy, a proposed unit test covering 1-, 2-, 3-, and 4-digit country codes, and a remediation plan"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly ask whether a deployment or code change occurred ~2 weeks ago — this was inferred rather than confirmed, leaving a small gap",
+    "Did not ask about available backups or an immediate workaround despite the high-severity data corruption framing (the ground truth notes CRM backups exist and could restore affected records)"
+  ],
+  "most_insightful_question": "Q2: 'Do you have a sense of when the bad numbers started appearing?' paired with 'are the affected numbers all in a particular format, like international numbers or numbers with extensions?' — combining timing and format in one turn was the pivotal diagnostic move that led directly to the root cause hypothesis.",
+  "missed_opportunities": [
+    "Ask whether any code change, deployment, or configuration update to the Salesforce sync occurred approximately two weeks ago — this would have confirmed the developer-introduced regression rather than leaving it as an inference",
+    "Ask whether the original (correct) phone numbers are still available anywhere — e.g., in Salesforce, a CRM backup, or TaskFlow's audit history — to surface the remediation path sooner"
+  ]
+}

@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** PDF attachments silently corrupted during upload (intermittent, regression ~1 week ago)
+
+## Problem
+PDF files uploaded to task attachments are sometimes corrupted and unreadable immediately after upload. The corruption is intermittent — some PDFs upload fine while others are damaged. Multiple customers are affected. The issue began approximately one week ago with no changes on the client side, indicating a server-side regression.
+
+## Root Cause Hypothesis
+A server-side change deployed ~1 week ago likely introduced a bug in the file upload pipeline. The intermittent nature combined with immediate corruption suggests either: (1) a multipart/chunked upload issue where large or certain-sized files are truncated or reassembled incorrectly, (2) an encoding/content-type handling change that corrupts binary data (e.g., treating binary as UTF-8), or (3) a race condition in the storage layer that sometimes writes incomplete data.
+
+## Reproduction Steps
+  1. Prepare several PDF files of varying sizes (small <100KB, medium 1-5MB, large >10MB) and sources
+  2. Upload each PDF as a task attachment
+  3. Immediately attempt to download/view each uploaded PDF
+  4. Compare file sizes and checksums of the original vs downloaded files to identify truncation or byte corruption
+  5. Note which files are corrupted — look for a pattern in file size or content
+
+## Environment
+Server-side issue affecting all customers using the file attachment feature. No specific client OS/browser correlation identified — likely independent of client environment.
+
+## Severity: high
+
+## Impact
+Multiple customers are unable to reliably use the file attachment feature for PDFs, which is described as heavily used. This is blocking core workflows and has persisted for approximately one week.
+
+## Recommended Fix
+1. Review all server-side deployments from ~1 week ago, focusing on changes to the file upload pipeline, storage layer, API gateway, or any middleware handling multipart uploads. 2. Compare a corrupted uploaded file against its original — check for truncation (file size mismatch), byte-level corruption, or encoding issues. 3. Check if the upload handler correctly preserves binary content-type (application/octet-stream or application/pdf) without any text encoding transformation. 4. If using chunked uploads, verify chunk reassembly logic. 5. Check for any proxy or CDN configuration changes that might alter request bodies.
+
+## Proposed Test Case
+Upload PDFs of various sizes (1KB, 100KB, 1MB, 10MB, 50MB) and verify that the downloaded file is byte-identical to the original (matching SHA-256 checksum). Include both single-page and multi-page PDFs. This test should run against the upload pipeline in CI to catch future regressions.
+
+## Information Gaps
+- Exact file size threshold or pattern distinguishing corrupted from successful uploads (developer can determine during reproduction)
+- Whether non-PDF file types are also affected (would widen the scope if so)
+- The specific server-side deployment or change that introduced the regression (requires deployment log review)

@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: inverted filter behavior, missing active tasks, timing tied to v2.3.1 (~3 days ago), multi-user impact, correct archive labels on individual task pages, confirmed filter inversion, and isolation to search layer rather than underlying data. The triage also captured additional useful detail: reproduction steps, a proposed test case, and a workaround."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the v2.3.1 migration as the trigger and the archive filter as the broken component — matching acceptable path #2 exactly. It also mentions the search index as a candidate location, touching on acceptable path #1. The root cause hypothesis ('inverted boolean or enum value in the search index or query layer') is directionally correct. The slight miss is framing this as potentially a query-builder issue rather than an index mapping configuration issue; the actual cause is in the Elasticsearch index field mapping, not the query layer. However, this is within acceptable diagnostic territory."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked all the questions needed to reach a confident conclusion: established the regression window, confirmed archive labels are still correct on individual tasks, confirmed browsing works without search, and ran a decisive confirmation experiment switching filter modes. Information gaps (API, mobile, other filters) were explicitly noted rather than overlooked. No obvious follow-up was skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three investigative turns, each with a clear purpose: (1) establish timing and platform, (2) distinguish indexing failure from filter inversion, (3) confirm inversion with a direct experiment. No redundant or low-value questions. The agent reached a definitive conclusion in the minimum number of exchanges."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 2 showed genuine diagnostic reasoning — asking whether the archived task retains its label (ruling out data corruption) and whether the active task is visible by browsing (ruling out data loss) were exactly the right questions to distinguish between 'index not updated' and 'filter inverted.' Turn 3 designed a clean experiment to test the inversion hypothesis directly, which the reporter confirmed definitively. The questions led to information the reporter would not have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start: a precise problem statement, the specific migration event as a trigger, where to look (v2.3.1 changeset, search query/index filter logic), what to look for (inverted boolean, swapped enum, flipped conditional), a complete reproduction script, a proposed regression test, and a workaround. A developer could open the v2.3.1 diff and begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Turn 2 question pair cleanly separated two distinct failure modes (index staleness vs. filter inversion), demonstrating structured diagnostic reasoning rather than generic troubleshooting",
+    "Turn 3 designed a targeted experiment that produced a definitive yes/no answer on the inversion hypothesis — the reporter's response confirmed it completely",
+    "The final summary is exceptionally well-structured, including a proposed test case and explicit information gaps — making it immediately useful to both the developer and QA"
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis leans toward 'search query layer' as the likely fix location, when the actual cause is in the Elasticsearch index field mapping configuration — a subtle but meaningful distinction that could send a developer to the wrong place first",
+    "The agent did not ask whether the issue appeared immediately after v2.3.1 deployed or after some delay (which could hint at an async index rebuild), though this is a minor gap given the strong confirmation already achieved"
+  ],
+  "most_insightful_question": "Does the archived task that shows up in search results still have the 'archived' label on it — and if you browse your task list directly without using search, is the active 'Q2 planning' task still there?",
+  "missed_opportunities": [
+    "Asking whether the problem appeared immediately at v2.3.1 deployment or after some delay (could indicate an async index rebuild window)",
+    "Asking whether searching without any status filter ('all tasks') was tried before the experiment — this was eventually covered in the experiment but could have been established earlier to narrow scope faster"
+  ]
+}

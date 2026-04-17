@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Extracted 5 of 7 expected items: task count (~5,000), description vs title search distinction, v2.2→v2.3 regression, ~2 week timeline, and 10-15 second latency. Missed CPU spikes during search and the detail about long descriptions (copy-pasted meeting notes, 2000+ words), both of which would have strengthened the diagnosis and pointed more precisely at the full table scan issue."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it specifically suggests a change from indexed full-text search to unindexed LIKE/ILIKE queries, which is essentially the actual cause (FTS5 index replaced by naive LIKE query). The hypothesis that title search was unaffected because its index path remained is also correct. All facts in the summary are consistent with the ground truth."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent turns before resolution. The first question efficiently elicited the critical title-vs-description distinction. The second question gathered environment, version, timeline, and scale in a single well-structured ask. No wasted questions."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-framed and successfully drew out the most important diagnostic clue (title vs description search speed difference). The second question efficiently bundled multiple environment details. However, no follow-up probed for system-level symptoms (CPU usage) or data characteristics (description length), which would have further narrowed the diagnosis."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary provides clear reproduction steps, a precise root cause hypothesis pointing at the migration and query path, and a concrete recommended fix (compare migrations, check EXPLAIN ANALYZE, restore FTS index). A developer could start investigating the v2.3 migration immediately. Docked slightly because the missing detail about long descriptions and CPU spikes would have helped a developer understand the severity of the full-scan problem."
+    }
+  },
+  "weighted_total": 4.20,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptionally accurate root cause hypothesis that closely matches the actual cause without any code inspection",
+    "Very efficient — reached a strong diagnosis in only 2 turns",
+    "Well-structured summary with clear reproduction steps, recommended fix, and honest information gaps",
+    "First question effectively surfaced the title-vs-description distinction, which was the key diagnostic signal"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about system resource behavior during searches (CPU spike would have confirmed compute-bound full scan vs I/O issue)",
+    "Did not explore data characteristics like description length, which is a contributing factor to the severity",
+    "Information gaps section mentions browser dev tools and network timing, suggesting the agent was partly thinking about this as a web app latency issue rather than a local database query issue"
+  ],
+  "most_insightful_question": "What are you searching for when it's slow? — This open-ended question led the reporter to volunteer the critical observation that title searches are fast while description searches are slow, which is the single most diagnostic piece of information in the conversation.",
+  "missed_opportunities": [
+    "Asking whether CPU or memory spikes during slow searches (would confirm compute-bound full table scan)",
+    "Asking about the size or nature of task descriptions (long descriptions amplify the LIKE query cost)",
+    "Asking whether the reporter has tried any workarounds like reindexing or clearing cache"
+  ]
+}

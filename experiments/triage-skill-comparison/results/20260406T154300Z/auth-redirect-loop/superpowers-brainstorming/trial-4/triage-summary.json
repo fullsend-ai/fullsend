@@ -1,0 +1,22 @@
+{
+  "title": "Infinite login redirect loop for users with plus-addressed or migrated email addresses after Okta-to-Entra ID SSO switch",
+  "problem": "After switching SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop: they authenticate successfully at Entra ID but TaskFlow fails to establish a session and redirects them back to the IdP. The affected users correlate with those who have plus-addressed emails (e.g., jane+taskflow@company.com) or whose email addresses were changed or aliased during the Entra ID migration.",
+  "root_cause_hypothesis": "TaskFlow's SSO callback handler matches the identity token's email claim against stored user records to find or create a session. Entra ID likely returns a normalized or canonical email (stripping the plus-address tag, or returning the new primary alias) that no longer matches the email stored in TaskFlow's user table. The mismatch causes the session lookup to fail, so TaskFlow treats the user as unauthenticated and redirects back to the IdP, creating the loop. Okta may have preserved the original plus-addressed or aliased email in its claims, masking this problem until the switch.",
+  "reproduction_steps": [
+    "Have a user account in TaskFlow whose stored email is a plus-address (e.g., jane+taskflow@company.com) or an email that was changed/aliased during Entra ID migration",
+    "Attempt to log in via SSO",
+    "Authenticate successfully at Microsoft Entra ID",
+    "Observe that TaskFlow redirects back to the IdP instead of establishing a session",
+    "The loop repeats indefinitely"
+  ],
+  "environment": "TaskFlow with Microsoft Entra ID SSO (recently migrated from Okta). Affects users with plus-addressed emails or emails changed during migration. Browser-independent (incognito helps inconsistently).",
+  "severity": "high",
+  "impact": "~30% of the team is locked out of TaskFlow entirely. No reliable workaround exists — incognito mode is inconsistent. Affected users must have their email addresses manually corrected or the matching logic fixed before they can work.",
+  "recommended_fix": "1. Inspect the email claim returned by Entra ID for affected users (check the id_token or SAML assertion) and compare it to what TaskFlow has stored in its user table. 2. Fix the user-matching logic in the SSO callback to handle email normalization — either normalize plus-addresses (strip the +tag portion) before lookup, or match on a secondary/alias field. 3. For users whose emails changed during migration, ensure TaskFlow's user records are updated to reflect their current Entra ID primary email, or add support for matching on Entra ID's `oid` (object ID) claim as a stable identifier rather than relying on email alone. 4. Clear any stale Okta session cookies/tokens that may still be present (this explains the inconsistent incognito behavior).",
+  "proposed_test_case": "Create test users with plus-addressed emails (user+tag@domain.com) and aliased emails. Perform SSO login via Entra ID and verify that the callback correctly resolves them to the right TaskFlow user record and establishes a session without redirecting back to the IdP.",
+  "information_gaps": [
+    "Exact SSO protocol in use (OIDC vs SAML) — affects which claim fields to inspect",
+    "Whether TaskFlow uses email as the sole user identifier or also stores an external IdP subject/object ID",
+    "The specific email claim Entra ID is returning for plus-addressed users (stripped or preserved)"
+  ]
+}

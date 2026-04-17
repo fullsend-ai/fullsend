@@ -1,0 +1,56 @@
+# Conversation: crash-on-save x superpowers-brainstorming
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — losing work to crashes is definitely frustrating and we want to get this sorted out.
+
+To help us narrow this down, could you tell us what you're saving when the crash happens?
+
+1. **Creating a new task** (hitting save on a new task form)
+2. **Editing an existing task** (updating title, description, status, etc.)
+3. **Saving project settings or preferences**
+4. **Something else** — please describe what you were doing right before the crash
+
+---
+
+### reporter
+
+I'm editing an existing task list — I have about 200 tasks in it. When I click 'Save' in the toolbar, the app just crashes. I see a quick flash of some error dialog before it closes but I can't read it in time. It's not when I'm creating a new task or changing settings, just saving my task list.
+
+---
+
+### triage-agent
+
+Thanks, that's really helpful — saving a large task list with ~200 tasks is a great lead.
+
+You mentioned a quick flash of an error dialog before the app closes. Could you try to capture it? A couple of options:
+
+1. **Screen recording** — start a screen recording (most OSes have a built-in one), then trigger the save so we can pause on the error
+2. **Developer console** — if this is a web app, open your browser's developer tools (F12 → Console tab) before clicking Save, and paste any red error messages you see
+3. **It happens too fast / not sure how** — no worries, we can still work with what we have
+
+Also — does the crash happen *every* time you save that task list, or only sometimes?
+
+---
+
+### reporter
+
+It happens every single time I try to save that list. I'll try the screen recording thing — good idea. I did manage to catch a glimpse of the word 'encoding' in the error dialog once, but it disappears so fast I can't read the rest. Also worth mentioning: this only started happening after I imported a bunch of tasks from a CSV file. Smaller lists save just fine, and if I remove the imported tasks it stops crashing.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save when task list contains CSV-imported tasks due to encoding error","problem":"Saving a task list that contains tasks imported from a CSV file causes the application to crash with an encoding-related error. The crash is deterministic (100% reproduction rate) and affects only lists containing CSV-imported tasks. Smaller or manually-created lists save without issue.","root_cause_hypothesis":"The CSV import path does not normalize character encoding (e.g., the CSV may be in Latin-1, Windows-1252, or contain BOM/invalid UTF-8 sequences). The imported task data is stored in memory as-is, and the save/serialization routine (likely expecting valid UTF-8) crashes when it encounters bytes it cannot encode.","reproduction_steps":["Create or obtain a CSV file with ~200 tasks (likely containing non-ASCII characters, special punctuation, or mixed encoding)","Import the CSV into TaskFlow as a task list","Click 'Save' in the toolbar","Observe: app crashes with a briefly-visible encoding error dialog"],"environment":"Not yet confirmed — reporter did not specify OS, browser, or app version. However, the bug is encoding-related and likely platform-independent.","severity":"high","impact":"Any user who imports tasks from CSV files risks data loss — the app crashes on save with no recovery path, and work done after import cannot be persisted.","recommended_fix":"1. Inspect the CSV import code: ensure incoming data is decoded and re-encoded as UTF-8 (or the app's canonical encoding) at import time, with invalid byte sequences handled gracefully (replace or reject with a user-visible warning). 2. Inspect the save/serialization path: add a try/catch around encoding operations so that an encoding failure surfaces a readable error message instead of crashing the app. 3. Validate with a CSV containing mixed encodings, BOM markers, and non-ASCII characters (em-dashes, accented characters, smart quotes).","proposed_test_case":"Import a CSV file containing tasks with non-UTF-8 characters (e.g., Latin-1 accented names, Windows-1252 smart quotes, and raw 0x80–0xFF bytes). Verify that (a) import either succeeds with normalized encoding or warns about invalid characters, and (b) saving the resulting task list succeeds without crashing.","information_gaps":["Exact encoding of the original CSV file","Full text of the error dialog (reporter may still provide a screen recording)","OS, browser/app version, and platform details"]}
+
+---

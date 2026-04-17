@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All eight expected extracts are present: the 30% affected rate, the plus-addressing and alias pattern, the SameSite cookie issue, the email claim mismatch, the Set-Cookie header observation (reporter noted it might not be 'sticking', agent explained the mechanism), the incognito workaround, correct redirect URI configuration, and other SSO apps working fine. The summary additionally produced reproduction steps, concrete fix options, test cases, and explicitly flagged information gaps — adding genuine value beyond the expected baseline."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identified both compounding issues from the ground truth: email claim mismatch (Entra stripping plus-addressing, sending primary email for aliased accounts) and SameSite=Strict causing the session cookie to be dropped on cross-origin redirect. The causal hierarchy is inverted from the canonical answer (email mismatch treated as primary, cookie as secondary), but this matches acceptable diagnostic path #3. The explanation of each mechanism is technically accurate. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered the essential diagnostic territory in three well-chosen turns: user pattern identification, token claim inspection, and cookie attribute inspection. The one notable gap is that aliased-user token claims were never directly confirmed — the agent inferred it from the plus-sign finding and acknowledged it as an information gap. The SameSite hypothesis was also not fully confirmed (no test of whether SameSite=Lax resolves the loop), though this is a reasonable stopping point for a triage. No other obvious questions were left unasked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, each necessary and non-overlapping. The first narrowed the user pattern, the second confirmed the email claim mismatch via network tab inspection, the third specifically probed cookie attributes to surface the SameSite issue. No redundant or low-value turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "All three questions demonstrated genuine diagnostic reasoning. The first correctly identified the 30/70 split as the fastest path to a root cause. The second synthesized the reporter's observations into a coherent hypothesis and asked for specific evidence to test it. The third — asking specifically about SameSite and Secure cookie attributes — was the most impressive: it required SSO-specific knowledge (that SameSite=Strict breaks OAuth redirect flows) and directly produced the key secondary finding the reporter would never have volunteered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding from this summary immediately. It identifies the specific fields to change (SameSite=Strict → Lax), provides multiple fix options for the email matching issue (match on oid/sub, normalize emails, add fallback lookup), includes concrete reproduction steps, and proposes specific test cases. Information gaps are clearly flagged so the developer knows what to verify before shipping."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the 30/70 split as the primary diagnostic signal and structured the first question around it — this directly surfaced the plus-addressing and alias patterns",
+    "Third question probing specifically for SameSite cookie attributes was technically sophisticated and non-obvious; it required SSO domain expertise and directly produced the key secondary finding",
+    "Final summary is production-quality: clear causal hierarchy, multiple fix options with trade-offs, concrete test cases, and honestly flagged information gaps",
+    "Correctly identified both compounding root causes within three turns despite the reporter having no hypothesis about either"
+  ],
+  "notable_weaknesses": [
+    "Token claims for aliased users were inferred but never directly verified — a follow-up asking the reporter to check one aliased user's network tab would have closed this gap",
+    "Did not ask about TaskFlow version or deployment type (self-hosted vs. cloud), which could have been relevant if there were known SSO migration issues in a specific version"
+  ],
+  "most_insightful_question": "The third question: asking specifically whether the Set-Cookie header had a SameSite attribute, and explaining that SameSite=Strict would cause the session cookie to be dropped on cross-site navigations like the Entra-to-TaskFlow redirect. The reporter had no idea what SameSite meant and would never have surfaced this information unprompted.",
+  "missed_opportunities": [
+    "Directly verify token claims for an aliased (non-plus-sign) affected user to confirm the secondary email mismatch category with evidence rather than inference",
+    "Ask whether affected users could log in successfully if an admin manually updated their TaskFlow email to match what Entra sends — this would have confirmed the email mismatch hypothesis with a simple workaround test",
+    "Ask whether the loop also occurs in Firefox, to rule out Chromium-specific cookie handling as a confounding factor"
+  ]
+}

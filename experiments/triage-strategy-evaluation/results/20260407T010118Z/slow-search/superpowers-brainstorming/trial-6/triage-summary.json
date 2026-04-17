@@ -1,0 +1,22 @@
+{
+  "title": "Full-text search on task descriptions regressed to 10-15s after v2.3 upgrade",
+  "problem": "After upgrading from TaskFlow v2.2 to v2.3 approximately two weeks ago, full-text search across task descriptions takes 10-15 seconds to return results. Search by title remains fast. The user has ~5,000 tasks accumulated over 2 years, some with lengthy descriptions containing pasted meeting notes.",
+  "root_cause_hypothesis": "The v2.3 release likely introduced a regression in the full-text search indexing or query strategy for task descriptions. Possible causes: (1) an FTS index on the description column was dropped or not migrated, (2) the search query was changed from an indexed full-text search to an unindexed pattern match (LIKE/ILIKE), or (3) a new search feature in v2.3 added unindexed fields to the search scope. The fact that title search remains fast while description search is slow points directly at description-specific indexing — titles are short enough to scan quickly even without an index, but large descriptions (~5K rows with lengthy text) would be severely impacted by a missing or broken FTS index.",
+  "reproduction_steps": [
+    "Set up a TaskFlow v2.3 instance with ~5,000 tasks, some with lengthy descriptions (paragraph-length or longer)",
+    "Perform a full-text search using the global search targeting task descriptions",
+    "Observe response time of 10-15 seconds",
+    "Compare with the same search on a v2.2 instance with equivalent data — expect significantly faster results",
+    "Additionally, compare description search time vs title-only search time on v2.3 to confirm the discrepancy"
+  ],
+  "environment": "TaskFlow v2.3 (upgraded from v2.2), running on a work laptop, ~5,000 tasks with some containing lengthy descriptions (pasted meeting notes)",
+  "severity": "medium",
+  "impact": "Users with moderate-to-large task databases experience unacceptable search latency (10-15s) on description searches, making the full-text search feature effectively unusable for daily workflows. Title search is unaffected, so users are not fully blocked but lose access to a key capability.",
+  "recommended_fix": "1. Diff the v2.2→v2.3 changes to search-related code (query construction, indexing, migrations). 2. Check whether the description FTS index exists in a v2.3 database — run EXPLAIN/EXPLAIN ANALYZE on the description search query to confirm whether it's doing a sequential scan. 3. If an index was dropped, add a migration to restore it. If the query strategy changed, revert or optimize the description search path. 4. Benchmark with a dataset of ~5K tasks with large descriptions to verify the fix brings response time back to sub-second.",
+  "proposed_test_case": "Create a performance regression test that seeds a database with 5,000 tasks (with realistic-length descriptions averaging 500+ words) and asserts that a full-text description search completes within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 schemas to catch indexing regressions.",
+  "information_gaps": [
+    "Exact database backend in use (SQLite, PostgreSQL, etc.) — though the investigation path is the same regardless",
+    "Whether the user is running self-hosted or cloud-hosted TaskFlow",
+    "Whether the v2.3 upgrade ran all migrations successfully"
+  ]
+}

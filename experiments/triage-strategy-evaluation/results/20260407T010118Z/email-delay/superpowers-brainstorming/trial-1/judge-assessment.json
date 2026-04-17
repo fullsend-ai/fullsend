@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, started ~1 week ago, morning worst/afternoon better, marketing digest connection, queue congestion, transactional vs. bulk competition, and original 1-2 minute baseline. The summary also adds useful extras like org size (~200 users), reproduction steps, and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The hypothesis — bulk digest emails flooding the mail queue and pushing transactional notifications into a backlog that drains through the afternoon — matches acceptable diagnostic path 2 exactly. The recommended fix even explicitly calls out implementing a priority system ('separate queues, a priority system, or separate sending infrastructure'), which is precisely the canonical fix. This is as accurate as a reporter-facing triage can get without developer-side queue visibility."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-chosen question rounds established scope, identified the likely causal change, and quantified the digest batch size. The agent correctly acknowledged remaining unknowns (SMTP provider, queue architecture, rate limits) as information gaps rather than leaving them implicit. One minor gap: no direct question about whether digest recipients could be a subset of users rather than everyone, which could affect scale estimates. Overall, resolved at a reasonable point given the reporter's limited infrastructure visibility."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three question rounds were necessary and non-redundant. Q1 ruled out account-specific issues. Q2 probed for causal changes and directly surfaced the digest feature. Q3 confirmed the theory with timing and scale data. No questions were repeated or could reasonably have been combined without loss of clarity."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q2 was particularly well-constructed — a structured list of specific change categories that naturally led the reporter to recall the digest feature, which they hadn't connected to the problem on their own. Q3 was equally strong: the agent transparently stated its working hypothesis and asked targeted questions to validate it (digest timing and org size), demonstrating genuine diagnostic reasoning rather than generic troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names specific log sources to check, prescribes a concrete fix (priority separation between transactional and bulk email queues), lists alternative implementation approaches (separate infrastructure, off-peak scheduling, throttling), and provides a precise test case to verify the fix. A developer could open queue logs and begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Surfaced the digest email connection entirely through targeted questioning — the reporter had not considered it relevant until asked about recent changes",
+    "Transparently shared the working hypothesis in Q3 and invited the reporter to validate it, which both confirmed the theory and built reporter trust",
+    "Recommended fix explicitly includes priority separation, which is exactly the canonical solution, despite the agent never having direct access to queue internals",
+    "Information gaps section is honest and precise, giving a developer clear pointers for what to investigate next"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether the digest emails go to all users or a subset — this affects the estimated queue load and the 'roughly 200 digest emails' assumption",
+    "Did not ask the reporter to check whether they received the digest email that morning on the days notifications were worst, which would have further confirmed the correlation"
+  ],
+  "most_insightful_question": "Do you know if any of the following happened around that time? (listing deployments, email provider changes, usage spikes) — this structured prompt led the reporter to recall the digest email feature they had not connected to the problem, which became the central diagnostic clue.",
+  "missed_opportunities": [
+    "Ask whether the digest goes to all ~200 users or a subset, to better estimate queue load",
+    "Ask the reporter to check whether the digest email arrives in their inbox at approximately the same time as the delay window begins on bad mornings (would confirm the correlation with more precision)",
+    "Ask whether there is a TaskFlow admin dashboard or notification log the reporter could check to see timestamps of when notifications were sent vs. received"
+  ]
+}

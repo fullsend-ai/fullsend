@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured most key information: the inverted filter behavior, the timing correlation with v2.3.1, multi-user impact, and the active/archived swap. However, two expected items were not extracted: (1) whether individual task pages show the correct archive status — a critical distinction between an index/search bug vs. a data or UI bug — and (2) any framing around the search index specifically vs. application logic."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The general direction is correct and matches the second acceptable diagnostic path: the v2.3.1 update is correctly identified as the trigger, and the archive filter is correctly identified as the broken component showing inverted behavior. The root cause hypothesis mentions 'inverted boolean flag in the search index query' as one possibility, which is directionally close to the actual cause (inverted field mapping in index config). The recommended fix focuses on diffing application code rather than index configuration, which is slightly off but would still lead a developer toward the right area. Not a misleading conclusion."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after a single exchange. The reporter's reply was unusually rich and volunteered the inversion behavior without prompting, giving the agent a reasonable basis to resolve. However, asking whether individual task detail pages display the correct archive status was an obvious and valuable follow-up that was skipped — it would have distinguished an index bug from an application code bug and changed the recommended fix direction. The absence of this question left a meaningful diagnostic gap."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "One question was asked and it was well-targeted. No redundant or wasted turns. The question directly elicited the most useful diagnostic information the reporter had."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The timing question was well-structured with explicit options that helped the reporter contextualize their answer, and it successfully prompted the reporter to connect the issue to v2.3.1 and describe the inversion behavior in detail. It demonstrated genuine diagnostic reasoning (regression vs. latent bug is a meaningful distinction). A question about whether individual task pages show correct status would have been even more insightful."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is detailed and well-structured: clear reproduction steps, a proposed test case, severity and impact assessment, and a concrete fix direction. A developer could start investigating immediately by diffing v2.3.0 to v2.3.1. The fix recommendation pointing at application code (boolean inversion in query logic) rather than index configuration may add friction, but the overall framing is close enough that a developer would likely find the actual issue."
+    }
+  },
+  "weighted_total": 3.70,
+  "turn_count": 1,
+  "notable_strengths": [
+    "A single well-crafted question elicited highly diagnostic information that the reporter likely would not have volunteered as clearly otherwise",
+    "Correctly identified the v2.3.1 update as the regression trigger and correlated timing precisely",
+    "Captured the inversion pattern explicitly — 'active only' returns archived, archived filter returns active — which is the core behavior a developer needs",
+    "Proposed test case with both filter states is excellent and would catch this class of inversion in CI",
+    "Multi-user impact was noted from the original issue and preserved in the summary"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether individual task detail pages show the correct archive status — the answer would have localized the bug to the search/index layer vs. data or rendering layer",
+    "Recommended fix directs developers to diff application code rather than index configuration, which is where the actual inversion lives; this could add unnecessary investigation time",
+    "No question about recent database migrations or maintenance tasks that might have triggered an index rebuild"
+  ],
+  "most_insightful_question": "The timing question structuring three explicit options (recent regression / long-standing / not sure) — it framed the diagnostic space clearly and prompted the reporter to both pin the timing and spontaneously describe the inverted filter behavior.",
+  "missed_opportunities": [
+    "Ask whether viewing an individual archived task's detail page still shows it as 'archived' — confirming correct status display would strongly implicate the search index rather than the data or UI layer",
+    "Ask whether any database migrations or background maintenance jobs ran around the same time as the v2.3.1 patch, which would have pointed toward an index rebuild as the proximate cause",
+    "Ask whether searches without any archive filter (e.g., searching all tasks) return correct results — this would help confirm the issue is specifically in filter logic rather than general result ordering"
+  ]
+}

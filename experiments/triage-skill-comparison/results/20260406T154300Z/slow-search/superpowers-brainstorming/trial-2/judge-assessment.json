@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 2,
+      "rationale": "The triage captured the v2.2→v2.3 regression and the ~2 week timeline, but missed most expected extracts: the ~5,000 task count, the critical distinction between description search (slow) vs title search (fast), CPU spikes during search, and long descriptions. The agent even acknowledged these as information gaps but chose to resolve after only one follow-up question instead of asking."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The information that was captured is accurate. The root cause hypothesis is in the right direction — it mentions 'switch from indexed search to full table scan' and 'new full-text search implementation without proper indexing' which are close to the actual cause (FTS5 index replaced by LIKE query). However, without knowing about the title vs description distinction, the hypothesis is less precise than it could be."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one question and then resolved. While the single question was good, the agent was too eager to close. It had budget for more questions and the information gaps it identified were critical — particularly whether all searches are slow or only certain patterns, which would have revealed the title vs description distinction and pointed directly at the root cause. Efficiency isn't just about minimizing turns; it's about maximizing information per conversation."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The one question asked was well-structured with multiple-choice options that made it easy for the reporter to respond. It correctly prioritized understanding whether this was a regression vs scaling issue. However, there were no follow-up questions to dig deeper into the search behavior patterns, which was a missed diagnostic opportunity."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer could start investigating by diffing v2.2 and v2.3 search code, which is a reasonable starting point. But without knowing that title search is fast while description search is slow, the developer would need to discover this themselves. The summary's recommended fix is generic ('diff search-related code') rather than targeted. The information gaps the agent identified but didn't pursue would have made this much more actionable."
+    }
+  },
+  "weighted_total": 2.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Correctly identified v2.3 upgrade as the trigger with a well-structured first question",
+    "Root cause hypothesis included the actual cause (full table scan / missing index) among its possibilities",
+    "Honestly identified its own information gaps in the summary",
+    "Good severity assessment and impact analysis"
+  ],
+  "notable_weaknesses": [
+    "Resolved far too early — only 1 follow-up question before closing",
+    "Failed to discover the critical title vs description search distinction",
+    "Did not ask about task count despite the reporter mentioning 'a lot of tasks'",
+    "Listed information gaps but chose not to pursue them before closing"
+  ],
+  "most_insightful_question": "The multiple-choice question about when search started feeling slow was well-designed and efficiently confirmed the regression hypothesis",
+  "missed_opportunities": [
+    "Ask whether all search types are equally slow or if some searches are still fast (would have revealed title vs description distinction)",
+    "Ask how many tasks they have (reporter mentioned 'a lot' — easy follow-up)",
+    "Ask about system resource usage during searches (would have revealed CPU spike)",
+    "Ask about the nature of their task content (would have revealed long descriptions)"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were captured: affected record count (~50-100 of 2,000), truncation pattern, ~2-week timeline, nightly batch import as the vector, 3+ digit country code pattern, US/UK numbers unaffected, and connection to a recent change. The summary additionally included reproduction steps, a proposed test case with edge cases, and severity/impact assessment."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly import as the corruption source, the 3+ digit country code pattern, the ~2-week timeline, and explicitly hypothesizes 'a regex/parsing change that extracts only the first 2 digits after +' — which directly matches the actual root cause. This satisfies the first acceptable path and closely approximates the canonical cause. No material inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions yielded all critical information. The reporter volunteered the 2-week timeline and the specific examples without being prompted, which is fortunate but means the agent didn't explicitly ask about recent changes to the sync pipeline. The noted information gaps (exact date, specific deployment change) are real but the agent reasonably resolved rather than ask a third turn, since the hypothesis was already well-supported."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, both essential. Question 1 scoped the ingestion mechanism; Question 2 isolated the corruption point and gathered a concrete example. No redundancy, no low-value turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated strong diagnostic reasoning. The first question (ingestion source) is a high-yield differential that immediately scoped the problem. The second question was dual-purpose: a Salesforce vs. TaskFlow comparison to isolate causation, paired with a request for an example number that unlocked the country-code-length pattern the reporter would not have articulated unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a specific root cause hypothesis with three named candidate mechanisms (schema change, regex, formatting/validation), reproduction steps, a structured test case covering all country code length edge cases, and a concrete recommended fix (check commit history, repair affected records from Salesforce). A developer could start investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Resolved in just 2 turns while capturing all expected information",
+    "First question was a high-yield differential that immediately identified the nightly sync as the vector",
+    "Second question was cleverly dual-purpose: isolation question plus concrete example request, which unlocked the country-code-length pattern",
+    "Root cause hypothesis accurately names regex/parsing change as a candidate and correctly characterizes the truncation-to-2-digits behavior",
+    "Proposed test case covers all four relevant edge cases (+1, +44, +353, +1684)"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly ask whether any recent changes were made to the sync job — the ~2-week timeline correlation was noted but not actively probed",
+    "Exact onset date was estimated by reporter rather than precisely confirmed; a third question could have pinpointed the first affected sync run"
+  ],
+  "most_insightful_question": "Are the bad numbers correct in Salesforce but wrong in TaskFlow, or wrong in both? — This single question isolated causation to the sync job and, combined with the request for an example, prompted the reporter to share the +353→+35 and +1268→+12 examples that revealed the 3+ digit country code truncation pattern.",
+  "missed_opportunities": [
+    "Asking directly: 'Were any changes deployed to the sync job or TaskFlow around 2 weeks ago?' — this would have more directly surfaced the normalizer update without relying on the developer to connect the timeline",
+    "Asking for the exact date the nightly sync first produced bad numbers (e.g., checking sync logs) to pin the regression to a specific deploy"
+  ]
+}

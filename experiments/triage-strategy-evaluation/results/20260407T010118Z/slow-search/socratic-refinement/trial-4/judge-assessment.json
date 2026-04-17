@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items were extracted: ~5,000 tasks, slow on description / fast on title, v2.2→v2.3 regression, ~2 weeks ago, 10-15 seconds, CPU spike, and long descriptions. The summary also added useful extras like UI freeze behavior and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage satisfies both acceptable diagnostic paths simultaneously: it identifies the v2.2→v2.3 upgrade as the trigger and suspects a search implementation regression, AND it identifies the title-vs-description performance gap and suspects an indexing issue. The recommended fix explicitly says 'Check whether a full-text search index was dropped, altered, or is no longer being used' — which maps precisely to the actual FTS5→LIKE regression."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two rounds of well-targeted questions covered the key diagnostic space. The agent resolved with all critical information in hand. Minor gaps: OS/hardware details were not confirmed (flagged in information_gaps), and no question was asked about workarounds like cache clearing or reindexing. Neither omission significantly undermines the diagnosis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question rounds were productive. The first drew out the version upgrade, title/description split, and task count. The second drew out CPU spike and UI freeze behavior. The 'first search worse than later?' sub-question was slightly speculative but not wasteful. No redundancy."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was well-structured and drew out information the reporter wouldn't have volunteered unprompted (specifically the title-vs-description asymmetry and version correlation). The second question's UI-behavior angle was diagnostically sharp — the resulting CPU-spike and freeze details meaningfully narrowed the hypothesis space toward a synchronous, CPU-bound main-thread operation."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately: the summary directs them to diff the search implementation between v2.2 and v2.3, specifically checking whether the FTS index path is still used for description search. Reproduction steps are precise, a concrete test case is proposed, and the root cause hypothesis is specific enough to be directly testable."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extracted every expected data point, including all three that required prompting (CPU spike, long descriptions, UI freeze behavior)",
+    "Root cause hypothesis independently converged on the indexing regression — matching the actual FTS5→LIKE cause without access to the codebase",
+    "The recommended fix steps are specific and prioritized, giving a developer an immediate starting point",
+    "Triage satisfied both acceptable diagnostic paths simultaneously, making it robust to uncertainty about the precise mechanism"
+  ],
+  "notable_weaknesses": [
+    "OS and hardware details were not confirmed (Ubuntu 22.04, ThinkPad T14, 32GB RAM) — these were flagged as a gap but could have been asked directly",
+    "No question about attempted workarounds (cache clearing, reindexing) — the ground truth notes the reporter hasn't tried either, which is relevant for short-term mitigation advice"
+  ],
+  "most_insightful_question": "The second question's ask about UI behavior during slowness ('does the app freeze up entirely, do you get a spinner, or does it just sit there looking like nothing is happening?') — this drew out both the UI freeze and the CPU fan observation, which together characterized the bug as a CPU-bound synchronous operation blocking the main thread, substantially narrowing the hypothesis space.",
+  "missed_opportunities": [
+    "Ask for OS and hardware details directly rather than leaving them as a gap",
+    "Ask whether the reporter had tried any workarounds such as clearing the app cache or triggering a reindex, which could have revealed the FTS index migration path"
+  ]
+}

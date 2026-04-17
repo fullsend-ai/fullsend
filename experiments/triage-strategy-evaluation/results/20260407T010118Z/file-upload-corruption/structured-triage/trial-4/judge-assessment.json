@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Most expected extracts are present: small PDFs fine, started ~1 week ago, multiple customers affected, size-dependent behavior noted, upload pipeline/proxy suspected, binary encoding flagged as a hypothesis. Missing: confirmation that other large file types are also affected (correctly listed as an info gap, but not probed), and the 1MB threshold was not established (also listed as a gap). The agent surfaced the key clues but acknowledged the gaps honestly."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis explicitly lists 'binary vs. text encoding in the upload stream' and 'chunked transfer encoding' as suspects, which directly maps to the actual cause (Content-Type stripped, storage defaults to text/plain, binary mangled). The size-dependent behavior and recent deployment trigger are both correctly identified, satisfying acceptable path 1. The summary doesn't lock onto the upload proxy specifically, but the direction is right and a developer following the recommended fix would find it quickly."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent noticed the size correlation from the first reply but didn't follow up with a targeted question about it (e.g., 'Can you try a file you know is over 1MB?'). It didn't ask whether other file types are affected, which the information gaps section acknowledges. The browser/OS question consumed a turn without strong diagnostic value. The agent resolved with reasonable basis but left two obvious follow-ups on the table."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Only two question turns were used. The first question was well-targeted and efficiently multi-part. The second question (browser/OS, TaskFlow version) was less valuable — the reporter's pushback made clear it was cross-machine — but it wasn't egregiously wasteful. One turn could have been better spent on file size confirmation or other file types."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The first question was solid and drew out the crucial size clue. The second question was generic (browser, OS, app version) and didn't build on the size signal the reporter had just dropped. A more insightful follow-up would have probed the size threshold directly or asked about other file types, which would have advanced the diagnosis significantly. The agent recognized the clue but didn't chase it."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes specific investigation areas (chunked transfer encoding, binary vs. text encoding, proxy/middleware changes), concrete reproduction steps with file size variation, a proposed SHA-256 hash test case, and explicit pointers to what changed ~1 week ago. A developer could begin investigating and writing a test immediately."
+    }
+  },
+  "weighted_total": 3.8,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Recognized and preserved the size correlation clue from the first reporter reply, even though the reporter didn't emphasize it",
+    "Recommended fix is specific and technically precise — mentions chunked transfer encoding, binary vs. text encoding, and proxy configuration, which directly point at the actual bug",
+    "Proposed test case with SHA-256 hash comparison is immediately implementable and would catch regressions",
+    "Correctly identified that the issue is cross-browser/cross-machine without needing further confirmation"
+  ],
+  "notable_weaknesses": [
+    "Did not follow up on the size correlation with a targeted question (e.g., asking the reporter to test a known large vs. known small file)",
+    "Second question turn spent on browser/OS details that the reporter immediately dismissed as irrelevant and that added little diagnostic value",
+    "Never asked whether other file types (images, spreadsheets) are affected, which would have been a strong signal pointing at the upload path rather than PDF-specific handling"
+  ],
+  "most_insightful_question": "The first question asking 'Roughly how large are the affected files?' and 'Does this happen with every PDF you upload, or only certain ones?' — this drew out the key observation that smaller PDFs seem fine, which is the central diagnostic clue.",
+  "missed_opportunities": [
+    "Follow up on the size correlation: 'Can you find one PDF that works and one that doesn't and tell me roughly how big each is?' or 'Can you try uploading a file you know is larger than 1–2MB?'",
+    "Ask whether other file types over the same size (images, Word docs, spreadsheets) are also affected — would have strongly suggested an upload-path issue rather than PDF-specific handling",
+    "Ask whether the reporter's IT team knows of any recent TaskFlow updates or infrastructure changes ~1 week ago — the reporter explicitly mentioned nothing changed on their end, making this a natural redirect"
+  ]
+}

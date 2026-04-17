@@ -1,0 +1,23 @@
+{
+  "title": "Intermittent 403 errors caused by misconfigured backend server (app-server-3)",
+  "problem": "Users across the team are receiving intermittent 403 Forbidden errors on all TaskFlow pages. The errors occur approximately 1 in 3 page loads and resolve on refresh. The 403 response is a TaskFlow-generated permission error ('You do not have permission to access this resource'), not an infrastructure/WAF block.",
+  "root_cause_hypothesis": "app-server-3, one of the backend servers behind the load balancer, is returning 403 for all authenticated requests. The most likely causes are: (1) a failed or incomplete deployment to app-server-3 that left it with stale or incorrect authorization configuration, (2) a session/auth store connectivity issue specific to that node (e.g., it cannot reach the session store or auth cache and defaults to denying access), or (3) a misconfigured permission or middleware change that was applied inconsistently across servers.",
+  "reproduction_steps": [
+    "Log in to TaskFlow as any user",
+    "Load any page (dashboard, reports, settings, etc.)",
+    "Observe the X-Served-By response header",
+    "When routed to app-server-3, a 403 with 'You do not have permission to access this resource' is returned",
+    "When routed to app-server-1 or app-server-2, the page loads normally",
+    "Refreshing may re-route to a healthy server and succeed"
+  ],
+  "environment": "TaskFlow 2.3.1, behind a load balancer with at least 3 backend servers (app-server-1, app-server-2, app-server-3). Reproduced on Chrome 124/125 on Windows 10. Multiple team members affected.",
+  "severity": "high",
+  "impact": "All users are affected. Approximately one-third of requests fail with 403, making the application unreliable for the entire team. No data loss, but significant productivity impact and user frustration.",
+  "recommended_fix": "1. Immediately pull app-server-3 out of the load balancer rotation to stop user-facing errors. 2. Compare the configuration, deployment version, and auth/session store connectivity of app-server-3 against the healthy servers (app-server-1 and app-server-2). 3. Check app-server-3's application logs around the time the issue started (~April 5) for deployment events, auth errors, or connectivity failures. 4. Once the root cause is identified and fixed, return app-server-3 to the pool and monitor.",
+  "proposed_test_case": "Send authenticated requests directly to each backend server (bypassing the load balancer) and verify all return 200 for authorized users. Additionally, add a health check to the load balancer that verifies auth-dependent routes return 200, so a misconfigured node is automatically removed from rotation.",
+  "information_gaps": [
+    "Exact deployment or configuration change that occurred on or around April 5 that may have affected app-server-3",
+    "Whether app-server-3's application logs show auth-related errors or session store connectivity issues",
+    "The load balancer's health check configuration (whether it currently checks app-level auth or only TCP/HTTP connectivity)"
+  ]
+}

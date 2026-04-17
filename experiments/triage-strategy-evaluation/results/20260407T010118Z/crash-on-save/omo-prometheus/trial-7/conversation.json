@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I understand how frustrating it is to lose work.\n\nTo start narrowing this down, I need a few specifics:\n\n**What exactly are you saving when the crash occurs?** For example, are you saving a task, editing a project, updating settings, or something else?\n\nAlso, when you say \"crashes\" — does the app close entirely, show an error message, freeze, or something else? If there's an error message, the exact text would be very helpful."
+    },
+    {
+      "author": "reporter",
+      "body": "I'm saving my task list. I have like 200 tasks in there. When I hit Save the whole app just dies — closes completely. I think there's some error dialog that flashes for a split second but I can't read it fast enough. Something about encoding maybe? I don't know, it just crashes. I need this fixed, I've been dealing with this for days."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that's really helpful. The combination of 200 tasks and a possible encoding error gives me a couple of theories to work with.\n\nHere's what I'd like to narrow down next: **Did this start happening at a specific point, or has saving always crashed with this task list?** For instance, did it start after you added a particular task, pasted content from another app, or used any special characters (like emoji, accented letters, or symbols)?\n\nIf you're not sure, one quick test that would tell us a lot: try creating a brand-new task list with just a few tasks and saving that. If that works, the issue is likely tied to something in your existing data rather than a general save bug."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah it started after I imported a bunch of tasks from a CSV file. Before that it was fine. And yeah I tried with a smaller list and it works, which is even more annoying because it means my actual work list is the one that's broken. Can you just fix the save so it doesn't crash?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's a really useful data point — the CSV import is almost certainly the trigger here.\n\nCan you tell me **where that CSV came from and what tool generated it?** For example, was it exported from another app (like Excel, Google Sheets, Notion, etc.), or was it hand-edited? And do you know if any of those imported tasks contain non-English text, special characters, emoji, or content that was copy-pasted from a webpage?\n\nIf you're able to share the CSV file (or even just a few sample rows), that would make it much faster to pinpoint the exact cause."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't remember exactly where the CSV came from, I think I exported it from some other tool. Look, I don't have the CSV anymore and I'm not going to go dig around for it. What I do know is the task names have some fancy characters in them like those curly quote things and long dashes — you know, the ones that look different from regular dashes. I don't see why that should crash the whole app though. It's your app's job to handle that stuff."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save when task list contains typographic characters (curly quotes, em dashes) from CSV import\",\"problem\":\"Saving a task list that was populated via CSV import causes the app to crash (closes entirely). The crash occurs during serialization and appears to be an encoding error triggered by non-ASCII typographic characters such as curly/smart quotes and em dashes present in imported task names.\",\"root_cause_hypothesis\":\"The save/serialization code path does not correctly handle non-ASCII typographic characters (e.g., U+2018/U+2019 curly quotes, U+2013/U+2014 em/en dashes). These characters likely entered via CSV import and trigger an unhandled encoding exception during file write or data serialization, causing the app to crash instead of gracefully handling the error. The brief error dialog mentioning 'encoding' supports this. Likely candidates: the save routine assumes ASCII or a narrow encoding, or a serialization library is misconfigured.\",\"reproduction_steps\":[\"Create or obtain a CSV file containing task names with typographic characters (curly quotes like ‘ ’ “ ” and em dashes like —)\",\"Import the CSV into TaskFlow to populate a task list (aim for ~200 tasks to match reporter's scenario, though fewer may reproduce it)\",\"Attempt to save the task list\",\"Observe: app crashes (closes entirely) with a brief encoding-related error dialog\"],\"environment\":\"Not specified. Reproduction should be attempted across all supported platforms. The issue is likely platform-independent since it stems from character encoding handling in the save path.\",\"severity\":\"high\",\"impact\":\"Any user who imports tasks containing non-ASCII typographic characters (common when exporting from tools like Excel, Google Sheets, or Notion) will be unable to save their task list. The crash causes data loss for unsaved changes. The reporter has been blocked for days.\",\"recommended_fix\":\"1. Inspect the save/serialization code path for encoding assumptions — ensure it uses UTF-8 throughout. 2. Check the CSV import path to see if it normalizes or validates character encoding on ingest. 3. Add graceful error handling around the save operation so encoding failures surface as user-visible errors rather than crashes. 4. Consider normalizing typographic characters on import (e.g., replacing curly quotes with straight quotes) or ensuring the full pipeline is Unicode-safe.\",\"proposed_test_case\":\"Create a task list containing task names with curly single quotes (‘’), curly double quotes (“”), em dashes (—), en dashes (–), and other common non-ASCII punctuation. Verify that saving completes without error and that the characters round-trip correctly when the list is reloaded.\",\"information_gaps\":[\"Exact error message from the crash dialog (reporter could not read it in time)\",\"Operating system and app version\",\"Original CSV file and the tool that generated it\",\"Whether the issue is strictly about character count/list size or purely about character encoding (the small-list test used new tasks, not a subset of imported ones)\"]}"
+    }
+  ]
+}

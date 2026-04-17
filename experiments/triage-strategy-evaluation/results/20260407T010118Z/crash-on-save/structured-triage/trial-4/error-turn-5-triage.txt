@@ -1,0 +1,30 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "All four required checklist items are present: (1) Expected behavior — saving should work without crashing; (2) Actual behavior — app instantly closes on save with a brief 'encoding' error flash; (3) Reproduction steps — edit a task list (likely one with CSV-imported tasks), click Save in toolbar, app crashes immediately; (4) Environment — desktop app on macOS 14 Sonoma. The reporter has also provided a strong causal lead: the crashes began after importing tasks from a CSV file. The reporter has clearly reached their limit on self-debugging (refused Console.app, expressed frustration multiple times across 4 rounds), and further questions would not materially change the triage — a developer can reproduce by importing a CSV with non-UTF-8 characters and attempting to save. Items 5-6 (logs, frequency) are partially covered: no formal logs but we have the 'encoding' clue, and frequency is every save attempt.",
+  "triage_summary": {
+    "title": "Desktop app crashes instantly on save after CSV task import (encoding error)",
+    "problem": "The macOS desktop app crashes immediately — the entire app closes — whenever the user clicks Save in the toolbar. The user reports a brief flash of an error message mentioning 'encoding' before the app dies. The issue began after the user imported tasks from a CSV spreadsheet. The import itself completed without error, but every subsequent save attempt crashes the app.",
+    "root_cause_hypothesis": "The CSV import likely introduced task data containing characters in a non-UTF-8 encoding (e.g., Latin-1, Windows-1252, or Shift-JIS). The import path probably accepts raw bytes without validating or normalizing encoding. When the save/serialization path attempts to encode the in-memory task data (likely to UTF-8 for persistence), it hits an unencodable or malformed byte sequence and throws an unhandled encoding exception, which crashes the app instead of being caught and surfaced gracefully.",
+    "reproduction_steps": [
+      "Create a CSV file containing task data with non-UTF-8 characters (e.g., save a spreadsheet with curly quotes, accented characters, or em-dashes using Windows-1252 encoding)",
+      "Import the CSV file into TaskFlow using the task import feature",
+      "Verify the import completes successfully and tasks appear in the task list",
+      "Click Save in the toolbar",
+      "Observe: app crashes immediately with a brief 'encoding' error flash"
+    ],
+    "environment": "macOS 14 (Sonoma), TaskFlow desktop app (version unknown — reporter unable to check)",
+    "severity": "high",
+    "impact": "User is completely unable to save any work, causing repeated data loss. The user has a deadline and has been blocked for multiple days. Any user who has imported CSV data with non-standard encoding is likely affected. The crash is not recoverable without app restart, and the problem persists across sessions since the corrupted data is already in the task list.",
+    "recommended_fix": "1. Investigate the CSV import code path — check whether it performs encoding detection/normalization (e.g., chardet or explicit UTF-8 conversion) on import. 2. Investigate the save/serialization path — find where encoding is performed and add proper error handling for malformed byte sequences. 3. Short-term fix: wrap the save serialization in a try/catch that falls back to replacing unencodable characters rather than crashing. 4. Long-term fix: normalize all imported text to UTF-8 at import time, rejecting or replacing invalid sequences with user notification.",
+    "proposed_test_case": "Create a CSV file saved in Windows-1252 encoding containing task titles with characters outside the ASCII range (e.g., curly quotes "", em-dashes —, accented characters like café). Import the CSV into TaskFlow, then trigger a save. Verify: (a) the app does not crash, (b) the data is saved correctly or the user is warned about encoding issues, and (c) previously imported non-UTF-8 data can be re-saved without error.",
+    "information_gaps": [
+      "Exact app version (reporter could not check; reproducible from crash logs once reproduced internally)",
+      "Exact macOS version (reporter said '14 something, Sonoma maybe')",
+      "Contents and encoding of the original CSV file (developer can test with various encodings)",
+      "Exact error message text (only partial recall: 'something about encoding')",
+      "Whether the crash occurs on a fresh task list with no imported data (would confirm CSV import as the trigger)"
+    ]
+  }
+}
+```

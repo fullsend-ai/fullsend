@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are present: ~50-100 affected records, truncation pattern, ~2-week onset, nightly batch import, 3+ digit country code pattern, US/UK unaffected, and a recent code change hypothesis. The agent additionally captured version, integration type, upstream data integrity confirmation, severity, recovery path, and proposed test cases."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage lands squarely on both acceptable diagnostic paths: it identifies the nightly Salesforce import as the corruption source and correctly maps the 3+ digit country code pattern. Notably, the root cause hypothesis explicitly names 'a regex pattern with a {1,2} quantifier on the country code group' — essentially naming the exact bug. The summary is consistent with the ground truth throughout with no factual errors."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-sequenced question rounds established the truncation pattern, data entry mechanism, timeline, version, and upstream data integrity. The agent self-identified the two obvious remaining gaps (server-side logs, manual sync reproducibility) but did not ask about them before resolving. Those were reasonable to leave as information gaps given the strong evidence already gathered, but asking at least about logs would have been valuable."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three question turns were essential and non-redundant. Each built directly on the previous answer: examples → mechanism/timeline → version and upstream verification. No question repeated information already provided or asked something low-diagnostic-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was particularly sharp: rather than asking generically 'what's wrong,' it asked for concrete format/length examples with privacy redaction guidance, which directly surfaced the Ireland/Antigua examples revealing the truncation pattern. The second turn correctly pivoted to data entry mechanism and onset timing. The third turn's upstream verification question ('are the numbers correct in Salesforce?') was a clean diagnostic move that definitively isolated the corruption to the import path."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: specific version (v2.3.1), integration (built-in Salesforce), a narrow 2-week git history window, multiple concrete hypotheses for where to look (regex quantifier, field length, normalization library), step-by-step reproduction steps, a 5-step fix plan, proposed unit and integration tests, and a data recovery path via Salesforce backup re-sync. A developer could begin investigating within minutes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "First question's framing ('format and length are what matter most') expertly elicited the Ireland/Antigua examples that revealed the exact truncation pattern without requiring exact digits",
+    "Root cause hypothesis specifically named 'a regex pattern with a {1,2} quantifier on the country code group' — essentially naming the actual bug",
+    "Upstream verification question cleanly isolated corruption to the import path, eliminating Salesforce as a source",
+    "Recovery path (re-sync from Salesforce backup) is correct and immediately usable"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about server-side sync logs, which could have pinpointed the exact date the issue began and narrowed the deployment window further",
+    "Did not ask whether a manual/on-demand sync could reproduce the issue, which would be useful for both diagnosis and fixing"
+  ],
+  "most_insightful_question": "Could you share a couple of concrete examples of what the phone numbers look like now versus what they should be? (Feel free to redact digits for privacy — the format and length are what matter most.)",
+  "missed_opportunities": [
+    "Asking whether server-side sync logs are available and if they show any warnings or errors during phone number processing",
+    "Asking whether a manual sync can be triggered to reproduce the issue on-demand rather than waiting for the nightly run",
+    "Asking if the reporter could identify the approximate date the issue first appeared (e.g., by checking when a specific affected customer's number last changed), which would help narrow the deployment window"
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks appearing in active filter, active tasks missing from default results, correlation with v2.3.1 migration ~3 days ago, multi-user impact confirmed, individual task pages showing correct status, filter inversion explicitly demonstrated, and issue isolated to search index not application data. The summary adds further value with reproduction steps, a proposed test case, severity rating, workaround, and identified information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the v2.3.1 migration as the trigger and the search index archive filter as the broken component — a precise match for acceptable diagnostic path 2. The root cause hypothesis ('boolean or enum value representing active/archived status was inverted when rebuilding or updating the search index') closely matches the actual cause (field mapping inversion in the index). The recommended fix explicitly calls out checking the search index mapping, pointing directly at the actual defect location. No inaccuracies that would mislead a developer."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Three questions cover exactly the right ground in sequence: establish onset/correlation, isolate search from underlying data, and probe filter toggle behavior to reveal inversion. No obvious follow-up questions were skipped. The agent correctly deferred search engine identification to codebase discovery rather than burning a turn on it."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Each of the three turns built directly on the previous answer and was non-redundant. Q1 established timeline and trigger, Q2 isolated the defect layer, Q3 confirmed and characterized the inversion. No question could reasonably be merged or dropped without losing diagnostic value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q2 (browsing vs. search comparison) demonstrates real diagnostic reasoning — distinguishing search index corruption from data corruption is a non-obvious but critical distinction. Q3 (filter toggle experiment) is the standout: asking the reporter to actively probe the filter behavior is a brilliant move that caused the reporter to discover and articulate the exact inversion pattern themselves, information they would not have volunteered unprompted. Both questions reflect domain expertise, not generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes a precise root cause hypothesis, a 4-step recommended fix with specific artifacts to inspect (migration script, index mapping, query filter predicate), a concrete test case, reproduction steps, a workaround, and explicitly labeled information gaps with directions for resolving them. A developer could open the v2.3.1 migration script and index configuration immediately."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q3 about the filter toggle was a high-leverage move that led the reporter to independently discover and articulate the exact inversion pattern, producing the most diagnostic signal of any turn",
+    "Q2 cleanly separated 'search index problem' from 'data corruption problem' — a critical architectural distinction that correctly scoped the fix",
+    "The triage summary is exceptional in depth: includes reproduction steps, workaround, proposed regression test, severity, and labeled information gaps with resolution paths",
+    "Correctly correlated onset with the v2.3.1 database migration within the first exchange, giving the entire investigation a precise anchor"
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis hedges slightly between query-time filter logic and index mapping as the inversion site — both are mentioned, but the actual defect (index field mapping configuration) could have been called out more precisely",
+    "Did not explicitly confirm whether unfiltered searches (no archive status filter at all) return a correct mixed result set, which would have further distinguished index mapping from query filter as the defect layer"
+  ],
+  "most_insightful_question": "Does the search interface have any filter or toggle for task status (e.g., 'Active only,' 'Include archived,' etc.)? If so, what happens when you change it? — This question prompted the reporter to run an active experiment that revealed the full inversion pattern, yielding the single most diagnostic data point in the conversation.",
+  "missed_opportunities": [
+    "Asking whether a search with no archive filter applied (if such a mode exists) returns all tasks correctly — this would have confirmed whether the inversion is in the index values themselves or only in the filter predicate evaluation",
+    "Asking how many active tasks the reporter has (150 active) to verify that the ~300 results in 'Active only' mode correspond suspiciously to the archived task count — a quantitative signal that would have strengthened the inversion hypothesis even earlier"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, ~1 week onset, morning-worst/afternoon-better pattern, link to the marketing digest batch, pipeline congestion, transactional and bulk emails competing for the same channel, and the original sub-2-minute baseline. The summary also adds useful extras: in-app notifications are unaffected (isolating the problem to email delivery), system-wide scope, and a proposed regression test case."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage matches acceptable diagnostic path #2 closely: it correctly identifies the digest feature as the cause and describes queue congestion as the mechanism. The hypothesis frames the issue as rate-limit or send-capacity saturation rather than priority inversion, which is a slight mismatch with the canonical cause (priority=1 shared between bulk and transactional). However, the core claim — digest emails flooding the shared pipeline and pushing transactional emails behind — is directionally correct and sufficient for a developer to find and fix the actual bug."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-chosen questions covered the essential diagnostic space available from a non-technical reporter: isolating the pipeline layer, surfacing the recent change, and confirming system-wide scope. The remaining unknowns (queue architecture, provider logs, digest volume) are server-side details no user could supply; flagging them as information gaps is the right call. No obvious reporter-facing question was skipped."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Each question targeted a distinct diagnostic goal. Question 3 (system-wide vs. account-specific) was the least critical — the root cause hypothesis doesn't change either way — but it meaningfully upgraded the severity assessment and is worth the turn. No questions were redundant or low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Question 1 (in-app vs. email) was a sharp diagnostic move that immediately localized the fault to the email delivery layer, ruling out notification generation entirely. Question 2 (what changed a week ago) was open-ended enough to let the reporter surface the digest feature without leading them. Question 3 confirmed scope in a way that the reporter could easily verify. All three demonstrated genuine reasoning about the failure space rather than generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate investigation path: check whether the digest queue shares a channel or priority level with transactional emails, inspect provider logs for throttling events at 9am, and separate bulk from transactional sends. Reproduction steps are specific and time-anchored. The proposed test case after the fix is concrete. A developer could open the email service code and start investigating without gathering any additional context."
+    }
+  },
+  "weighted_total": 4.5,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Question 1 (in-app vs. email) elegantly ruled out notification generation as the failure site in a single turn, focusing all subsequent investigation on the delivery pipeline.",
+    "Question 2 (what changed a week ago) drew out the digest feature connection organically — the reporter volunteered it without being led, which makes the hypothesis more credible.",
+    "The triage summary is unusually complete: it includes reproduction steps, a regression test case, severity, impact, recommended fix with short- and long-term options, and explicit information gaps for the developer to chase."
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis frames the mechanism as rate-limiting or send-capacity saturation rather than priority queue ordering, which could send a developer toward the provider dashboard before looking at internal queue configuration.",
+    "Asking about system-wide scope was useful for severity but added a turn whose answer was fairly predictable given the morning-pattern detail already in the issue."
+  ],
+  "most_insightful_question": "Do you know if anything changed about a week ago when this started? For example: a new email provider or configuration change, a spike in the number of users or tasks, or maybe a platform update or deployment?",
+  "missed_opportunities": [
+    "Asking what time the digest emails typically arrive in the reporter's inbox — confirming they land around 9am would have directly corroborated the congestion hypothesis without requiring developer investigation.",
+    "Asking whether disabling or pausing digest emails (if that option exists in account settings) changed the delay, which would have provided a near-definitive confirmation before closing the triage."
+  ]
+}

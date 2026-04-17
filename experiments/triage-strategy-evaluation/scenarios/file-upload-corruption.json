@@ -1,0 +1,25 @@
+{
+  "title": "PDF attachments are corrupted after upload",
+  "body": "When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.",
+  "quality": "poor",
+  "reporter_profile": "difficult",
+  "ground_truth": {
+    "description": "The reporter is a customer support manager. The corruption only affects PDF files larger than 1MB. Smaller PDFs upload and download fine. The upload path has two routes: files under 1MB go through a direct upload to storage, while files over 1MB go through an upload proxy that streams the file in chunks. The proxy was recently updated (1 week ago) and has a bug: it strips the Content-Type header from the chunked upload request. The downstream storage service sees no Content-Type and defaults to text/plain, which causes a text encoding transformation on the binary PDF data, corrupting it. Other file types over 1MB (images, spreadsheets) are also affected but less noticeably because some viewers are more tolerant of encoding issues. The reporter has noticed that 'small PDFs seem fine' but hasn't made the exact size connection.",
+    "actual_cause": "The upload proxy strips the Content-Type header on chunked uploads (files >1MB). The storage service defaults to text/plain encoding, which mangles binary content. Files under 1MB bypass the proxy and go direct, so they're unaffected. The fix is to preserve the Content-Type header in the proxy's chunked upload handler.",
+    "acceptable_paths": [
+      "Identifying the size-dependent behavior (small files fine, large files corrupted) and suspecting different upload paths, even without identifying the Content-Type header issue",
+      "Identifying the proxy as the corruption source and the recent update as the trigger, even without discovering the size threshold"
+    ],
+    "environment": "TaskFlow v2.3.1, upload proxy (Nginx), S3-compatible storage backend, various PDF sizes",
+    "workaround": "Compress or split large PDFs to get them under 1MB before uploading; or upload via the API directly (bypasses the proxy)"
+  },
+  "expected_triage_extracts": [
+    "corruption affects PDFs over 1MB only",
+    "small PDFs upload fine",
+    "started approximately 1 week ago",
+    "related to upload proxy or upload path change",
+    "binary content is being mangled (not just metadata)",
+    "multiple customers affected",
+    "other large file types may also be affected"
+  ]
+}

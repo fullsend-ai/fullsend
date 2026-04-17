@@ -1,0 +1,26 @@
+{
+  "title": "PDF attachments are corrupted after upload",
+  "body": "When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — corrupted attachments are definitely disruptive.\n\nTo help us narrow down the cause: is this happening with **every** PDF you upload, or only some of them?\n\n- **Every PDF** — no PDF attachment has worked recently\n- **Only large PDFs** — smaller ones seem fine\n- **Only certain PDFs** — some work, some don't, and size doesn't seem to be the pattern\n- **Something else**\n\nAlso, did this start suddenly (e.g., after an update), or is it the first time you've tried uploading PDFs?"
+    },
+    {
+      "author": "reporter",
+      "body": "Look, I don't know about sizes exactly, I just know that PDFs are broken and our team can't work. Some PDFs do seem to work fine actually, now that I think about it... the smaller ones maybe? But I haven't been measuring them or anything. All I know is customers are complaining and we need this fixed. It started maybe a week ago? Something like that."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for that detail — the fact that smaller PDFs seem to work is a really useful clue.\n\nCould you try a quick test for us? Upload a PDF you know is broken, then check its file size (right-click → Properties on Windows, Get Info on Mac). Roughly how large is it?\n\n- **Under 5 MB**\n- **5–10 MB**\n- **10–25 MB**\n- **Over 25 MB**\n- **Not sure / can't check right now**\n\nThis will help us pinpoint whether there's a size cutoff causing the corruption."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't have time to run tests for you, I have customers breathing down my neck. I know the ones that are broken are definitely not tiny files — probably a few MB at least? But I'm not going to go measure every PDF. Can you just look at the logs or something and figure out what changed a week ago?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"PDF attachments corrupted on upload above a certain file size (regression ~1 week ago)\",\"problem\":\"PDF files attached to tasks are being corrupted during upload, rendering them unopenable. The corruption appears to affect larger PDFs while smaller ones upload successfully. Multiple customers are impacted. The issue began approximately one week ago, suggesting a regression introduced by a recent change.\",\"root_cause_hypothesis\":\"A recent change (~1 week ago) introduced a size-dependent failure in the file upload pipeline. Likely candidates: (1) a new upload size limit or request body size limit that silently truncates larger files rather than rejecting them, (2) a change to chunked upload/multipart handling that corrupts reassembly for files above a threshold, or (3) a middleware or proxy configuration change (e.g., nginx client_max_body_size, API gateway timeout) that truncates the request body.\",\"reproduction_steps\":[\"Upload a small PDF (under 1 MB) to a task — confirm it downloads and opens correctly\",\"Upload a larger PDF (5+ MB) to a task\",\"Download the uploaded PDF and attempt to open it\",\"Compare the file sizes of the original and downloaded PDF to determine if truncation occurred\",\"Check if the corruption is truncation (file is smaller) or encoding damage (file is same size but garbled)\"],\"environment\":\"Production environment, multiple customers affected, started approximately one week ago\",\"severity\":\"high\",\"impact\":\"Multiple customers cannot use PDF attachments for larger files, blocking workflows that depend on file sharing within tasks. The feature is described as heavily used.\",\"recommended_fix\":\"1. Review deployment history and changelog from ~1 week ago for changes to upload handling, file storage, middleware, or proxy configuration. 2. Check server-side upload logs for errors or warnings on failed/large uploads. 3. Determine the size threshold by uploading test PDFs of increasing size in a staging environment. 4. Compare uploaded vs. stored file sizes in the storage backend to confirm whether truncation is occurring. 5. Check for recent changes to request body size limits (nginx, API gateway, application-level multipart config).\",\"proposed_test_case\":\"Upload PDFs at various sizes (1 MB, 5 MB, 10 MB, 25 MB) and verify each can be downloaded and opened without corruption. Automate by comparing SHA-256 hashes of the original and downloaded files to ensure byte-for-byte integrity.\",\"information_gaps\":[\"Exact file size threshold where corruption begins (determinable via server-side testing)\",\"Whether corruption is truncation or encoding damage (determinable by comparing original vs. downloaded file sizes)\",\"Specific deployment or config change that coincides with the ~1 week ago onset (determinable from deploy logs)\"]}"
+    }
+  ]
+}

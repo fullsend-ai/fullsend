@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted 5 of 7 expected items: ~5,000 tasks, slow on description search vs fast on title search, regression after v2.2 to v2.3 upgrade, started ~2 weeks ago, and 10-15 seconds for description searches. Also captured long descriptions. Missed CPU spikes during search, which the reporter didn't volunteer and the agent didn't ask about. That's a minor gap — 5 of 7 explicit items plus good additional context about project-level filtering behavior."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is close to the actual cause — correctly identifies a regression in the description search indexing path in v2.3, mentions dropped/altered full-text indexes and sequential scans. The actual cause (FTS5 index replaced with LIKE query) is a specific instance of what the hypothesis describes. The summary correctly notes title search is unaffected and that the issue scales with description volume. The observation that filtering to a smaller project reduces but doesn't eliminate slowness is an additional accurate detail. Slightly docked because it didn't pinpoint SQLite FTS5 specifically, but that's reasonable given the agent didn't know the database backend."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent questions before resolution. The first question efficiently combined timing/trigger and scale questions. The second question precisely targeted the search type distinction (title vs description) which was the key diagnostic differentiator. Every question was essential and well-targeted. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was well-structured, offering concrete hypotheses (update, batch import, gradual degradation) to jog the reporter's memory — this successfully drew out the v2.3 upgrade timing. The second question was genuinely insightful: asking whether all searches are slow or only certain types directly led to the critical title-vs-description distinction that the reporter hadn't volunteered. This showed real diagnostic reasoning about search architecture. Both questions were professionally framed and easy for a non-technical reporter to answer."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable. It provides clear reproduction steps, a well-reasoned root cause hypothesis pointing directly at the search indexing path, specific investigation steps (diff v2.2 vs v2.3 search implementation, run EXPLAIN on queries), and even a proposed performance test with concrete parameters. A developer could immediately start diffing the search code between versions. The recommended fix section reads like a ready-made investigation plan."
+    }
+  },
+  "weighted_total": 4.55,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — only 2 questions to extract the key diagnostic information",
+    "The second question about search type specificity was genuinely insightful and uncovered the critical title-vs-description distinction",
+    "The summary is highly actionable with concrete reproduction steps, investigation plan, and proposed test case",
+    "Root cause hypothesis accurately identifies the likely class of bug (indexing regression on description search path)"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about system resource behavior during searches (CPU spikes would have strengthened the diagnosis)",
+    "Did not ask about or determine the database backend, which the summary itself flags as an information gap",
+    "Environment details are incomplete — the reporter mentioned 'work laptop' but OS and specs weren't gathered"
+  ],
+  "most_insightful_question": "Does the slowness happen on every search, or only with certain queries? For example, is searching for a single word just as slow as a more complex search? And does it matter whether you're searching across all 5,000 tasks or filtering within a specific project or tag first?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory usage spikes during slow searches — would have confirmed the full-table-scan hypothesis",
+    "Ask what database backend TaskFlow uses (SQLite vs PostgreSQL) — directly relevant to the indexing investigation",
+    "Ask whether the reporter has tried any workarounds like clearing cache or reindexing"
+  ]
+}

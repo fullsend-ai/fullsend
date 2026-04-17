@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** PDF attachments corrupted on upload — binary encoding corruption affecting large files (regression ~1 week ago)
+
+## Problem
+PDF files uploaded to tasks via any method (drag-and-drop, file picker) are returned corrupted when downloaded. The PDF viewer reports the file as damaged. The issue affects multiple customers and has been occurring for approximately one week. Larger files (contracts, reports) are consistently affected; smaller PDFs may still upload correctly.
+
+## Root Cause Hypothesis
+A change to the upload/download pipeline approximately one week ago is applying a text encoding transformation (e.g., UTF-8 re-encoding, charset conversion, or a new middleware layer) to binary file data. The evidence strongly supports this: file sizes are roughly preserved (ruling out truncation or chunking issues) but content is garbled (ruling out partial upload or empty files). This is the classic signature of binary data being processed as text, where multi-byte sequences get reinterpreted or replaced. The size-dependent pattern suggests smaller files may survive the transformation by luck (fewer problematic byte sequences) or that a chunked upload threshold triggers different code paths.
+
+## Reproduction Steps
+  1. Upload a large PDF file (e.g., a multi-page contract or report, likely >1MB) to any task using either drag-and-drop or the file picker
+  2. Download the same file from the task
+  3. Attempt to open the downloaded PDF — it will be reported as damaged/corrupted
+  4. Open the downloaded file in a text editor and observe garbled/mangled characters
+  5. Compare with a small PDF upload (<100KB) which may succeed
+
+## Environment
+Affects all customers, all upload methods, all PDF viewers. Not browser- or OS-specific based on the report of multiple customers being affected. Production environment.
+
+## Severity: high
+
+## Impact
+Multiple customers are unable to share PDF documents (contracts, reports) through TaskFlow, which is a core workflow for their teams. Customers are waiting on these documents, making this a blocking issue for daily operations.
+
+## Recommended Fix
+1. Review all changes to the file upload/download pipeline from the past 7-10 days (git log on upload service, storage layer, any API gateway or middleware changes). 2. Specifically look for: changes to content-type handling, new middleware that processes request/response bodies, encoding changes, streaming/buffering changes, or library upgrades that may have changed default encoding behavior. 3. Verify that binary files are being streamed as raw bytes (application/octet-stream) without any text encoding transformation at every stage: upload endpoint → storage → retrieval endpoint. 4. Check if a chunked upload threshold exists that routes large files through a different code path than small files. 5. Compare a hex dump of an original PDF with the corrupted download to confirm the encoding corruption pattern.
+
+## Proposed Test Case
+Upload PDFs of varying sizes (100KB, 1MB, 5MB, 20MB) and verify byte-for-byte integrity by comparing SHA-256 checksums of the original and downloaded files. The test should cover both the upload and download paths and assert that the checksums match exactly.
+
+## Information Gaps
+- Exact file size threshold where corruption begins (reporter indicated 'smaller might be okay' but did not test systematically)
+- Whether non-PDF binary files (images, Word docs, ZIPs) are also affected
+- Exact date of first corrupted upload vs. last successful one (reporter couldn't provide precise dates)
+- Whether the corruption occurs at upload time (stored corrupted) or download time (served corrupted) — a developer can check by inspecting the stored blob directly

@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Search filter logic inverted: archived tasks shown as active and vice versa since latest update
+
+## Problem
+All searches via the main search bar return archived tasks in place of active ones, and active tasks appear only when the user manually selects the 'archived' filter. The active/archived filter predicate appears to be inverted. This affects all search terms, not just specific queries.
+
+## Root Cause Hypothesis
+The most recent application update (deployed ~3 days ago) likely introduced an inversion in the boolean logic or query predicate that distinguishes active from archived tasks. For example, a condition like `WHERE archived = false` may have been changed to `WHERE archived = true` (or an equivalent flag/enum was swapped) in the search index or query layer.
+
+## Reproduction Steps
+  1. Log in to TaskFlow as any user
+  2. Use the main search bar with default filter settings (no manual filter changes)
+  3. Search for any term that matches both an active and an archived task (e.g., 'Q2 planning')
+  4. Observe that archived tasks appear in results while known active tasks are missing
+  5. Toggle the filter to 'show archived' and observe that active tasks now appear there instead
+
+## Environment
+Affects the production environment post-update (~3 days ago). Confirmed on at least two user accounts. No specific browser/OS constraints reported — appears to be a server-side issue.
+
+## Severity: high
+
+## Impact
+All users performing searches see incorrect results. Active tasks are effectively hidden from search, which blocks normal task discovery and workflow. At least two users have independently confirmed the issue. The workaround (manually toggling the archived filter) exists but is counterintuitive and unreliable for users who don't know about it.
+
+## Recommended Fix
+Inspect the search query or index-building logic changed in the most recent deployment (~3 days ago). Look for an inverted boolean condition on the archived/active status flag. Check the default filter value applied when no explicit filter is set — it is likely selecting archived tasks instead of active ones. Revert or correct the predicate and verify with the reproduction steps above.
+
+## Proposed Test Case
+Create one active task and one archived task with the same keyword. Perform a default search for that keyword and assert that only the active task appears. Then switch the filter to 'archived' and assert that only the archived task appears. This test should cover both the search query layer and the default filter initialization.
+
+## Information Gaps
+- Exact version or commit hash of the update deployed ~3 days ago
+- Whether the issue affects all users globally or is account/role-specific
+- Whether the API/backend returns inverted results or the frontend is misapplying the filter

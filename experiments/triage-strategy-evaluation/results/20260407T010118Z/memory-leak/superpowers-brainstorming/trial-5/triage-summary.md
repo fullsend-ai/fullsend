@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Memory leak regression in TaskFlow v2.3 — server memory climbs from 500MB to 4GB+ daily
+
+## Problem
+After upgrading from TaskFlow v2.2 to v2.3, the server exhibits a consistent memory leak. Memory usage grows from ~500MB at startup to 4GB+ over the course of a workday, causing page loads to exceed 10 seconds and API timeouts by late afternoon. The team has been forced to restart the server daily for the past week. The issue was not present on v2.2.
+
+## Root Cause Hypothesis
+A memory leak was introduced in the v2.3 release — likely an object cache, event listener, or connection pool that grows without bound under normal usage. The strong correlation with the upgrade date and the absence of this behavior on v2.2 points to a regression in the v2.2→v2.3 diff.
+
+## Reproduction Steps
+  1. Deploy TaskFlow v2.3 on a server with ~200 active users
+  2. Monitor memory usage over 8-10 hours of normal usage
+  3. Observe memory climbing steadily from ~500MB toward 4GB+
+  4. Note degraded page load times (10+ seconds) and API timeouts as memory grows
+
+## Environment
+Ubuntu 22.04 VM, 8GB RAM, TaskFlow v2.3, ~200 active users
+
+## Severity: high
+
+## Impact
+All 200 users experience progressively degrading performance throughout each day, with the application becoming effectively unusable by late afternoon. Requires daily manual restarts.
+
+## Recommended Fix
+Diff the v2.2→v2.3 codebase for changes to caching, event listeners, database connection handling, or session management. Run a heap profile on a v2.3 instance under load and compare with v2.2 to identify which objects are accumulating. Common culprits: unbounded in-memory caches, event listeners not being cleaned up, or connection/session objects not being released.
+
+## Proposed Test Case
+Run a load test simulating 200 concurrent users over a simulated 8-hour period. Assert that memory usage remains within a bounded range (e.g., does not exceed 2x the startup baseline) and that p95 response times stay under an acceptable threshold (e.g., 2 seconds).
+
+## Information Gaps
+- Exact v2.3 changelog — which components changed between v2.2 and v2.3
+- Whether the Grafana dashboard shows any correlation with specific request types or endpoints
+- Whether the leak rate scales with user count or is constant regardless of load

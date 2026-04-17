@@ -1,0 +1,21 @@
+{
+  "title": "Memory leak in v2.3 real-time notification system causes progressive slowdown requiring daily restart",
+  "problem": "After upgrading from v2.2 to v2.3, the TaskFlow server leaks memory proportional to user activity. Memory climbs from ~500MB at startup to 4GB+ over a workday with 200 active users, causing 10+ second page loads and API timeouts. Memory never reclaims — it only grows during activity and plateaus during idle periods. A full server restart is the only way to recover.",
+  "root_cause_hypothesis": "The v2.3 changes to the real-time notifications system introduced a memory leak where per-user or per-event data structures are allocated on each interaction but never freed when users disconnect or events are delivered. The fact that established connection counts remain normal (ruling out socket/connection leaks) while memory only grows and never reclaims points to an in-process data structure (e.g., an event history buffer, subscriber registry, or notification queue) that accumulates entries without eviction or cleanup.",
+  "reproduction_steps": [
+    "Deploy TaskFlow v2.3 on a test VM with real-time notifications enabled",
+    "Simulate 50-200 concurrent users performing normal task operations (creating, updating, completing tasks) over several hours",
+    "Monitor process memory (RSS) — it should climb steadily and never decrease even as simulated users disconnect",
+    "Compare with the same test on v2.2 to confirm the regression"
+  ],
+  "environment": "TaskFlow v2.3, self-hosted on 8GB RAM VM running Ubuntu 22.04, ~200 active users, real-time browser push notifications enabled, no external integrations (no Slack, email, or webhooks)",
+  "severity": "high",
+  "impact": "All 200 active users experience progressive degradation daily. By late afternoon the application is effectively unusable (10+ second loads, API timeouts). Operations team must restart the server every evening. Productivity loss is significant and ongoing.",
+  "recommended_fix": "Diff the real-time notification subsystem between v2.2 and v2.3. Look for in-memory collections (subscriber maps, event buffers, notification queues) that grow per-user or per-event without cleanup. Likely candidates: (1) a notification history or event log that appends but never trims, (2) a subscriber/session registry that adds entries on connect but doesn't remove them on disconnect, or (3) per-user message queues that are allocated but never garbage-collected. Add proper cleanup on WebSocket/SSE disconnect and consider bounded data structures (e.g., ring buffers or TTL-based eviction) for any event history.",
+  "proposed_test_case": "Write a load test that connects N simulated users, has them perform actions generating notifications, then disconnects them. Assert that after all users disconnect and a GC cycle is forced, server memory returns to within a small margin of baseline. Run this for multiple connect/disconnect cycles to verify no accumulation.",
+  "information_gaps": [
+    "No heap dump or memory profiler output to pinpoint the exact leaking object type",
+    "Haven't confirmed whether rolling back to v2.2 resolves the issue (though timing correlation is strong)",
+    "Unknown whether the leak rate scales linearly with user count or with notification volume specifically"
+  ]
+}

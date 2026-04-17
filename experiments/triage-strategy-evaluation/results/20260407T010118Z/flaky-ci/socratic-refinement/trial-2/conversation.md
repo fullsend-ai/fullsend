@@ -1,0 +1,61 @@
+# Conversation: flaky-ci x socratic-refinement
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it's blocking releases.
+
+You mentioned this started happening over the past few days. Can you walk me through what was going on around the time the failures started? For example, were there any notable PRs merged, dependency updates, or changes to the CI configuration? I'm trying to understand what the world looked like right before things went sideways versus after.
+
+---
+
+### reporter
+
+Yeah, there was a PR merged like 4 days ago that added some new tests for task ordering. I guess those could be related but they pass fine on my machine so I didn't think much of it. Can someone just look at the CI and fix whatever's broken? This is really holding us up.
+
+---
+
+### triage-agent
+
+That's a really helpful detail about the task ordering PR — the timing lines up, so it's worth pulling on that thread.
+
+When the failures happen in CI, are the tests that fail the *new* task ordering tests, or are they other, previously-stable tests? And could you share what the failure output actually looks like — the error messages or assertion failures you're seeing? I'm curious whether the failures point to a specific pattern (like ordering, timing, or shared state) or whether they seem truly scattered across unrelated areas.
+
+---
+
+### reporter
+
+Yeah honestly I think it is the new tests that fail. The CI logs show the test names and they're the ordering ones. The errors are something about expected order not matching — like the tasks come back in the wrong order. But again, they pass perfectly fine on my machine so I don't see how those tests are broken. Can you just look at the CI logs? They're right there.
+
+---
+
+### triage-agent
+
+Okay, I think a picture is starting to come together here. Let me share what I'm seeing:
+
+The new task ordering tests expect tasks to come back in a specific order, but in CI they sometimes come back in a different order. Locally they're consistent, which is why they look fine on your machine. This is a classic pattern where the code or tests assume a deterministic ordering that isn't actually guaranteed — for example, relying on database insertion order or timestamps that might have identical values.
+
+To confirm this and point the developer in the right direction: do you know what the tasks are supposed to be ordered *by* in those tests? Is it something like priority, due date, creation time? And are the test assertions checking against a hardcoded expected sequence, or comparing against a sort rule? Basically, I'm trying to understand whether the tests are verifying a sort that the code explicitly performs, or whether they're assuming an order that just happens to work locally.
+
+---
+
+### reporter
+
+Look, I didn't write those tests, a coworker did in that PR. From what I can tell they're checking that tasks come back in the order they were inserted after running some sort operation. I think the expected order is just hardcoded in the test. I don't really know why it works locally and not in CI — that's kind of the whole point of this bug report. Can someone just look at the code? It's in the task ordering module.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky CI: Task ordering tests fail intermittently due to non-deterministic sort results","problem":"Task ordering tests added ~4 days ago pass locally but fail intermittently in CI. The failures show tasks returning in an unexpected order after a sort operation. The test assertions compare against a hardcoded expected sequence.","root_cause_hypothesis":"The sort operation in the task ordering module does not produce a stable, fully-deterministic order — likely because multiple tasks share the same sort key value (e.g., identical priority, due date, or creation timestamp). Locally the tiebreaker happens to be consistent (e.g., insertion order preserved by the local DB engine), but CI uses a different environment (potentially parallel test execution, different DB engine or configuration, or different data seeding timing) where the tiebreaker differs. The tests assume a single correct ordering that isn't guaranteed by the sort contract.","reproduction_steps":["Check out the PR merged ~4 days ago that added task ordering tests","Examine the test assertions — they use hardcoded expected sequences","Run the test suite repeatedly (or in a CI-like environment) to observe intermittent ordering differences","Inspect the sort implementation in the task ordering module for missing tiebreaker / unstable sort on equal keys"],"environment":"CI environment (specific runner/DB details not provided but the discrepancy is CI vs. local development machine)","severity":"high","impact":"Blocking all releases for the team. Every CI run has a chance of spurious failure, requiring reruns and eroding confidence in the test suite.","recommended_fix":"1. Add a deterministic tiebreaker to the sort operation (e.g., secondary sort by unique ID) so the order is fully specified. 2. Update the test assertions to either reflect the corrected deterministic order or assert the sort contract (e.g., verify relative ordering by sort key rather than exact sequence). 3. If the sort is intentionally unstable, tests should only assert that elements are correctly grouped/ordered by the primary key, not assert a single hardcoded permutation.","proposed_test_case":"Create multiple tasks with identical sort key values (e.g., same priority and due date), run the sort operation, and assert that the result is ordered correctly by the primary key with a deterministic tiebreaker. Run this test in a loop (e.g., 50 iterations) to verify it never flakes.","information_gaps":["Exact sort key(s) used in the task ordering module (priority, due date, creation time, etc.)","Whether CI uses a different database engine or configuration than local development","Whether CI runs tests in parallel, which could affect data seeding order"]}
+
+---

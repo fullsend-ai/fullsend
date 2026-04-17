@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I can understand how frustrating it must be to lose your work. To help us track this down, could you walk me through what you were doing when the crash happened? For example, what kind of task or document were you saving, and what were you working on at the time? Also, does this happen every single time you save, or only in certain situations?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yes it happens every time I hit save. I have a big task list I've been working on. Look, I just need to be able to save my work without the app blowing up on me. Can you just fix the save button?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "I hear you — getting this fixed is the priority, and the details you're sharing are helping us get there faster.\n\nYou mentioned a big task list — that's actually a really useful clue. Can you tell me roughly how many tasks are in it, and whether you've ever been able to save it successfully before? I'm wondering if something changed recently (maybe the list grew past a certain size, or you updated the app).\n\nAlso, when the crash happens, do you see any error message or does the app just disappear?"
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know, like 200 maybe? It was saving fine before. I imported a bunch of tasks from a spreadsheet a few days ago and I think that's around when it started but I'm not sure if that's related. The app just closes. I think there's some kind of error box that flashes for a split second but I can't read it before the whole thing shuts down."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's a really helpful detail about the spreadsheet import — that timing lines up suspiciously well.\n\nCould you tell me a bit more about that import? Specifically, what kind of data was in the spreadsheet — just task names, or did it include things like descriptions, due dates, tags, or other fields? And do you recall if any of the entries had unusual content, like very long text, special characters, or empty rows?\n\nAlso, if you're up for a quick experiment: what happens if you create a brand-new task list with just a couple of tasks and try to save that? I'm curious whether the crash is tied to that specific list or happens everywhere now."
+    },
+    {
+      "author": "reporter",
+      "body": "It was a CSV file with task names mostly. I don't remember every detail about what was in it, I just needed to get my tasks into the app. I guess some of the names might have had weird characters like fancy quotes or whatever, it was copied from a Word doc originally. I haven't tried making a new list, I just need THIS list to work. But now that you mention it, I did delete a bunch of the imported tasks once to try something else and I think it saved okay after that. But I need all those tasks."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Save crashes when task list contains imported CSV data with Word special characters\",\"problem\":\"The application crashes immediately on save when the task list contains tasks imported from a CSV file that was originally sourced from a Microsoft Word document. The crash appears as the app closing abruptly with a briefly-flashing error dialog. The reporter cannot save their work and loses progress.\",\"root_cause_hypothesis\":\"The save/serialization path likely fails on non-ASCII or Word-specific characters (smart quotes like “”, em dashes —, curly apostrophes ’, etc.) present in imported task names. The serializer or file writer probably lacks proper Unicode handling or character encoding, causing an unhandled exception during save that crashes the app instead of being caught gracefully.\",\"reproduction_steps\":[\"Create a CSV file with task names containing Word-style special characters (smart/curly quotes, em dashes, etc.)\",\"Import the CSV into TaskFlow using the spreadsheet import feature\",\"Attempt to save the task list\",\"Observe: app crashes with a briefly-flashing error dialog\"],\"environment\":\"Not specified; appears to be a desktop application. Issue is data-dependent rather than environment-dependent.\",\"severity\":\"high\",\"impact\":\"Any user who imports tasks from CSV files containing non-ASCII characters (common when data originates from Word or similar tools) will be unable to save their work. The crash causes data loss. This likely affects a meaningful subset of users who rely on the import feature.\",\"recommended_fix\":\"1. Investigate the save/serialization code path for character encoding issues — ensure it handles the full Unicode range, especially common Word special characters. 2. Add proper error handling around save so that encoding failures surface as user-visible error messages rather than crashing the app. 3. Consider sanitizing or normalizing special characters during CSV import (e.g., replacing smart quotes with straight quotes) with a user notification. 4. As an immediate mitigation, the reporter can likely work around this by replacing special characters in their CSV before re-importing.\",\"proposed_test_case\":\"Import a CSV containing task names with Word-specific Unicode characters (smart quotes “ ” ‘ ’, em dash —, ellipsis …, etc.) and verify that (a) the import succeeds, (b) saving succeeds without crashing, and (c) the characters are preserved or gracefully normalized in the saved output.\",\"information_gaps\":[\"Exact error message from the flashing dialog (developer can capture via logs or debugger during reproduction)\",\"Specific application version and platform (desktop OS)\",\"Whether the issue is in the file-write serializer, an in-memory data structure, or a database layer\"]}"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted 6 of 7 expected items: task count (~5,000), title-vs-description performance split, v2.2→v2.3 regression, 10-15s timing, and long descriptions. The 2-week timeframe is implied by the upgrade mention but not stated explicitly in the summary. CPU spike during search was never asked about and is absent from the summary — a meaningful diagnostic signal that was missed."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identified both acceptable diagnostic paths simultaneously: (1) the v2.2→v2.3 upgrade as the trigger with a search implementation regression hypothesis, and (2) the title-vs-description performance difference pointing to an indexing issue. The recommended fix explicitly calls out 'dropped or unused full-text index' and 'sequential scan instead of an index scan,' which is essentially the actual cause (FTS5 index abandoned for naive LIKE). No inaccuracies introduced."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-chosen questions covered the essential diagnostic space: trigger/timeline, search type differentiation, and scale/description length. The agent did not ask about CPU/resource usage during search, which is a meaningful omission — that signal (100% CPU on one core) would have further confirmed a scanning hypothesis. Otherwise no major gaps."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three turns were essential. No redundant or low-value questions. Each question built meaningfully on the previous response and opened a new diagnostic dimension."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question ('does every search feel slow, or are some searches still fast?') was a genuinely diagnostic probe the reporter would not have volunteered — it directly surfaced the title-vs-description distinction that unlocked the indexing hypothesis. The third question's framing around 'consistent vs. variable timing' showed sophisticated thinking about cache vs. scan behavior. Questions were targeted and non-generic."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis, three specific technical checks (missing FTS index, query planner choosing sequential scan, removed caching), a concrete reproduction procedure, a proposed performance test case, and a clear starting point (diff the search implementation between v2.2 and v2.3). A developer could open the codebase immediately and know exactly where to look."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Second question proactively probed search-type differentiation, surfacing the title-vs-description split that the reporter had not volunteered and that is the crux of the diagnosis",
+    "Root cause hypothesis closely mirrors the actual cause (FTS5 abandoned for sequential LIKE scan) without access to the codebase",
+    "Timing consistency question ('consistent vs. variable') showed nuanced reasoning about cold-cache vs. full-scan behavior",
+    "Triage summary is exceptionally actionable: specific technical checks, reproduction steps, and a proposed test case all in one place"
+  ],
+  "notable_weaknesses": [
+    "CPU spike during search was never asked about — a readily available diagnostic signal that would have further supported the full-table-scan hypothesis",
+    "OS and hardware specs were not gathered, though the agent correctly noted them as low-priority information gaps in the summary",
+    "The '2 weeks ago' timeframe is not explicitly preserved in the summary, only implied by the upgrade reference"
+  ],
+  "most_insightful_question": "When it takes 10-15 seconds, what kind of search are you running? … does *every* search feel slow, or are some searches still fast while others drag?",
+  "missed_opportunities": [
+    "Ask whether CPU or system resources spike during a slow search — this would have confirmed a computation-heavy scan pattern",
+    "Ask whether search results are correct or if matches are being missed — would clarify whether the regression is purely performance or also functional",
+    "Ask whether they had tried reindexing, clearing cache, or any other workaround — useful for both workaround documentation and confirming index-rebuild as a fix"
+  ]
+}

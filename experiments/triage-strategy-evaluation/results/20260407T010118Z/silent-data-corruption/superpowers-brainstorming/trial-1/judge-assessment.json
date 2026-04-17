@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are captured: affected count (~50-100 of 2,000), truncation pattern, ~2-week timeline, nightly batch import source, 3+ digit country code pattern, US/UK numbers unaffected, and the hypothesis of a recent change to the import pipeline. The summary additionally includes reproduction steps, a proposed test case, and severity/impact assessment."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly Salesforce sync as the corruption source and the 3+ digit country code pattern as the discriminating factor — matching both acceptable diagnostic paths. The root cause hypothesis explicitly calls out 'a regex/split operation that mishandles 3-digit country codes,' which closely mirrors the actual regex bug (`\\d{1,2}` capture group). No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent extracted nearly everything needed in just 2 questions. One notable gap: it never directly asked whether a deployment or code change to the sync pipeline coincided with the ~2-week onset — it noted this as an information gap rather than asking about it. That question would have likely confirmed the normalizer change and sharpened the hypothesis further. Otherwise thorough."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only 2 questions were asked, both essential and non-redundant. The first immediately isolated the ingestion mechanism; the second pinpointed the corruption pattern. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first (how do numbers enter TaskFlow?) is the single most important question for a data integrity issue — it directly surfaces the nightly sync. The second (what does the corruption look like?) elicited the critical before/after pattern (+353 → +35) that the reporter hadn't volunteered. Neither question is generic; both are precisely targeted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear problem statement, a specific root cause hypothesis pointing to regex/parsing logic with 1-2 digit country code assumptions, concrete reproduction steps, a 5-step recommended fix plan (including git history audit, code review, E.164-compliant fix, backfill, and validation), and a parameterized test case. A developer could begin investigating and coding a fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question immediately isolated the ingestion mechanism, which is the highest-leverage diagnostic question for a data integrity issue",
+    "Second question offered structured options for corruption type, which guided the reporter to articulate the +353 → +35 pattern they wouldn't have described precisely on their own",
+    "Root cause hypothesis specifically named regex and 1-2 digit country code assumptions, closely matching the actual bug",
+    "Recommended fix plan is comprehensive and immediately actionable, including backfill strategy and validation additions"
+  ],
+  "notable_weaknesses": [
+    "Did not directly ask whether a code change or deployment to the sync pipeline coincided with the ~2-week onset — this would have likely confirmed the normalizer update and elevated the hypothesis from inference to near-certainty",
+    "Information gaps section notes the missing deployment correlation but it was left unasked rather than followed up"
+  ],
+  "most_insightful_question": "Can you tell me what the corrupted numbers look like compared to what they should be? (The structured options prompted the reporter to articulate the +353 → +35 truncation pattern, which was the key diagnostic insight.)",
+  "missed_opportunities": [
+    "Did any code changes or deployments to the Salesforce sync integration happen around the time this started (~2 weeks ago)?",
+    "Are there any records in TaskFlow showing the phone number history before it was overwritten, or is Salesforce the only source of truth for the original values?"
+  ]
+}

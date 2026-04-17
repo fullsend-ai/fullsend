@@ -1,0 +1,75 @@
+# Conversation: silent-data-corruption x omo-prometheus
+
+## Issue
+
+**Some customer phone numbers are wrong in TaskFlow**
+
+We noticed that some of our customer contact records have incorrect phone numbers. The numbers look truncated or mangled. Our support team caught it because they tried calling a few customers and got wrong numbers. We have about 2,000 customer records and I'd estimate maybe 50-100 have wrong numbers. This is a serious data integrity issue for us.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — data integrity issues are serious and I want to help us get to the bottom of it quickly.
+
+To start narrowing this down: do you know approximately when the phone numbers became incorrect? Specifically:
+
+1. Were these customer records imported/migrated into TaskFlow, or were they entered manually through the UI?
+2. Were the phone numbers ever correct in TaskFlow, or is it possible they were wrong from the time they were created?
+3. Has anything changed recently — a TaskFlow update, a data import, a bulk edit, or an integration sync?
+
+This will help us determine whether we're looking at a regression, an import problem, or something else entirely.
+
+---
+
+### reporter
+
+The records are synced from our Salesforce CRM via a nightly batch import — they're not manually entered. The numbers were definitely correct before, because our support team has been using them for months without issues. As for changes, I think something was updated maybe 2 weeks ago? I'm not 100% sure on the exact date, but that's around when people started noticing the bad numbers. I don't know if it was a TaskFlow update or something with the import process specifically, but the timing lines up.
+
+---
+
+### triage-agent
+
+Thanks for the detail — a Salesforce nightly sync regression from ~2 weeks ago gives us a clear direction.
+
+Critical next question: **Have you checked whether the phone numbers are still correct in Salesforce itself?** If you pull up a few of the affected customers in Salesforce, do their numbers look right there?
+
+Also, can you share 2-3 examples of what the mangled numbers look like in TaskFlow versus what they should be? (Feel free to redact digits for privacy, e.g. `+1 (555) 123-4567` became `55512345` or similar.) The specific corruption pattern will tell us a lot about what's going wrong in the sync.
+
+---
+
+### reporter
+
+Yeah, the numbers are still correct in Salesforce — we checked there first. The problem is definitely on the TaskFlow side.
+
+Let me pull up a couple examples. So we have a customer in Antigua whose number should be something like +1268 555 1234, but in TaskFlow it shows as +12 5551234. And an Irish customer whose number is +353 1 234 5678 shows up as +35 12345678 in TaskFlow. But our US and UK customers seem fine — like +1 and +44 numbers look normal. I hadn't really thought about that pattern until just now but yeah, it seems like the longer country codes are getting chopped.
+
+---
+
+### triage-agent
+
+Great catch on the pattern — I think you've nailed it. Here's my working theory:
+
+**The Salesforce sync is truncating country codes to exactly 2 digits.** That's why US (+1) and UK (+44) numbers are fine, but Antigua (+1268) loses its last two digits and Ireland (+353) loses its last digit. The remaining digits then get concatenated without proper formatting.
+
+Does that match what you're seeing across the other ~50-100 affected records? Are *all* of them countries with 3- or 4-digit country codes?
+
+Also, one thing that would really help a developer pinpoint the breaking change: **can you check the `updated_at` or `last_synced` timestamps on a few corrupted records in TaskFlow?** If they all share the same sync date, we can correlate that with a specific deployment or configuration change on the TaskFlow side. Even knowing whether it was, say, March 23 vs. March 25 could be the difference between a quick fix and a long investigation.
+
+---
+
+### reporter
+
+Yeah, that theory sounds right to me. I haven't gone through all 50-100 records systematically, but the ones our support team flagged do seem to be international customers outside the US/UK. We have a handful of Caribbean and European contacts and those are the ones with issues.
+
+As for timestamps, I can check but I'm not sure where to find a last_synced field — is that in the UI somewhere or would I need to look in the database? I can see a "Last Modified" date on the contact records and the ones I've spot-checked show dates from the last couple weeks, but they get updated every night by the sync so that's kind of expected. I don't think I can tell you the exact date the corruption started from that alone.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Salesforce sync truncates phone country codes to 2 digits, corrupting international numbers","problem":"The nightly Salesforce-to-TaskFlow contact sync is mangling phone numbers for customers with country codes longer than 2 digits. Approximately 50-100 of ~2,000 customer records are affected. US (+1) and UK (+44) numbers are unaffected because their country codes are already ≤2 digits.","root_cause_hypothesis":"A change introduced approximately 2 weeks ago in the phone number parsing or normalization logic within the Salesforce sync pipeline is truncating the country code portion of phone numbers to exactly 2 digits. The remaining digits are then concatenated without proper formatting. This is likely a regex, substring, or parsing library change that assumes all country codes are 1-2 digits.","reproduction_steps":["Identify a customer record in Salesforce with a country code of 3+ digits (e.g., Antigua +1268, Ireland +353)","Verify the phone number is correct in Salesforce","Wait for (or manually trigger) the nightly sync to TaskFlow","Observe the phone number in TaskFlow — country code will be truncated to 2 digits and remaining digits concatenated"],"environment":"TaskFlow instance with Salesforce CRM integration via nightly batch import. Regression began approximately 2 weeks ago (late March 2026). Specific TaskFlow version and deployment date unknown but correlatable via deployment logs.","severity":"high","impact":"Support team cannot reach ~50-100 international customers by phone. Data integrity issue affecting active customer contact records. The corruption recurs nightly since the sync overwrites TaskFlow data from Salesforce each run, meaning manual corrections would be overwritten until the root cause is fixed.","recommended_fix":"1. Check deployment/commit history from ~2 weeks ago for changes to the Salesforce sync pipeline, specifically phone number parsing, normalization, or formatting logic. 2. Look for code that extracts or validates country codes — likely a regex, substring operation, or library call that assumes max 2-digit country codes. 3. Fix the parser to handle 1-4 digit country codes per the ITU-T E.164 standard. 4. Re-run the sync (or a targeted repair) to restore correct numbers from Salesforce for all affected records.","proposed_test_case":"Create test phone numbers with country codes of varying lengths: 1 digit (+1), 2 digits (+44), 3 digits (+353), and 4 digits (+1268). Run them through the sync's phone normalization logic and assert the full country code and subscriber number are preserved in E.164 format.","information_gaps":["Exact deployment date or version that introduced the regression (obtainable from TaskFlow deployment logs)","Whether the bug is in TaskFlow's sync ingestion code or in a shared phone-number parsing library","Whether manually editing a phone number in TaskFlow's UI also triggers the truncation (would indicate the bug is in a shared normalization layer rather than sync-specific code)"]}
+
+---

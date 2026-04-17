@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items well: inverted filter behavior, archived tasks in active results, active tasks missing, timing/migration correlation, and multi-user impact. Missing two important items: (1) whether individual task pages show the correct archive status (not asked), and (2) any indication that the issue is in the search index rather than the database — the triage never distinguished between layers."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "Correctly identified the schema migration as the trigger and the archive filter as the broken component, which satisfies acceptable path #2. However, the root cause hypothesis and recommended fix point to the database layer (column semantics, corrective migration) rather than the search index mapping. The actual cause is an inverted field mapping in the Elasticsearch index configuration — a reindex is needed, not a database migration rollback. This misdirection in the fix is a meaningful inaccuracy that would initially send developers looking in the wrong place."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after 2 turns with a reasonable basis. However, a key diagnostic question was skipped: 'Do individual task pages show the correct archive status, or are they also wrong?' This question would have distinguished a database-layer issue (task data itself corrupted) from a search index issue (data fine, index mapping broken), which is precisely the distinction the triage got wrong. The agent had enough to characterize the symptom but not enough to correctly isolate the layer."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. No wasted turns. The agent resolved efficiently with exactly the questions needed to characterize the problem scope and timing."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was genuinely insightful — framing the problem as four specific options (including 'both') with a clear diagnostic rationale prompted the reporter to volunteer the key inversion insight unprompted. The second question (timing with anchored options) was solid but standard. No question probed the UI-vs-backend distinction that would have been most diagnostic."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is well-structured with reproduction steps, environment, severity, impact, recommended fix, and a proposed test case. A developer could start investigating quickly. The main limitation is that the recommended fix points to database migration scripts rather than the search index configuration, which would add friction before finding the actual problem. The test case is well-conceived and would catch the bug regardless of which layer is investigated."
+    }
+  },
+  "weighted_total": 3.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The first question's multiple-choice framing with a 'both' option was excellent — it directly elicited the inversion characterization that became the centerpiece of the triage",
+    "Correctly identified the v2.3.1 migration as the trigger and correlated timing precisely",
+    "Triage summary is thorough and well-structured: includes reproduction steps, severity, impact, proposed test case, and honest information gaps",
+    "Correctly established multi-user scope from information already in the original report"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether individual task pages show the correct archive status — the one question that would have distinguished a database-layer bug from a search index bug",
+    "Root cause hypothesis and recommended fix target the database migration directly, missing that the actual problem is in the search index field mapping configuration",
+    "Recommended fix ('write a corrective migration to flip values back') could send the engineering team in the wrong direction before they discover the index mapping issue"
+  ],
+  "most_insightful_question": "Which of these best describes what you're experiencing? (1) archived tasks showing up, (2) active tasks missing, (3) both, (4) something else — this framing directly surfaced the inversion pattern the reporter then confirmed in their own words",
+  "missed_opportunities": [
+    "Do individual task pages (when you open a task directly) show the correct archive status, or are those wrong too? (Would distinguish database corruption from search index mapping inversion)",
+    "If you search without any archive filter applied, do you see all tasks mixed together, or are some tasks missing entirely? (Would confirm whether the issue is purely in the filter or also in base indexing)"
+  ]
+}

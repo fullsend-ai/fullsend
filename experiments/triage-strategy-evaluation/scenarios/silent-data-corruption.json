@@ -1,0 +1,25 @@
+{
+  "title": "Some customer phone numbers are wrong in TaskFlow",
+  "body": "We noticed that some of our customer contact records have incorrect phone numbers. The numbers look truncated or mangled. Our support team caught it because they tried calling a few customers and got wrong numbers. We have about 2,000 customer records and I'd estimate maybe 50-100 have wrong numbers. This is a serious data integrity issue for us.",
+  "quality": "medium",
+  "reporter_profile": "typical",
+  "ground_truth": {
+    "description": "The reporter manages customer records in TaskFlow. A nightly batch import job syncs customer data from their CRM. Two weeks ago, a developer updated the phone number normalizer to support international formats. The new regex-based normalizer silently truncates phone numbers with country codes longer than 2 digits (e.g., +1268 for Antigua becomes +12, +353 for Ireland becomes +35). Numbers with 1-2 digit country codes (+1 for US, +44 for UK) are fine. The affected records are all customers with phone numbers from countries with 3-4 digit country codes. The corruption happened gradually — each nightly sync overwrote good numbers with truncated ones. The old numbers are in CRM backups but not in TaskFlow's history.",
+    "actual_cause": "The phone number normalizer regex uses a capture group that only matches 1-2 digit country codes: /^\\+(\\d{1,2})(\\d+)$/. Numbers with 3+ digit country codes get partially matched, truncating the country code. The normalizer was updated 2 weeks ago and runs on every nightly import, silently corrupting affected numbers.",
+    "acceptable_paths": [
+      "Identifying the nightly import as the corruption source and the country code pattern among affected numbers, even without finding the exact regex issue",
+      "Identifying the 2-week timeline and connecting it to a recent change in the import pipeline, even without pinpointing the normalizer"
+    ],
+    "environment": "TaskFlow v2.3.1, nightly batch import from Salesforce CRM, ~2,000 customer records",
+    "workaround": "Restore affected numbers from CRM backup; disable the nightly sync until the normalizer is fixed"
+  },
+  "expected_triage_extracts": [
+    "~50-100 affected records out of 2,000",
+    "phone numbers appear truncated, not random",
+    "started approximately 2 weeks ago",
+    "related to nightly batch import",
+    "pattern: affected numbers have international country codes with 3+ digits",
+    "numbers with US/UK country codes are fine",
+    "recent change to phone number normalizer"
+  ]
+}

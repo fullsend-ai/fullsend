@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: delay duration (2-4 hours), onset (~1 week ago), morning-worse/afternoon-better pattern, connection to marketing digest batch process, queue congestion hypothesis, transactional vs. bulk emails sharing a pipeline, and pre-regression baseline (1-2 minutes). The summary also adds value with reproduction steps, a proposed test case, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the daily digest feature as the cause and queue saturation as the mechanism, which matches acceptable path #2 exactly. While it doesn't name the specific priority inversion (digest emails at the same priority as transactional), it correctly diagnoses shared queue contention and recommends separating real-time notifications onto a higher-priority queue — which is precisely the fix. No factual errors are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two focused rounds of questions and had solid evidence before resolving. It correctly flagged remaining unknowns (queue logs, digest volume, whether other self-hosted users are affected) in the information_gaps section. One obvious question was left unasked: how many users receive the digest (i.e., queue volume), which would have strengthened the hypothesis further. Resolving at this point was reasonable but slightly premature."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Every question asked was essential. The first turn established environment and change history; the second turn targeted the specific timing correlation that confirmed the hypothesis. No redundant or low-value questions were asked."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second-round questions were genuinely diagnostic and elicited the critical insight — the reporter explicitly said they hadn't connected the digest timing to the delays until asked. Asking 'roughly what time of day do digest emails arrive?' and 'when a delayed notification finally comes through, does it arrive around the same time as the digest?' demonstrated real diagnostic reasoning and directly unlocked the root cause."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it includes a specific root cause hypothesis, step-by-step reproduction instructions, a prioritized list of investigation steps (check shared queue, inspect queue depth at 9am, separate queues), a proposed test case with an SLA assertion, and explicit information gaps. A developer could begin coding a fix or writing a diagnostic script immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second-round follow-up on digest timing and correlation was precisely targeted and elicited the key insight the reporter had not volunteered",
+    "The triage summary is exceptionally actionable — reproduction steps, specific fix recommendations, a proposed test case, and explicit information gaps all in one structured artifact",
+    "The agent correctly identified the digest feature as the cause in just two turns without any server-side data"
+  ],
+  "notable_weaknesses": [
+    "Did not ask how many users receive the daily digest, which would have quantified queue volume and further strengthened the congestion hypothesis",
+    "Did not ask whether disabling the digest temporarily resolves the delays — a quick workaround confirmation that would also serve as diagnostic validation"
+  ],
+  "most_insightful_question": "Roughly what time of day do the daily digest emails arrive? When a delayed notification finally comes through, does it arrive around the same time as the digest, or at a completely different time?",
+  "missed_opportunities": [
+    "How many users are on the TaskFlow instance and receive the daily digest? (Would have revealed the ~10K email volume behind the congestion)",
+    "Have you tried disabling the daily digest to see if notification delays resolve? (Would confirm causation and provide an immediate workaround)"
+  ]
+}

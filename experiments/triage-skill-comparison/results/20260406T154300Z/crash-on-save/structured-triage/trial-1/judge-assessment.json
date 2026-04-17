@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: CSV import with special characters, encoding error message, large task list (~200 tasks), environment details (macOS 14.2, TaskFlow v2.3.1), and that smaller lists save fine. It missed explicitly distinguishing that the crash happens on manual save (toolbar click) vs auto-save, though the reporter didn't volunteer this distinction either. The information gap about size vs characters interaction was honestly acknowledged."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is close — it correctly identifies encoding issues with special characters during save serialization as the culprit. The hypothesis slightly misattributes the issue to non-UTF-8 encoding from the CSV rather than the actual cause (the serializer choking on non-ASCII when payload exceeds 64KB), but the general direction is correct and actionable. The summary accurately reflects what the reporter described."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 question rounds were needed to gather substantial diagnostic information. The first question effectively drew out the encoding clue, CSV connection, and list size factor. The second gathered environment details and CSV encoding info. A third round could have probed the manual-save vs auto-save distinction and whether removing imported tasks fixes it, but overall very efficient."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-structured with specific prompts (error dialog vs freeze, error messages, specific conditions). It successfully drew out the encoding flash, CSV connection, and size factor — information the reporter wouldn't have volunteered from the vague original issue. The second question appropriately followed up on environment and CSV encoding. Questions were professional and diagnostic rather than generic."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary provides clear reproduction steps, a reasonable root cause hypothesis pointing to the save serialization path, and a concrete recommended fix (UTF-8 normalization at import or graceful encoding handling at save). A developer could start investigating the save/serialization code immediately. The information gaps are honestly noted. Missing the 64KB threshold detail means some investigation is still needed."
+    }
+  },
+  "weighted_total": 4.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extracted substantial diagnostic information from a very vague initial report in only 2 rounds",
+    "Correctly identified the CSV import and encoding as the core issue",
+    "Summary is well-structured with reproduction steps, root cause hypothesis, and recommended fix",
+    "Honestly acknowledged information gaps rather than over-claiming certainty"
+  ],
+  "notable_weaknesses": [
+    "Did not distinguish between manual save and auto-save behavior",
+    "Did not ask whether removing the imported tasks resolves the issue (a key diagnostic that would isolate the cause)",
+    "Root cause hypothesis attributes the issue to non-UTF-8 encoding rather than considering the size+encoding interaction"
+  ],
+  "most_insightful_question": "Does the app close completely, freeze, or show an error dialog? Do you see any error message or warning before or after the crash? Is there a specific type of task or project you're saving when this happens?",
+  "missed_opportunities": [
+    "Does the crash happen with auto-save, or only when you manually click Save?",
+    "If you remove the tasks that were imported from CSV, does saving work again?",
+    "Have you tried saving the imported tasks in a new/separate task list to see if size matters?"
+  ]
+}

@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Crash on save when task list contains CSV-imported data with non-UTF-8 encoding
+
+## Problem
+TaskFlow crashes (abrupt app closure) when the user clicks Save in the toolbar for a project whose tasks were populated via CSV import. A brief error dialog referencing 'encoding' flashes before the app terminates. Manually created task lists and other projects save without issue.
+
+## Root Cause Hypothesis
+The CSV import path ingests task data without normalizing its character encoding to TaskFlow's internal format (likely UTF-8). When the save routine later serializes the project, it encounters byte sequences that are invalid in the expected encoding, triggering an unhandled exception that crashes the app. The source CSV was exported from a spreadsheet application (likely Excel on Windows) which commonly produces Windows-1252 or Latin-1 encoded files, or UTF-8 with BOM — any of which could cause this if the save path assumes clean UTF-8.
+
+## Reproduction Steps
+  1. Create a CSV file with task names containing characters outside ASCII (accented characters, curly quotes, em-dashes, or BOM marker) using a tool like Excel with Windows-1252 encoding
+  2. Open TaskFlow 2.3.1 on macOS
+  3. Import the CSV into a new or existing project
+  4. Click Save in the toolbar
+  5. Observe: app crashes with a brief encoding-related error dialog
+
+## Environment
+macOS 14.2 (Sonoma), TaskFlow version 2.3.1
+
+## Severity: high
+
+## Impact
+Any user who imports a CSV with non-UTF-8 encoding is unable to save their project, resulting in complete data loss for that session. The user reports being unable to work on their main project for days. This likely affects anyone importing CSVs from Excel or legacy spreadsheet tools.
+
+## Recommended Fix
+1. Inspect the CSV import code path — verify whether it detects and normalizes source encoding (e.g., using charset detection like ICU or chardet) before storing task data internally. 2. Inspect the save/serialization code path — add encoding error handling (e.g., replace or escape invalid sequences) so that malformed strings produce a user-visible error rather than an unhandled crash. 3. Add a try/catch around the save routine to gracefully surface the error dialog instead of terminating the app. 4. Consider re-encoding all imported data to UTF-8 at import time as the primary fix.
+
+## Proposed Test Case
+Import a CSV file saved with Windows-1252 encoding containing characters like curly quotes (\u201c\u201d), em-dashes (\u2014), and accented characters (e.g., \u00e9). Verify that (a) the import succeeds, (b) the project saves without crashing, and (c) the characters round-trip correctly. Additionally, test with a UTF-8 BOM file and a Latin-1 file.
+
+## Information Gaps
+- Exact error message text (flashes too quickly for reporter to read; recoverable from logs or code inspection)
+- Original CSV file is no longer available — reproduction requires constructing a test CSV
+- Specific spreadsheet application and OS that exported the CSV (reporter only knows 'a spreadsheet from manager')
+- Whether the issue is specific to certain characters in the CSV or any non-ASCII content

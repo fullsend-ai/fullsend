@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~5,000 tasks, slow on description/fast on title, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 second latency, long descriptions (meeting notes, 2000+ words). CPU spike during search was not explicitly mentioned in the conversation — reporter didn't volunteer it and agent didn't ask — but this is the only gap. The summary is otherwise exceptionally complete and adds valuable context like cold-cache ruling out and impact assessment."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage precisely matches the acceptable diagnostic path of identifying the v2.2→v2.3 upgrade as the trigger and suspecting a search implementation regression. The root cause hypothesis explicitly names 'indexed full-text search to unindexed LIKE/substring scan' which is exactly the actual cause (FTS5 → LIKE). The recommended fix correctly directs the developer to diff the search implementation, check for dropped indexes, and use EXPLAIN ANALYZE — all on target."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about timing/version, search type differentiation (title vs. description), and description length — all high-value questions that unlocked the key diagnostic signals. One notable gap: the agent never asked about CPU usage during searches, which would have been a useful data point. The information_gaps section acknowledges some remaining unknowns, which is appropriate. Overall thoroughness is strong."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three substantive question turns, each well-targeted. The second turn bundled the title-vs-filter question with the cold-cache question, which was efficient. The filter question was slightly low-value given the reporter doesn't use filters, but it was bundled rather than consuming its own turn. No redundant questions were asked."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question asking whether 'title search behaves differently than description/filter search' was genuinely diagnostic and led to the critical title-vs-description distinction — information the reporter would not have volunteered. The cold-cache question was also insightful, ruling out a common alternative hypothesis. The description length question in turn 3 was well-targeted and confirmed the scale of the problem."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes specific reproduction steps, a recommended fix with three concrete checks (dropped index, failed migration, LIKE vs FTS), suggests EXPLAIN ANALYZE for verification, and proposes a concrete test case with specific dataset parameters. A developer could start investigating immediately and has a clear hypothesis to test first."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The title-vs-description differentiation question in turn 2 was the pivotal diagnostic move — it unlocked the key clue that the reporter wouldn't have volunteered",
+    "Root cause hypothesis accurately named the FTS→LIKE regression pattern without access to the codebase, based purely on symptom analysis",
+    "The final summary is developer-ready: includes reproduction steps, concrete debugging commands (EXPLAIN ANALYZE), and a proposed regression test case"
+  ],
+  "notable_weaknesses": [
+    "CPU spike during search was never surfaced — this would have strengthened the 'full table scan' hypothesis and is one of the 7 expected extracts",
+    "OS/hardware was listed as an information gap but never asked about during triage; while the agent correctly assessed it as unlikely to be root cause, it could have been captured in one of the bundled questions"
+  ],
+  "most_insightful_question": "is *every* search slow, or only certain types of queries? For example, does searching for a single word like a task title behave differently than searching with filters (by date, tag, status, etc.)?",
+  "missed_opportunities": [
+    "Ask whether CPU usage spikes during slow searches — this would have provided strong evidence for a full table scan and is a symptom the reporter could easily observe",
+    "Ask whether the reporter had tried reindexing or clearing any cache (the workaround path)"
+  ]
+}

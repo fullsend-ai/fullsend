@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items are present in the triage summary: 2-4 hour delay, started ~1 week ago, morning worse/afternoon better, connection to digest batch emails, queue congestion hypothesis, transactional vs bulk competition, and original 1-2 minute baseline. The summary also adds useful extras like severity classification, reproduction steps, a proposed test case, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis closely matches both the canonical cause and the acceptable diagnostic paths. The agent correctly identified the digest feature as the cause, queue congestion as the mechanism, and even proposed prioritizing transactional over digest emails as a fix — which is exactly the canonical fix. This maps cleanly to the acceptable path 'identifying the digest email feature as the cause and the queue congestion, even without understanding the priority system.'"
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two substantive rounds of questions before resolving, covering recent changes, team-wide impact, delivery format, and whether the digest is a TaskFlow feature. The agent appropriately called out remaining information gaps (exact digest send time, queue architecture, digest scale). One obvious unasked question was the approximate time the digest emails arrive each morning, which would have directly confirmed the 9am overlap hypothesis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question turns were mostly well-targeted. The question about whether delayed notifications arrive as individual or bundled emails had limited diagnostic value — the reporter had already said the notifications behaved 'just like they always did, just late' — but it wasn't harmful. Otherwise, questions were efficiently combined and on-point."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-constructed: it asked about recent changes and team-wide scope simultaneously, directly targeting the two most important diagnostic dimensions. The second question smartly surfaced whether the digest was a TaskFlow feature, which confirmed the shared infrastructure hypothesis. The individual-vs-bundled delivery question was generic and added little signal, preventing a score of 5."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes a precise root cause hypothesis, step-by-step reproduction instructions tied to the morning window, three concrete fix options (separate queues, prioritization, rate-limiting), a proposed test case, and clearly scoped information gaps. A developer could begin investigating the queue implementation immediately without needing additional context."
+    }
+  },
+  "weighted_total": 4.55,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Immediately latched onto the morning timing pattern as a diagnostic clue and used it to frame follow-up questions",
+    "Connected the reporter's mention of the digest feature to the queue congestion hypothesis without prompting, demonstrating genuine causal reasoning",
+    "Triage summary is exceptionally well-structured: includes severity, impact, reproduction steps, multiple fix options, a test case, and explicit information gaps",
+    "Correctly proposed queue prioritization as the fix, matching the canonical solution, after only two question turns"
+  ],
+  "notable_weaknesses": [
+    "Did not ask when exactly the digest emails are sent each morning — confirming a 9am send time would have directly validated the queue flooding hypothesis",
+    "The individual-vs-bundled delivery question was low-signal given the reporter had already implied behavior was unchanged aside from latency",
+    "Did not probe the scale of the digest send (number of recipients), which is key to understanding why the backlog is so severe"
+  ],
+  "most_insightful_question": "Can you tell me more about how the delayed notifications arrive? ... And do you know if that new daily digest email is a TaskFlow feature, or is it something from a separate email/marketing tool?",
+  "missed_opportunities": [
+    "What time does the daily digest email typically arrive in your inbox? (Would confirm 9am overlap with the notification delay window)",
+    "Approximately how many people in your organization receive the daily digest? (Would establish queue flooding scale)",
+    "Have you checked the TaskFlow changelog or release notes to see exactly what changed a week ago? (Would confirm digest feature launch date precisely)"
+  ]
+}

@@ -1,0 +1,7 @@
+```json
+{
+  "action": "ask",
+  "reasoning": "We're in Phase 3 (hypothesis testing). I have a strong working theory — the CSV import introduced characters with incompatible encoding (smart quotes, em dashes, likely Windows-1252 or similar) that the save serialization can't handle. Before resolving, I need to confirm the environment (web app vs desktop, OS, version) since that determines the save/encoding path a developer would investigate. I also want to validate the hypothesis with the reporter without asking them to do manual deletion work, which they've already declined.",
+  "question": "That's really helpful — I think I have a working theory. The 'fancy quotes and dashes' from your CSV (things like curly quotes " " and em dashes —) are very likely what's triggering the encoding error on save.\n\nI'm **not** going to ask you to delete tasks to test this. Instead, two quick things so we can hand this off to a developer:\n\n1. **Are you using TaskFlow as a web app (in a browser) or a desktop app?** And if browser, which one (Chrome, Firefox, etc.)?\n2. **Before that CSV import, did saving work fine for you?** Just want to confirm the timeline."
+}
+```

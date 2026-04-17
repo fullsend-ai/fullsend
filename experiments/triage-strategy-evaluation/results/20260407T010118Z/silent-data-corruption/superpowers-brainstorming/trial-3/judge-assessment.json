@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured 5 of 7 expected items: affected record count, truncation pattern, nightly import connection, 3+ digit country code pattern, and US/UK numbers being fine. It missed two critical items: when the issue started (~2 weeks ago) and any recent change to the import pipeline/normalizer. These are the items most useful for pinpointing a regression."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identified the nightly Salesforce import as the corruption source and the 3+ digit country code pattern as the discriminating factor. The root cause hypothesis explicitly calls out 'a regex that captures only 2 digits after the + sign' — strikingly close to the actual regex bug. This satisfies the first acceptable diagnostic path and nearly reaches the canonical cause."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after just two question rounds without asking when the problem started or whether anything changed recently in the import pipeline. These are obvious follow-ups given a data integrity issue: timeline establishes whether it's a regression or a long-standing defect, and recent changes would point directly to the normalizer update. The agent even flags 'whether this is a recent regression' as an information gap in the summary — but never asked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions asked were essential and high-value. The first narrowed the data source to the nightly sync; the second elicited specific examples that revealed the country code pattern. No redundancy, no filler."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions showed genuine diagnostic reasoning. The first used structured multiple-choice options to efficiently categorize data origin. The second explicitly prompted for before/after examples with illustrative formats, which directly surfaced the country code truncation pattern the reporter might not have articulated on their own."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is highly actionable: specific hypotheses to investigate (VARCHAR(2), slice operation, regex), reproduction steps, a proposed test suite covering 1–4 digit country codes, and a recovery path via Salesforce re-import. The main gap is the missing timeline — a developer won't know to look at a 2-week-old git change, which is the fastest path to the fix."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Root cause hypothesis independently arrived at the regex explanation, almost exactly matching the actual bug",
+    "Question 2's before/after framing elicited the Ireland and Antigua examples, which exposed the 3+ digit country code pattern without leading the reporter",
+    "Summary includes a concrete test matrix (1-, 2-, 3-, 4-digit country codes) that would catch the bug and validate the fix",
+    "Recovery path (re-import from Salesforce) is practical and correct"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the problem first appeared — the 2-week timeline is the single fastest clue pointing to a recent code change",
+    "Never asked whether anything changed recently in the import pipeline or TaskFlow configuration — would have surfaced the normalizer update directly",
+    "Resolved without knowing whether historical records are also corrupted or only records synced after the regression, which affects scope assessment"
+  ],
+  "most_insightful_question": "Can you share a couple of examples of what the mangled numbers look like compared to what's in Salesforce? — prompted specific before/after pairs that immediately revealed the country code truncation pattern and the US/UK vs. international split.",
+  "missed_opportunities": [
+    "When did your support team first notice the wrong numbers — was this recent, or has it been ongoing for a while?",
+    "Have there been any recent changes to your Salesforce integration or to how TaskFlow processes the imported data?",
+    "Are older records also affected, or only records that were synced recently?"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected information items are present in the triage summary: the ~50-100 affected records out of 2,000, the truncation pattern, the ~2-week timeline, the nightly batch import, the 3+ digit country code pattern, US/UK numbers being fine, and the connection to a recent phone number formatting change. The summary also adds useful detail like reproduction steps and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis directly matches both an acceptable diagnostic path and closely approximates the canonical cause. The agent correctly identifies the nightly import as the corruption source, the 2-week timeline tied to a recent change, and specifically hypothesizes 'the code likely assumes a maximum country code length of 2 digits' — which is exactly what the actual regex bug does. The Salesforce-side data being clean was confirmed and correctly interpreted. No factual inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered the critical bases: example patterns, data source, upstream data integrity check, and version/recent changes. The information gaps section correctly flags import logs and whether old records were retroactively corrupted — legitimate open questions that weren't pursued but are noted. One missed follow-up: asking for the import logs directly rather than listing it as a gap would have strengthened the triage. Otherwise well-paced."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Four turns, each advancing the investigation meaningfully. The sequence was optimal: establish the pattern → identify the data source → confirm upstream data integrity → establish version and change timeline. No redundancy, no wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. The third question — asking whether the Salesforce records themselves show correct numbers — was particularly sharp: it definitively isolated the bug to the TaskFlow import layer rather than the data source, which is a targeted diagnostic move a non-expert might not think to make. The first question (asking for specific examples) immediately surfaced the country-code pattern. All questions led to non-obvious, high-value information."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start investigating immediately: the summary names the version (v2.3.1), identifies the specific code area (phone number normalization in the Salesforce import pipeline), hypothesizes the exact class of bug (2-digit country code assumption), provides a specific fix direction (E.164 compliance), proposes a concrete test case, and outlines a data recovery path (re-import from clean Salesforce data)."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The Salesforce upstream data integrity check definitively isolated the corruption to the import layer in a single question, avoiding ambiguity that could have sent developers down the wrong path.",
+    "The root cause hypothesis — specifically calling out a 2-digit country code length assumption — is remarkably close to the actual regex bug without access to the source code.",
+    "The proposed test case is concrete and immediately usable, covering 1-, 2-, 3-, and 4-digit country codes explicitly."
+  ],
+  "notable_weaknesses": [
+    "Import job logs were identified as an information gap but never requested; asking for them directly could have surfaced warnings or errors that confirm the normalizer as the exact culprit.",
+    "The question about whether previously correct records were retroactively corrupted (vs. only new records) was also left as a gap rather than asked — this has practical implications for the remediation scope."
+  ],
+  "most_insightful_question": "When you look at those same affected records in Salesforce itself, are the phone numbers correct there? — This question definitively isolated the bug to the TaskFlow import pipeline rather than the upstream data source, which is the single most important diagnostic distinction in this case.",
+  "missed_opportunities": [
+    "Requesting a sample of import job logs or error output to check for warnings during phone number processing",
+    "Asking whether records that were imported before the suspected 2-week window are also affected, which would clarify whether the nightly re-sync retroactively corrupted previously correct records (as the ground truth confirms)"
+  ]
+}

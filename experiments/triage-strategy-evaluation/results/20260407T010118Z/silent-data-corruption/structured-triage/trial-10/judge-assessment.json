@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected information items were captured: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import, 3+ digit country code pattern, US/UK numbers unaffected, and the connection to a recent change. The summary also adds a proposed test case and reproduction steps not required by the rubric."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: nightly import as the corruption source with the 3+ digit country code pattern, and the 2-week timeline connected to a recent pipeline change. The recommended fix explicitly calls out 'a regex with a hard-coded capture group length' as a candidate — very close to the actual cause. Loses one point for not pinpointing the normalizer component specifically, framing the hypothesis more broadly as a field-length constraint or substring operation."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the key questions that unlocked the critical facts: corruption pattern, data entry mechanism, timing, and version. It self-acknowledged the gaps around import logs and update history. One obvious question was left unasked: whether the Salesforce CRM still shows correct phone numbers, which would definitively confirm that corruption is happening inside TaskFlow rather than at the CRM source."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, three questions, each yielding high-value information. The second question efficiently bundled two related angles (entry mechanism and timing). No redundant or low-value questions were asked."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Questions were well-targeted and professionally framed. The second question — asking how numbers were entered and when the problem started — was particularly effective, eliciting the nightly Salesforce sync and 2-week timeline in a single turn. Questions were diagnostic rather than generic, though none required unusually deep technical reasoning to formulate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it identifies the import pipeline as the locus, the country code capture as the specific behavior to look for, provides a git history search strategy, mentions regex as a candidate mechanism, includes concrete reproduction steps, and proposes a specific test case with 1-, 2-, 3-, and 4-digit country codes. A developer could open the import module's git log and start reviewing immediately."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the 2-digit truncation pattern from the first reporter response and named the mechanism precisely, setting up all subsequent questions effectively",
+    "Efficiently combined the 'how were numbers entered' and 'when did this start' questions into a single turn, minimizing reporter burden",
+    "The recommended fix explicitly called out regex capture group length as a candidate — remarkably close to the actual root cause without access to the codebase",
+    "Proposed test case with country codes of length 1, 2, 3, and 4 is practically ready to copy into a test file"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether the Salesforce CRM still shows the correct phone numbers, which would definitively rule out the CRM as the corruption source",
+    "Did not ask for server-side import logs or any TaskFlow-side artifacts that could narrow down the layer (ingestion vs. normalization vs. storage) where truncation occurs",
+    "The root cause hypothesis is framed around field-length constraints and schema changes ahead of regex, even though the symptom (exactly 2 digits retained) is a stronger signal for a regex capture group than for a VARCHAR column width"
+  ],
+  "most_insightful_question": "How were these customer phone numbers entered into TaskFlow? For example, were they typed in manually through the UI, imported via CSV/spreadsheet, synced from another system through an API, or some mix?",
+  "missed_opportunities": [
+    "Does the Salesforce CRM still show the correct, untruncated phone numbers for the affected customers? (Would confirm corruption is inside TaskFlow)",
+    "Can you identify which specific night the numbers first went wrong — e.g., by checking if the support team has any call logs with the correct number from before that date? (Would narrow the 2-week window to a specific deploy)",
+    "Do you have access to TaskFlow's import logs or audit trail for the nightly sync job? (Could reveal transformation warnings or the exact field being written)"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: inverted filter behavior, missing active tasks, timing tied to v2.3.1 migration (~3 days ago), multi-user impact, correct status on individual task pages, inverted search filter behavior, and search index as the locus. The summary goes beyond with reproduction steps, severity, impact, recommended fix, proposed test case, and information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis directly matches the canonical cause: a boolean inversion in the search index introduced during the v2.3.1 migration, with the source-of-truth database records unaffected. The hypothesis even explicitly names literal boolean inversion (`is_archived` written as `!is_archived`) as the most likely mechanism, which matches the ground truth precisely. The distinction between search index and application logic is correctly drawn."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions reached a solid, accurate conclusion. The agent correctly identified the search index as the problem and established timing, scope, and the filter inversion. The one notable gap is the search backend technology (Elasticsearch vs. database full-text), which the agent acknowledged but did not ask about — it's identified as an information gap rather than resolved. No other obvious follow-ups were skipped given what was already confirmed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions, both essential. No redundant or low-value turns. The first question efficiently established timing and trigger; the second pinpointed the failure boundary. The reporter volunteered the task counts and teammate confirmation unprompted, keeping the conversation tight."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question is the standout: asking whether individual task pages show correct status vs. search results is a precise diagnostic probe designed to distinguish between data corruption and index corruption. This is not a generic bug-report question — it reflects genuine hypothesis testing. The reporter's answer (and the unprompted 'filter flip' observation) directly confirmed the index-only hypothesis. The first question was more standard but effective in surfacing the migration trigger."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary provides a numbered fix plan (inspect migration script, query index directly, reindex from source-of-truth, verify query layer), a concrete test case with pass/fail criteria, reproduction steps, and environment details. A developer could open the migration script and the search index configuration and begin debugging immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question precisely targeted the search-index-vs-data-corruption boundary, eliciting the 'filter flip' observation that confirmed the hypothesis without further questioning",
+    "The root cause hypothesis is specific enough to name the exact failure mechanism (boolean inversion) while acknowledging alternative forms (enum mapping, negated predicate)",
+    "The triage summary is immediately actionable: fix steps, test case, reproduction steps, and information gaps are all present and concrete",
+    "Correctly identified that the UI and database are unaffected — only the search index is broken — matching the ground truth precisely"
+  ],
+  "notable_weaknesses": [
+    "The search backend technology (Elasticsearch vs. database full-text) was not asked about, leaving the fix approach partially underdetermined — noted as a gap but not resolved",
+    "Did not ask whether the issue affects all workspaces or only those migrated during the specific maintenance window, which would help scope the incident"
+  ],
+  "most_insightful_question": "When you open that 'Q2 planning' task you created yesterday directly (not through search — maybe from your task list or a bookmark), does it show up correctly as active? And conversely, if you click on the archived task that search is surfacing, does it still show as archived when you view it?",
+  "missed_opportunities": [
+    "Ask which search backend is used (Elasticsearch, Solr, database full-text, etc.) — determines the exact remediation path",
+    "Ask whether the issue affects all workspaces in the product or only those that went through the v2.3.1 migration window — scopes incident severity",
+    "Ask if toggling the archive filter manually (using 'archived tasks' filter to find active tasks) serves as a functional workaround — would have surfaced the filter-flip behavior sooner"
+  ]
+}

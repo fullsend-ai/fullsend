@@ -1,0 +1,53 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this. To help us narrow it down: when you say the search is slow, are you using the main search bar at the top of the app, or filtering/sorting within a task list or project view? And does the slowness happen with every search term, or only with certain queries (e.g., short words, phrases, special characters)?
+
+---
+
+### reporter
+
+It's the main search bar at the top. It happens with pretty much every search term as far as I can tell — doesn't matter if it's a single word or a phrase. Actually, now that I think about it, I think it might be slower when it's searching through the task descriptions versus just titles. Like if I search for something that I know is only in a task title, it comes back pretty quick. But searching for something that's in the description body takes forever. Not sure if that helps.
+
+---
+
+### triage-agent
+
+That's really helpful — the distinction between title and description search is a great clue. A couple of things that would help us pin this down: roughly how many tasks do you have in your TaskFlow instance? And do you recall approximately when the slowdown started — for example, did it coincide with an update to TaskFlow, or with your task count growing past a certain point?
+
+---
+
+### reporter
+
+I have around 5,000 tasks — I've been using TaskFlow for about 2 years now so they've built up. As for when it started, I think it was maybe 2 weeks ago? I recently updated from v2.2 to v2.3, and I feel like the slowness started around that time, but I'm not 100% sure if it was right after the update or a few days later. Could be related though.
+
+---
+
+### triage-agent
+
+That's very useful context — the v2.3 timing and the 5,000-task count both give us good leads. To help us reproduce this reliably: when you search for something you know is only in a title and it comes back "pretty quick," are we talking under a second, or still a few seconds? And one thing worth checking — is there any chance you could briefly test on a second device or browser to see if the slowness follows? That would help us rule out anything specific to your laptop (like low disk space or memory pressure) versus a server-side or app-level issue. Also, is TaskFlow running locally on your machine, or are you connecting to a hosted/shared instance?
+
+---
+
+### reporter
+
+When I search by title it's pretty much instant, like under a second for sure. TaskFlow is running locally on my machine — it's a desktop app. So it wouldn't be a server thing. My laptop is a ThinkPad T14 with 32GB of RAM so I don't think it's a memory issue. I did notice that when I do the slow searches, my fan kicks on and it sounds like the CPU is working hard. I haven't tried on another device though, I only have it installed on this one.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text description search regression in v2.3: 10-15s latency with ~5,000 tasks","problem":"After upgrading from v2.2 to v2.3, searching via the main search bar takes 10-15 seconds when the search term matches task description/body content. Title-only matches return in under 1 second. The CPU spikes heavily during slow searches, indicating a compute-bound operation rather than I/O or memory pressure.","root_cause_hypothesis":"The v2.3 update likely introduced a regression in how description/body fields are searched — most probably a missing or dropped full-text index on the task description column, a switch from indexed search to naive string scanning, or a new search feature (e.g., expanded search scope or ranking) that performs unoptimized full-text comparison across all 5,000 task bodies. The CPU spike pattern supports an unindexed sequential scan hypothesis.","reproduction_steps":["Install TaskFlow v2.3 (desktop app)","Populate the instance with ~5,000 tasks that have non-trivial description/body content","Open the main search bar at the top of the app","Search for a term known to exist only in task titles — confirm it returns in under 1 second","Search for a term known to exist in task description bodies — observe 10-15 second delay and high CPU usage","Optionally compare against v2.2 with the same dataset to confirm the regression"],"environment":"Desktop app (local install), ThinkPad T14 with 32GB RAM, TaskFlow v2.3, ~5,000 tasks accumulated over 2 years","severity":"medium","impact":"Users with large task counts (~5,000+) experience severely degraded search performance after upgrading to v2.3. Core search functionality becomes effectively unusable for description-level searches. Likely affects all users with significant task history. Title-only search still works as a partial workaround.","recommended_fix":"1. Diff the search implementation between v2.2 and v2.3 — look for changes to query logic, index definitions, or search scope on the description/body field. 2. Check the local database schema for a missing or dropped full-text index on the task description column. 3. Profile the search query with EXPLAIN/ANALYZE (or equivalent) on a 5,000-task dataset to confirm whether it's doing a sequential scan. 4. If v2.3 added full-text search over descriptions as a new feature, ensure it uses proper indexing (FTS5 for SQLite, GIN/GiST for PostgreSQL, etc.).","proposed_test_case":"Performance test: seed a TaskFlow instance with 5,000+ tasks with varied description content. Assert that a description-level search completes in under 2 seconds. Run this test against both v2.2 (baseline) and v2.3 (regression) to validate the fix restores prior performance.","information_gaps":["Exact v2.3 changelog — whether search implementation was intentionally modified","Whether the issue worsens linearly with task count or has a threshold","Operating system version (likely not a factor given the clear version correlation)"]}
+
+---

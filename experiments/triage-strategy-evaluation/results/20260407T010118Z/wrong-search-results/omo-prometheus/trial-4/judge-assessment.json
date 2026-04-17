@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "All seven expected extracts are present: archived tasks appearing in active filter, active tasks missing from results, onset tied to v2.3.1 (~3 days ago), multi-user impact (teammate confirmed), individual task pages showing correct status, filter inversion confirmed. The only partial gap is item 7 — 'related to search index, not application logic' — where the triage mentions 'search index query builder' but hedges toward application code paths as the primary hypothesis, not cleanly distinguishing index configuration from application logic."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The canonical cause is an inverted field mapping in the search index configuration after a migration rebuild. The triage correctly identifies the archive filter as inverted, the v2.3.1 release as the trigger, and isolation to search (not the main task list). This satisfies acceptable path #2: 'identifying the schema migration as the trigger and the archive filter as the broken component.' The root cause hypothesis leans toward application code (boolean negation, swapped enum) rather than index configuration, which is somewhat off, but the diagnosis is fundamentally sound and actionable."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two rounds of well-targeted questions gave enough signal to confidently characterize the bug. The agent correctly stopped once the reporter confirmed full inversion consistency and task-list isolation. One missed probe: asking what kind of changes v2.3.1 included (e.g., database migrations, infrastructure changes) might have surfaced the schema migration directly. The information_gaps section appropriately flags remaining unknowns."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns, each containing tightly grouped, non-redundant questions. No question was repeated or low-value in isolation. The 'who archived the tasks' sub-question in turn 1 was the weakest but still provided useful context for severity assessment."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 2 was genuinely insightful: asking the reporter to actively test a known-active task against both filter states converted a description of confusing behavior into a confirmed, reproducible inversion hypothesis. Asking whether the main task list (without search) was also affected elegantly isolated the bug to the search subsystem. These questions reflected real diagnostic reasoning, not generic checklist questions."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is detailed and well-structured: clear problem statement, step-by-step reproduction, root cause hypothesis, specific fix recommendation, a proposed regression test, and acknowledged information gaps. A developer could begin investigation immediately. The recommendation to diff search filter code between versions is reasonable but slightly misdirects toward application logic rather than index configuration, which could add an investigative step before finding the actual fault."
+    }
+  },
+  "weighted_total": 4.25,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Turn 2's request that the reporter actively test a known-active task against both filter states converted a vague complaint into a confirmed, reproducible inversion — demonstrating genuine diagnostic reasoning rather than passive information collection.",
+    "Asking whether the main task list was also affected cleanly isolated the bug to the search subsystem in a single question, providing a critical clue about the affected code path.",
+    "The final summary is unusually complete: it includes reproduction steps, a proposed regression test, and explicitly enumerated information gaps, making it immediately useful for both developers and follow-up triage."
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis focuses on application code changes (boolean negation, swapped enum) rather than search index configuration, which is the actual fault location. A developer following the 'diff the code' recommendation might not immediately check the index field mapping.",
+    "The agent did not probe what type of changes v2.3.1 included — a question like 'do you know if v2.3.1 involved any database migrations or infrastructure changes?' might have surfaced the schema migration directly and pointed toward the index as the fault domain."
+  ],
+  "most_insightful_question": "If you search for a term that you know only exists in an active task (something you created recently), does it return zero results with the default 'active tasks only' filter — but appear when you switch to the 'archived' filter?",
+  "missed_opportunities": [
+    "Ask whether v2.3.1 included database migrations or search index rebuilds — this would have pointed toward infrastructure-level changes rather than application code, aligning the hypothesis more closely with the actual index configuration fault.",
+    "Ask whether searching without any archive filter (showing all tasks) returns correct results — this would have confirmed the inversion is specifically in the filter predicate, not in indexing of task content generally."
+  ]
+}

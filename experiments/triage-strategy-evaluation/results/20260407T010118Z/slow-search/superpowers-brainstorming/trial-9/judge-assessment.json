@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items: task count (~5,000), title-fast/description-slow distinction, v2.2→v2.3 regression, ~2 weeks ago timing, 10-15s latency, and long descriptions. The one notable miss is CPU spiking during search, which was never asked about and doesn't appear in the summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: the v2.2→v2.3 upgrade as the trigger and the title-vs-description performance gap pointing to an indexing issue. The hypothesis explicitly mentions 'change from indexed search to sequential scan' and 'switching from indexed lookup to LIKE/sequential scan' — remarkably close to the actual FTS5→LIKE regression. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent covered search type differentiation, version timing, and task count. However, it never asked about CPU behavior, OS/hardware details, or whether the reporter had tried reindexing or clearing cache. The fresh-install-vs-upgrade question was correctly identified as an information gap but not pursued. The agent resolved with a reasonable basis but left several concrete follow-ups unasked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two triage turns before resolution. Both were dense and well-targeted: the first combined search-type categorization with timing inquiry; the second confirmed the hypothesis while gathering task count. No wasted or redundant questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was genuinely diagnostic — it presented a precise taxonomy of search modes (title vs. full-text vs. filtered) that the reporter would not have spontaneously articulated, and it immediately surfaced the key discriminating factor. The structured task-count options in the second question were efficient. Both questions demonstrated real diagnostic reasoning rather than generic bug-report checklist items."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it names the specific code path to diff (full-text query path between v2.2 and v2.3), lists concrete things to check (dropped indexes, LIKE vs. indexed lookup, new joins, missing caching), recommends EXPLAIN/ANALYZE, provides reproduction steps, and proposes a regression test with specific performance thresholds. A developer could start coding from this immediately."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question's precise search-type taxonomy (title vs. full-text vs. filtered) immediately surfaced the critical discriminating factor in one turn",
+    "Root cause hypothesis explicitly named indexed-vs-sequential-scan as a candidate, which is essentially correct",
+    "Resolved in only 2 turns with high information density per turn",
+    "Triage summary is exceptionally actionable — includes specific debugging steps, EXPLAIN/ANALYZE recommendation, reproduction steps, and a concrete regression test"
+  ],
+  "notable_weaknesses": [
+    "CPU spiking during search was never asked about and is absent from the summary",
+    "OS and hardware details were not captured (summary notes 'OS unspecified')",
+    "Did not ask whether the reporter had tried reindexing or clearing cache, which would have confirmed the index hypothesis and offered a workaround"
+  ],
+  "most_insightful_question": "The first question's enumerated search-type taxonomy — distinguishing title search, filtered search, and full-text search — which the reporter would not have volunteered in those terms and which directly revealed the title-fast/description-slow split that anchored the entire diagnosis.",
+  "missed_opportunities": [
+    "Ask whether CPU usage spikes noticeably during slow searches (would have confirmed compute-bound full-table scan hypothesis)",
+    "Ask whether the slowness started immediately after upgrading or gradually (would disambiguate migration bug from data-growth issue)",
+    "Ask whether the issue reproduces on a fresh v2.3 install vs. an upgraded one (noted as gap but never pursued)",
+    "Ask about OS/hardware to complete the environment picture"
+  ]
+}

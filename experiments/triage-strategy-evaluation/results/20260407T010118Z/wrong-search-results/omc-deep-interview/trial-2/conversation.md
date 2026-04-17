@@ -1,0 +1,43 @@
+# Conversation: wrong-search-results x omc-deep-interview
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — that's definitely not the expected behavior.
+
+To help us narrow this down: when you search for 'Q2 planning', are you using the main search bar, or a filtered/scoped search (e.g., within a specific project or board)? And do you have any filters applied (like status, date range, or assignee) when this happens, or is it a plain keyword search with no filters?
+
+---
+
+### reporter
+
+I'm using the main search bar with no extra filters — just typing in keywords. The default 'Show active tasks only' filter is on, which is how I always use it. That's what's so confusing: it's supposed to be showing me only active tasks, but instead I'm seeing archived ones. If I toggle the filter to 'Show archived tasks,' I actually see my active tasks there instead. It's like the filter is backwards.
+
+---
+
+### triage-agent
+
+That's really helpful — the filter behaving in reverse is a strong clue. One more thing that would help us track this down quickly: do you remember roughly when this started? Was it working correctly at some point recently and then flipped, or has it been like this as long as you can remember? If you recall a specific date or event (like a product update notification), that would help us pinpoint the change that caused it.
+
+---
+
+### reporter
+
+Yes, actually I can pinpoint it pretty well. It started about three days ago, right after we got the v2.3.1 patch update. I remember because everything was working fine before that, and then the day after the update I started noticing weird search results. I initially thought maybe I was misremembering which tasks I'd archived, but then I checked individual tasks and their status was correct — it's only the search filter that's mixed up. My teammate noticed it around the same time too, so it lines up with that update.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search active/archived filter is inverted since v2.3.1 — 'Show active tasks only' returns archived tasks and vice versa","problem":"The search filter toggle for active vs. archived tasks is producing inverted results. When 'Show active tasks only' is enabled (the default), search returns archived tasks. When toggled to 'Show archived tasks,' it returns active tasks instead. The underlying task statuses are correct; only the search filter logic is reversed.","root_cause_hypothesis":"The v2.3.1 patch update introduced an inversion in the boolean logic that maps the active/archived filter toggle to the search query. Most likely a negation bug (e.g., a flipped conditional, an inverted boolean parameter, or a swapped enum mapping) in the search filter code path changed in that release.","reproduction_steps":["Ensure the application is on v2.3.1","Navigate to the main search bar","Leave the default 'Show active tasks only' filter enabled","Search for a keyword that matches both an active task and an archived task (e.g., 'Q2 planning')","Observe that archived tasks appear in results while the known active task is missing","Toggle the filter to 'Show archived tasks'","Observe that the active task now appears in results instead"],"environment":"Application version v2.3.1 (patch update installed ~3 days ago). Reproduced by at least two users. No specific OS/browser constraints reported — appears to be a server-side or shared logic bug.","severity":"high","impact":"All users on v2.3.1 who use the default search view see incorrect results. Active tasks are effectively hidden by default, which can cause missed work items and confusion. A workaround exists (manually toggle the filter to the opposite setting), but most users won't discover it without investigation.","recommended_fix":"Diff the search filter logic between v2.3.0 and v2.3.1. Look for an inverted boolean condition, negation operator change, or swapped enum/constant in the code that translates the 'active/archived' UI toggle into a query filter. The fix is likely a single-character or single-line boolean inversion.","proposed_test_case":"Unit test: given the 'Show active tasks only' filter is enabled, assert that the search query filters to status=active (not status=archived), and vice versa. Integration test: create one active and one archived task with the same keyword, search with each filter setting, and verify the correct task appears in each case.","information_gaps":["Exact code change in v2.3.1 that introduced the inversion has not been identified yet","Whether the bug affects API-level search or only the UI search bar is unknown","Full scope of affected users/instances beyond the two confirmed reporters"]}
+
+---

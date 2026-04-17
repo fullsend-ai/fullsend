@@ -1,0 +1,22 @@
+{
+  "title": "Full-text search on task descriptions regressed to ~10-15s after v2.3 update",
+  "problem": "Since updating to approximately v2.3 two weeks ago, searching across task descriptions takes 10-15 seconds. Title-only search remains fast. The user has ~5,000 tasks accumulated over 2 years, some with lengthy descriptions (e.g., pasted meeting notes).",
+  "root_cause_hypothesis": "The v2.3 update likely dropped, failed to create, or altered the full-text index on the task descriptions column. Without a proper full-text index, description searches would fall back to sequential scanning, explaining why title search (likely indexed) is still fast while description search over 5,000 rows with large text payloads takes 10-15 seconds.",
+  "reproduction_steps": [
+    "Set up a TaskFlow instance running v2.3",
+    "Load or accumulate ~5,000 tasks, some with multi-paragraph descriptions",
+    "Perform a full-text search across task descriptions",
+    "Observe response time of 10-15 seconds",
+    "Compare with a title-only keyword search, which should return quickly"
+  ],
+  "environment": "TaskFlow v2.3 (approximate), work laptop, ~5,000 tasks with some large description fields",
+  "severity": "medium",
+  "impact": "Users with moderate-to-large task databases experience unusable full-text search performance after upgrading to v2.3. Title search is unaffected, so basic search workflows still function.",
+  "recommended_fix": "1. Inspect the v2.3 database migration for changes to the descriptions table or its indexes. 2. Check whether a full-text index exists on the descriptions column in a v2.3 instance. 3. Compare the schema against v2.2 to identify what changed. 4. If the index was dropped or altered, add a migration to restore or recreate the full-text index. 5. If the search implementation changed (e.g., switched from indexed FTS to LIKE/ILIKE), revert to the indexed approach.",
+  "proposed_test_case": "Create a performance test that loads 5,000+ tasks with realistic description lengths, performs a full-text description search, and asserts the query completes within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 schemas to confirm the regression and validate the fix.",
+  "information_gaps": [
+    "Exact database engine in use (SQLite, PostgreSQL, etc.) — though the fix investigation is the same regardless",
+    "Whether the user confirmed v2.3 is the exact version or an approximation",
+    "Whether other users on v2.3 with large datasets report the same issue"
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present in the triage summary: the ~50-100 affected records, truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US numbers being fine, and the recent change to phone number handling. The summary also surfaced additional useful detail such as the ongoing re-corruption risk and reproduction steps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names 'a regex that captures only the first 2 digits after the + sign' as the likely mechanism — which matches the actual cause precisely. The agent also correctly identified the acceptable diagnostic path (2-week timeline + import pipeline change) and correctly scoped the bug to the import/parsing layer rather than Salesforce or TaskFlow storage."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all high-value questions across 2 turns before resolving. It correctly identified remaining gaps (2-digit country codes, re-corruption on each sync, exact commit) and called them out in the summary rather than leaving them implicit. One obvious follow-up was skipped: asking directly whether backup data exists to restore correct numbers, which the ground truth identifies as a key part of the workaround."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only 2 questioning turns, each bundling 2-3 tightly related sub-questions. No question was redundant or low-value. Every turn produced information that materially shaped the hypothesis."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question efficiently probed data ingestion path, baseline correctness, and concrete examples in one turn. The second question directly targeted the change timeline and the structural nature of the truncation (country code vs. local number). The truncation-structure question in particular was non-obvious and revealed that only the country code prefix is clipped, strongly pointing to a parsing/capture-group issue."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise root cause hypothesis with the exact mechanism named (regex with 1-2 digit capture), numbered reproduction steps, a recommended 4-step fix including a migration script, and a concrete proposed test case with specific international number examples. A developer could begin the fix immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The agent identified the regex as the likely mechanism — specifically calling out 'a regex that captures only the first 2 digits after the + sign' — which matches the actual root cause without having access to the code",
+    "Immediately recognized the significance of the Ireland +353 → +35 example and used it to anchor the country-code-length hypothesis",
+    "Correctly flagged ongoing re-corruption risk ('affected count may grow') and the need for a data-restore step alongside the code fix",
+    "Proposed test cases with specific ITU E.164-representative inputs (+1, +44, +353, +1-868) demonstrating genuine domain knowledge"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether a data backup or recovery path exists (CRM backup is the actual workaround, but was never surfaced)",
+    "Left ambiguity about 2-digit country codes (UK +44) in the information gaps without attempting to resolve it with a follow-up question",
+    "Did not confirm whether the nightly sync has already run again since the issue was noticed, which would affect urgency of disabling it"
+  ],
+  "most_insightful_question": "Can you tell me what changed around two weeks ago? For example, was there an update to TaskFlow, a change to the batch import configuration, or any modifications on the Salesforce side?",
+  "missed_opportunities": [
+    "Do you have access to the Salesforce CRM data for affected customers, or a backup, so the correct numbers could be restored without waiting for a code fix?",
+    "Has the nightly import run since you discovered this issue, and if so, have any additional records been affected?",
+    "Can you check a UK customer (+44) to confirm whether 2-digit country codes are also affected, or only 3-digit ones?"
+  ]
+}

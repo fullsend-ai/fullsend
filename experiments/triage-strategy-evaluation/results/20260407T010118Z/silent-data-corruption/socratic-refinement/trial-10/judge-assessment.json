@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~50-100 affected records out of 2,000, truncation pattern, ~2-week timeline, nightly Salesforce sync as the vector, 3+ digit country codes as the affected pattern, US/UK being fine, and the v2.3.1 phone formatting change. The summary goes further with reproduction steps, a proposed test case, a specific regex pattern hypothesis, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identified the nightly import as the corruption source, the 3+ digit country code pattern, the 2-week timeline tied to a recent change, and even named the likely code form — `\\+(\\d{1,2})` — which is exactly the actual regex. This matches both the canonical root cause and the acceptable diagnostic paths. The recommended fix (E.164 standard, up-to-4-digit country codes) is technically sound."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the high-value questions and resolved with a strong evidential basis. The only minor gap is that resolution came before the reporter actually retrieved the changelog entry — the agent flagged it as an information gap rather than waiting for confirmation. The ongoing re-corruption risk was also implicitly understood (reporter raised it themselves) but could have been explicitly probed earlier."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, all well-targeted. The second turn efficiently combined two questions (concrete examples and recent changes) in one message. No redundant or low-value questions were asked."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question probed both ingestion method and historical correctness simultaneously — classic diagnostic framing. The second asked for concrete before/after examples with a privacy caveat, which drew out the +353→+35 and +1268→+12 examples that unlocked the root cause. The third message synthesized a precise hypothesis from those examples and asked for targeted confirmation. The questions demonstrated genuine reasoning, not generic bug-report prompts."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed: version, pipeline, specific code patterns to search for (substr, varchar(2), regex `\\+(\\d{1,2})`), reproduction steps, a proposed unit and integration test, a workaround (disable sync, restore from CRM backup), and clearly scoped information gaps pointing to version control as the next step."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Second-turn question elicited concrete before/after examples that directly revealed the truncation pattern, without needing to prompt the reporter again",
+    "Third-turn hypothesis synthesis was precise enough to name the likely regex form (`\\d{1,2}`), matching the actual bug",
+    "Summary is developer-ready: includes reproduction steps, test case scaffold, workaround, and specific code patterns to audit"
+  ],
+  "notable_weaknesses": [
+    "Resolved before the reporter retrieved the changelog entry — the exact version diff would have been the final confirming evidence and was in reach",
+    "Did not explicitly ask when the 2-week window started (e.g., exact date) to cross-reference against deployment or sync logs"
+  ],
+  "most_insightful_question": "Can you tell me more about what the corrupted numbers actually look like? ... If you could share a couple of before/after examples (with digits changed for privacy, of course), that would be really useful. Also, do you know if anything changed around two weeks ago — a TaskFlow update, a change to the Salesforce sync configuration, or maybe new fields or formatting in your Salesforce records?",
+  "missed_opportunities": [
+    "Ask for the exact date the issues first appeared to correlate with deployment timestamps",
+    "Ask whether any records that were manually corrected were subsequently re-corrupted by a later nightly sync (would confirm ongoing active corruption)"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were extracted: ~5,000 tasks, slow on description/fast on title, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 second delays, CPU spikes during search, and long descriptions. The triage also captured additional useful details like the loading spinner behavior and that slowness is independent of search term specificity."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The agent correctly identified that description search lost its index and is doing a sequential scan while title search retains its indexed path. This matches the ground truth (FTS5 index replaced by naive LIKE query). The hypothesis about index not being built/maintained during migration is essentially correct."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent turns to reach a comprehensive, accurate triage. The first question efficiently combined timing/trigger and task count. The second question precisely targeted the search behavior differences that revealed the critical title-vs-description distinction. No wasted questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first combined timeline with potential triggers and task count — all essential baseline info. The second question asking whether all searches are slow or only certain kinds was the key diagnostic question that led the reporter to discover the title-vs-description split, which they hadn't noticed before. This is exactly the kind of question that draws out information the reporter wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides everything a developer needs: clear reproduction steps, a precise root cause hypothesis pointing to the search index/query path change between v2.2 and v2.3, specific areas to diff (description field indexing, query path, migration script), and a concrete test case with performance thresholds. A developer could start investigating the v2.3 search migration immediately."
+    }
+  },
+  "weighted_total": 5.00,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptionally efficient — reached a comprehensive diagnosis in only 2 turns",
+    "The second question was perfectly crafted to surface the title-vs-description distinction, which was the key diagnostic insight",
+    "Root cause hypothesis nearly perfectly matches the actual cause without access to source code",
+    "Recommended fix is specific and actionable, pointing to exactly the right areas to investigate",
+    "Proposed test case includes both regression validation and performance threshold"
+  ],
+  "notable_weaknesses": [
+    "Did not capture the exact OS (Ubuntu 22.04) or hardware specs, though the agent correctly noted this in information gaps as unlikely to change the fix approach",
+    "Could have asked about cache clearing or reindexing attempts, though this wasn't critical for the triage"
+  ],
+  "most_insightful_question": "Is every search slow, or only certain kinds? For example, does searching for a single common word like 'meeting' take just as long as searching for something rare or specific?",
+  "missed_opportunities": [
+    "Could have asked whether the reporter had tried any troubleshooting steps like clearing cache or reindexing",
+    "Could have asked about the specific OS to complete the environment picture, though this was low-priority"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "scenario": "email-delay",
+  "strategy": "superpowers-brainstorming",
+  "reporter_profile": "typical",
+  "turns": 4,
+  "parse_failures": 0
+}

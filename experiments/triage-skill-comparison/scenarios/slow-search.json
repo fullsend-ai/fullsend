@@ -1,0 +1,20 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "quality": "medium",
+  "ground_truth": {
+    "description": "The reporter has ~5,000 tasks accumulated over 2 years of use. Search used to return results in under a second. The slowness started about 2 weeks ago, around the time they upgraded from v2.2 to v2.3. The slow searches are specifically full-text searches across task descriptions — searching by task title is still fast. They have tasks with very long descriptions (some are copy-pasted meeting notes, 2000+ words). The work laptop is a ThinkPad T14 running Ubuntu 22.04 with 32GB RAM. CPU usage spikes to 100% on one core during searches. The reporter hasn't tried clearing any cache or reindexing.",
+    "actual_cause": "v2.3 changed the search implementation from a pre-built SQLite FTS5 index to a naive LIKE query for full-text search on descriptions. The migration script created the new table structure but didn't migrate the FTS index. Title search still uses the old indexed path. With 5,000 tasks and long descriptions, the LIKE query does a full table scan on every search.",
+    "environment": "Ubuntu 22.04, ThinkPad T14, 32GB RAM, TaskFlow v2.3, ~5,000 tasks",
+    "workaround": "Search by title only (still fast), or manually rebuild the FTS index if you know how"
+  },
+  "expected_triage_extracts": [
+    "~5,000 tasks in the database",
+    "slow on description search, fast on title search",
+    "regression after v2.2 to v2.3 upgrade",
+    "started ~2 weeks ago",
+    "10-15 seconds for description searches",
+    "CPU spikes during search",
+    "long descriptions in some tasks"
+  ]
+}

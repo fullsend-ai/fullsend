@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: affected record count (~50-100 of 2,000), truncation pattern (not random corruption), 2-week timeline, nightly batch import source, 3+ digit country code pattern, US/UK numbers unaffected, and the recent phone formatting change. The summary also added useful extras: reproduction steps, proposed test cases, and a workaround recommendation."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: (1) nightly import as the corruption source with the 3+ digit country code pattern, and (2) the 2-week timeline connected to a recent change in the pipeline. The root cause hypothesis ('fixed 2-digit width' cap) is essentially correct — it accurately describes what the regex does — and the recommended fix explicitly mentions 'regex, or field-width issue that caps country codes at 2 digits,' which is exactly right."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the key diagnostic questions: data entry method, before/after state, concrete examples, and recent changes. It resolved with a solid evidential basis. Minor gap: it didn't ask whether import logs recorded any warnings during the corrupting runs, or whether the nightly sync could be paused to prevent further corruption — both natural follow-ups for a high-severity data integrity issue."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns, each combining multiple sub-questions efficiently. No redundant or low-value questions. The agent moved from general (data entry method) to specific (concrete examples + timeline) in exactly two well-structured turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question efficiently bifurcated entry method and pre-existing vs. newly introduced corruption. The second question — asking for concrete before/after examples — was the pivotal move that unlocked the country code length pattern; the reporter wouldn't have framed it that way unprompted. Both questions showed genuine diagnostic reasoning rather than generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately: the summary names the correct subsystem (phone number normalizer in the nightly sync), the exact failure mode (country codes capped at 2 digits), points to the relevant code change (~2 weeks ago), provides reproduction steps, proposes specific unit test cases with concrete examples (+1, +44, +353, +1268, +86), and identifies that re-syncing from Salesforce can restore correct numbers. Information gaps are clearly labeled so nothing is left ambiguous."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Requesting concrete before/after examples in the second turn was the decisive move — it surfaced the country code length pattern that the reporter had not framed explicitly.",
+    "The summary's recommended fix specifically names regex/substring/field-width as the likely mechanism, which is accurate and directly actionable.",
+    "Proposed test cases cover the full range of country code lengths (1, 2, 3 digits) and correctly flags the NANP +1268 edge case.",
+    "Resolved in only 2 question turns while capturing all expected information."
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether the nightly sync could be paused or disabled immediately to prevent further corruption — critical for a high-severity ongoing data loss issue.",
+    "Did not ask whether TaskFlow's import logs captured any warnings or errors during the corrupting runs, which could have helped pinpoint the exact change date."
+  ],
+  "most_insightful_question": "Can you tell me more about what the mangled numbers actually look like? For example, if a correct number in Salesforce is `+1 (555) 867-5309`, what does the corresponding wrong number look like in TaskFlow — is it missing digits, missing the country code, showing extra characters, or something else?",
+  "missed_opportunities": [
+    "Ask whether the nightly sync can be paused immediately to stop ongoing corruption while the fix is developed.",
+    "Ask whether TaskFlow's import logs or error logs show any anomalies around the time the corruption started.",
+    "Follow up more specifically on the developer's phone formatting change — the reporter said 'I vaguely remember someone mentioning it'; asking them to confirm with their dev team before closing would have firmed up that link."
+  ]
+}

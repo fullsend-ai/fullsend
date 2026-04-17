@@ -1,0 +1,51 @@
+# Conversation: slow-search x structured-triage
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! I can see the search is taking 10-15 seconds, which does sound excessive.
+
+To help us reproduce the issue, could you walk us through the steps you're taking when you see the slowness? For example:
+- What are you searching for (a keyword, a tag, a filter combination)?
+- Roughly how many tasks do you have in your account?
+- Does it happen with every search query, or only certain ones (e.g., broad queries vs. specific ones)?
+
+---
+
+### reporter
+
+I have about 5,000 tasks — I've been using TaskFlow for a couple years now so they've built up. When I search for a keyword it's slow, like if I type "budget" or "meeting notes" into the search box. Actually, now that I think about it, I feel like it's mainly slow when it's searching through the task descriptions. Searching by title seems to still be pretty quick. It happens pretty consistently with description searches, not just certain queries.
+
+---
+
+### triage-agent
+
+Thanks for those details — the distinction between title search (fast) and description search (slow) is really helpful and will narrow things down a lot.
+
+Could you share a few environment details so we can try to reproduce this on our side?
+- What OS is your work laptop running (e.g., Windows 11, macOS Sonoma)?
+- Which browser are you using (and roughly what version)?
+- Do you know which version of TaskFlow you're on? (You can usually find this under Settings → About.)
+
+---
+
+### reporter
+
+I'm on Ubuntu 22.04, it's a ThinkPad T14. I'm not sure about the browser version off the top of my head, but I use Firefox. TaskFlow version is 2.3 — I actually upgraded from 2.2 maybe two weeks ago, and now that you mention it, I think the slowness might have started around that time. Not 100% sure though.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search by task description is extremely slow (~10-15s) with large task count since v2.3","problem":"Searching tasks by description takes 10-15 seconds for a user with ~5,000 tasks. Searching by title remains fast. The slowness appears to have started around the upgrade from TaskFlow 2.2 to 2.3 approximately two weeks ago.","root_cause_hypothesis":"The v2.3 upgrade likely changed how description searches are executed — possibly a missing or dropped database index on the task descriptions column, a switch from indexed full-text search to unindexed LIKE/ILIKE queries, or a regression in the search query path that causes a full table scan on descriptions while titles retain their index.","reproduction_steps":["Create or use an account with approximately 5,000 tasks (with non-trivial description text)","Use the search box to search for a common keyword (e.g., 'budget' or 'meeting notes')","Observe that when the search includes task descriptions, results take 10-15 seconds","Compare with a title-only search for the same keyword — this should return quickly"],"environment":"Ubuntu 22.04, ThinkPad T14, Firefox (version unknown), TaskFlow 2.3 (upgraded from 2.2 ~2 weeks ago)","severity":"medium","impact":"Users with large task histories experience unacceptable search latency when searching by description. Title-only search is unaffected. This degrades the core search workflow for long-time power users.","recommended_fix":"1. Diff the search query logic between v2.2 and v2.3 — look for changes to how description search is performed. 2. Check whether a database index on the descriptions column exists and is being used (run EXPLAIN ANALYZE on the search query). 3. If full-text search was replaced or modified in v2.3, restore or add proper indexing for description content. 4. Load-test with 5,000+ tasks to verify the fix brings search latency to acceptable levels.","proposed_test_case":"Performance test: seed a test database with 5,000 tasks with realistic description text. Execute a description search for a keyword present in ~50 tasks. Assert that results are returned in under 1 second. Run this test against both v2.2 and v2.3 schemas to confirm the regression and validate the fix.","information_gaps":["Exact Firefox version (unlikely to matter if this is a server-side/database issue)","Whether the slowness definitively started with the v2.3 upgrade or coincidentally around that time","Server-side logs or query timing data to confirm the bottleneck is in the database query rather than client-side rendering"]}
+
+---

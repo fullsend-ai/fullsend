@@ -1,0 +1,37 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden errors for users with analyst role behind load balancer
+
+## Problem
+Users with the newly created analyst role are experiencing intermittent 403 Forbidden errors across all pages (dashboard, reports, project settings). The errors appear randomly on roughly 1 in 3 page loads and clear on refresh. Multiple users with the same role are affected. The issue began a couple of days ago, coinciding with the new analyst role being assigned.
+
+## Root Cause Hypothesis
+The self-hosted instance runs behind a load balancer with multiple backend servers. The analyst role permissions were likely added or updated recently, but not all backend nodes have consistent permission/role configuration or caches. When a request routes to a node with stale or missing analyst role permissions, a 403 is returned; on refresh, the load balancer may route to a correctly configured node. Alternatively, a session-affinity or authorization-cache inconsistency across nodes is causing some requests to lose role context.
+
+## Reproduction Steps
+  1. Log in as a user with the analyst role on the self-hosted TaskFlow instance
+  2. Navigate to any page (dashboard, reports, project settings)
+  3. Observe that approximately 1 in 3 page loads returns a 403 Forbidden error
+  4. Refresh the page — it loads successfully
+  5. Repeat navigation to see the intermittent pattern
+
+## Environment
+Windows 10, Chrome (latest, auto-updated), TaskFlow ~2.3.1, self-hosted behind a load balancer
+
+## Severity: high
+
+## Impact
+All users with the analyst role are affected. Core functionality (dashboard, reports, project settings) is intermittently inaccessible, blocking normal workflow roughly one-third of the time.
+
+## Recommended Fix
+1. Check whether all backend nodes behind the load balancer have the same analyst role/permission configuration — look for config drift or failed deployments across nodes. 2. Inspect the authorization/session caching layer for consistency issues (e.g., role lookups that are cached per-node). 3. Review server-side access logs correlated with 403 responses to identify which backend node(s) are rejecting requests and compare their role/permission state. 4. Verify that the analyst role was fully propagated to all nodes when it was created.
+
+## Proposed Test Case
+Send repeated authenticated requests as an analyst-role user to protected endpoints across a configurable number of iterations, asserting that all return 200. Run this against each backend node individually (bypassing the load balancer) to identify which node(s) return 403s.
+
+## Information Gaps
+- Exact TaskFlow version (reporter said ~2.3.1 but was unsure)
+- Server-side error logs or access logs showing the 403 responses
+- Number of backend nodes behind the load balancer
+- Whether non-analyst-role users also experience the issue (would confirm or rule out role-specific cause)
+- Exact date the analyst role was created/assigned relative to when the issue started

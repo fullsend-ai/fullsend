@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of the seven expected extracts were captured: task count (~5,000), title-fast/description-slow distinction, v2.2→v2.3 regression, ~2-week onset, 10-15 second timing, and CPU spike. The one gap is the length of task descriptions (some with 2,000+ words from copy-pasted meeting notes), which is a contributing factor to the severity of the full-table-scan problem and was never surfaced."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage summary precisely matches both the canonical root cause and the acceptable diagnostic paths. It correctly identified the v2.3 upgrade as the trigger, hypothesized that the FTS index was dropped or bypassed in favor of a sequential scan (LIKE or in-application matching), explained why title search is unaffected, and cited the single-core CPU spike as corroborating evidence. This is essentially the correct diagnosis without access to the source code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the high-value questions: onset/trigger, task count, search type, title-vs-description discrimination, consistency across the session, CPU behavior, and local vs. remote database. The one notable gap is not probing description content characteristics — specifically whether descriptions are unusually long — which would have added useful context about why 5,000 rows causes such a severe slowdown."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three rounds of questions before resolving, each well-targeted and non-redundant. Turn 2 bundled two related but distinct questions (all-searches-slow vs. specific-term, and first-vs-repeated) efficiently. No questions were repeated or wasteful. A minor inefficiency: asking about rollback to v2.2 in turn 3 was low-yield given the reporter had already said upgrading caused it and they wouldn't want to downgrade."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning at each step. The standout was turn 2's title-vs-description discrimination question — a non-obvious probe that the reporter would never have volunteered, and which immediately narrowed the problem to the description search path. Turn 3's CPU/system-behavior question was similarly precise: distinguishing between a CPU-bound sequential scan and I/O or network latency."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it names the specific SQLite FTS virtual table as the suspect, provides a concrete debugging checklist (diff the query construction, check whether the FTS table exists, check EXPLAIN QUERY PLAN), includes step-by-step reproduction instructions, and even proposes a regression test. A developer familiar with SQLite FTS could open the relevant file and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.55,
+  "turn_count": 7,
+  "notable_strengths": [
+    "The title-vs-description discrimination question in turn 2 was a high-leverage diagnostic move that unlocked the core insight of the bug",
+    "The root cause hypothesis in the summary is precise enough to name FTS vs. LIKE, cite EXPLAIN QUERY PLAN, and distinguish between a missing index and a migration failure — all without source code access",
+    "Reproduction steps and proposed test case are specific and immediately usable by a developer"
+  ],
+  "notable_weaknesses": [
+    "Description length was never probed — the fact that some tasks contain 2,000+ word meeting notes is a meaningful data point explaining why the full scan is as slow as it is",
+    "The rollback-to-v2.2 question in turn 3 was a low-yield ask given the reporter had already implicated the upgrade and stated reluctance to downgrade"
+  ],
+  "most_insightful_question": "Is every search slow, or does it depend on what you're searching for? For example, does searching by task title take just as long as searching through descriptions?",
+  "missed_opportunities": [
+    "Asking whether task descriptions tend to be long (e.g., copy-pasted notes or detailed write-ups) — this would have surfaced the 2,000-word description detail and explained the severity of the scan penalty",
+    "Asking what OS and hardware the work laptop is running — the Ubuntu 22.04 / ThinkPad T14 detail was in the ground truth and could have been relevant for environment reproduction"
+  ]
+}

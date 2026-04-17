@@ -1,0 +1,53 @@
+# Conversation: crash-on-save x structured-triage
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how frustrating it must be to lose your work.
+
+To help us investigate, could you describe what exactly happens when the app crashes? For example:
+- Do you see an error message or dialog before it closes?
+- Does the app freeze and then quit, or does it close instantly?
+- Is there any error output in the console or logs?
+
+Any specific details about what you observe at the moment of the crash would be very helpful.
+
+---
+
+### reporter
+
+When I click Save, there's a very brief flash of a dialog box — it goes by so fast I can barely read it, but I think it says something about 'encoding' — and then the app just closes completely. No freeze, no spinning wheel, it just disappears. I haven't checked the console logs, sorry. It's been happening every time I try to save from the toolbar.
+
+---
+
+### triage-agent
+
+Thanks for those details — that flash mentioning 'encoding' is a really useful clue.
+
+Could you let us know a bit about your environment?
+- What operating system are you on (e.g., Windows 11, macOS Sonoma, Ubuntu 24.04)?
+- Which browser and version are you using (e.g., Chrome 124, Firefox 126)?
+- Do you know which version of TaskFlow you're running? (You can usually find this under Help → About.)
+
+---
+
+### reporter
+
+I'm on macOS 14.2 (Sonoma) and running TaskFlow v2.3.1. It's a desktop app, not a browser — or did you mean something else by browser?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"TaskFlow crashes on save with brief 'encoding' error dialog (macOS, v2.3.1)","problem":"When the user clicks Save from the toolbar, a dialog box briefly flashes (appearing to mention 'encoding') and the application immediately closes, causing loss of unsaved work.","root_cause_hypothesis":"The save operation likely encounters a character encoding error (e.g., an unsupported or malformed character in the task data) that triggers an unhandled exception, causing the app to crash instead of displaying a persistent error dialog.","reproduction_steps":["Open TaskFlow v2.3.1 on macOS 14.2 (Sonoma)","Create or open a task with content","Click the Save button in the toolbar","Observe: a dialog briefly flashes mentioning 'encoding' and the app closes immediately"],"environment":"macOS 14.2 (Sonoma), TaskFlow v2.3.1 (desktop app)","severity":"high","impact":"Users lose all unsaved work every time they attempt to save. The issue is fully blocking — saving is a core function and it crashes 100% of the time from the toolbar.","recommended_fix":"Investigate the save-to-disk code path triggered by the toolbar Save button. Look for encoding-related operations (file encoding selection, character set conversion, or content serialization) that may throw an unhandled exception. Add proper error handling so encoding failures surface a persistent error dialog rather than crashing the app. Check whether the issue is specific to certain file content (e.g., non-ASCII characters, emoji) or affects all saves.","proposed_test_case":"Create a task, click Save from the toolbar, and verify the app does not crash. Additionally, test saving content containing non-ASCII characters, emoji, and special characters to confirm encoding is handled gracefully, with a user-visible error message on failure rather than a crash.","information_gaps":["Exact error message from the flashing dialog (reporter could not read it fully)","Console or crash logs that would pinpoint the exact exception and stack trace","Whether the crash occurs with all task content or only content containing specific characters (e.g., non-ASCII, emoji)","Whether saving via a keyboard shortcut (Cmd+S) also triggers the crash, or only the toolbar button"]}
+
+---

@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected extracts are present: 2-4 hour delay, started ~1 week ago, worse in morning (9-10am)/better afternoon, related to batch email (marketing digest), queue congestion, transactional and bulk emails competing, and prior 1-2 minute arrival time. The triage also surfaced additional useful info: trickling vs. batch arrival pattern, multi-user impact, and a confirmed missed deadline."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches an acceptable diagnostic path — identifying the digest email feature causing queue congestion/saturation. The triage correctly identifies the shared pipeline, morning timing correlation with digest sends, and the trickle pattern as evidence of a draining queue. The recommended fix (priority separation) aligns with the canonical fix even without knowing the exact priority queue mechanism."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "In two turns the agent surfaced the key causal connection (digest email timing), confirmed multi-user scope, and probed the arrival pattern (trickle vs. batch) which was diagnostically valuable. No obvious follow-ups were left unasked given the information available from a non-technical reporter."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, each pulling distinct and high-value information. No redundancy. The first question surfaced the digest email connection; the second confirmed scope and characterized the arrival pattern. Both were essential."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question cleverly asked about recent changes in a way that prompted the reporter to recall the digest email feature they wouldn't have volunteered unprompted. The second question about trickle vs. batch arrival was insightful — it distinguished between a held queue draining versus individual email slowness, directly informing the queue hypothesis. Both questions demonstrated genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary includes a clear root cause hypothesis, concrete reproduction steps (including time-of-day specificity), prioritized recommended fixes, a proposed test case, and explicit information gaps. A developer could immediately inspect the email queue infrastructure and test the priority separation fix."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question strategically elicited the digest email connection the reporter hadn't made themselves",
+    "Trickle-vs-batch question was diagnostically sophisticated and confirmed queue-drain behavior",
+    "Recommended fix correctly identifies priority separation even without knowing the exact queue implementation",
+    "Proposed test case is concrete and verifiable"
+  ],
+  "notable_weaknesses": [
+    "Did not confirm whether other transactional email types (deadline reminders, comments) are also delayed — though this is listed as an information gap"
+  ],
+  "most_insightful_question": "Can you think of anything that changed around that time? — This open-ended prompt about recent changes caused the reporter to recall the daily digest email feature they wouldn't have volunteered, directly surfacing the root cause.",
+  "missed_opportunities": [
+    "Could have asked whether other transactional email types (deadline reminders, comment mentions) are also delayed to further confirm the queue-level hypothesis"
+  ]
+}

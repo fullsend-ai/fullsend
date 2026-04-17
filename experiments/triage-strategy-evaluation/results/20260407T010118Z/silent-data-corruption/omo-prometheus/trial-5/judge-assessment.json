@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items are present: affected record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import link, 3+ digit country code pattern, US/UK numbers unaffected, and a recent change to phone number handling. The summary also adds reproduction steps, a proposed test case, and explicitly catalogued information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage matches the acceptable diagnostic path of identifying nightly import as the corruption source, the 3+ digit country code pattern, the 2-week timeline, and connecting it to a recent phone number handling change. The root cause hypothesis ('a parsing or normalization step that incorrectly assumes all country codes are 1-2 digits') is essentially correct and would lead a developer directly to the regex bug, even without naming the exact capture group."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the right questions to establish timeline, gather concrete examples, confirm the pattern, and probe for recent changes. It appropriately noted remaining gaps (re-corruption of manually fixed records, direct-entry numbers, exact changelog entry) rather than resolving prematurely. One minor missed opportunity: it could have explicitly asked whether the sync should be halted immediately to prevent ongoing corruption before closing."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions were asked and each was load-bearing: Q1 established whether corruption was pre-existing vs. introduced and surfaced the import link; Q2 produced the concrete examples that revealed the country-code-length pattern; Q3 confirmed the pattern and probed for the precipitating change. No question was redundant or could have been safely omitted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q2 was especially strong — asking for side-by-side comparisons (TaskFlow vs. Salesforce, with a formatting example) was the pivotal move that drew out the Ireland and Antigua examples, which made the 3-digit country code pattern immediately visible. Q1 framed the corruption vs. bad-input distinction cleanly. Q3 synthesized the discovered pattern and directly asked about recent changes, which elicited the reporter's recollection of a changelog note about international format support."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a precise hypothesis (normalizer limits country codes to 2 digits), specific reproduction steps with control cases, a recommended fix referencing ITU E.164, a concrete test case covering 1-, 2-, 3-, and 4-digit country codes, and a remediation path (re-sync from Salesforce). The information gaps section is honest about what still needs to be looked up without undermining the overall direction."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Requesting side-by-side comparisons (TaskFlow vs. Salesforce) rather than just 'what does it look like wrong' was the key diagnostic move that surfaced the country-code-length pattern from only three examples",
+    "Synthesized the pattern back to the reporter for confirmation before closing, which both validated the hypothesis and prompted the reporter to recall the changelog note about international format support",
+    "Final summary is highly structured and developer-ready: includes reproduction steps, a proposed unit test, a remediation path, and honestly catalogued information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly recommend disabling or pausing the nightly sync immediately to prevent ongoing re-corruption of any manually remediated records — this was implied in the impact section but not surfaced as an urgent action item during the conversation",
+    "Did not ask the reporter to confirm whether other countries with 3-digit codes (India +91, for example) were also affected before concluding, relying instead on the reporter's unprompted spot-check"
+  ],
+  "most_insightful_question": "Can you pull up 2-3 of the affected records and share what the phone number looks like in TaskFlow vs. what it should be (or what it shows in Salesforce)? — this produced the Ireland and Antigua examples that made the country-code-length pattern immediately apparent.",
+  "missed_opportunities": [
+    "Ask whether the nightly sync should be paused immediately to stop re-corrupting records that support staff might manually fix",
+    "Ask whether TaskFlow stores any history of previous field values that might allow restoration without relying solely on CRM backups"
+  ]
+}

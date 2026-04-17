@@ -1,0 +1,33 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter has provided comprehensive information covering all sufficiency criteria. We have: (1) a clear reproduction path — import CSV with special characters into a 200+ task list, click Save; (2) a strong root cause hypothesis — the manual Save code path mishandles multi-byte UTF-8 characters (em-dashes U+2014, curly quotes U+201C/U+201D) and the error dialog confirms 'encoding' is involved; (3) the auto-save path works, meaning there are two distinct serialization paths with different encoding behavior; (4) the size threshold (~50 vs 200 tasks) suggests either a buffer sizing issue in the encoding conversion or a compounding error that only triggers a crash past a certain data volume. A developer can start investigating immediately without contacting the reporter.",
+  "triage_summary": {
+    "title": "Crash on manual save with large task lists containing multi-byte UTF-8 characters (em-dashes, curly quotes)",
+    "problem": "TaskFlow crashes (window closes entirely) when the user clicks the toolbar Save button on a task list with ~200 tasks that contain special characters imported from CSV (em-dashes, curly quotes). A brief error dialog mentioning 'encoding' flashes before the crash. Auto-save does not trigger the crash, and manual save works fine with fewer than ~50 tasks or when the special-character tasks are removed.",
+    "root_cause_hypothesis": "The manual Save code path uses a different serialization or encoding routine than auto-save, and it mishandles multi-byte UTF-8 characters (em-dashes U+2014, curly quotes U+201C/U+201D). The size dependency suggests either: (a) a fixed-size buffer that overflows when many tasks with multi-byte characters expand beyond the expected byte count, or (b) an encoding conversion error that accumulates and only causes a fatal crash past a data-size threshold. The 'encoding' keyword in the crash dialog strongly supports this.",
+    "reproduction_steps": [
+      "Create or open a project in TaskFlow v2.3.1 on macOS 14.2",
+      "Prepare a CSV file with 200+ tasks where some task names contain em-dashes (—) and curly quotes ("" '')",
+      "Import the CSV into the project",
+      "Click the 'Save' button in the toolbar",
+      "Observe: app window closes with a brief flash of an error dialog mentioning 'encoding'"
+    ],
+    "environment": "macOS 14.2, TaskFlow v2.3.1",
+    "severity": "high",
+    "impact": "Users who import task data from external sources (CSV) containing non-ASCII characters lose work when saving manually. The workaround (removing special characters or keeping lists small) is impractical for real-world usage. Auto-save partially mitigates data loss but users cannot rely on explicit saves.",
+    "recommended_fix": "1. Compare the manual Save serialization path against the auto-save path — identify where encoding handling diverges. 2. Check for fixed-size buffer allocations in the manual save path that don't account for multi-byte character expansion. 3. Ensure the manual save path uses UTF-8 throughout (read → process → write) without intermediate encoding conversions (e.g., accidental Latin-1 or ASCII truncation). 4. Add proper error handling so encoding failures surface a readable dialog instead of crashing.",
+    "proposed_test_case": "Create a task list with 200+ tasks containing multi-byte UTF-8 characters (em-dashes, curly quotes, accented characters, emoji). Invoke the manual save path programmatically. Assert: (a) save completes without crash, (b) saved file is valid UTF-8, (c) round-trip preserves all characters exactly. Also test at boundary sizes (50, 100, 200, 500 tasks) to confirm no size-dependent failures.",
+    "information_gaps": [
+      "Exact crash log or macOS crash report (would confirm the specific exception/signal)",
+      "Whether the issue reproduces on other platforms (Windows/Linux) or is macOS-specific",
+      "Whether the CSV import step itself introduces encoding corruption vs. the save path failing on valid UTF-8 data"
+    ]
+  },
+  "confidence": {
+    "root_cause": "medium",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

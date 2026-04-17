@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "All seven expected extracts are present: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import, 3+ digit country code pattern, US/UK numbers unaffected, and a recent change to the normalizer (surfaced as a hypothesis including 'regex change in the phone number parser'). The normalizer change was not confirmed directly but is included as a likely candidate rather than a confirmed fact."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The summary correctly identifies the nightly import as the corruption source, the 2-week timeline tied to v2.3.1, and the exact truncation-to-2-digits pattern. The root cause hypothesis explicitly includes 'a regex change in the phone number parser' — which is the actual cause — alongside other plausible alternatives. This satisfies the acceptable diagnostic path of connecting the 2-week timeline to a recent change in the import pipeline, and comes very close to pinpointing the normalizer. Minor deduction because the regex was listed as one of several candidates rather than the leading hypothesis."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all key diagnostic questions: onset timing and entry method, concrete examples to expose the pattern, pattern confirmation and change investigation. One obvious follow-up left on the table: asking whether the CRM backup could be used to restore affected records and whether the nightly sync should be paused as a workaround. The agent did note the ongoing re-corruption risk in the impact section, but never asked the reporter to consider disabling the import until a fix is deployed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three rounds of questions, each carrying its weight. Round 1 established timeline and data entry channel. Round 2 elicited concrete examples critical to pattern identification. Round 3 confirmed the pattern and probed for recent changes. No redundant or low-value questions; no information was asked for twice."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Round 2 — asking for 2-3 specific examples with before/after values — was the pivotal move. The reporter would not have volunteered that the corruption was limited to exactly the country code portion or that the truncation was always to 2 digits; the concrete examples made that pattern immediately visible and led directly to the root cause hypothesis. Round 3's follow-up asking whether any 3+ digit codes were unaffected was a good falsification check. Questions were specific, diagnostic, and built on each prior answer."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes a precise problem description, specific reproduction steps with example phone numbers, a ranked list of where to look in the codebase (regex, schema constraint, validation rule), a concrete recommended fix sequence including restoring data from Salesforce, a proposed regression test covering all country code lengths, and clearly labeled information gaps. A developer could open the v2.3.1 diff and start searching for the phone number parser change immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Asking for concrete before/after examples in round 2 was the single most important move — it turned a vague 'truncated or mangled' complaint into a precise, reproducible pattern (always 2 digits, always the country code) that nearly identifies the root cause on its own.",
+    "The agent immediately synthesized the examples into a structured pattern table (+353→+35, +1268→+12, +91 fine) and articulated the 2-digit limit hypothesis clearly before asking for confirmation.",
+    "The final summary is production-quality: severity, impact, reproduction steps, fix recommendations, a proposed test case, and documented information gaps — a developer could act on it without any follow-up."
+  ],
+  "notable_weaknesses": [
+    "The agent never asked the reporter to pause the nightly sync as an immediate workaround, leaving open the risk that manual fixes will be re-corrupted on the next import cycle — a risk the agent identified in the impact section but didn't surface as an actionable recommendation during the conversation.",
+    "The agent did not confirm the exact TaskFlow version — the reporter said 'I think' and 'vaguely remember', and the agent accepted this uncertainty rather than asking the reporter to verify it in their admin panel or deployment logs."
+  ],
+  "most_insightful_question": "Can you give me 2-3 specific examples of what the corrupted numbers look like compared to what's in Salesforce? — This question transformed a vague data integrity complaint into a falsifiable, precise pattern and is what made the triage so effective.",
+  "missed_opportunities": [
+    "Should the nightly import be paused immediately to prevent further corruption of records while a fix is developed? (The agent identified the ongoing risk but never asked the reporter to act on it.)",
+    "Can you verify the exact TaskFlow version you're running, e.g., in the admin settings or release notes? (Reporter was uncertain; this would have confirmed or disproved the v2.3.1 hypothesis.)",
+    "Are there any affected records where the truncated number still happens to reach a valid (but wrong) subscriber, meaning the corruption is silent unless you check against Salesforce? (Relevant to severity and detectability.)"
+  ]
+}

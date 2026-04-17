@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were captured: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK numbers unaffected, and recent normalizer change. The summary additionally includes reproduction steps, a proposed test case, severity classification, and explicit information gaps — going beyond the minimum."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly Salesforce import as the corruption source, the 3+ digit country code pattern, the 2-week timeline tied to a code change, and hypothesizes 'a regex or substring operation that assumes all country codes are 1-2 digits' — which is essentially the exact mechanism of the actual bug. Both acceptable diagnostic paths are satisfied. The Salesforce verification confirmed the corruption is import-side, not source-side. No meaningful inaccuracies."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked for concrete examples, timing, recent changes, sync mechanism details, and crucially directed the reporter to verify Salesforce data — closing the loop on where corruption originates. Given the reporter's limited technical access, no obvious follow-up was left unasked. Information gaps were explicitly documented for the dev team."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns, all productive. Turn 3 probed sync log details with a reporter who had already signaled limited technical access, yielding only the offhand mention of the formatting change. That question was still net-positive but could have been aimed more directly at 'was there a recent code change?' rather than implementation specifics. At most one question could have been better targeted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question immediately sought concrete examples and timing — anchoring the investigation. The second connected the symptom to possible systemic causes. The Salesforce verification question in turn 4 was particularly sharp: it was a directly actionable diagnostic the non-technical reporter could perform immediately, and the result conclusively isolated the corruption to the import path. Questions demonstrated genuine diagnostic reasoning rather than generic checklists."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start on a fix immediately: check git history ~2 weeks ago for phone normalization changes, look for regex patterns constraining country codes to 1-2 digits, fix to support E.164 full-length codes, re-sync from Salesforce. The proposed test case covers country codes of all lengths. The workaround (restore from CRM, disable sync) is also implicit from the summary. Nothing essential is missing for a developer to begin."
+    }
+  },
+  "weighted_total": 4.9,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Identified the country code length pattern (3+ digits truncated, 1-2 unaffected) from the very first reporter response, then built every subsequent question on that hypothesis",
+    "The Salesforce verification question decisively confirmed the corruption is import-side, ruling out source data issues with a single non-technical action the reporter could perform immediately",
+    "Root cause hypothesis ('regex or substring operation that assumes all country codes are 1-2 digits') matches the actual bug with high precision despite never seeing the code",
+    "Proactively surfaced the ongoing-corruption risk (nightly sync re-corrupting manual fixes) before the reporter realized it — demonstrating forward-looking diagnostic reasoning"
+  ],
+  "notable_weaknesses": [
+    "Turn 3 asked for sync log access and implementation details from a reporter who had already indicated limited technical involvement — slightly misaligned to the audience, though it still surfaced the mention of the formatting change",
+    "The agent never explicitly asked when the affected records were last successfully correct, which could have further pinpointed the change date beyond 'approximately 2 weeks ago'"
+  ],
+  "most_insightful_question": "Can you look at those same customers (the Ireland and Antigua ones) directly in Salesforce and confirm their phone numbers are still correct there?",
+  "missed_opportunities": [
+    "Asking whether any records added or updated after the corruption started also had wrong numbers, which would confirm the import path rather than a one-time batch event",
+    "Asking the reporter to check one number before and after that night's sync to empirically confirm ongoing re-corruption, rather than flagging it as a hypothesis — though the reporter offered to test this themselves"
+  ]
+}

@@ -1,0 +1,113 @@
+# Conversation: auth-redirect-loop x socratic-refinement
+
+## Issue
+
+**Login redirect loop after SSO change**
+
+We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.
+
+We've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed write-up — that's a really helpful starting point.
+
+I'm curious about the 30% of users who are affected: have you noticed anything they have in common that distinguishes them from the users who can log in fine? For example, were they active sessions during the SSO cutover, do they share a particular role or group membership, or are they using a specific browser or device? Even a hunch would be useful here — sometimes the pattern isn't obvious until you start talking through it.
+
+---
+
+### reporter
+
+Hmm, good question. I haven't noticed a browser or device pattern — we have people on Chrome, Edge, and Firefox all affected. And it's not a role thing either, we have both regular users and admins hitting it.
+
+One thing I did notice is that a lot of the affected users have those plus-sign email addresses, like jane+taskflow@company.com. We use that plus addressing convention for some of our team. But I'm not 100% sure that's the only factor because I think there are a couple people affected who don't use that format. Those ones might have had their email changed at some point though, I'd have to check.
+
+Also I'm not sure if this matters, but some affected users said they can sometimes get in if they use an incognito window, though it doesn't always work.
+
+---
+
+### triage-agent
+
+That plus-sign email detail is a really interesting lead — that's exactly the kind of thing that can trip up identity matching between systems.
+
+This might be a bigger ask, but: are you able to check TaskFlow's authentication logs (or any server-side logs) for what happens when an affected user tries to log in? Specifically, I'm wondering whether TaskFlow receives the identity back from Entra ID and then rejects it for some reason (like a user-not-found or email mismatch), or whether the redirect seems to fail before TaskFlow even processes the response. Even a snippet of what the logs show for one failed login attempt would tell us a lot about where the loop is actually breaking.
+
+---
+
+### reporter
+
+I'll be honest, I haven't dug into the server-side logs yet — our TaskFlow instance is self-hosted but I'm not super familiar with where the detailed auth logs live. I can try to track that down.
+
+What I did do was open the browser dev tools on one of the affected user's machines while they tried to log in. I could see that the redirect back from Microsoft to TaskFlow does include a Set-Cookie header in the response, so it seems like TaskFlow is trying to set a session. But then it just redirects again immediately. I'm not sure if the cookie is actually sticking or not — it was hard to follow with all the redirects happening so fast.
+
+I'll see if I can find the server logs and get back to you with something more concrete. Is there a specific log file or error message I should look for?
+
+---
+
+### triage-agent
+
+Great observations from dev tools — that's actually more useful than you might think, and we can dig a bit further right from there.
+
+Since you already had dev tools open during the redirect loop: could you try one more time with the Network tab recording, and after the first redirect back from Microsoft, check the **Application → Cookies** panel to see whether the session cookie TaskFlow tried to set is actually present? If it's missing (or being cleared immediately), that tells us the loop is about session persistence. If the cookie *is* there but TaskFlow redirects anyway, that points more toward TaskFlow not recognizing the user — which would fit the plus-sign email theory.
+
+That one check would really narrow things down for us.
+
+As for server logs — for most self-hosted TaskFlow deployments, authentication logs typically live in the application's main log output (often `stdout` if containerized, or a file like `taskflow.log` in your install directory). The key thing to search for would be any log entries during the timestamp of a failed login attempt — look for terms like `auth`, `session`, `user not found`, or `email`. But honestly, the dev tools check above might get us the answer faster.
+
+---
+
+### reporter
+
+OK so I just tried this with one of our affected users. I had the Network tab and the Cookies panel open. After they authenticated with Microsoft and got redirected back to TaskFlow, I checked the cookies and... the session cookie doesn't seem to be there. Like I can see in the Network tab that the response from TaskFlow includes a Set-Cookie header, but when I look at the actual stored cookies in the Application panel, it's not showing up. So it looks like the cookie isn't sticking for some reason.
+
+I tried the same thing with one of our unaffected users and their cookie shows up fine after the redirect. So it definitely seems like a session persistence thing like you said. Any idea why the cookie would be set in the response but not actually saved by the browser?
+
+---
+
+### triage-agent
+
+That's a really clear finding — you've essentially confirmed the loop is happening because the browser won't store the session cookie, so TaskFlow thinks the user isn't authenticated and sends them back to Microsoft.
+
+Now here's what I think might connect this to the plus-sign email pattern you noticed earlier. Could you compare the actual `Set-Cookie` header value from the Network tab for both the affected user and the unaffected user? Specifically, I'm curious whether the cookie's value contains the user's email address — and if so, whether the `+` character in something like `jane+taskflow@company.com` appears as a literal `+` rather than being encoded as `%2B`. An unencoded `+` or other special character in a cookie value can cause browsers to silently discard the cookie, which would explain everything you're seeing — the 30% correlation with plus-sign emails, the intermittent incognito behavior, and the cookie appearing in the response header but never actually being stored.
+
+If you can grab those two Set-Cookie values (or even just the affected user's), that would tell us whether this is the culprit.
+
+---
+
+### reporter
+
+So I just compared them. The cookie value itself doesn't seem to contain the email address — it looks like a long random session token, same kind of format for both users. No plus signs or anything like that in the value itself.
+
+But I did notice something else while I was looking at the headers. The Set-Cookie for the affected user has `SameSite=Strict` on it. The unaffected user's cookie also says `SameSite=Strict`, but I guess it works for them because... I'm not sure why actually. Maybe because the affected user's redirect is going through a different path? I don't really know enough about how SameSite works to say if that matters. Could that be related?
+
+---
+
+### triage-agent
+
+This is really great detective work — you've pinpointed the problem to the cookie not being stored, which is huge.
+
+I have a theory that might tie everything together. Since you just had dev tools open for both users, could you check one thing: in the **Application → Cookies** panel for the affected user, are there any *other* cookies already present for the TaskFlow domain — particularly any leftover from the old Okta setup? (They might have names related to sessions, auth tokens, or Okta specifically.)
+
+The reason I ask is that leftover cookies from your previous SSO provider can sometimes interfere with new ones being stored — for example, if an old cookie shares the same name but has a conflicting Domain or Path attribute, the browser may refuse to overwrite it with the new one. That would explain why ~30% of users are affected (they had persistent sessions from before the switch), why incognito sometimes works (no old cookies), and why clearing cookies would fix it.
+
+If there are old cookies there, compare that list to what the unaffected user has — the difference might be the smoking gun.
+
+---
+
+### reporter
+
+I checked and no, there aren't any leftover Okta cookies or anything like that. The affected user's cookie panel for our TaskFlow domain is basically empty — which kind of makes sense since the cookie isn't sticking in the first place. The unaffected user has the session cookie there but nothing Okta-related either. We actually had everyone clear their browser data when we did the migration, so I don't think old cookies are the issue.
+
+I keep coming back to that SameSite=Strict thing I mentioned. I just did some quick googling and it sounds like SameSite=Strict cookies get blocked when you're coming from a different site? Since the redirect is coming from Microsoft's login page back to our TaskFlow, could that be why the cookie isn't saving? But then I don't understand why it works for the other 70% of users...
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Session cookie with SameSite=Strict is dropped on cross-origin SSO redirect from Microsoft Entra ID, causing infinite login loop","problem":"After migrating from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. The user authenticates successfully with Microsoft, gets redirected back to TaskFlow, but the session cookie set by TaskFlow is silently discarded by the browser, causing TaskFlow to redirect them back to Microsoft again.","root_cause_hypothesis":"TaskFlow sets its session cookie with `SameSite=Strict`, which instructs browsers to reject cookies on cross-site navigations. Since SSO login involves a redirect from Microsoft's domain back to TaskFlow's domain, this is a cross-site navigation and the cookie is dropped. The reason only ~30% of users are affected is likely due to differences in the redirect chain: some users may follow a flow that includes an intermediate same-site redirect (e.g., a TaskFlow callback endpoint that redirects to the app's main page, making the final cookie-setting request same-site), while affected users hit a flow where the cookie is set directly on the cross-site redirect response. The plus-sign email correlation may indicate these users were provisioned or routed through a different auth path.","reproduction_steps":["Set up TaskFlow with Microsoft Entra ID SSO","Log in as an affected user (or any user if the issue is consistent in a test environment)","Click the login button — user is redirected to Microsoft","Authenticate successfully with Microsoft","Observe the redirect back to TaskFlow — the Set-Cookie header is present in the response but the cookie is not stored in the browser","TaskFlow detects no session cookie and redirects back to Microsoft, creating an infinite loop","Confirm by checking Application → Cookies in dev tools: the session cookie is missing for the affected user but present for an unaffected user"],"environment":"Self-hosted TaskFlow instance, SSO via Microsoft Entra ID (recently migrated from Okta), affects ~30% of users across Chrome/Edge/Firefox, correlated with plus-sign email addresses but not exclusively","severity":"high","impact":"Approximately 30% of the team cannot log into TaskFlow at all through normal flow. Some can work around it via incognito windows (intermittently), but there is no reliable workaround.","recommended_fix":"Change the session cookie's `SameSite` attribute from `Strict` to `Lax`. `SameSite=Lax` permits cookies on top-level navigational redirects (like SSO callbacks) while still protecting against CSRF on subresource requests. Investigate where the cookie's SameSite policy is configured — this is likely in TaskFlow's session/authentication middleware configuration. If TaskFlow uses a framework session library, check its cookie configuration options. If `SameSite=None` is needed instead (e.g., for iframe scenarios), ensure the `Secure` flag is also set. Additionally, investigate why only some users trigger the problematic flow — there may be multiple redirect paths in the auth code, and the one affecting 30% of users may differ from the main path.","proposed_test_case":"Write an integration test that simulates a cross-origin SSO redirect callback (request with an Origin/Referer from a different domain) and verifies that the session cookie set in the response has `SameSite=Lax` (not `Strict`). Additionally, verify that the cookie is accepted by the browser in an end-to-end test that completes the full SSO redirect flow.","information_gaps":["Why exactly 30% of users are affected while others with the same SameSite=Strict cookie work fine — there may be multiple auth/redirect code paths","Whether the plus-sign email correlation is causal or coincidental (it may affect which auth code path is taken)","Server-side auth logs were never retrieved — these could confirm whether TaskFlow receives and validates the identity token at all before setting the cookie","The exact TaskFlow version and authentication middleware/library in use"]}
+
+---

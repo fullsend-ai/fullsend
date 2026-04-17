@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~50-100 affected records, truncation pattern, 2-week timeline, nightly import connection, 3+ digit country code pattern, US/UK unaffected, and recent normalizer change. The summary also adds useful information not explicitly in the expected list, such as confirming the data is actually corrupted (not a display issue) and that Salesforce data is clean."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary aligns with the acceptable diagnostic path of identifying the 2-week timeline and connecting it to a recent change in the import pipeline. The root cause hypothesis explicitly names 'a regex pattern that assumes all country codes are 1-2 digits' as the most likely mechanism — which is the exact actual cause. No inaccuracies; the summary would not mislead a developer."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked all necessary questions before resolving: examples of truncation, what changed around the 2-week mark, and critically whether the corruption is at the data layer or the display layer. The data-vs-display question (turn 3) is particularly important for remediation planning and was not obvious. No significant follow-ups were left on the table."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only 3 questions, each clearly essential and building on the previous answer. No redundancy. The agent combined related sub-questions efficiently (e.g., turn 1 asks for examples and timeline together; turn 2 asks about sync internals and recent changes together)."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 2 showed genuine diagnostic reasoning — the agent immediately recognized the 2-digit clipping pattern as a strong clue and pivoted directly to the sync process and recent changes. Turn 3 (data vs. display distinction) demonstrated sophisticated awareness of how the answer would affect remediation strategy. These questions extracted information the reporter would not have volunteered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes reproduction steps with concrete country code examples, a specific git-history investigation path, a recommended fix with scope (support 1-4 digit country codes), a restore plan, and a proposed unit test. A developer could begin investigating and writing a fix immediately without gathering further context."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the 2-digit clipping pattern from the first reporter response and correctly inferred a length constraint in the normalization logic",
+    "The data-vs-display question in turn 3 was diagnostically sophisticated and directly shaped the remediation recommendation",
+    "The final summary is exceptionally actionable: includes reproduction steps, fix guidance, a proposed test case, and honest information gaps",
+    "The agent acknowledged CRM data correctness as a key narrowing factor, focusing the investigation squarely on the TaskFlow import pipeline"
+  ],
+  "notable_weaknesses": [
+    "The summary lists 'whether the truncation happens in application code or at the database schema level' as an information gap, but this could have been asked directly — the reporter might have known whether a schema migration ran recently",
+    "No attempt to quantify which country codes beyond Ireland and Antigua are affected, which could help scope the restore effort"
+  ],
+  "most_insightful_question": "Do you know if the phone numbers are actually stored incorrectly (e.g., if you export the data or look at a record's edit history, the digits are genuinely missing), or is it possible the full number is still there but just being displayed in a truncated way on screen? — This question is not obvious, yet the answer fundamentally changed the remediation path from 'fix display logic' to 'restore from CRM backup + fix sync'.",
+  "missed_opportunities": [
+    "Ask whether any database schema changes (e.g., column width reduction) coincided with the 2-week timeline, to rule out a schema-level truncation as the cause",
+    "Ask how many distinct country codes are represented in the customer base, to help estimate total affected records beyond the two examples given"
+  ]
+}

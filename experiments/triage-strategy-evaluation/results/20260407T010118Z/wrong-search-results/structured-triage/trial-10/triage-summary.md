@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Search index returns archived tasks and omits active tasks since v2.3.1 upgrade
+
+## Problem
+After updating to TaskFlow v2.3.1, the global search returns archived tasks that should be hidden by the default 'active only' filter, while omitting active tasks that exist and display correctly when accessed via direct link. The issue affects all searches, not just specific queries, and is reproduced by multiple users across different browsers and operating systems.
+
+## Root Cause Hypothesis
+The v2.3.1 update likely introduced a regression in the search index or the search query's filter logic. Since tasks show the correct status when accessed directly, the underlying task data is correct — the problem is isolated to search. Most likely either: (a) the search index was rebuilt or migrated during the upgrade and task status flags were inverted or lost, or (b) the default filter predicate for the search query was changed or broken so it now includes archived and excludes active tasks.
+
+## Reproduction Steps
+  1. Update TaskFlow to v2.3.1
+  2. Ensure at least one active task and one archived task exist with overlapping keywords (e.g., 'Q2 planning')
+  3. Open the global search bar at the top of the page
+  4. Type 'Q2 planning' with default filters (should default to 'active tasks only')
+  5. Observe that the archived task appears in results and the active task does not
+  6. Verify the active task shows correct status when accessed via direct link
+
+## Environment
+TaskFlow v2.3.1 (upgraded a few days prior). Reproduced on Chrome (latest) / Windows 11 and Safari / macOS. Backend issue — not browser-specific.
+
+## Severity: high
+
+## Impact
+All users performing searches see incorrect results — archived tasks surfaced, active tasks hidden. This undermines the primary task discovery workflow and affects the entire team. Multiple users confirmed.
+
+## Recommended Fix
+Investigate the v2.3.1 changelog for changes to the search index, search query logic, or task status filtering. Check whether the search index stores a status or 'archived' flag and whether its polarity matches the application data model. Compare the search filter query in v2.3.0 vs v2.3.1 for regressions in the default active-only predicate. If the index was rebuilt during upgrade, verify the indexing pipeline maps the archived/active status correctly. A reindex with corrected status mapping may be required.
+
+## Proposed Test Case
+Create an active task and an archived task with the same keyword. Perform a global search with default filters for that keyword. Assert that only the active task appears in results. Repeat after toggling filters to 'all tasks' and assert both appear. Repeat after toggling to 'archived only' and assert only the archived task appears.
+
+## Information Gaps
+- Exact Chrome version (unlikely to matter given cross-browser reproduction)
+- Whether a search index rebuild or migration ran as part of the v2.3.1 upgrade
+- Whether the issue affects project-scoped search or only global search

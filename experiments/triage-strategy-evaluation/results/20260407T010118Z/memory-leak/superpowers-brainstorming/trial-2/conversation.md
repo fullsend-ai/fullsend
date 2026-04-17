@@ -1,0 +1,39 @@
+# Conversation: memory-leak x superpowers-brainstorming
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana dashboard — the memory growth pattern is very helpful.
+
+Did anything change around the time this started about a week ago? For example:
+- A TaskFlow version upgrade or config change
+- A significant increase in users or workload
+- An infrastructure change (new server, OS update, database migration)
+- Or did it seem to start on its own with no obvious trigger?
+
+This will help narrow down whether we're looking at a regression vs. a latent issue that crossed a threshold.
+
+---
+
+### reporter
+
+Yes, we upgraded from TaskFlow v2.2 to v2.3 about a week ago — that lines up exactly with when this started. No other changes on our end: same server, same user base, no config changes. I did notice the v2.3 changelog mentioned 'improved real-time notifications' as a new feature, but I'm not sure if that's related. Everything was rock solid on v2.2.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in v2.3 causes progressive slowdown requiring daily restart","problem":"After upgrading from TaskFlow v2.2 to v2.3, the server exhibits a steady memory leak — growing from ~500MB at startup to 4GB+ over the course of a business day. This causes page loads to exceed 10 seconds and API timeouts by late afternoon, forcing a daily restart. The pattern is consistent and reproducible across multiple days.","root_cause_hypothesis":"The 'improved real-time notifications' feature introduced in v2.3 is likely leaking memory — most probably through WebSocket connections or event listeners that are created per-user/per-session but never cleaned up on disconnect, or an unbounded in-memory notification queue/cache that grows with each event.","reproduction_steps":["Deploy TaskFlow v2.3 on a self-hosted instance","Allow ~200 users to use the application normally throughout the day","Monitor memory usage via Grafana or system tools","Observe memory climbing steadily from ~500MB toward 4GB+ over 8-10 hours","Observe page loads degrading to 10+ seconds and API timeouts in the afternoon"],"environment":"Self-hosted TaskFlow v2.3, approximately 200 active users, previously stable on v2.2","severity":"high","impact":"All 200 users experience progressively degrading performance throughout each day, with the application becoming effectively unusable by late afternoon. Requires daily manual restarts.","recommended_fix":"Diff the v2.2→v2.3 changes, focusing on the real-time notifications subsystem. Look for: (1) WebSocket or SSE connections not being cleaned up on client disconnect, (2) event listeners registered per-connection that are never removed, (3) in-memory notification stores or caches that grow without eviction, (4) subscription objects accumulating without cleanup. Run a heap profile on a test instance under simulated load to confirm which objects are accumulating.","proposed_test_case":"Simulate 200 concurrent users connecting and disconnecting over a 2-hour period. Assert that memory usage remains within a bounded range (e.g., does not exceed startup memory + 50%) and that heap object counts for notification/connection-related classes do not grow monotonically.","information_gaps":["Whether memory grows during off-hours (no active users) or only under active use — would distinguish timer-based leak from per-connection leak","Specific v2.3 deployment mode (single process, clustered, containerized) — could affect where the leak manifests","Whether the Grafana dashboard shows any correlation between memory growth rate and concurrent user count"]}
+
+---

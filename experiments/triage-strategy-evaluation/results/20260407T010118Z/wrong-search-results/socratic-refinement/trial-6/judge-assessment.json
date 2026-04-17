@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are clearly captured: search returns archived tasks when filtering active, active tasks are completely missing (not just buried), started ~3 days ago with v2.3.1, affects all users, individual task pages show correct status, and search filter behavior is inverted. The seventh item — 'related to search index, not application logic' — is partially captured: the triage correctly notes the issue is isolated to search and not the underlying data, but attributes the cause to a query/filter code predicate rather than a search index layer."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage satisfies the second acceptable path: it identifies the v2.3.1 schema migration as the trigger and the archive filter as the broken component, even without pinpointing the exact inversion mechanism. The root cause hypothesis ('flipped boolean condition or negated flag in the query predicate') is directionally correct about the symptom but points to application code rather than the search index configuration — a meaningful distinction that could send a developer to the wrong layer initially. The recommended fix ('diff the search/filter logic') is reasonable even if imprecise about the artifact to inspect."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The triage asked both key questions before resolving: establishing the timeline/trigger and probing whether active tasks were truly absent versus deprioritized. The reporter volunteered the inverted filter observation unprompted, which gave the triage enough signal to resolve confidently. One obvious question was skipped: whether v2.3.1 included any database schema migrations or index rebuilds, which would have pointed more precisely at the search index layer rather than application code."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two question turns, both substantive and non-overlapping. The first established the timeline; the second confirmed the severity of missing tasks and validated that individual task data was intact. No redundancy, no low-value probing."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question's framing ('sudden vs. gradual') was well-calibrated for distinguishing a deployment regression from a data drift problem. The second question's two-part structure — 'buried or truly absent?' combined with 'does the task look normal when accessed directly?' — was particularly insightful: it prompted the reporter to actively investigate and independently discover the inverted filter behavior, which was the most diagnostic finding in the conversation."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage provides a clear problem statement, detailed reproduction steps, severity/impact assessment, a proposed test case, and explicit information gaps. A developer can begin investigating immediately. The main limitation is that the recommended fix ('diff the search/filter logic in application code') would initially direct attention to the wrong artifact — the actual fix is in the search index configuration, not a code predicate. However, a developer running the diff would likely surface the index rebuild as part of v2.3.1 regardless."
+    }
+  },
+  "weighted_total": 4.25,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question's structure directly caused the reporter to discover the inverted filter behavior themselves — the single most diagnostic observation in the conversation",
+    "Extremely economical: two focused, non-redundant questions before a well-structured resolution",
+    "Resolution includes reproduction steps, a proposed regression test, and explicitly flagged information gaps — unusually thorough for a two-turn triage",
+    "Correctly inferred multi-user scope from a single data point (teammate confirmation) and called out severity appropriately"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis points to application query code ('flipped boolean predicate') rather than the search index configuration, which is the actual locus of the bug — this misdirection could cost a developer time",
+    "Recommended fix ('diff the search/filter logic') is reasonable but imprecise; a more accurate recommendation would include inspecting index mapping configuration and considering a reindex",
+    "No question asked about database migrations or index rebuilds as part of v2.3.1, which would have surfaced the search index layer as the likely culprit"
+  ],
+  "most_insightful_question": "I want to make sure I understand the 'missing active tasks' part correctly. When you searched for 'Q2 planning' and didn't see your active task — did you scroll through all the results to confirm it wasn't there at all, or is it more that the archived results pushed it so far down that you couldn't find it? … Also, when you look at that active 'Q2 planning' task directly (not through search), does everything about it look normal?",
+  "missed_opportunities": [
+    "Did the v2.3.1 update include any database schema migrations or search index rebuilds? (Would have pointed directly at the search index layer)",
+    "If you search without any archive filter applied — showing all tasks — do you see both active and archived results, or is something still wrong? (Would have helped distinguish a filter predicate bug from a deeper index corruption)",
+    "Are other search filters (by assignee, priority, etc.) also behaving incorrectly, or is it only the active/archived partition? (Would have scoped the blast radius and helped confirm this is filter-specific)"
+  ]
+}

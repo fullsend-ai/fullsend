@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Task save crashes on all CSV-imported tasks; natively-created tasks save fine
+
+## Problem
+The application crashes every time the user edits and saves any existing task. The user has approximately 200 tasks, all of which were imported via CSV. Newly created tasks save without issue. The crash is 100% reproducible and occurs regardless of which field is edited.
+
+## Root Cause Hypothesis
+The CSV import likely introduced task data that does not conform to what the save/update code path expects — for example, null or missing fields that the save handler doesn't guard against, special characters or encoding issues in text fields, or data type mismatches (e.g., a string where an integer is expected). The create path works because it produces well-formed data, but the update/save path chokes on the malformed imported data.
+
+## Reproduction Steps
+  1. Import tasks from a CSV file (any CSV with multiple tasks should work, though the reporter's specific CSV would be ideal)
+  2. Open any imported task for editing
+  3. Change any field (title, description, due date, etc.)
+  4. Click Save
+  5. Observe crash — contrast with creating a brand new task, editing it, and saving successfully
+
+## Environment
+Not specified — but the bug is data-dependent rather than environment-dependent, so it should reproduce in any environment with CSV-imported task data
+
+## Severity: high
+
+## Impact
+The user cannot edit any of their ~200 existing tasks without the app crashing, causing repeated data loss. This effectively makes the application unusable for their primary workflow.
+
+## Recommended Fix
+1. Inspect the database records for CSV-imported tasks vs. natively-created tasks — look for schema differences, null values, unexpected types, or malformed data. 2. Add defensive handling in the task save/update code path for any fields that could be null, missing, or malformed. 3. Consider adding a data migration or repair script to normalize existing imported tasks. 4. Harden the CSV import to validate and sanitize data on ingest so future imports don't produce fragile records.
+
+## Proposed Test Case
+Import a CSV containing tasks with edge-case data (empty fields, special characters, very long strings, missing optional columns), then verify that each imported task can be opened, edited, and saved without crashing.
+
+## Information Gaps
+- Exact error message or stack trace from the crash (would speed up pinpointing the failing line but not needed to start investigating)
+- The structure/contents of the original CSV file
+- App version and platform (web, desktop, mobile)
+- Whether the issue appeared immediately after import or only after a subsequent app update

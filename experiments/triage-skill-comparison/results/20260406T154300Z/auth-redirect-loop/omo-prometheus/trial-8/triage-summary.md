@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** SSO redirect loop for users with '+' in email or mismatched email between Okta and Entra ID
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop: they authenticate successfully at Microsoft, get redirected back to TaskFlow, and are immediately sent back to Microsoft. The issue correlates with users who have '+' (plus addressing) in their email or whose primary email changed between the Okta and Entra identity providers.
+
+## Root Cause Hypothesis
+TaskFlow's authentication callback is matching the identity token from Entra ID against stored user records using the email claim, and the match is failing for two related reasons: (1) The '+' character in email addresses is being incorrectly URL-encoded or decoded during the OAuth2/OIDC redirect flow (e.g., 'jane+taskflow@company.com' becomes 'jane taskflow@company.com' or 'jane%2Btaskflow@company.com'), causing the lookup to fail. (2) Users whose primary email changed during migration have a mismatch between the email claim in the Entra token and the email stored in TaskFlow's user table (still reflecting the old Okta email). When the user lookup fails, TaskFlow treats the user as unauthenticated and initiates a new login flow, creating the loop. The inconsistent incognito success may be due to timing-dependent race conditions in session creation or slight differences in how the redirect URI encodes the callback parameters.
+
+## Reproduction Steps
+  1. Configure TaskFlow SSO with Microsoft Entra ID
+  2. Create or ensure a user exists with a '+' in their email address (e.g., jane+taskflow@company.com)
+  3. Attempt to log in via SSO
+  4. Observe: Microsoft authentication succeeds, redirect back to TaskFlow occurs, but TaskFlow immediately redirects back to Microsoft, creating an infinite loop
+  5. Alternatively: create a user whose email in TaskFlow's database differs from their Entra ID primary email and attempt login
+
+## Environment
+TaskFlow with SSO configured against Microsoft Entra ID (migrated from Okta). Issue is browser/device independent. Affects users with special characters in email or email mismatches between identity providers.
+
+## Severity: high
+
+## Impact
+~30% of the team cannot log into TaskFlow at all. No reliable workaround exists (incognito is inconsistent). This is a complete access blocker for affected users.
+
+## Recommended Fix
+1. Inspect TaskFlow's SSO callback handler — find where the email claim from the OIDC/SAML token is extracted and matched against the user database. 2. Check for URL encoding issues with the '+' character: ensure the email is properly URL-decoded before comparison. 3. Check what claim is being used for matching (email, preferred_username, sub) and whether Entra ID is returning the same value Okta used to return. 4. Add a fallback matching strategy: if email match fails, try matching on a stable identifier (e.g., immutable user ID / sub claim) or a case-insensitive/normalized email comparison. 5. For the migration mismatch cases, either update TaskFlow's stored emails to match Entra, or add an email alias/mapping table. 6. Add logging to the auth callback to record the incoming claims and the match result — this will immediately confirm the hypothesis and help identify all affected users.
+
+## Proposed Test Case
+Create test users with emails containing '+' characters (e.g., test+tag@example.com) and verify that SSO login completes successfully without redirect loops. Additionally, create a test user whose stored email in TaskFlow differs from the email claim in the identity token, and verify that the matching logic either normalizes or handles the mismatch gracefully rather than looping.
+
+## Information Gaps
+- Which specific OIDC/SAML claim TaskFlow uses for user matching (email, upn, sub, etc.)
+- Whether TaskFlow logs authentication callback failures — existing logs could confirm the hypothesis immediately
+- The exact URL-encoded form of the redirect during the loop (capturing this from browser dev tools would confirm if '+' encoding is the issue)
+- Whether the Entra ID token's email claim literally differs from what's stored, or if it matches but the comparison logic is faulty

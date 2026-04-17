@@ -1,0 +1,34 @@
+{
+  "title": "Getting random 403 Forbidden errors on the dashboard",
+  "body": "I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — intermittent 403s are definitely frustrating, especially when permissions haven't changed.\n\nTo help us narrow this down, could you walk us through the exact steps you take when you hit the 403? For example:\n- How are you navigating to the dashboard — directly via URL, from another page in TaskFlow, or via a bookmark?\n- Is it the main dashboard that fails, or a specific project/team dashboard?\n- When it fails, does refreshing the page fix it, or do you have to wait / log out and back in?"
+    },
+    {
+      "author": "reporter",
+      "body": "I usually just go to the main dashboard from my bookmarks. It's the main dashboard that fails — I haven't really tried other pages much because I get nervous when I see a 403, like maybe my account got locked or something. When it fails, refreshing usually fixes it, though sometimes I have to refresh a couple times. I don't need to log out or anything. It's weird, it almost feels like it works 2 out of 3 times and fails the other time, but that might just be coincidence. I figured it was some kind of network issue on our end."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — the pattern of it working roughly 2 out of 3 times with a refresh fixing it is a useful clue.\n\nCould you share some environment details? Specifically:\n- What browser (and version) are you using?\n- What OS are you on?\n- Do you know which version of TaskFlow your team is running (there may be a version number in the footer or settings page)?\n\nAlso, since others on your team are hitting this too — do you know if they're on the same browser, or is it happening across different browsers?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm using Chrome, not sure of the exact version but it's pretty recent — I have auto-updates on. I'm on Windows 10. I think TaskFlow is version 2.3.1, I saw that in the footer once. As for my teammates, I know at least one of them uses Firefox and they're seeing the same thing, so I don't think it's a browser issue. Although now that I think about it, I'm not sure if all my teammates are seeing it or just the ones who got switched to the new analyst role recently. The people who've been around longer don't seem to be complaining about it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That detail about the 'new analyst role' is a really important clue — it could explain the whole thing.\n\nCould you help us confirm the correlation? Specifically:\n- Were you recently switched to this new analyst role yourself?\n- Among the teammates seeing the 403s, are they **all** on the new analyst role, or are any of them on a different role?\n- Do you know roughly when the analyst role switch happened — does the timing line up with when the 403s started \"a couple days ago\"?\n\nIf this turns out to be role-related rather than random, it'll point us straight at the fix."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah, I was switched to the analyst role right before this started happening — I think it was two days ago, which lines up exactly. The teammate I talked to who uses Firefox, she's also on the analyst role. I asked one of the senior guys who's been here a while and he said he's not having any issues, but he's still on the editor role I think. So yeah, it does seem like it might be connected to the analyst role. I just assumed it was a network thing since it's so intermittent, but the timing does match up."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Intermittent 403 Forbidden on main dashboard for users with new analyst role\",\"problem\":\"Users assigned to the recently introduced 'analyst' role are receiving intermittent 403 Forbidden errors when accessing the main dashboard. The errors occur roughly 1 in 3 page loads and can be resolved by refreshing. Users on the older 'editor' role are unaffected. The issue began approximately two days ago, coinciding with when users were switched to the analyst role.\",\"root_cause_hypothesis\":\"The new analyst role likely has incorrect or incomplete dashboard permissions, and the intermittent nature (roughly 1-in-3 failure rate) suggests the application runs behind a load balancer with multiple backend instances where one or more instances have a stale or misconfigured permissions/role definition that does not recognize the analyst role's dashboard access. Alternatively, a caching layer may be intermittently serving a cached authorization decision.\",\"reproduction_steps\":[\"Assign a user to the 'analyst' role in TaskFlow 2.3.1\",\"Navigate to the main dashboard (e.g., via bookmark or direct URL)\",\"Observe that the page intermittently returns 403 Forbidden (~1 in 3 loads)\",\"Refresh the page — it typically loads on retry\"],\"environment\":\"TaskFlow 2.3.1, observed on Windows 10 / Chrome (latest) and Firefox, not browser-specific. Affects multiple users on the analyst role.\",\"severity\":\"high\",\"impact\":\"All users assigned to the new analyst role are intermittently blocked from accessing the main dashboard. This affects their core workflow and creates confusion about account status. Multiple team members are impacted.\",\"recommended_fix\":\"1. Inspect the permissions/RBAC configuration for the analyst role and verify it includes explicit dashboard access grants. 2. Check whether all application server instances (behind the load balancer) have the same, up-to-date role definitions — a rolling deploy or config sync issue may have left one or more instances without the analyst role definition. 3. Review any authorization caching layer for stale entries. 4. Check server-side access logs filtered by 403 status to confirm the correlation with analyst-role sessions and identify which backend instance(s) are rejecting requests.\",\"proposed_test_case\":\"As an analyst-role user, load the main dashboard 20 times in succession and verify 0 responses return 403. Repeat after any deployment or config change to ensure consistency across all backend instances.\",\"information_gaps\":[\"Server-side access logs and which backend instance(s) return the 403\",\"Exact RBAC/permissions configuration for the analyst role vs. the editor role\",\"Whether the analyst role was added via a recent deployment or a runtime config change\"]}"
+    }
+  ]
+}

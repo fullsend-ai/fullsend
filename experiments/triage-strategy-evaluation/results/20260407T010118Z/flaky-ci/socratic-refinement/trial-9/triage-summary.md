@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** New task ordering tests fail intermittently in CI due to likely non-deterministic sort order
+
+## Problem
+Five new tests added for task ordering functionality pass consistently on the developer's local machine but fail intermittently in CI. The failures started exactly when the PR introducing these tests was merged (~4 days ago). All pre-existing tests continue to pass.
+
+## Root Cause Hypothesis
+The tests assert an exact ordering of tasks after sorting, but the sort is either unstable or there are tasks with identical sort keys (ties). The tie-breaking order is non-deterministic and happens to be consistent locally but varies in CI — likely due to differences in database query ordering, language runtime sort stability guarantees, hash randomization seeds, or timing-dependent factors like parallel execution.
+
+## Reproduction Steps
+  1. Identify the 5 new task ordering tests added in the PR merged ~4 days ago
+  2. Run the test suite repeatedly (e.g., 20+ iterations) — failures may not reproduce on every run even locally
+  3. Inspect the sort keys of the test fixture data for ties or identical values
+  4. Compare the CI runtime environment (database, language version, OS) to local for sort stability differences
+
+## Environment
+CI environment (specific details not provided); failures do not reproduce consistently on the reporter's local machine
+
+## Severity: high
+
+## Impact
+Blocking all releases for the team for the past 4 days. The flaky tests cause CI failures that prevent merging and deploying.
+
+## Recommended Fix
+1. Examine the 5 new ordering tests and identify what exact order they assert. 2. Check the sorting logic for tasks with equal sort keys (ties). 3. Either add a deterministic tiebreaker to the sort (e.g., sort by priority then by ID) or relax the test assertions to only verify relative ordering of items with distinct sort keys. 4. If the sort is expected to be stable, ensure the underlying sort implementation (language/DB) guarantees stability in both local and CI environments.
+
+## Proposed Test Case
+Create a test with multiple tasks sharing identical sort keys and verify that the sort produces a deterministic result regardless of input order. Run the test in a loop (50+ iterations) to confirm no flakiness.
+
+## Information Gaps
+- Exact CI environment details (OS, language runtime version, database)
+- Actual failure log output showing the assertion mismatches
+- Whether the sort key has known duplicates in test fixtures

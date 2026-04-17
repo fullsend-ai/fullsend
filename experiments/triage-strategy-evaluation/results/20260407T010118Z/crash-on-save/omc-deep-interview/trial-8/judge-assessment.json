@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured the key signals: CSV import as trigger, encoding-related error, crash on large projects, macOS platform. However, it missed several expected extracts: the manual-save vs. auto-save distinction was never explored (reporter said 'hit Save' which implies manual, but agent never asked about auto-save), the exact task count (~200) was noted only as 'a ton', the exact macOS version (14.2) was not obtained, and the exact app version (2.3.1) was left as 'approximately 2.3'. These gaps are noted in the summary's information_gaps section, which shows self-awareness but doesn't compensate for not asking."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage accurately identifies the CSV import as the trigger and encoding as the mechanism, which matches acceptable diagnostic path 1. The root cause hypothesis (typographic characters in an unexpected encoding causing the serializer to crash) is directionally correct and aligns well with the actual cause. The agent did not discover the 64KB size threshold, but that is explicitly listed as an acceptable path. Minor inaccuracy: the agent framed the encoding issue as potentially Windows-1252 vs. UTF-8 mismatch (import encoding), while the actual cause is more about the save serializer panicking on non-ASCII characters — a subtle but meaningful distinction."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked the right categories of questions (crash behavior, environment, reproduction scope, CSV content) and resolved with a reasonable basis. However, several obvious follow-ups were skipped: the auto-save vs. manual save distinction was never raised despite being diagnostically significant; the agent never asked whether removing the imported tasks restores save functionality (a simple workaround test that would have strongly confirmed the hypothesis); exact version numbers were not pressed for after getting vague answers."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three agent turns, each covering distinct diagnostic territory. The questions did not repeat themselves and each turn advanced understanding meaningfully. The second question bundled environment and reproduction scope efficiently. No obvious question could have been dropped. Slight inefficiency: asking about 'what program exported the CSV' in turn 3 was low-yield given the reporter's evident impatience, but it was not a wasted question per se."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The third question — asking specifically about non-English characters and the CSV source program — demonstrated genuine diagnostic reasoning and directly surfaced the 'fancy dashes and quote marks' admission that clinched the encoding hypothesis. The first question (distinguishing crash type: freeze vs. close vs. error) was well-structured and elicited the key 'encoding' clue. Questions were professional and empathetic. The agent did not ask the most powerful diagnostic question available: 'Does saving work if you remove the imported tasks?' — which would have definitively confirmed the CSV connection and revealed a workaround."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable. It includes a root cause hypothesis pointing to specific code paths (save serializer, CSV import), concrete reproduction steps, a proposed test case with specific Unicode codepoints, a four-part recommended fix covering both the immediate crash and the upstream import sanitization, and a data migration suggestion. A developer could begin investigating and writing tests immediately from this summary."
+    }
+  },
+  "weighted_total": 3.70,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Correctly identified the CSV import and encoding as the crash mechanism, matching an acceptable diagnostic path, despite the reporter never volunteering this connection explicitly",
+    "The triage summary is exceptionally detailed and actionable — reproduction steps, specific Unicode test cases, layered fix recommendations, and a data migration suggestion go well beyond baseline expectations",
+    "Empathetic tone maintained throughout despite a frustrated, unhelpful reporter; this preserved the conversation long enough to extract key clues",
+    "Self-aware about information gaps, explicitly listing what was not obtained rather than presenting an artificially complete picture"
+  ],
+  "notable_weaknesses": [
+    "Never asked about auto-save vs. manual save, missing a key expected extract that would have narrowed the failure surface",
+    "Did not ask the highest-value diagnostic question: 'Does saving work if you temporarily remove the imported tasks?' — this would have confirmed the hypothesis and revealed the workaround in one turn",
+    "Accepted vague version information ('v2.3 or something', 'Mac') without a targeted follow-up, leaving environment details underspecified"
+  ],
+  "most_insightful_question": "Could you tell me a bit about that CSV file? Specifically: did it contain any non-English characters (accents, emoji, characters from other languages), and do you remember what program you exported it from?",
+  "missed_opportunities": [
+    "Does saving work if you remove the imported tasks from the project? (Would confirm CSV as root cause and reveal the workaround)",
+    "Does the app crash when auto-save triggers, or only when you manually click Save? (Key expected extract — distinguishes manual vs. auto-save code paths)",
+    "Approximately how many tasks are in the list that crashes vs. the small lists that save fine? (Would have surfaced the size-dependent nature of the crash)",
+    "Can you check the exact TaskFlow version in the app's About screen? (Vague answer should have prompted a targeted follow-up)"
+  ]
+}

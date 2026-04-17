@@ -1,0 +1,61 @@
+# Conversation: slow-search x socratic-refinement
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — slow search is definitely frustrating, especially when it used to work well.
+
+Can you tell me a bit more about what changed? You mentioned it used to be fast — do you remember roughly when you first noticed the slowdown? For example, was it after a TaskFlow update, after your task list grew past a certain size, or did it seem to happen suddenly one day? Any context around what was different "before" versus "now" would really help narrow this down.
+
+---
+
+### reporter
+
+I think it started maybe 2 weeks ago? I'm not 100% sure but I believe I updated TaskFlow around that time — went from 2.2 to 2.3 I think. It wasn't a gradual thing, it felt like it just got slow pretty suddenly. My task list has been growing over the past couple years but I've had a lot of tasks for a while and it was fine before.
+
+---
+
+### triage-agent
+
+That's really helpful — the timing around the 2.2 → 2.3 upgrade is a strong clue. I'd love to understand the slowdown a bit better from your side.
+
+When you search, is it slow every time regardless of what you type, or are there certain kinds of searches that are worse than others? For instance, does searching for a single common word feel different from searching for something very specific? And does it feel like the delay is before *any* results start appearing, or do partial results show up quickly and then it hangs while loading more?
+
+---
+
+### reporter
+
+Hmm, now that you mention it, I think searching by task title is actually still pretty fast. It's when I search across the full descriptions that it gets really slow. I have some tasks with pretty long descriptions — like I paste meeting notes into them sometimes. The delay is before any results show up at all, it just hangs for a while and then everything appears at once.
+
+---
+
+### triage-agent
+
+Thanks, that distinction between title search and description search is a really useful clue — it narrows things down a lot.
+
+Let me make sure I'm understanding the full picture: after upgrading from TaskFlow 2.2 to 2.3 about two weeks ago, searching across task descriptions became very slow (10-15 seconds with no partial results), while title-only search still feels fast. You have a large, long-lived task list with some tasks containing lengthy descriptions like pasted meeting notes. Does that sound right?
+
+One more thing that would help a developer reproduce this: roughly how many tasks are we talking about? Hundreds? Thousands? Even a ballpark would be useful.
+
+---
+
+### reporter
+
+Yeah, that's a pretty accurate summary. I've got around 5,000 tasks built up over about 2 years. And yeah, some of those descriptions are pretty beefy — I tend to dump meeting notes in there, some of them are probably a couple thousand words. Title search is still snappy though, it's just the description search that crawls.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text description search regressed to ~10-15s after upgrading to TaskFlow 2.3","problem":"After upgrading from TaskFlow 2.2 to 2.3 approximately two weeks ago, searching across task descriptions takes 10-15 seconds with no partial/incremental results. Title-only search remains fast. The user has ~5,000 tasks accumulated over 2 years, many containing lengthy descriptions (pasted meeting notes, some several thousand words).","root_cause_hypothesis":"The 2.3 release likely introduced a regression in full-text description search — possibly a dropped or changed index on the description field, a switch from indexed search to naive full-table scan, or a change in the search query path that bypasses previously-used indexing. The fact that title search is unaffected and the slowdown was sudden (not gradual with data growth) points to a code/schema change rather than a data volume issue.","reproduction_steps":["Create or use a TaskFlow instance with a large number of tasks (~5,000) including many with long description fields (1,000-2,000+ words)","Perform a search that targets task descriptions (full-text search, not title-only)","Observe that the search hangs for 10-15 seconds before returning all results at once","Compare with the same search on TaskFlow 2.2 to confirm the regression"],"environment":"TaskFlow 2.3 (upgraded from 2.2), running on a work laptop. ~5,000 tasks with some containing multi-thousand-word descriptions.","severity":"high","impact":"Any user with a non-trivial number of tasks performing full-text description search experiences severe slowdown. This is a core search workflow, and the 10-15 second delay makes it effectively unusable for iterative searching.","recommended_fix":"Diff the search implementation between 2.2 and 2.3, focusing on how description search is executed. Check for: (1) removed or altered database indexes on the description field, (2) changes to the search query (e.g., switching from indexed FTS to LIKE/ILIKE scans), (3) new serialization or processing of description content before search. Restore or add appropriate full-text indexing on the description column.","proposed_test_case":"Performance test: seed a database with 5,000 tasks (500 of which have descriptions over 1,000 words), execute a full-text description search, and assert that results return within an acceptable threshold (e.g., under 2 seconds). This test should run against both title and description search paths to catch future regressions in either.","information_gaps":["Exact TaskFlow 2.3 build/patch version (reporter said 'I think' re: version numbers)","Whether other users on 2.3 with large datasets experience the same issue","Database backend in use (SQLite vs PostgreSQL vs other) — may affect indexing behavior"]}
+
+---

@@ -1,0 +1,7 @@
+{
+  "scenario": "intermittent-403",
+  "strategy": "omc-deep-interview",
+  "reporter_profile": "typical",
+  "turns": 4,
+  "parse_failures": 0
+}

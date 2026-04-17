@@ -1,0 +1,39 @@
+# Triage Summary
+
+**Title:** Infinite login redirect loop after Okta-to-Entra SSO migration due to SameSite=Strict cookie and email claim mismatch
+
+## Problem
+After switching SSO from Okta to Microsoft Entra ID, approximately 30% of users are caught in an infinite redirect loop: they authenticate successfully at Microsoft, get redirected back to TaskFlow, but TaskFlow immediately redirects them back to Microsoft. The session cookie set by TaskFlow during the redirect is silently dropped by the browser, so TaskFlow has no record the user just authenticated.
+
+## Root Cause Hypothesis
+Two interacting causes: (1) TaskFlow sets its session cookie with SameSite=Strict. When the user is redirected back from Microsoft (a cross-site navigation), the browser blocks the cookie per the Strict policy. Without a session cookie, TaskFlow treats the user as unauthenticated and redirects again — creating the loop. This likely worked with Okta because Okta may have used a SAML POST-based response (top-level form POST navigations can set Strict cookies in many browsers) whereas Entra ID uses a GET redirect. (2) For the subset of affected users, email normalization differences between Okta and Entra ID tokens (plus-sign addresses like jane+taskflow@company.com, and aliased personal-to-work email mappings) may cause TaskFlow's email-based account matching to fail, triggering a fallback redirect path that exacerbates the cookie issue rather than showing an error page.
+
+## Reproduction Steps
+  1. Have a user with a plus-sign email address (e.g., jane+taskflow@company.com) or an aliased email account attempt to log in to TaskFlow
+  2. User clicks Login and is redirected to Microsoft Entra ID
+  3. User authenticates successfully at Microsoft
+  4. Observe the redirect response back to TaskFlow: it includes a Set-Cookie header with SameSite=Strict
+  5. Observe in the browser's cookie storage that the cookie was NOT persisted
+  6. TaskFlow, finding no session cookie, redirects back to Microsoft — loop begins
+  7. Note: in the browser dev tools Network tab, the loop is visible as repeated 302 redirects between TaskFlow and Microsoft
+
+## Environment
+TaskFlow with Microsoft Entra ID SSO (recently migrated from Okta). OIDC/SAML-based authentication. Session cookies configured with SameSite=Strict and Secure attributes. Affects approximately 30% of users, with a correlation to plus-sign email addresses and accounts originally provisioned with personal emails later aliased to work emails.
+
+## Severity: high
+
+## Impact
+~30% of users are completely locked out of TaskFlow — they cannot log in at all. No workaround is reliable (incognito mode works intermittently). This is a complete access blocker for affected users.
+
+## Recommended Fix
+Two changes needed: (1) **Change the session cookie SameSite attribute from Strict to Lax.** Lax allows cookies to be set on top-level cross-site GET navigations (which is the SSO redirect flow). This is the standard setting for session cookies in SSO-integrated apps. Do NOT use SameSite=None unless required, as Lax is sufficient and more secure. (2) **Audit and normalize email claim matching.** Compare the email claim returned by Entra ID tokens (the `email`, `preferred_username`, or `upn` claim) against what TaskFlow stores for each user. Ensure matching handles plus-sign addresses and email aliases correctly — consider matching on a normalized form or on a stable identifier like the `oid` or `sub` claim instead of email. Investigate whether a failed email match triggers a redirect rather than an error page, and fix that to show an explicit error.
+
+## Proposed Test Case
+1. Configure a test user with a plus-sign email address and SameSite=Lax cookie policy. Verify they can log in via Entra SSO without a redirect loop. 2. Configure a test user whose Entra ID email differs from their TaskFlow account email (alias scenario). Verify either successful login (if normalization is implemented) or a clear error message (not a redirect loop). 3. Regression test: verify that SameSite=Lax cookies persist correctly across the full SSO redirect flow in Chrome, Firefox, and Safari.
+
+## Information Gaps
+- Exact OIDC/SAML token claims returned by Entra ID for affected vs. unaffected users (reporter is working on capturing this)
+- Whether the Okta integration used SAML POST-back vs OIDC GET redirect (would confirm why SameSite=Strict worked before)
+- The exact cookie Domain attribute value — if misconfigured, this could be a contributing factor
+- Browser distribution of affected vs unaffected users (different browsers enforce SameSite differently in edge cases)
+- Whether TaskFlow's email matching failure path is an explicit redirect-to-login or an unhandled exception that defaults to redirect

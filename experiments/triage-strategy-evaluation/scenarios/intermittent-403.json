@@ -1,0 +1,25 @@
+{
+  "title": "Getting random 403 Forbidden errors on the dashboard",
+  "body": "I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.",
+  "quality": "medium",
+  "reporter_profile": "typical",
+  "ground_truth": {
+    "description": "The reporter is a regular user. The company runs TaskFlow behind a load balancer that round-robins across 3 application servers. Two days ago, a deployment went out to update the RBAC (role-based access control) policy to add a new 'analyst' role. The deployment succeeded on servers 1 and 2 but failed on server 3 due to a disk space issue — the deploy script exited silently without rolling back. Server 3 is running the old RBAC policy that doesn't recognize the 'analyst' role. Users with the 'analyst' role get 403 on every request that hits server 3 (roughly 1 in 3 requests). Users with older roles (admin, editor, viewer) are unaffected. The reporter was recently assigned the 'analyst' role. The reporter has noticed it's roughly 1-in-3 but attributes it to 'network issues.'",
+    "actual_cause": "One of three load-balanced servers has a stale deployment with an old RBAC policy that doesn't include the recently-added 'analyst' role. Requests that round-robin to this server return 403 for users with the analyst role. The fix is to redeploy to server 3 or fix the disk space issue and re-run the deployment.",
+    "acceptable_paths": [
+      "Identifying the 1-in-3 pattern and suspecting a load balancer or inconsistent server state, even without identifying the RBAC policy as the specific issue",
+      "Identifying that only users with the 'analyst' role are affected and connecting it to the recent role addition, even without discovering the stale server"
+    ],
+    "environment": "TaskFlow v2.3.1, 3 load-balanced servers, Nginx load balancer, recently added 'analyst' RBAC role",
+    "workaround": "Refresh the page until you get a working server; or temporarily reassign affected users to the 'editor' role"
+  },
+  "expected_triage_extracts": [
+    "403 errors are intermittent, roughly 1 in 3 requests",
+    "started ~2 days ago",
+    "coincides with a recent deployment or role change",
+    "affects users with the 'analyst' role specifically",
+    "other roles (admin, editor, viewer) are unaffected",
+    "multiple users are affected",
+    "load-balanced environment with multiple servers"
+  ]
+}

@@ -1,0 +1,56 @@
+# Conversation: file-upload-corruption x superpowers-brainstorming
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — corrupted attachments definitely need to be sorted out quickly.
+
+To help narrow down the cause: is this happening with **every** PDF you upload, or only certain ones? For example:
+
+1. **Every PDF** — all uploads come back corrupted, no exceptions
+2. **Only large PDFs** — smaller files seem fine
+3. **Only certain PDFs** — some specific files fail while others work
+4. **Something else**
+
+Also, was this working correctly before and broke recently, or has it never worked for you?
+
+---
+
+### reporter
+
+Look, I don't have time to go through every PDF we've ever uploaded. All I know is customers are complaining that their PDFs are broken and it's making us look bad. Some PDFs seem to work fine honestly, but a lot of them don't. I haven't sat down and categorized which ones. And yes, this was working before — it broke maybe a week ago? Can you just fix it?
+
+---
+
+### triage-agent
+
+Totally understand — let me take this from here with minimal back-and-forth.
+
+Based on what you've described (regression ~1 week ago, affects some PDFs but not others), my best guess is that a recent change broke handling of PDFs above a certain file size — likely they're getting truncated or mis-encoded during upload.
+
+One quick thing that would help confirm this: if you pick one of the broken PDFs, could you check whether the **file size after downloading it back** is noticeably different from the original? (Right-click → Properties on the original, then download the uploaded version and compare.) Even a rough "it went from 5 MB to 1 MB" vs. "they're about the same size" would narrow this down a lot.
+
+No need to test multiple files — just one broken one is enough.
+
+---
+
+### reporter
+
+Fine, I just checked one. The sizes are pretty much the same actually — the original was like 3MB and the downloaded one is about the same. It's not smaller or anything, it's just... broken. The PDF viewer says it's corrupted. Meanwhile I just tried a small one-pager PDF a customer sent and that one works perfectly fine. So I don't know what's going on but can someone please look at the actual system instead of having me play detective?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"PDF attachments corrupted after upload — content mangled despite correct file size (regression ~1 week)","problem":"PDF files uploaded as task attachments are silently corrupted. When downloaded back, the file size is approximately correct but the PDF viewer reports the file as damaged. Simple/small PDFs survive the round-trip; more complex ones do not. This is a regression that appeared roughly one week ago and is affecting multiple customers.","root_cause_hypothesis":"A recent change in the upload or storage pipeline is applying a content transformation to binary data — most likely a character encoding conversion (e.g., treating the binary stream as UTF-8 text) or a middleware/proxy layer re-encoding the body. This would explain why file sizes are roughly preserved (byte-for-byte substitution of invalid sequences) while the binary content is destroyed. Simple PDFs with mostly ASCII-range bytes survive; complex PDFs with arbitrary binary content in embedded fonts, images, or streams do not.","reproduction_steps":["Upload a multi-page PDF with embedded images or fonts (>1 page, ~3MB) as a task attachment","Download the attachment back from the task","Attempt to open the downloaded PDF — it will report as corrupted","Compare the original and downloaded file sizes — they should be approximately equal","Repeat with a simple one-page text-only PDF — this one should open correctly"],"environment":"Production environment; not browser-specific based on report (multiple customers affected)","severity":"high","impact":"Multiple customers are unable to use the file attachment feature for non-trivial PDFs. This is a core workflow for affected users and is customer-facing, causing reputational damage.","recommended_fix":"Review all commits to the upload/attachment pipeline from the past 1–2 weeks. Look specifically for: (1) changes to content-type handling or stream encoding, (2) new middleware or proxy layers in the upload path, (3) changes to the storage client configuration (e.g., a base64 or encoding flag), (4) any text/binary mode changes in file I/O. Do a binary diff between an original PDF and its round-tripped version to confirm the corruption pattern — UTF-8 mangling will show characteristic 0xEF 0xBF 0xBD (U+FFFD replacement character) sequences.","proposed_test_case":"Upload a PDF containing embedded binary streams (fonts, images) and assert that the downloaded file is byte-identical to the original (SHA-256 hash comparison). Include PDFs of varying complexity: text-only single page, multi-page with images, and a PDF with embedded fonts.","information_gaps":["Whether non-PDF binary attachments (e.g., images, ZIP files) are also affected — would confirm this is a general binary handling issue vs. PDF-specific","The exact date or deployment that introduced the regression","Whether the corruption is consistent (same file always corrupts the same way) or non-deterministic"]}
+
+---

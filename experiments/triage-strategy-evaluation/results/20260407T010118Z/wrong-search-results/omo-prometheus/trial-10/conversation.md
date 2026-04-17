@@ -1,0 +1,63 @@
+# Conversation: wrong-search-results x omo-prometheus
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report — that's a frustrating issue, especially when it's affecting your whole team.
+
+To help me scope this: **was search working correctly before, and if so, when did you first notice it returning wrong results?** Specifically, did anything change around that time — an update, a settings change, a data migration? Knowing whether this is a regression (and roughly when it started) will help us narrow down the cause significantly.
+
+---
+
+### reporter
+
+Yes, search was definitely working fine before! I first noticed the problem about three days ago. Actually, I think that lines up with when our team got the v2.3.1 update — I remember there was a database migration that ran as part of that patch. Ever since then, search has been returning the wrong results. Before that update, everything was working perfectly. So it's definitely a regression that started with that update.
+
+---
+
+### triage-agent
+
+Thanks — that's really helpful. Pinpointing it to the v2.3.1 migration is a strong lead.
+
+I want to understand the failure mode more precisely: **when you search for 'Q2 planning,' does the active task you created yesterday show up at all — even further down in the results — or is it completely absent?** And a quick follow-up: if you navigate directly to that active task (e.g., via your task list or a direct link), does it still appear as active, or could the migration have changed its status to archived?
+
+---
+
+### reporter
+
+Good question — no, the active 'Q2 planning' task does not show up at all in the search results, not even further down. It's completely absent. But here's the weird part: if I go to my task list directly and find that task, it's definitely still marked as active. It hasn't been changed to archived. So the task itself is fine — it's just the search that can't find it. Actually, now that I think about it, it's almost like search has things backwards. The results I'm getting back when I search are mostly archived tasks, and the active ones are missing. I have way more archived tasks (maybe 300) than active ones (about 150), and my search results are way longer than they should be, which would make sense if it's pulling archived tasks instead of active ones.
+
+---
+
+### triage-agent
+
+Thanks — that's a really telling observation, and it's pointing me toward a specific theory.
+
+I think the v2.3.1 database migration may have **inverted the active/archived flag in the search index** — so search treats archived tasks as active and vice versa. That would explain exactly what you're seeing: active tasks invisible to search, archived tasks flooding your results.
+
+Can you help me confirm this? **Does TaskFlow's search have any filter or toggle to include archived tasks in results (or to search only archived tasks)?** If so, try turning it on (or switching to "archived only") and searching for 'Q2 planning' again. If my theory is right, your *active* task should appear when you filter for archived, which would be the smoking gun.
+
+If there's no such filter, that's useful to know too — we'll still have enough to act on.
+
+---
+
+### reporter
+
+Yes, there is a filter for that! By default, search shows 'active tasks only,' but you can toggle it to show archived tasks. I just tried what you suggested — I switched the filter to 'archived only' and searched for 'Q2 planning,' and sure enough, my active task from yesterday showed up! That's definitely backwards. And when I switch back to the default 'active only' filter, I get all the old archived tasks instead. So your theory seems spot on — the active/archived flag is flipped in search. The task list and individual task views all show the correct status, it's only the search filter that has things inverted.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search index active/archived flag inverted after v2.3.1 database migration","problem":"After the v2.3.1 update and its associated database migration, the search index treats active tasks as archived and archived tasks as active. The default 'active only' search filter returns archived tasks, while the 'archived only' filter returns active tasks. Task status is correct in the task list and individual task views — only the search index is affected.","root_cause_hypothesis":"The v2.3.1 database migration inverted the boolean active/archived flag (or equivalent status value) in the search index. The most likely cause is a flipped boolean mapping, swapped enum values, or an inverted WHERE clause in the migration script that rebuilt or updated the search index.","reproduction_steps":["Have a TaskFlow instance on v2.3.1 (post-migration) with both active and archived tasks","Search for a term that matches a known active task (e.g., 'Q2 planning')","Observe that the active task is absent from results and archived tasks appear instead","Toggle the search filter to 'archived only' and repeat the search","Observe that the active task now appears in the 'archived only' results"],"environment":"TaskFlow v2.3.1, after database migration. Confirmed on at least two user accounts on the same team.","severity":"high","impact":"All users on v2.3.1 are affected. Search is effectively unusable — users cannot find active tasks via search, which is a core workflow. Workaround exists (manually invert the filter toggle) but is unintuitive and unreliable for users who don't know about it.","recommended_fix":"1. Inspect the v2.3.1 migration script for any operation that updates or rebuilds the search index — look for inverted boolean logic, swapped enum values, or a NOT condition applied to the active/archived flag. 2. Write a corrective migration that re-inverts the flag in the search index. 3. Verify that the task list/detail views use a different code path (they display correctly, so the source-of-truth data is intact — only the search index is wrong).","proposed_test_case":"Create one active task and one archived task with the same keyword. Search with 'active only' filter and assert the active task is returned and the archived task is not. Search with 'archived only' filter and assert the inverse. Run this test before and after the migration to catch regressions.","information_gaps":["Exact migration script contents and which table/column was modified","Whether other features that depend on the search index (e.g., dashboards, reports, API endpoints) are also affected","Whether the issue affects all TaskFlow instances on v2.3.1 or only those with specific data conditions"]}
+
+---

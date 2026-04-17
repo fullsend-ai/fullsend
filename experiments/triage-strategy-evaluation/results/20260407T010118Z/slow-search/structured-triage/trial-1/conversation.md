@@ -1,0 +1,55 @@
+# Conversation: slow-search x structured-triage
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help us investigate, could you walk us through the steps to reproduce the slow search? Specifically:
+
+- What search query (or type of query) are you running when it's slow? For example, is it a keyword search, a filter, or a specific phrase?
+- Roughly how many tasks do you have in your account?
+- Does it happen on every search, or only with certain queries?
+
+This will help us narrow down where the bottleneck is.
+
+---
+
+### reporter
+
+I have around 5,000 tasks — I've been using TaskFlow for about 2 years now. It seems to be slow when I search for keywords that would appear in task descriptions. Like if I search for a phrase from meeting notes I pasted into a task, it takes forever. But now that I think about it, searching for stuff that's in the task title seems to be fine, it's pretty quick. I'm not sure why there'd be a difference. It happens pretty consistently when I'm searching for things in the description text.
+
+---
+
+### triage-agent
+
+Thanks for that detail — the distinction between title search (fast) and description search (slow) is really helpful and gives us a strong lead.
+
+Could you share a few environment details so we can try to reproduce this on our end?
+
+- What operating system is your work laptop running (e.g., Windows 11, macOS Sonoma)?
+- Which browser (and version) are you using TaskFlow in?
+- Do you know which version of TaskFlow you're on? (You can usually find this under Settings → About.)
+
+This will help us rule out any platform-specific factors.
+
+---
+
+### reporter
+
+I'm on Ubuntu 22.04 on a ThinkPad T14. TaskFlow is a desktop app for me, not browser-based. I'm on version 2.3 — I actually upgraded from 2.2 maybe two weeks ago? I think the slowness might have started around then but I'm not 100% sure, I didn't connect the two right away.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description-field search is extremely slow (~10-15s) with large task counts since v2.3 upgrade","problem":"Searching for keywords that appear in task descriptions takes 10-15 seconds, while searching for keywords in task titles returns results quickly. The reporter has ~5,000 tasks accumulated over 2 years. The slowness may have started after upgrading from v2.2 to v2.3 approximately two weeks ago.","root_cause_hypothesis":"The v2.3 upgrade likely changed or regressed the description search path — possibly a missing or dropped index on the task description column, a change from indexed search to full table scan for description text, or a switch in search implementation (e.g., removing full-text indexing) that only affects the description field. Title search likely still hits an indexed column, explaining the performance disparity.","reproduction_steps":["Create or use an account with ~5,000 tasks, many containing descriptive text (e.g., pasted meeting notes)","Search for a keyword or phrase that appears in task descriptions but not in task titles","Observe that results take 10-15 seconds to return","Search for a keyword that appears in a task title","Observe that title-match results return quickly"],"environment":"Ubuntu 22.04, ThinkPad T14, TaskFlow desktop app v2.3 (upgraded from v2.2 ~2 weeks ago)","severity":"high","impact":"Users with large task histories experience unusable search performance for description-text queries — a core workflow. Likely affects all users with substantial task counts on v2.3.","recommended_fix":"Diff the search query path and database schema between v2.2 and v2.3. Check whether a full-text index on the task description column was dropped or altered during the upgrade. Profile the description search query on a dataset of ~5,000 tasks to confirm whether it's doing a full table/collection scan. Restore or add appropriate indexing for description-field search.","proposed_test_case":"With a dataset of 5,000+ tasks containing varied description text, assert that a keyword search matching description content returns results in under 2 seconds (matching title search performance).","information_gaps":["Whether the slowness definitively started with the v2.3 upgrade or was a gradual degradation","Whether any error messages or debug logs are produced during slow searches","Exact query execution time (reporter estimates 10-15s but no precise measurement)"]}
+
+---

@@ -1,0 +1,26 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this! To help us narrow down what's going on — do you recall roughly when the search started feeling slow? For example, did it coincide with a TaskFlow update, importing or creating a large batch of tasks, or any other change to your setup? Also, approximately how many tasks do you have in your workspace right now?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah, now that you mention it, I think it started around 2 weeks ago when I upgraded to v2.3. Before that it was snappy, under a second. I have about 5,000 tasks — I've been using TaskFlow for a couple years now. But I had all those tasks before the upgrade too and it was fine, so I don't think the number of tasks alone is the issue."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — the v2.3 timing is a strong clue. One more thing that would help us zero in on this: does the slowness happen on every search, or only certain kinds? For instance, is it slow when you search by keyword, when you filter by tags/labels/status, or both? And does the first search after opening TaskFlow feel slower than subsequent ones, or is it consistently 10-15 seconds every time?"
+    },
+    {
+      "author": "reporter",
+      "body": "Good question — it's specifically slow when I search by keyword across task descriptions. If I search just by task title, it's still fast like before. Filtering by tags or status is fine too. And it's consistently slow every time, not just the first search. Every single description search takes 10-15 seconds. I should mention that a lot of my tasks have really long descriptions — I tend to paste in meeting notes and stuff, so some of them are pretty beefy."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Keyword search over task descriptions regressed to 10-15s in v2.3 (was <1s)\",\"problem\":\"Since upgrading to TaskFlow v2.3, keyword searches across task descriptions consistently take 10-15 seconds. Title-only search, tag filtering, and status filtering remain fast. The user has ~5,000 tasks, many with lengthy descriptions (pasted meeting notes), but this dataset performed fine prior to v2.3.\",\"root_cause_hypothesis\":\"v2.3 likely introduced a regression in how description-field keyword search is executed. Possible causes: (1) a full-text search index on the description field was dropped or not migrated during the v2.3 upgrade, (2) the search query was changed from indexed lookup to sequential scan/LIKE query, or (3) a new search implementation (e.g., switching search libraries) handles large text fields poorly. The fact that title search is unaffected suggests the regression is specific to the description field path.\",\"reproduction_steps\":[\"Install or upgrade to TaskFlow v2.3\",\"Create or import a workspace with ~5,000 tasks, many with long descriptions (1,000+ words)\",\"Perform a keyword search scoped to task descriptions\",\"Observe search takes 10-15 seconds consistently\",\"Compare with the same search scoped to task titles only (should be fast)\"],\"environment\":\"TaskFlow v2.3, work laptop (OS/specs unspecified), ~5,000 tasks with lengthy descriptions\",\"severity\":\"high\",\"impact\":\"Any user with a large task corpus who relies on description search is affected. Keyword search on descriptions is a core workflow for power users. Workaround exists (search by title, filter by tags/status), but this significantly degrades the usefulness of search for users who store detailed information in descriptions.\",\"recommended_fix\":\"Diff the search implementation between v2.2 and v2.3, focusing on how description-field queries are constructed. Check whether a full-text index on the description column was dropped or altered in the v2.3 migration. If the search backend was changed, benchmark the new implementation against large text fields. Restore or add proper indexing for description content.\",\"proposed_test_case\":\"Performance test: seed a database with 5,000 tasks where descriptions average 500+ words. Assert that keyword search across descriptions returns results in under 2 seconds. Run this test against both v2.2 (baseline) and v2.3 to confirm the regression and validate the fix.\",\"information_gaps\":[\"Exact OS and hardware specs of the reporter's laptop (unlikely to be root cause given the version correlation)\",\"Whether other v2.3 users with large datasets experience the same issue\",\"Whether the v2.3 changelog or migration scripts mention search-related changes\"],\"clarity_scores\":{\"symptom\":0.95,\"cause\":0.85,\"reproduction\":0.80,\"impact\":0.70,\"overall_ambiguity\":0.15}}"
+    }
+  ]
+}

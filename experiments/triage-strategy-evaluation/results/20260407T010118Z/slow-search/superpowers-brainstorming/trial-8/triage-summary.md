@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Full-text search on task descriptions is slow (~10-15s) at scale (~5k tasks with long descriptions)
+
+## Problem
+Searching by keywords that match task descriptions takes 10-15 seconds, while searching by task title remains fast. The reporter has ~5,000 tasks accumulated over 2 years, many with lengthy descriptions containing pasted meeting notes. The slowdown appears specific to description-field search.
+
+## Root Cause Hypothesis
+The task description field likely lacks a full-text search index. Title search is fast because titles are indexed (or short enough for a sequential scan to be cheap), but description search is performing a full table scan or unindexed LIKE/CONTAINS query over large text blobs across 5,000 rows.
+
+## Reproduction Steps
+  1. Create or use a workspace with ~5,000 tasks, many having multi-paragraph descriptions
+  2. Search for a keyword that appears in task descriptions but not titles
+  3. Observe search latency of 10-15 seconds
+  4. Search for the same keyword when it appears in a task title — observe it returns quickly
+
+## Environment
+Work laptop, ~5,000 tasks, 2 years of usage, tasks contain long descriptions with pasted meeting notes
+
+## Severity: medium
+
+## Impact
+Users with large workspaces and lengthy task descriptions experience unusable search latency. Affects power users and long-term users most, as the problem scales with data volume.
+
+## Recommended Fix
+1. Check the database schema for the tasks table — confirm whether a full-text index exists on the description column. 2. If missing, add a full-text index (e.g., GIN index with tsvector in PostgreSQL, or FTS virtual table in SQLite). 3. If the app uses application-level search (e.g., loading all tasks into memory and filtering), refactor to push the search to the database. 4. Consider whether the search query uses LIKE '%term%' (which cannot use B-tree indexes) and replace with proper full-text search operators.
+
+## Proposed Test Case
+Seed a test database with 5,000+ tasks where descriptions contain 500+ words each. Run a keyword search matching description content and assert it completes within an acceptable threshold (e.g., <1 second). Verify title-only and description searches both meet the performance target.
+
+## Information Gaps
+- Exact TaskFlow version and database backend in use
+- Whether the slowdown was gradual (scaling) or sudden (regression from a specific update)
+- Whether the deployment is local SQLite or a remote database server

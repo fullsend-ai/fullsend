@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK unaffected, and recent normalizer change. The triage also added E.164 standard context, reproduction steps, and proposed test cases beyond the minimum."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the nightly Salesforce sync as the corruption source, the 3+ digit country code pattern as the discriminator, the 2-week timeline tied to a phone number handling change, and specifically hypothesizes 'a substring, field-length, or regex issue capping at 2 characters' — which precisely describes the actual regex bug. This satisfies both acceptable diagnostic paths and closely approximates the canonical root cause."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen question turns extracted all the key diagnostic information. The agent correctly resolved after obtaining concrete examples and confirmation of a recent change. The only obvious missed question was asking for the specific commit or PR reference for the phone number update — though the agent appropriately flagged this as an information gap rather than leaving it unacknowledged."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only 2 question turns, each combining multiple sub-questions efficiently. No redundant or low-value questions. The first turn established the data pipeline and timeline; the second obtained examples and change context. Both were necessary and non-overlapping."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question correctly targeted the data ingestion mechanism as the primary diagnostic lever. The second question's request for concrete examples was particularly insightful — it directly surfaced the Ireland (+353→+35) and Antigua (+1268→+12) cases, making the 3+ digit country code pattern immediately apparent. The reporter would not have volunteered this pattern unprompted. The pairing of 'what do the bad numbers look like' with 'what changed around that time' in one turn was efficient and diagnostic."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin debugging immediately: find the recent PR/commit for international number support, locate the phone normalizer, look for logic capping country codes at 2 digits, fix and verify against E.164. The triage includes reproduction steps, a recommended fix sequence, proposed unit and integration test cases, and a restoration path (re-sync from Salesforce). Information gaps are explicitly named so nothing is assumed resolved."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question immediately targeted the data ingestion mechanism, which was the correct diagnostic axis",
+    "Request for concrete examples in turn 2 was the key move — it surfaced the country code length pattern that defined the entire root cause",
+    "Root cause hypothesis ('regex or field-length capping at 2 characters') is precise enough that a developer could find the bug without further investigation",
+    "Fix recommendations include both the code fix and the data restoration path from Salesforce, addressing the immediate operational problem",
+    "Information gaps are explicitly listed rather than silently omitted, giving the developer a clear research agenda"
+  ],
+  "notable_weaknesses": [
+    "Did not ask for the specific PR or commit reference for the phone number handling change, which would have made the fix immediately locatable",
+    "Did not ask whether the import process logs transformations, which could help identify all affected records without manual inspection"
+  ],
+  "most_insightful_question": "Could you grab a couple of examples — say, what the number looks like in Salesforce versus what ended up in TaskFlow? The specific pattern of how they're wrong will tell us a lot about where things are breaking down.",
+  "missed_opportunities": [
+    "Ask for the PR or ticket reference for the 'international number support' change — a developer could have gone directly to the offending commit",
+    "Ask whether the import job logs transformations or errors — would help determine whether affected records can be identified programmatically without comparing to Salesforce"
+  ]
+}

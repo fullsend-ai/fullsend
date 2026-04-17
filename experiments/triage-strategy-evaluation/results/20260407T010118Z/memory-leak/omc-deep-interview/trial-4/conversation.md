@@ -1,0 +1,53 @@
+# Conversation: memory-leak x omc-deep-interview
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana dashboard — the consistent daily pattern is really helpful.
+
+To help narrow down what's driving the memory growth: what version of TaskFlow are you running, and have you been able to look at what's consuming the memory? For example, if you're on a JVM-based deployment, a heap dump near end-of-day would be very telling. Even without that, do you know if TaskFlow is using any features heavily — like real-time notifications, file attachments, or webhook integrations — that might be accumulating state over time?
+
+---
+
+### reporter
+
+We're on v2.3 — we upgraded about a week ago, and actually now that you mention it, that's right around when this problem started. Before the upgrade we didn't have this issue at all.
+
+We don't do much with webhooks or file attachments, but we do use the real-time notifications feature. I noticed v2.3 mentioned 'improved real-time notifications' in the changelog, so that could be related.
+
+I haven't done a heap dump — we're not on the JVM, it's the standard Go-based deployment on an Ubuntu 22.04 VM with 8GB RAM. I can see in Grafana that memory just climbs steadily throughout the day. With our ~200 users it grows roughly 10MB per hour, but then it seems to accelerate later in the day and we end up at 3-4GB by evening. The growth pattern is very linear in the morning and then gets worse as the day goes on.
+
+---
+
+### triage-agent
+
+That timing with the v2.3 upgrade is a really strong clue — especially combined with the real-time notifications change.
+
+Since you're on the Go deployment, could you grab a quick `pprof` snapshot late in the day when things are slow? Specifically, hitting `http://your-server:port/debug/pprof/heap` and `http://your-server:port/debug/pprof/goroutine?debug=1` would tell us a lot. The goroutine count in particular would help confirm whether the real-time notification connections are piling up rather than being cleaned up.
+
+If pprof isn't exposed, even the goroutine count from the `/debug/vars` endpoint or the output of `runtime.NumGoroutine()` in the logs late in the day vs. early morning would be very useful. Does the goroutine count climb alongside the memory?
+
+---
+
+### reporter
+
+I haven't looked at pprof before, but I just tried hitting that heap endpoint and it gave me a profile. I'm not sure how to read it in detail, but I also grabbed the goroutine one you mentioned. The goroutine count is definitely high — it looks like there are thousands of them, and most of them seem to be related to WebSocket notification listeners based on the function names I can see. Early in the morning after a restart it's just a few dozen goroutines, but by late afternoon it's in the thousands. So yeah, it does look like they're piling up and never getting cleaned up. Each one seems to be waiting on some kind of event channel for push notifications.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Goroutine leak in real-time WebSocket notification listeners causes progressive memory exhaustion (regression in v2.3)","problem":"After upgrading to TaskFlow v2.3, the Go-based server leaks goroutines tied to WebSocket notification listeners. Memory climbs from ~500MB to 3-4GB over a workday, page loads degrade to 10+ seconds, and the API begins timing out, requiring a daily restart.","root_cause_hypothesis":"The v2.3 'improved real-time notifications' change introduced a goroutine lifecycle bug where WebSocket notification listener goroutines are spawned but never cleaned up — likely on client disconnect or reconnect. Each goroutine blocks on an event channel indefinitely. With ~200 active users reconnecting throughout the day, goroutines accumulate into the thousands and their associated memory is never reclaimed.","reproduction_steps":["Deploy TaskFlow v2.3 (Go-based) with real-time notifications enabled","Connect ~200 active users performing normal task operations over several hours","Monitor goroutine count via /debug/pprof/goroutine and memory via /debug/pprof/heap","Observe goroutine count climbing from dozens to thousands, with memory growing ~10MB/hr initially and accelerating","Compare against v2.2 under the same load to confirm the regression"],"environment":"TaskFlow v2.3, Go-based deployment, Ubuntu 22.04 VM, 8GB RAM, ~200 active users, real-time notifications enabled","severity":"high","impact":"All ~200 users experience progressively degraded performance throughout each workday, with the application becoming effectively unusable by late afternoon. Operations team must restart the server daily as a workaround.","recommended_fix":"Diff the real-time notification subsystem between v2.2 and v2.3. Look for goroutines spawned per WebSocket connection that lack proper cleanup on client disconnect, connection timeout, or reconnect. Ensure each notification listener goroutine is tied to the connection context and exits when that context is canceled. Verify that event channels are closed or drained on disconnect so goroutines don't block indefinitely.","proposed_test_case":"Write a test that opens N WebSocket notification connections, disconnects them (both clean close and abrupt TCP drop), and asserts that goroutine count returns to baseline within a reasonable timeout. Run under load with repeated connect/disconnect cycles and verify zero goroutine growth over time.","information_gaps":["Whether the leak occurs on clean WebSocket close, abrupt disconnect, or reconnect (developer will determine from code inspection and pprof stack traces)","Whether the acceleration in memory growth later in the day correlates with higher user activity or is a compounding effect of the leak itself","Exact function names in the pprof goroutine dump (reporter saw them but didn't share the full trace)"]}
+
+---

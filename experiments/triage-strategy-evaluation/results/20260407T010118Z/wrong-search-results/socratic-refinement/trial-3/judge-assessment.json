@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks appearing in active filter, active tasks missing from default search, onset ~3 days ago tied to v2.3.1, confirmed affecting multiple users, individual task pages showing correct status, filter behavior inverted, and the data layer being intact (implying the bug is in search/query logic). The agent also surfaced additional useful detail: task counts (150 active, 300 archived), exact filter states tested, and that 'All tasks' works correctly."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly identified the trigger (v2.3.1 update), the symptom (inverted archive filter), and that data integrity is intact — aligning with acceptable path 2 ('identifying the schema migration as the trigger and the archive filter as the broken component'). However, the root cause hypothesis and recommended fix point squarely at application code (a negated condition or swapped enum in the filter-to-query mapping), not the search index field mapping configuration. A developer following the recommended fix would look at the wrong layer first, wasting time before discovering the index configuration issue."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after just two question turns, both of which were productive and well-timed. It established the timeline and update context in turn 1, then directly elicited the inversion behavior in turn 2. One notable missed follow-up: whether any backend maintenance (index rebuild, migration job) was explicitly run as part of the v2.3.1 upgrade — this would have been a short path to the search index hypothesis. But the agent had a reasonable basis to resolve given the strong inversion signal."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns were used, and neither could reasonably be cut. Turn 1 established context and timing; turn 2 asked the pivotal filter-toggle question. No redundant or low-value questions. Highly efficient triage."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — asking the reporter to explicitly toggle the filter and observe the result — was genuinely insightful. It transformed a vague 'wrong results' complaint into a precise 'filter is working backwards' finding that the reporter would not have articulated unprompted. This question directly produced the most diagnostic information in the conversation. The first question was also solid in anchoring timing and search surface."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary is detailed and well-structured: clear reproduction steps, severity rating, impact assessment, proposed test case, and an explicit recommended fix. However, the recommended fix directs developers to diff the search filter/query logic in application code, which is the wrong layer — the actual bug is in the search index field mapping configuration. A developer acting on this summary would likely spend time on the code diff before pivoting to the index configuration. Still, the inversion framing and reproduction steps are accurate and useful as a starting point."
+    }
+  },
+  "weighted_total": 4.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The filter-toggle question in turn 2 was exceptionally well-designed: it converted an ambiguous symptom into a precise, falsifiable diagnostic finding (filter is inverted, not just 'wrong').",
+    "The triage summary is unusually complete and structured — reproduction steps, test case proposal, impact assessment, and information gaps are all present and accurate.",
+    "All 7 expected information items were captured, often with additional useful detail (task counts, exact UI states tested, 'All tasks' behavior).",
+    "Correctly identified that data integrity is intact (individual task pages show correct status), which is a meaningful clue that narrows the fault domain."
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis and recommended fix point to application code (filter-to-query mapping logic), not the search index field mapping configuration — a developer following this would look in the wrong place.",
+    "No question asked about whether a backend migration, index rebuild, or maintenance job ran as part of the v2.3.1 deployment — this would have been a direct path to the search index hypothesis.",
+    "The agent did not consider or mention the search index as a possible fault domain at all, missing the 'search index out of sync' acceptable diagnostic path entirely."
+  ],
+  "most_insightful_question": "Does the filter control still look the same as it did before? And if you try explicitly toggling it (say, switching to 'All tasks' and then back to 'Active tasks only'), do the search results change at all, or do you get the same archived results regardless of what the filter is set to?",
+  "missed_opportunities": [
+    "Did the v2.3.1 upgrade include any database migrations or backend maintenance jobs (e.g., index rebuilds)? — this would have surfaced the schema migration and potentially pointed to the search index.",
+    "When you view a task that appeared in 'Active tasks only' results, does it show as archived in its detail view? (Reporter eventually shared this, but asking it directly and earlier would have confirmed data-vs-index split faster.)",
+    "Is there an admin or IT contact who could confirm whether any search index operations ran around the time of the v2.3.1 deployment?"
+  ]
+}

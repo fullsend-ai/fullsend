@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected items: small PDFs working fine, regression started ~1 week ago, multiple customers affected, and size-dependent behavior. Binary content mangling is implicitly covered in the hypothesis ('encoding or content-type handling for binary files'). The 1MB threshold wasn't established (correctly noted as an information gap), and whether other file types are affected is also listed as a gap rather than confirmed. Nearly complete but missing two items from the expected list."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage aligns well with acceptable diagnostic path #1 (size-dependent behavior pointing to different upload paths). Crucially, the root cause hypothesis explicitly calls out 'content-type and transfer-encoding headers for binary file handling' and 'chunked upload handling' — both are very close to the actual cause (proxy stripping Content-Type on chunked uploads). The size-dependent framing ('multi-page or image-heavy') correlates with the >1MB pattern even without identifying the exact threshold. No significant inaccuracies that would mislead a developer."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked three rounds of questions and elicited the critical size-dependent insight. However, it resolved without asking whether other file types (images, spreadsheets) were also affected — a natural follow-up given the size hypothesis. It also didn't pursue the TaskFlow version or specific change history, though the reporter was becoming impatient. The resolution had a reasonable basis but left one obvious diagnostic question unasked."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "Turn 1 (upload workflow) and Turn 3 (file size / which PDFs affected) were well-targeted. Turn 2 (browser/OS/version) was generic and low-value given the reporter had already said it affects everyone on the team — the reporter rightly pushed back on its relevance. One question was clearly suboptimal."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 3 was notably insightful — asking about file size and whether only certain PDFs are affected was well-framed and drew out the key diagnostic insight that smaller PDFs work fine. This question showed genuine diagnostic reasoning rather than generic troubleshooting. Turn 1 was adequate. Turn 2 was generic and missed the opportunity to ask about other file types or recent system changes, which the reporter had hinted at."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it provides a specific root cause hypothesis with multiple candidate mechanisms, step-by-step reproduction instructions, a concrete test case with checksum comparison, an ordered recommended fix list that explicitly mentions content-type and chunked transfer headers, and clearly enumerated information gaps. A developer could begin investigating and narrowing the cause immediately."
+    }
+  },
+  "weighted_total": 3.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Turn 3 question directly elicited the size-dependent insight that is the key diagnostic signal for this bug",
+    "Root cause hypothesis explicitly called out content-type handling and chunked uploads — remarkably close to the actual cause without access to server logs",
+    "Triage summary is extremely detailed and actionable, including a proposed test case with checksum comparison",
+    "Correctly framed as a regression and pointed developers toward checking recent deployment history"
+  ],
+  "notable_weaknesses": [
+    "Turn 2 (browser/OS/version) was a generic troubleshooting question that wasted a turn and frustrated the reporter; the reporter had already indicated it was affecting everyone",
+    "Never asked whether other file types (images, spreadsheets) are also affected, which would have further narrowed the upload-path hypothesis",
+    "Did not pursue the TaskFlow version or ask what changed in the system approximately one week ago, which the reporter was explicitly requesting"
+  ],
+  "most_insightful_question": "Does this happen with every PDF you upload, or only certain ones (e.g., larger files, files from a specific source)?",
+  "missed_opportunities": [
+    "Are other file types (images, Word documents, spreadsheets) also affected when uploading large files?",
+    "Do you know your TaskFlow version, or can you check Settings → About? This helps us correlate with our deployment timeline from about a week ago.",
+    "Has anything else changed in your environment or workflow around the time this started — e.g., did your team switch to uploading larger or more complex PDFs?"
+  ]
+}

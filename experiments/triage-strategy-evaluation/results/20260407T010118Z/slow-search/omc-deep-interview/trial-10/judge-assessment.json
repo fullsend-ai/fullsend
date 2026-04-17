@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected extracts cleanly: task count (~5,000), title-vs-description performance split, v2.3 regression, 2-week onset, 10-15s timing, and CPU spike (via fan behavior). The one gap is description length — the reporter's offhand mention of 'meeting notes pasted into a task description' was not followed up on, so the summary doesn't flag that some descriptions are exceptionally long (2,000+ words), which is a meaningful contributing factor. OS and hardware were correctly flagged as uncollected but noted as low-priority gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is strikingly accurate: the agent explicitly named 'LIKE %term%' as a candidate regression and 'full-text index dropped or not migrated' as the likely mechanism — matching the actual cause (FTS5 index not migrated, replaced by a LIKE scan). The title-vs-description split, v2.3 timing correlation, and CPU-bound characterization are all correct. This satisfies both acceptable diagnostic paths and closely mirrors the canonical root cause."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about search method, timing/version trigger, a concrete example with result count and timing, the title/description toggle mechanism, consistency across sessions, and multi-user scope. The only meaningful gap is not probing description content length — the reporter mentioned 'meeting notes pasted in' which was a signal worth following. The multi-user question was sensible given unknown deployment context. Resolution after 3 turns was well-supported by the evidence gathered."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three question turns, each carrying meaningful diagnostic intent. Turn 1 efficiently combined search-method and regression-onset questions. Turn 3's first-vs-subsequent-search question was well-reasoned (ruling out cold-cache effects) and the multi-user question was reasonable before knowing the app was local. No questions were redundant or repeated. At most the teammate question could have been deferred given the 'work laptop' framing in the original report."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The questions showed genuine diagnostic reasoning. Turn 2's clarification of the title/description toggle mechanism confirmed separate code paths — not something a reporter would volunteer unprompted. Turn 3's warm-vs-cold cache framing was technically motivated. The opening question's dual focus (search method + timing) was efficient. Questions were professional and led directly to the key discriminating information. Slightly below 5 because the description-length follow-up was missed despite a clear signal."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes a precise root cause hypothesis with specific technical candidates (FTS index not migrated, LIKE scan regression), step-by-step reproduction instructions with realistic seeding parameters, a concrete recommended fix with four ordered investigative steps, a proposed regression test case with a measurable pass/fail criterion, and a scoped impact statement. A developer could open the v2.2-to-v2.3 migration scripts and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Root cause hypothesis named LIKE scan and FTS index migration failure explicitly — matching the actual cause without access to the codebase",
+    "Title-vs-description performance split was recognized immediately as a strong diagnostic signal and pursued effectively",
+    "Triage summary is exceptionally well-structured: includes reproduction steps, fix recommendations, a proposed test case, and scoped impact — immediately useful to a developer",
+    "Turn 3 correctly used consistency-across-sessions as a caching discriminator, ruling out a warm-cache explanation before resolving"
+  ],
+  "notable_weaknesses": [
+    "Did not follow up on 'meeting notes pasted into a task description' — description length is a meaningful contributing factor to the scan cost and was an available signal",
+    "OS and hardware specs were not collected; flagged as low-priority but Ubuntu 22.04 and ThinkPad T14 with 32GB RAM would have completed the environment picture",
+    "Did not ask whether the reporter had tried reindexing or clearing any cache, which would also serve as a diagnostic data point"
+  ],
+  "most_insightful_question": "Turn 2's follow-up clarifying how title-only vs. description search is selected (same bar with a toggle) — this confirmed that both search modes share the same UI entry point but diverge at the implementation layer, directly supporting the separate-code-path / missing-index hypothesis.",
+  "missed_opportunities": [
+    "Ask whether task descriptions tend to be long or contain large pastes — the 'meeting notes' mention was a clear signal that description size amplifies the scan cost",
+    "Ask whether rebuilding an index or clearing a cache had been attempted — useful both as a workaround hint and as a diagnostic (if reindexing fixed it, that confirms the index hypothesis)",
+    "Ask for the exact OS and hardware specs — would have completed the environment record even if unlikely to change the fix direction"
+  ]
+}

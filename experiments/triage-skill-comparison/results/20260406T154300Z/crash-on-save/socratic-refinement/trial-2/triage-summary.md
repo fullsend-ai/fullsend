@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** App crashes on save when task list contains CSV-imported data (~200 tasks) with encoding error
+
+## Problem
+Clicking the Save button in the toolbar causes the application to crash when the task list contains a large number of tasks (~200) that were imported from a CSV file. A dialog referencing 'encoding' briefly flashes before the app closes. Saving works correctly with small, manually-created task lists.
+
+## Root Cause Hypothesis
+The CSV import likely brought in text with non-UTF-8 encoding or special characters (e.g., Latin-1, Windows-1252 smart quotes, BOM markers, or null bytes). The save/serialization path does not handle these encoding edge cases and throws an unhandled exception, which briefly surfaces as the encoding dialog before the app crashes.
+
+## Reproduction Steps
+  1. Create or obtain a CSV file with ~200 tasks (particularly one with non-ASCII characters or mixed encoding)
+  2. Import the CSV file into TaskFlow using the CSV import feature
+  3. Edit any task in the imported list
+  4. Click the Save button in the toolbar
+  5. Observe the app crashes with a brief encoding-related dialog
+
+## Environment
+Not specified — but the CSV file source and its original encoding are relevant. The issue is likely platform-independent since it stems from data encoding.
+
+## Severity: high
+
+## Impact
+Users who import task data from CSV files risk losing all unsaved work due to crashes on save. This is a data-loss scenario that blocks a core workflow (import → edit → save).
+
+## Recommended Fix
+Investigate the save serialization path for encoding handling. Likely fixes: (1) sanitize or re-encode imported CSV data to UTF-8 at import time, normalizing or replacing characters that cannot be represented; (2) add proper encoding error handling in the save path so malformed characters are handled gracefully rather than crashing; (3) ensure the encoding error dialog is modal and blocks so users can at least read the error message before the app exits.
+
+## Proposed Test Case
+Import a CSV file containing mixed-encoding text (e.g., Latin-1 characters, smart quotes, BOM markers, emoji, null bytes) with 200+ rows, then verify that save completes successfully or fails gracefully with a readable error — no crash, no data loss.
+
+## Information Gaps
+- Exact encoding of the original CSV file (UTF-8, Latin-1, Windows-1252, etc.)
+- Full text of the encoding error dialog
+- Operating system and app version
+- Whether re-importing the same CSV with explicit UTF-8 encoding avoids the issue

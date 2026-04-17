@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "The triage extracted nearly all expected information: ~5,000 tasks, slow on description search vs fast on title search, regression after v2.2 to v2.3 upgrade, started ~2 weeks ago, 10-15 second search times, and long descriptions in some tasks. The only missing item is the CPU spike during search, which the reporter didn't volunteer and wasn't asked about. The triage also discovered additional useful context like the consistency of slowness across sessions and search terms."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it specifically calls out a change from indexed search to LIKE '%term%' scanning, which is exactly what happened (SQLite FTS5 index replaced with naive LIKE query). The hypothesis that title search uses an unaffected code path is correct. The suggestion that a migration may have dropped or failed to recreate the index aligns with the actual cause. The summary correctly identifies this as a v2.3 regression affecting description search only."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "The conversation took only 2 agent questions to extract all the critical information. The first question efficiently combined timeline and change-event inquiries, yielding the v2.3 upgrade correlation, the 2-week timeline, and the 5,000 task count. The second question cleverly probed search behavior patterns, which surfaced the title-vs-description distinction and the long descriptions detail. No wasted questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question was well-structured, asking about timeline and correlating events simultaneously. The second question was particularly insightful — asking whether search speed varies by what you search for led the reporter to discover the title-vs-description distinction themselves, which is the single most important diagnostic clue. The questions also probed for cold-start vs warm-cache differences, showing systematic thinking."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable. It provides a precise root cause hypothesis (FTS index regression), specific investigation steps (diff v2.2 vs v2.3 search implementation, check migrations, run EXPLAIN/ANALYZE), clear reproduction steps with specific data parameters, and even a proposed regression test with concrete thresholds. A developer could start investigating immediately with a clear roadmap."
+    }
+  },
+  "weighted_total": 5.00,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional diagnostic efficiency — only 2 questions to reach a highly accurate root cause hypothesis",
+    "The second question's framing ('does it depend on what you're searching for') led the reporter to self-discover the title-vs-description distinction, which is the key diagnostic signal",
+    "Root cause hypothesis almost exactly matches the actual cause (LIKE query replacing FTS index)",
+    "Comprehensive and well-structured summary with actionable investigation steps, reproduction steps, and a proposed regression test",
+    "Appropriate severity assessment and impact analysis"
+  ],
+  "notable_weaknesses": [
+    "Did not collect OS/hardware details (though correctly noted this is unlikely to be root cause)",
+    "Did not ask about CPU/memory behavior during search, which would have further confirmed the full-scan hypothesis",
+    "Did not identify SQLite as the likely database backend despite it being common for local desktop apps"
+  ],
+  "most_insightful_question": "When you search, is it slow every single time regardless of what you type, or have you noticed it depends on what you're searching for? For instance, is searching for a single common word just as slow as searching for something very specific?",
+  "missed_opportunities": [
+    "Could have asked about CPU/memory usage during slow searches to confirm the full-scan hypothesis",
+    "Could have asked about the database backend (SQLite is implied by the local desktop app context)",
+    "Could have asked whether the reporter tried any workarounds like reindexing or clearing cache"
+  ]
+}

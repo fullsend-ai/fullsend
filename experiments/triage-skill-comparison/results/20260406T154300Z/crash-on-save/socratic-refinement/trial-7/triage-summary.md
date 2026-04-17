@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** App crashes on save with encoding error after CSV task import
+
+## Problem
+After importing tasks from a CSV file, clicking the Save button causes the application to immediately close. A dialog referencing 'encoding' flashes briefly before the app disappears. The user has approximately 200 tasks in the list. No freeze or gradual degradation — the app simply terminates.
+
+## Root Cause Hypothesis
+The CSV import likely introduced task data containing characters in an encoding (e.g., Latin-1, Windows-1252) that differs from the application's expected encoding (likely UTF-8). When the save routine attempts to serialize the task data, it encounters characters it cannot encode, throws an unhandled exception, and the application crashes. The briefly-visible dialog is likely the unhandled exception or encoding error surfacing before the process terminates.
+
+## Reproduction Steps
+  1. Create or obtain a CSV file with tasks containing non-ASCII or mixed-encoding characters (e.g., accented characters, smart quotes, em-dashes)
+  2. Import the CSV file into TaskFlow
+  3. Click the Save button in the toolbar
+  4. Observe the app crashes with a brief encoding-related dialog
+
+## Environment
+Not specified — likely desktop application. OS and version not yet confirmed.
+
+## Severity: high
+
+## Impact
+The user cannot save their work at all after importing CSV data, leading to repeated data loss. Any user who imports CSV files with non-ASCII characters is likely affected. This is a data-loss scenario.
+
+## Recommended Fix
+Investigate the save/serialization code path for encoding assumptions. Ensure imported CSV data is normalized to a consistent encoding (UTF-8) at import time, or that the save routine handles mixed encodings gracefully. The unhandled exception should be caught and surfaced as a user-visible error rather than crashing the app. Specifically: (1) Add encoding detection/normalization in the CSV import pipeline, (2) Wrap the save serialization in proper error handling, (3) If encoding fails, show a meaningful error identifying which task(s) contain problematic characters.
+
+## Proposed Test Case
+Import a CSV file containing tasks with various non-ASCII characters (accented letters, CJK characters, smart quotes, emoji) and verify that saving completes successfully without crashing. Additionally, test with a CSV file explicitly saved in Latin-1 or Windows-1252 encoding to confirm the import normalizes encoding correctly.
+
+## Information Gaps
+- Exact OS and application version
+- The specific encoding of the source CSV file
+- Whether the crash occurs with a smaller subset of the imported tasks
+- Full text of the encoding error dialog

@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Infinite login redirect loop for users with plus-addressed or aliased emails after Okta-to-Entra-ID SSO migration
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. They authenticate successfully with Entra ID but are immediately redirected back to the IdP upon returning to TaskFlow. Affected users are predominantly those with plus-addressed emails (e.g. jane+taskflow@company.com) or email aliases that differ from their Entra ID primary email. The issue is intermittent in incognito mode and clearing cookies sometimes provides temporary relief, but the loop returns on subsequent login attempts.
+
+## Root Cause Hypothesis
+Two interacting defects: (1) **Email claim mismatch**: Entra ID returns the user's primary email (e.g. jane@company.com) as the identity claim, but TaskFlow's user table stores the plus-addressed or aliased variant (e.g. jane+taskflow@company.com). TaskFlow's auth callback cannot match the incoming claim to a local user, so it fails silently and restarts the auth flow. (2) **Session cookie not persisting**: The auth callback attempts to set a session cookie on redirect, but it is not sticking in the browser — likely due to a SameSite=Strict or SameSite=Lax cookie attribute conflicting with the cross-origin redirect from Entra ID, or a Secure flag issue if the dev/staging environment uses HTTP. This explains why incognito sometimes works (no pre-existing cookies competing) and why the issue is at login time rather than mid-session.
+
+## Reproduction Steps
+  1. Create or identify a TaskFlow user account registered with a plus-addressed email (e.g. testuser+taskflow@company.com)
+  2. Ensure the corresponding Entra ID account's primary email / UPN is the base address (testuser@company.com)
+  3. Attempt to log into TaskFlow via SSO
+  4. Observe the redirect loop: TaskFlow → Entra ID → successful auth → redirect back to TaskFlow → immediate redirect back to Entra ID
+  5. Open browser dev tools Network tab and note: (a) the email claim value in the OIDC callback response, and (b) whether the Set-Cookie header from TaskFlow's callback response is actually stored by the browser
+
+## Environment
+TaskFlow web application, recently migrated from Okta to Microsoft Entra ID for SSO. Multiple browsers affected (Chrome, Edge, Firefox). Issue is independent of OS. Entra ID app registration and redirect URIs have been verified as correct.
+
+## Severity: high
+
+## Impact
+~30% of the organization cannot reliably log into TaskFlow. No consistent workaround exists. Incognito/cookie-clearing provides only intermittent, temporary relief. Affected users are blocked from using the application.
+
+## Recommended Fix
+Investigate two areas: (1) **Auth callback user lookup** — check how TaskFlow resolves the incoming identity claim (email/UPN) to a local user. Add case-insensitive matching and normalize plus-addressed emails so that jane+taskflow@company.com matches jane@company.com. Alternatively, configure Entra ID to send a custom claim that includes the full plus-addressed email, or switch the matching key to a stable identifier like the Entra Object ID / OIDC `sub` claim rather than email. (2) **Session cookie attributes** — inspect the Set-Cookie header on TaskFlow's auth callback response. Ensure SameSite=Lax (not Strict) so the cookie is sent on the top-level redirect from Entra ID. Verify the Secure flag matches the protocol in use and the Domain/Path attributes are correct. Check for conflicts with any existing cookies from the old Okta integration.
+
+## Proposed Test Case
+Test with a user whose TaskFlow account email differs from their Entra ID primary email (plus-addressing and alias variants). Verify: (a) login completes without redirect loop, (b) the session cookie is correctly set and persists across page loads, (c) token renewal does not break the session, (d) users with exact-match emails continue to work as before.
+
+## Information Gaps
+- Exact OIDC claim TaskFlow uses for user matching (email, preferred_username, sub, etc.) — requires reading the auth code
+- Exact cookie attributes (SameSite, Secure, Domain, Path) set by TaskFlow's auth callback — requires inspecting server config or code
+- Whether TaskFlow's auth error handling silently restarts the auth flow on user-not-found vs. showing an error page
+- Whether any old Okta session cookies are still present and conflicting with the new Entra ID flow

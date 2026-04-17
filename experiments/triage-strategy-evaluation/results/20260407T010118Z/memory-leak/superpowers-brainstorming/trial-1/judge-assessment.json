@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: memory growth pattern (500MB to 4GB+), v2.3 upgrade trigger, 200 active users, consistent day-to-day pattern, restart as workaround, and v2.3 changelog mentioning notification system changes. The missing item is server specs (8GB RAM VM), which was never elicited."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the v2.3 upgrade as the trigger, the notification system as the source, and per-connection resource leaks (WebSocket connections, event listeners, subscription objects) as the mechanism. This satisfies both acceptable diagnostic paths and closely matches the canonical root cause. The hypothesis that cleanup on disconnect is the failure mode is exactly right."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The two questions asked were the right ones and established a solid diagnostic basis. The obvious gap is server specs (RAM, OS, runtime), which were never asked. A rollback confirmation would also have been valuable. The agent acknowledges these in the information_gaps section, indicating awareness, but they were left unasked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, and both were essential. No redundancy, no low-value probing. The conversation is as tight as it could be while still reaching a well-supported conclusion."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions show genuine diagnostic reasoning. The first question (what changed?) is the canonical opener for regression triage, and the multiple-choice framing elicited a precise answer including the changelog detail the reporter might not have volunteered otherwise. The second question (does growth track with user activity?) is particularly insightful — it directly distinguishes per-connection leaks from background process issues, a non-obvious and highly diagnostic distinction."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: specific subsystems to inspect (WebSocket/SSE cleanup, event listener deregistration, growing collections), a concrete debugging technique (heap snapshot comparison at startup vs. after load), and a proposed load test with acceptance criteria. A developer could open the v2.3 notification system code and begin auditing immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question — correlating memory growth with active user count — is a particularly sharp diagnostic move that distinguishes per-connection leaks from background process issues and directly implicates the root cause mechanism",
+    "The reporter volunteered the changelog detail ('improved real-time notifications') in response to the first question, but only because the question framed the context well enough to make it feel relevant",
+    "The recommended fix section is specific and prioritized, giving developers three concrete audit targets rather than vague guidance",
+    "Resolved in just two turns with a high-confidence, accurate hypothesis"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM VM, Ubuntu 22.04) were never elicited — relevant for assessing headroom and confirming OOM risk",
+    "No attempt to confirm rollback to v2.2 as a quick diagnostic or workaround verification",
+    "The request rate / request volume was not asked, which would have allowed the agent to estimate the leak rate and cross-check it against the observed memory growth"
+  ],
+  "most_insightful_question": "Does the memory growth rate seem to track with how many users are active? (with the weekend/low-usage framing) — this question directly distinguished per-connection resource leaks from background process issues and elicited the confirming weekend observation the reporter had not initially mentioned.",
+  "missed_opportunities": [
+    "Ask about server specs (RAM, OS, runtime/language) to confirm environment and assess OOM risk",
+    "Ask whether rolling back to v2.2 resolves the issue — a quick rollback test would have confirmed the regression hypothesis definitively",
+    "Ask approximately how many requests per user per hour to calculate the leak rate and cross-check it against the observed 500MB-to-4GB growth over ~8 hours"
+  ]
+}

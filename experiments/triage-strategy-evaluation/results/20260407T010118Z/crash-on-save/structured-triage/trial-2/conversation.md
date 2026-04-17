@@ -1,0 +1,51 @@
+# Conversation: crash-on-save x structured-triage
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how frustrating losing your work would be.
+
+To help us track this down, could you describe what exactly happens when the app crashes? For example:
+- Does the app close entirely, freeze, or show an error message?
+- What are you saving when this happens — a new task, an edit to an existing task, or something else?
+- Does it happen every time you try to save, or only sometimes?
+
+---
+
+### reporter
+
+It just closes. The whole app just disappears. I think there's some kind of error box that flashes for a split second but I can't read it. And yes it happens every single time I hit Save. I'm trying to save my task list, I have a bunch of tasks in there. This has been happening for days now and I really need this fixed.
+
+---
+
+### triage-agent
+
+Thanks for the details — that helps a lot. We know the app closes immediately on Save every time, and there's a brief error flash.
+
+Could you let us know what environment you're running the app in? Specifically:
+- What operating system are you on (e.g., Windows 11, macOS Sonoma, Ubuntu 24.04)?
+- Which browser are you using, if it's a web app (e.g., Chrome, Firefox, Safari), or is this a desktop app?
+- Do you know which version of TaskFlow you're running? (You can usually find this under Settings or Help → About.)
+
+---
+
+### reporter
+
+I'm on a Mac, macOS 14.2. It's the desktop app, not a browser thing. I think it's version 2.3 something... maybe 2.3.1? I don't remember exactly. Look, does it really matter what version I'm on? The save button is broken.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"TaskFlow desktop app crashes immediately on Save (macOS 14.2, v2.3.x)","problem":"The TaskFlow desktop app terminates abruptly every time the user clicks Save on their task list. A brief error dialog appears to flash on screen before the app closes, but it disappears too quickly to read. The user loses unsaved work each time.","root_cause_hypothesis":"Most likely an unhandled exception during the save/serialization path — possibly a data-specific issue triggered by the contents of this user's task list (special characters, size, or a corrupt entry). The fleeting error dialog suggests the app does catch the error but the crash handler or dialog is immediately followed by process exit.","reproduction_steps":["Open TaskFlow desktop app v2.3.x on macOS 14.2","Create or load a task list with multiple tasks","Click the Save button","Observe: app window disappears immediately; a brief error flash may be visible"],"environment":"macOS 14.2 (Sonoma), TaskFlow desktop app, version approximately 2.3.1","severity":"high","impact":"User is completely unable to save any work. Data loss occurs on every save attempt. This is a blocking workflow issue — the user has been affected for multiple days.","recommended_fix":"1. Check macOS crash reports (~/Library/Logs/DiagnosticReports) for TaskFlow crash logs to identify the exact exception. 2. Review the save/serialization code path for unhandled exceptions, particularly around data encoding, file I/O permissions, and large list handling. 3. Investigate the crash dialog lifecycle — it should remain visible or log its contents rather than flashing and closing. 4. Attempt to reproduce with varying task list sizes and content to isolate whether the crash is data-dependent.","proposed_test_case":"Create a task list with various content (empty, small, large, special characters, unicode) and invoke the save operation on macOS 14.x. Verify that save completes without crash and that the file is written correctly. Additionally, test that if save does fail, the error dialog remains visible and the app does not terminate.","information_gaps":["Exact app version (user unsure if 2.3.1)","Crash log or diagnostic report contents from macOS","Number and content of tasks in the list (could indicate a size or data-specific trigger)","Whether this started after an app update or a specific change to the task list"]}
+
+---

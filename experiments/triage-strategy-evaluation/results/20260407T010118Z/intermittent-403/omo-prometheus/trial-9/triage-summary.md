@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden errors for users with new 'analyst' role — likely deployment inconsistency across backend instances
+
+## Problem
+Users assigned the newly introduced 'analyst' role are experiencing intermittent 403 Forbidden errors across all dashboard pages. The errors appear on roughly every third request and resolve on refresh. Multiple team members who received the analyst role are affected. Users who retained their previous roles (editor, viewer) do not appear to be affected.
+
+## Root Cause Hypothesis
+A recent deployment added the 'analyst' role but did not propagate the role's permission grants consistently across all backend instances behind the load balancer. One (or more) instances lacks the correct authorization rules for the analyst role, causing 403s when the load balancer routes to that instance. The roughly 1-in-3 failure rate suggests one of three instances is misconfigured.
+
+## Reproduction Steps
+  1. Assign a user the 'analyst' role in TaskFlow
+  2. Log in as that user and navigate to the dashboard
+  3. Refresh the page repeatedly (5-10 times)
+  4. Observe that approximately every third request returns a 403 Forbidden
+  5. Note that refreshing again typically succeeds (request hits a different backend instance)
+
+## Environment
+TaskFlow dashboard, post-deployment that introduced the 'analyst' role (approximately 2 days before report). Load-balanced backend with likely 3 instances. Affects multiple users on the same team who were batch-assigned the analyst role.
+
+## Severity: high
+
+## Impact
+All users with the 'analyst' role are intermittently locked out of the dashboard. Multiple team members affected. Workaround exists (refresh the page) but degrades user experience and erodes trust. No data loss reported.
+
+## Recommended Fix
+1. Compare authorization/permission configuration across all backend instances — identify which instance(s) lack the analyst role grants. 2. Check the deployment pipeline for the analyst role rollout — determine why it didn't propagate to all instances (failed rolling update, missed migration, config cache not invalidated). 3. Re-deploy or hot-fix the misconfigured instance(s) to include analyst role permissions. 4. Verify by sending requests directly to each instance (bypassing LB) as an analyst-role user. 5. Consider adding a health check that validates role configuration consistency across instances.
+
+## Proposed Test Case
+Pin requests to each backend instance individually (via direct addressing or sticky sessions) and authenticate as an analyst-role user. Verify that all instances return 200 for dashboard, reports, and task pages. Additionally, add an integration test that assigns the analyst role to a test user and confirms consistent 200 responses across N sequential requests (to exercise load balancer rotation).
+
+## Information Gaps
+- Exact number of backend instances and which specific instance(s) are misconfigured (requires server-side investigation)
+- Whether any non-analyst-role users are also affected (reporter believes not, but not 100% confirmed — server logs can verify)
+- Exact deployment mechanism that caused the inconsistency (rolling update failure, config management issue, etc.)

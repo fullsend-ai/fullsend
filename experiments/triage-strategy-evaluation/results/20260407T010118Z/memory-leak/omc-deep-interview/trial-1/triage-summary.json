@@ -1,0 +1,24 @@
+{
+  "title": "Memory leak in TaskFlow v2.3 application process causes progressive slowdown requiring daily restart",
+  "problem": "The TaskFlow application process exhibits a memory leak introduced in v2.3, growing from ~500MB at startup to 4GB+ over an 8-hour workday with ~200 active users. This causes page loads to exceed 10 seconds and API timeouts by late afternoon, requiring a daily server restart. The leak is proportional to user activity and does not occur during idle periods.",
+  "root_cause_hypothesis": "The v2.3 'improved real-time notifications' feature is accumulating internal state (event listeners, notification history buffers, or per-connection metadata) that is not being cleaned up when events are processed or users disconnect. WebSocket connection counts appear normal, but per-connection CPU and memory work snowballs over time, suggesting a growing internal data structure that is iterated or appended to on each notification event without pruning. The accelerating growth pattern (faster later in the day) points to an O(n²) or similar superlinear cost — e.g., broadcasting to a listener list that grows but is never trimmed, or an in-memory event log that is scanned on each new event.",
+  "reproduction_steps": [
+    "Deploy TaskFlow v2.3 on a test environment (Ubuntu 22.04, PostgreSQL, bare metal or VM with 8GB RAM)",
+    "Simulate 20-50 concurrent users performing mixed operations (create/update tasks, comment, drag between boards, view dashboards) using a load testing tool",
+    "Ensure users have TaskFlow open in long-lived sessions (simulating browser tabs open throughout the day)",
+    "Monitor application process memory via htop or process metrics over several hours",
+    "Observe memory climbing proportionally to user count and time, with growth accelerating",
+    "Compare by deploying v2.2 with the same load — memory should remain stable"
+  ],
+  "environment": "TaskFlow v2.3 (upgraded from v2.2 approximately one week ago), deployed bare metal on Ubuntu 22.04 VM with 8GB RAM, PostgreSQL database (stable at 300-400MB), approximately 200 active users during business hours",
+  "severity": "high",
+  "impact": "All 200 active users experience progressive degradation throughout the workday. By afternoon, the application becomes nearly unusable (10+ second page loads, API timeouts). Operations team must restart the server daily. This is a regression from v2.2 which did not exhibit this behavior.",
+  "recommended_fix": "1. Take a heap dump of the running process late in the day when memory is high and diff against a fresh-start heap to identify the accumulating objects. 2. Audit the v2.3 real-time notifications code path — specifically look for: (a) event listener registrations that are not removed on disconnect or page navigation, (b) in-memory notification history or event buffers that grow unbounded, (c) per-user or per-session caches in the notification system that are never evicted. 3. Compare the notification system implementation between v2.2 and v2.3 to identify what changed. 4. As a short-term mitigation, investigate whether real-time notifications can be disabled via configuration or the notification subsystem can be restarted independently without a full server restart.",
+  "proposed_test_case": "Create an integration test that simulates 50 users connecting, performing mixed task operations over a simulated 2-hour period (compressed time with high event throughput), then verifies that application heap usage remains within a bounded range (e.g., no more than 2× baseline). Users should connect and disconnect throughout the test to verify connection cleanup. The test should fail if memory grows linearly with total events processed rather than stabilizing proportional to active connections.",
+  "information_gaps": [
+    "No heap dump or profiling data available to confirm exactly which objects are accumulating",
+    "Exact v2.3 changelog diff for the notification system has not been reviewed",
+    "Unknown whether a configuration flag exists to disable real-time notifications (reporter could not find one)",
+    "No confirmation of whether a v2.2 rollback resolves the issue (reporter has not attempted this)"
+  ]
+}

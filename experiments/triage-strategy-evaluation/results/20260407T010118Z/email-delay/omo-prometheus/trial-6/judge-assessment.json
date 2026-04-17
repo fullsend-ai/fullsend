@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, started ~1 week ago, worse at 9-10am/better afternoon, related to marketing digest batch, queue congestion hypothesis, transactional and bulk emails competing, and prior baseline of 1-2 minutes. The agent also surfaced the in-app vs. email distinction and company-wide blast radius, which were not expected but genuinely useful."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary correctly identifies the daily digest feature as the cause, queue saturation as the mechanism, the 9am timing as the inflection point, and transactional emails competing with bulk emails. This matches both acceptable diagnostic paths — the agent identified the batch job flooding the pipeline AND the digest feature as the specific cause. The only element not surfaced is the priority-level implementation detail (priority=1 shared between both types), but neither acceptable path requires that specificity."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the high-value questions: blast radius (all users?), pipeline stage isolation (in-app vs. email), trigger event (what changed?), and timing confirmation (when do digests arrive?). Resolving was well-justified given the reporter's confirmation of the 9am digest timing. Slight deduction because the agent did not ask the IT admin follow-up before resolving — confirming whether digest and transactional emails share a queue (not just infer it) would have been the definitive final step, and the reporter had already flagged the IT admin as a resource."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns before resolution. The first turn efficiently bundled two orthogonal diagnostics (scope + pipeline stage). The second turn asked the pivotal 'what changed?' question that unlocked the digest connection. The third turn confirmed the timing hypothesis with one targeted question. No redundancy, no low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The in-app vs. email question in turn 1 was the standout — it's a non-obvious diagnostic that the reporter would not have volunteered and it definitively isolated the failure layer. The 'what changed ~1 week ago?' question was standard but well-framed around the temporal correlation. The 'what time do digest emails arrive?' question was precisely targeted to validate or invalidate the working hypothesis. All three questions demonstrated real diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin investigating immediately: the summary identifies the suspect feature, the mechanism (queue saturation), the time pattern, and offers four concrete remediation options with a clear priority order. The proposed test case is reproducible. Information gaps are explicitly enumerated so there's no ambiguity about what remains unknown. The recommended fix (priority-separate the queues) directly maps to the actual fix needed."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The in-app vs. email pipeline isolation question in turn 1 was a genuinely insightful diagnostic that definitively scoped the problem before any further questioning",
+    "The agent formed and stated an explicit working hypothesis before asking the digest timing question, making the reasoning transparent and the question purposeful rather than fishing",
+    "The triage summary is unusually complete: it includes reproduction steps, a proposed test case, severity, impact, four ranked remediation options, and enumerated information gaps — a developer could hand this directly to an engineer"
+  ],
+  "notable_weaknesses": [
+    "The agent resolved without looping in the IT admin who had visibility into the actual email infrastructure — confirming whether the queue is shared (vs. inferred) would have elevated the hypothesis to a near-confirmed root cause",
+    "The agent did not ask about the size of the digest mailing list, which would have quantified the queue load and strengthened or qualified the saturation theory"
+  ],
+  "most_insightful_question": "Do you have any visibility into whether the notifications are being generated late by TaskFlow (e.g., do they show up late in the in-app notification list too) or whether TaskFlow sends them on time but the emails arrive late?",
+  "missed_opportunities": [
+    "Ask the reporter to check with the IT admin or engineering team whether digest and transactional emails share the same sending queue or worker — this would have confirmed rather than inferred the core mechanism",
+    "Ask roughly how many people are in the company to quantify the digest batch size and validate whether it's large enough to cause multi-hour congestion at 100 emails/minute"
+  ]
+}

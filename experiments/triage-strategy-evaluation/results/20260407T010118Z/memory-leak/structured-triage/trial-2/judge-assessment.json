@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present in the summary: memory growth from ~500MB to 4GB+, v2.3 upgrade timing (~1 week ago), ~200 active users, consistent day-to-day pattern, daily restart workaround, v2.3 changelog notification mention, and 8GB RAM VM specs. The summary also adds useful context like the bare metal/no-Docker detail and lack of caching layer."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the v2.3 upgrade as the trigger and the notification system as the likely source, and specifically calls out event listener accumulation (missing removeListener/off calls) as the mechanism — which matches the canonical root cause exactly. This also satisfies both acceptable diagnostic paths. No inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after a single well-structured question round, which was sufficient because the reporter volunteered the critical v2.3 upgrade timing and changelog connection unprompted. Acknowledged information gaps (logs, heap dump, whether notifications can be disabled) were reasonable to leave open. One missed follow-up: confirming whether the notification feature was actively in use or could be disabled as a workaround before resolving."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "The single question block covered version, OS/runtime, database, and caching — all reasonable for a memory leak investigation. The database question turned out to be low-yield (reporter didn't know and it wasn't diagnostic), but it was not unreasonable to ask. No redundancy across turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-structured and targeted the right diagnostic axes for a memory leak. Asking for version info was the highest-leverage question and directly unlocked the key insight about the v2.3 upgrade. The questions were professional and diagnostic rather than generic checklist items, though they could have been slightly more targeted (e.g., explicitly asking about recent upgrades or changes rather than relying on the reporter to volunteer that connection)."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it identifies the specific subsystem (real-time notifications in v2.3), provides concrete investigation steps (WebSocket cleanup, listener accumulation, code diff between v2.2 and v2.3), suggests profiling tools, proposes a test case, and lists remaining information gaps. A developer could start the investigation immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly pinpointed the notification system as the root cause and identified listener accumulation as the specific mechanism — matching the canonical cause — from a single question round",
+    "Comprehensive recommended fix with specific, actionable investigation steps including code diffing and heap profiling",
+    "Clean documentation of the full environment including details the reporter volunteered beyond what was asked"
+  ],
+  "notable_weaknesses": [
+    "Resolved without asking for server-side error logs or confirming whether the real-time notification feature could be disabled as a temporary workaround",
+    "Database question was low-yield for this type of issue and could have been replaced with a more targeted question about recent changes or upgrade timing"
+  ],
+  "most_insightful_question": "What version of TaskFlow are you running? — This directly surfaced the v2.3 upgrade timing and prompted the reporter to connect it to the changelog's notification system changes, which was the diagnostic breakthrough.",
+  "missed_opportunities": [
+    "Ask whether disabling or downgrading the real-time notifications feature was an option to confirm the hypothesis and provide a faster workaround",
+    "Ask for server-side logs or error output during the slowdown period to look for leak-related warnings",
+    "Ask about request rate or API call volume to estimate the accumulation rate and cross-check against the observed memory growth slope"
+  ]
+}

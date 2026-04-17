@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden errors for users with the new 'analyst' role
+
+## Problem
+Users who were recently moved to the 'analyst' role are experiencing intermittent 403 Forbidden errors when loading any dashboard page. The errors occur roughly 1 in 3 page loads and are resolved by refreshing. Users with other roles (e.g., 'editor') are not affected. The issue occurs across browsers (Chrome and Firefox) and started a few days ago.
+
+## Root Cause Hypothesis
+The new 'analyst' role likely has a permissions or authorization configuration issue. The intermittent nature (refresh fixes it, ~1 in 3 failures) suggests either: (1) a load-balancer or multi-instance deployment where not all instances have the updated role permissions, (2) a caching issue where authorization lookups intermittently return stale data that doesn't recognize the 'analyst' role, or (3) a race condition in the authorization middleware when resolving the new role's permissions.
+
+## Reproduction Steps
+  1. Log in as a user assigned the 'analyst' role (especially one recently migrated to it)
+  2. Navigate to the TaskFlow dashboard via sidebar links or bookmarks
+  3. Repeat page loads — approximately 1 in 3 should return a 403 Forbidden
+  4. Refresh the page to confirm the 403 clears on retry
+
+## Environment
+Chrome 124/125 on Windows 11; also reproduced on Firefox. TaskFlow v2.3.1 (approximate). Affects multiple users with the 'analyst' role.
+
+## Severity: high
+
+## Impact
+All users with the 'analyst' role are intermittently locked out of dashboard pages. Multiple team members affected. Workaround exists (refresh) but significantly disrupts workflow.
+
+## Recommended Fix
+Investigate the authorization/RBAC configuration for the 'analyst' role: (1) Verify the role's permissions are correctly defined and propagated across all application instances. (2) Check for caching layers in the auth middleware that might serve stale permission data. (3) If running behind a load balancer with multiple instances, confirm all instances have the current role configuration. (4) Review recent deployments or configuration changes from a few days ago that coincide with the start of the issue.
+
+## Proposed Test Case
+Authenticate as an 'analyst' role user and make 50 sequential requests to dashboard endpoints. Assert that all requests return 200. Run the same test against other roles to confirm they are unaffected.
+
+## Information Gaps
+- Exact TaskFlow version (reporter said v2.3.1 but was uncertain)
+- Server-side logs showing the 403 responses and their authorization context
+- Whether the 'analyst' role was introduced or modified in a recent deployment

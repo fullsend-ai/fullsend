@@ -1,0 +1,22 @@
+{
+  "title": "Intermittent CI failures in task ordering tests due to likely non-deterministic sort",
+  "problem": "Five new test cases added to the task ordering module in a PR merged approximately one week ago pass consistently on developer machines but fail intermittently in CI. The failing tests assert that tasks are returned in insertion order after a sort operation. When they fail, the order is wrong.",
+  "root_cause_hypothesis": "The sort operation uses a field (e.g., created_at, priority) where multiple tasks can have identical values. When values are tied, the sort is unstable — the database or application returns tied records in an arbitrary order that happens to be consistent on the developer's local environment (likely same DB engine/version, same data size, same query planner behavior) but differs in CI. This is a classic non-deterministic test caused by an unstable sort with no tiebreaker.",
+  "reproduction_steps": [
+    "Identify the PR merged ~1 week ago that added 5 test cases to the task ordering module",
+    "Run the test suite for that module repeatedly (10-20 times) — failures may not reproduce locally",
+    "Run the same tests against the CI environment's database engine/version if different from local",
+    "Inspect the test fixtures: look for tasks inserted with identical values in the sort field"
+  ],
+  "environment": "CI environment (specific details unknown — investigating CI vs. local differences is part of the fix). Local environment passes consistently, suggesting a difference in database engine, version, or configuration.",
+  "severity": "high",
+  "impact": "Blocking releases for the team. All team members affected. No workaround other than re-running CI until tests happen to pass.",
+  "recommended_fix": "1. Find the recent PR and examine what field the sort operates on. 2. If tasks can share the same value for that field, add a deterministic tiebreaker to the sort (e.g., sort by `created_at, id` instead of just `created_at`). 3. Update the tests to either use distinct sort-key values in fixtures or assert order using the same tiebreaker. 4. Investigate whether the CI database engine differs from local (e.g., PostgreSQL vs. SQLite) — different engines have different default ordering behavior for tied rows.",
+  "proposed_test_case": "Create a test that inserts multiple tasks with identical values for the sort field (e.g., same timestamp, same priority) and asserts that the returned order is deterministic across repeated runs. This test should fail before the tiebreaker fix and pass after.",
+  "information_gaps": [
+    "Exact PR number and test file name (developer can find via recent merge history)",
+    "Specific sort field used in the ordering logic",
+    "CI database engine and version vs. local development database",
+    "Whether CI runs tests in parallel which could affect insertion timestamps"
+  ]
+}

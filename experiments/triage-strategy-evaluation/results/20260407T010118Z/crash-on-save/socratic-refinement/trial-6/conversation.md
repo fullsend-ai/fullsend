@@ -1,0 +1,61 @@
+# Conversation: crash-on-save x socratic-refinement
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how frustrating it must be to lose your work repeatedly.
+
+To help us dig into what's going on, could you walk me through what you were doing when the crash happened? Specifically, what were you working on in TaskFlow at the time — for example, were you editing a task, updating a project, or something else? And when you say the app "crashes," what exactly do you see — does the window close, do you get an error message, does it freeze? Any detail about what happens in that moment would be really helpful.
+
+---
+
+### reporter
+
+I'm editing my task list and when I hit Save it just dies. The whole window disappears. I think there's some kind of error dialog that flashes for a split second but I can't read it before the app closes. I have like 200 tasks in there. Can you just fix the save button? It's been like this for days and I can't get any work done.
+
+---
+
+### triage-agent
+
+That's really helpful context, thank you. The fact that the window vanishes with just a flash of an error dialog gives us something to work with.
+
+I'm curious about the timeline — you mentioned this has been happening for days. Was there a point where saving worked fine with this same task list? If so, can you think of anything that changed around the time it started crashing — maybe you added a batch of new tasks, updated the app, or changed something about how you were using it? I'm trying to understand whether this started gradually or suddenly.
+
+---
+
+### reporter
+
+Yeah it was working fine before. I imported a bunch of tasks from a CSV file and that's when it started. But I need those tasks, I can't just delete them. Look, is this a known bug or not? I just need to be able to save my work.
+
+---
+
+### triage-agent
+
+That's a really useful clue — the CSV import timing lines up perfectly with when things broke, so that's almost certainly connected.
+
+Can you tell me a bit more about that CSV file? For instance, were the tasks in it fairly straightforward (short titles, simple descriptions), or did any of them have unusual content — things like very long text, special characters, emoji, links, or formatted content like bullet lists? Also, roughly how many tasks did the import add — was it a handful or closer to the full 200?
+
+I'm asking because sometimes imported data contains something the app doesn't expect, and knowing what's in that file could help us pinpoint exactly what's tripping up the save.
+
+---
+
+### reporter
+
+I don't know, it's just a CSV file with task names and dates and stuff. Nothing crazy. Maybe like 150 tasks from the import. They might have some weird characters in them I guess, the data originally came from a Word document so there could be fancy quotes or whatever. But that shouldn't crash the whole app, right? Other apps handle that fine.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save after importing CSV containing Word-originated special characters","problem":"The application crashes (window immediately disappears with a briefly-flashed error dialog) whenever the user attempts to save their task list. The user has approximately 200 tasks, ~150 of which were imported from a CSV file. The crash began immediately after that import and is 100% reproducible on every save attempt.","root_cause_hypothesis":"The CSV import introduced text containing Word-style special characters (smart/curly quotes, em dashes, ellipses, or other non-ASCII Unicode characters). The save/serialization routine likely has an unhandled encoding error or character-escaping bug that throws an exception when processing these characters, and the crash handler fails to catch it gracefully — causing the window to close instead of displaying a usable error.","reproduction_steps":["Create a CSV file with task names containing Word-style special characters (curly quotes, em dashes, ellipses, etc.)","Import the CSV into TaskFlow using the CSV import feature","Attempt to save the task list","Observe: application window closes abruptly with a briefly-flashed error dialog"],"environment":"Not confirmed — reporter did not specify OS or app version. The crash behavior (window disappearing with flashed error) suggests a desktop application build.","severity":"critical","impact":"User is completely unable to save any work. Data loss occurs on every save attempt. The user has been blocked for multiple days and cannot use the application productively.","recommended_fix":"1. Inspect the save/serialization code path for character encoding assumptions (e.g., ASCII-only handling, unescaped special characters in JSON/XML/SQL output). 2. Add proper Unicode handling and escaping during serialization. 3. Wrap the save operation in error handling that surfaces a readable error message rather than crashing. 4. Consider validating imported data at CSV import time to sanitize or warn about problematic characters.","proposed_test_case":"Import a CSV containing task names with Word-style Unicode characters (e.g., curly quotes “”, em dash —, ellipsis …, accented characters) and verify that saving completes successfully without crashing. Additionally, test with a large number of such tasks (150+) to rule out a volume-related interaction.","information_gaps":["Exact OS and application version","The actual CSV file contents (to identify the specific offending characters)","The exact error message from the flashed dialog (could be captured via screen recording or logs)"]}
+
+---

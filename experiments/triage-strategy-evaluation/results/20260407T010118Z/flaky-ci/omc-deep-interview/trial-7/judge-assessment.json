@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured six of the seven expected extracts: intermittent failures, task ordering tests, ~4-day timeline, macOS vs Ubuntu split, non-deterministic ordering, and environment differences. The fact that CI logs show specific failing test names was mentioned by the reporter but not surfaced as a notable diagnostic asset in the summary. Everything else is clearly documented."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies Go map iteration randomization as the root cause, which matches an acceptable diagnostic path ('identifying non-deterministic ordering as the root cause, even if attributed to a different mechanism'). The actual mechanism is a config-controlled hash seed difference (GOFLAGS with fixed seed locally, randomized in CI), which the triage does not identify. Instead it attributes the difference to OS/hardware/scheduling variation, which is plausible but imprecise. The core diagnosis is right; the attributed mechanism is slightly off."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked about failure type, shared state, environment, parallelism, and directly hypothesized the root cause — a solid set. However, it never asked about configuration differences between local and CI (environment variables, build flags, config files), which is the actual driver of the bug. That omission prevented identifying the GOFLAGS=-race fixed-seed setup. The agent resolved with a good hypothesis but left an obvious investigative thread untouched."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four substantive turns before resolution, each meaningfully advancing the diagnosis. The pytest loop suggestion was slightly misdirected (wrong language and ecosystem) but the surrounding question was still on target. At most one question had minor waste; no turn was truly redundant."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The progression from 'what does the failure look like' to 'is it ordering assertions' to 'environment differences' to directly hypothesizing Go map iteration was well-structured and showed genuine diagnostic reasoning. The final question — naming the specific Go mechanism and explaining why it varies across environments — was notably insightful and went beyond generic debugging. The only blemish was the pytest example in a Go codebase, which was a minor misstep."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names the likely code pattern (map iteration feeding into a returned slice), provides specific Go functions for the fix (sort.Slice, slices.SortFunc), gives a concrete test command (go test -count=100), identifies where to look in the codebase (task ordering PR from ~4 days ago), and lists remaining information gaps. A developer could begin reviewing the PR and drafting a fix immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Correctly hypothesized Go map iteration non-determinism as the root cause in a single targeted question, demonstrating Go-specific runtime knowledge",
+    "Final summary is exceptionally detailed and actionable, including specific API references (sort.Slice, slices.SortFunc) and a concrete verification strategy",
+    "Efficiently narrowed the problem from a vague 'CI is broken' report to a specific code-level hypothesis in four turns"
+  ],
+  "notable_weaknesses": [
+    "Never asked about config or environment variable differences between local and CI — the actual cause was a GOFLAGS setting with a fixed hash seed locally and a randomized one in CI",
+    "The pytest loop suggestion revealed a momentary language confusion; though minor, it briefly reduced reporter confidence",
+    "Root cause mechanism attributed to OS/hardware variation rather than the config-driven seed difference, which could send a developer toward the wrong environmental investigation first"
+  ],
+  "most_insightful_question": "In that task ordering PR, does the code collect or group tasks using a Go map (like `map[string][]Task` or similar) before returning them in order? Map iteration order in Go is intentionally randomized by the runtime, so code that iterates a map to build results will produce consistent-looking output on one machine but scrambled output on another.",
+  "missed_opportunities": [
+    "Ask whether the local dev environment has any special config files, build flags, or environment variables (like GOFLAGS) that differ from CI — this would have surfaced the fixed-seed setup",
+    "Ask the reporter to share a snippet of the CI log showing the failing test names and assertion output, which was reportedly available and would have confirmed the ordering mismatch concretely",
+    "Ask whether the CI pipeline sets any test-related environment variables or uses a custom go test invocation versus the local dev setup"
+  ]
+}

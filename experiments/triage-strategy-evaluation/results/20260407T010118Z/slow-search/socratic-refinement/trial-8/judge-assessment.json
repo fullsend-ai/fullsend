@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description split, v2.3 regression timing, 2-week onset, and 10-15s latency. Missed CPU spiking during search and long task descriptions — both diagnostically relevant for confirming a full-table-scan hypothesis."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — 'switch from indexed/optimized search to a naive full-text scan' — maps directly onto the actual cause (FTS5 index replaced by a LIKE query). Both acceptable diagnostic paths are satisfied: the v2.2→v2.3 regression is identified and the title-vs-description performance split is captured. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two question turns, having extracted the key differentiator (title vs. description). However, it never asked about CPU behavior during searches, description length (which would have strengthened the full-table-scan hypothesis), exact confirmed version, or whether any workarounds had been tried. These are non-trivial omissions given the diagnostic direction the conversation was heading."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both turns were well-structured and batched related questions efficiently. The 'first search vs. later searches' variability question in turn 2 was low-value — it didn't change the diagnosis — but the rest of the questions were well-targeted. No serious waste."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 1 was effective: combining search-type characterization with onset timing drew out the 5,000-task count and the v2.3 correlation. Turn 2's question about general app sluggishness was smart — it helped isolate the issue to search specifically. The title-vs-description discovery came from the reporter volunteering it rather than a targeted probe, which slightly limits the ceiling here, but overall the questions showed genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes specific reproduction steps, a diff-between-versions recommendation, EXPLAIN/ANALYZE guidance, a check for FTS index existence, a proposed regression test, and explicitly acknowledged information gaps. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 3.80,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Root cause hypothesis ('naive full-text scan replacing an indexed path') closely matches the actual FTS5→LIKE regression without access to the codebase",
+    "Second turn's 'sluggishness elsewhere in the app?' question efficiently ruled out general performance degradation, tightening the isolation",
+    "Triage summary is unusually actionable — reproduction steps, EXPLAIN/ANALYZE guidance, and a proposed regression test are all present",
+    "Information gaps section honestly flags what wasn't confirmed, which is useful for a developer picking this up"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU behavior during searches — a CPU spike to 100% on one core is strong confirming evidence for a full-table-scan and was entirely askable",
+    "Never asked about task description length — long descriptions (2,000+ words) are directly relevant to why a LIKE scan would be so slow",
+    "Did not confirm the exact version number despite the reporter hedging ('I think it was v2.3') — a simple follow-up was warranted",
+    "OS and hardware details (Ubuntu 22.04, ThinkPad T14, 32GB RAM) were never captured, leaving environment incomplete"
+  ],
+  "most_insightful_question": "Turn 2: 'is it just search that feels slow, or have you noticed any sluggishness elsewhere in the app — like when opening tasks, scrolling through lists, or loading the app itself?' — this ruled out a global performance regression and tightened the fault isolation to the description search path specifically, which the reporter then confirmed by volunteering the title-vs-description distinction.",
+  "missed_opportunities": [
+    "Did you notice your CPU or fan spin up during a slow search? (would have confirmed full-table-scan behavior)",
+    "Do any of your tasks have very long descriptions — like copy-pasted notes or documents? (directly relevant to scan cost)",
+    "Can you confirm you're definitely on v2.3? What does TaskFlow show under Help > About? (reporter hedged, follow-up was easy)",
+    "Have you tried anything to speed it up — like restarting the app, clearing a cache, or reindexing? (would reveal workaround status and gather environment signal)"
+  ]
+}

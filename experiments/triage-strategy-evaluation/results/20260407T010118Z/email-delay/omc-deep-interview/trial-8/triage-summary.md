@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Email notifications delayed 2-4 hours during morning peak, likely caused by daily digest feature saturating the email queue
+
+## Problem
+Task assignment email notifications that previously arrived within 1-2 minutes are now delayed 2-4 hours. The delay is concentrated in the morning (9-10am) and clears by afternoon. The issue is department-wide, started approximately one week ago, and is causing team members to miss deadlines because they don't learn about assignments promptly. Task creation itself is unaffected — assignments appear on the dashboard immediately.
+
+## Root Cause Hypothesis
+A daily digest/summary email feature was rolled out approximately one week ago and appears to send around 9am. This digest job is likely flooding the email notification queue at the same time the workday begins and task assignments spike, pushing transactional assignment notifications to the back of the queue. The queue drains over the course of the morning, which explains why afternoon notifications are faster and why an 8:30am assignment was delivered quickly (before the digest job fires).
+
+## Reproduction Steps
+  1. Confirm the daily digest email job schedule (expected: ~9am)
+  2. Assign a task to a user at 8:30am and note email delivery time (expected: fast, within minutes)
+  3. Assign a task to a user at 9:15am and note email delivery time (expected: 2-4 hour delay)
+  4. Check the email/notification queue depth over the course of a morning to observe the backlog building after 9am and draining by afternoon
+
+## Environment
+Production TaskFlow instance, affects at least one full department. Issue started approximately one week ago, coinciding with the rollout of a daily digest/summary email feature. All projects and assigners affected equally.
+
+## Severity: high
+
+## Impact
+Department-wide. Team members are missing task deadlines because assignment notifications arrive hours late. The dashboard provides a partial workaround (assignments are visible there immediately), but the team's workflow depends on email notifications.
+
+## Recommended Fix
+Investigate the email notification queue architecture. Likely fixes: (1) Separate the queue for transactional notifications (task assignments) from bulk/batch emails (daily digests) so digest sends cannot starve real-time notifications. (2) Prioritize transactional emails over digest emails in the queue. (3) Rate-limit or stagger the digest job so it doesn't dump all emails at once. (4) Consider sending digests via a separate email sending pathway entirely.
+
+## Proposed Test Case
+After applying the fix, send a batch of digest emails and simultaneously trigger a task assignment notification. Verify the assignment notification is delivered within 2 minutes regardless of digest queue depth. Run this test at 9am to match peak conditions.
+
+## Information Gaps
+- Exact queue implementation (single queue vs. prioritized, shared vs. separate for digest and transactional)
+- Precise rollout date of the daily digest feature to correlate with when delays began
+- Whether weekend or off-hours assignments are also delayed (reporter had no recent data)
+- Whether other notification channels (Slack integration) are also affected or only email

@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items: task count (~5,000), title-fast/description-slow distinction, v2.3 regression trigger, ~2 weeks ago onset, 10-15 second duration, and long descriptions. The one missing item is CPU spike behavior during searches, which was never asked about."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identified both acceptable diagnostic paths simultaneously: the v2.3 upgrade as the regression trigger AND the title-vs-description performance split pointing to an indexing issue. The hypothesis of 'dropping or failing to use an index on description content, switching to a non-indexed scan' maps directly to the actual cause (FTS5 → LIKE query regression). No inaccuracies present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-structured rounds of questioning covered the key diagnostic space. The agent missed one notable follow-up: asking about CPU or resource usage during searches, which would have surfaced the single-core 100% spike and strengthened the full-table-scan hypothesis. Otherwise resolved with a solid basis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "All three question turns were productive and non-redundant. Turn 1 established baseline and timeline, turn 2 elicited reproduction steps and discovered the title/description split, turn 3 gathered environment and scale. No wasted turns. Could have combined OS/environment questions with an earlier turn but the sequencing was logical."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The turn 2 question — asking for a concrete walkthrough of reproduction steps — was particularly effective. It prompted the reporter to surface the title-vs-description distinction unprompted ('actually, now that I think about it'), which is exactly the kind of diagnostic gold that reporters don't volunteer without structured prompting. Questions were specific and well-framed throughout."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: exact reproduction steps with task count and description length requirements, a pinpointed hypothesis (index regression on description path in v2.3), a recommended investigation path (compare query plans, check what changed in v2.3), a proposed test case with acceptance criteria, and identified information gaps. A developer could start coding or investigating immediately."
+    }
+  },
+  "weighted_total": 4.55,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Turn 2 structuring of reproduction steps successfully elicited the title-vs-description performance split, which the reporter wouldn't have volunteered otherwise — this was the key diagnostic insight",
+    "Root cause hypothesis accurately converged on both acceptable diagnostic paths (version regression + indexing issue) without being given either clue directly",
+    "Triage summary is unusually complete: includes reproduction steps, environment, hypothesis, recommended fix, proposed test case, and explicit information gaps"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU or system resource behavior during slow searches — the 100% single-core spike would have strongly confirmed a full-table-scan hypothesis",
+    "Did not ask the reporter to check app logs or console output, which might have surfaced query timing or warning messages"
+  ],
+  "most_insightful_question": "Could you walk me through the steps to reproduce the slow search? [...] What are you typing into the search box [...] Does it happen with every search query, or only certain ones?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory usage spikes visibly during slow searches (would surface the single-core 100% spike)",
+    "Ask whether the desktop app exposes any logs or a debug console that might show query timing or errors",
+    "Ask whether performance degrades linearly with query length or is uniformly slow regardless of search term length"
+  ]
+}

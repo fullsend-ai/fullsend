@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Desktop app crashes on save when task list contains many CSV-imported tasks with non-ASCII characters
+
+## Problem
+The desktop app (macOS) crashes immediately on save — the app closes after briefly flashing an error dialog mentioning 'encoding'. The crash occurs when saving a task list containing ~200 tasks imported from a CSV file. The CSV data contains non-ASCII characters (em-dashes, curly quotes) originating from Google Docs export.
+
+## Root Cause Hypothesis
+The save/serialization path mishandles multi-byte UTF-8 characters (such as em-dashes U+2014 and curly quotes U+201C/U+201D) when processing a large number of entries. The likely failure mode is a buffer size calculation that assumes single-byte characters, leading to a buffer overflow or truncation that corrupts the serialized data and triggers a fatal encoding error. The fact that ~40-50 imported tasks save fine but ~200 do not suggests the bug is size-dependent — possibly a fixed-size buffer or an integer overflow in a length calculation that only manifests above a certain payload size.
+
+## Reproduction Steps
+  1. Install TaskFlow v2.3.1 desktop app on macOS 14.2
+  2. Create a CSV file containing ~200 tasks with non-ASCII characters (em-dashes, curly quotes) in task names — exporting from Google Docs produces these naturally
+  3. Import the CSV file into a new task list via TaskFlow's CSV import feature
+  4. Attempt to save the task list
+  5. Observe: brief error dialog mentioning 'encoding', then app closes/crashes
+
+## Environment
+TaskFlow v2.3.1, desktop app, macOS 14.2
+
+## Severity: high
+
+## Impact
+Any user who imports CSV data containing non-ASCII characters (extremely common with Google Docs, Microsoft Office, and international users) risks data loss when their task list grows beyond a certain size. The crash causes complete loss of unsaved work. This likely affects all desktop platforms, not just macOS.
+
+## Recommended Fix
+Investigate the save/serialization code path for incorrect string length or buffer size calculations that don't account for multi-byte UTF-8 characters. Specifically: (1) check if any buffer allocation uses character count instead of byte length, (2) check if the serialization format has a size field that overflows or is computed incorrectly for multi-byte strings, (3) review the CSV import path to confirm data is stored as valid UTF-8 internally. Add explicit UTF-8 encoding validation at both CSV import time and save time.
+
+## Proposed Test Case
+Create a task list with 200+ tasks where every task name contains multi-byte UTF-8 characters (em-dashes, curly quotes, accented letters, emoji). Verify that save completes successfully and that reloading the file preserves all characters exactly. Additionally, test boundary sizes (50, 100, 150, 200, 500 tasks) to identify the exact threshold.
+
+## Information Gaps
+- Exact error message in the dialog (reporter only caught the word 'encoding' before it dismissed)
+- Whether the crash also occurs on Windows/Linux desktop or is macOS-specific
+- Whether the crash log/crash report contains a stack trace (macOS Console.app or ~/Library/Logs/DiagnosticReports)
+- The exact size threshold where the crash begins occurring (reporter confirmed ~40-50 works, ~200 does not)

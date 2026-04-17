@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items are present in the summary: memory growth pattern (500MB to 4GB+), v2.3 upgrade timing (~1 week ago), ~200 active users, consistent day-to-day pattern, restart as workaround, v2.3 changelog notification changes, and 8GB RAM VM. The summary also adds PostgreSQL backend and structured reproduction steps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis correctly identifies the v2.3 upgrade as the trigger and the notification system as the source, matching acceptable path 1. The summary specifically calls out 'notification event listeners are being cleaned up' as an investigation point — which is precisely the actual mechanism. The agent stopped short of pinpointing per-request listener registration (the canonical cause), but it is squarely within the acceptable diagnostic paths and pointed developers at the right subsystem."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-targeted rounds of questions and obtained all the critical information. One obvious follow-up was skipped: asking whether a rollback to v2.2 was attempted or feasible, which would have confirmed the version-specific hypothesis. The agent acknowledged this gap in the information_gaps section, which is a positive sign, but asking the question would have been more thorough."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two turns of questions, each bundled efficiently. The first turn collected environment essentials; the second focused on logs. No question was redundant or low-value. The agent resolved after receiving the notification system log clue, which was the right inflection point."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question smartly asked for version, which unlocked the v2.3/timing correlation the reporter hadn't initially connected. The second question proactively suggested log locations and named specific subsystems (database connections, caching, background jobs) showing genuine diagnostic reasoning. The timing correlation insight came partly from the reporter's own reflection rather than a targeted prompt, but the version question was the necessary catalyst."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it specifies exactly which subsystem to investigate, lists three concrete checks (connection close behavior, event listener cleanup, unbounded in-memory caches), recommends a v2.2-vs-v2.3 diff of the notification subsystem, suggests a heap dump approach to confirm, and even proposes a load test with a specific assertion. A developer could begin coding an investigation immediately."
+    }
+  },
+  "weighted_total": 4.7,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Identified the v2.3 upgrade as the causal trigger within the first exchange — the version question was the critical unlock",
+    "Correctly named event listener cleanup as a specific investigation target, landing very close to the actual root cause",
+    "Exceptionally detailed and actionable summary with structured reproduction steps, a proposed test case, and explicit information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether rolling back to v2.2 would confirm the version-specific hypothesis — this is the most direct confirmatory step available to the reporter",
+    "First question asked for runtime version (Node.js/Python) but the reporter couldn't answer it; a more targeted framing might have surfaced the changelog reference earlier"
+  ],
+  "most_insightful_question": "Asking about error messages and log activity in the second turn — the specific mention of 'caching, or background jobs' as things to watch for prompted the reporter to recall and share the anomalous WebSocket/notification log volume, which was the key diagnostic clue.",
+  "missed_opportunities": [
+    "Ask whether rolling back to v2.2 resolves the issue — this would confirm the version-specific hypothesis and is an easy test the reporter could perform",
+    "Ask for the approximate rate of memory growth (MB/hour) combined with request volume, which would reveal a per-request leak pattern and help quantify the scope"
+  ]
+}

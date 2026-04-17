@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected extracts are present: linear memory growth (~500MB to 4GB+), v2.3 upgrade as trigger (~1 week ago), ~200 active users, consistent day-to-day pattern, restart as workaround, v2.3 changelog mention of notification changes, and the server environment context. The agent also captured additional useful details like weekend usage patterns (~20 users), stable DB connection count, and the confirmation that memory stays pinned after activity drops."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is highly accurate. The agent correctly identified the v2.3 upgrade as the trigger, pinpointed the real-time notification/WebSocket subsystem as the likely source, and even correctly inferred that the leak is per-request or per-event rather than per-connection — which matches the actual mechanism (a listener registered per API request). This satisfies both the canonical root cause and the acceptable diagnostic paths, going beyond the minimum acceptable path."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked targeted questions that systematically narrowed the problem: version and features (uncovering the v2.3 correlation), user activity correlation, heap dump/memory profiling, proposed a disablement test to isolate the notification subsystem, and crucially asked the clarifying question about whether memory drops after activity ends (confirming true leak vs. load scaling). No obvious follow-ups were left unasked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Four turns of agent questions, each advancing the investigation materially. No redundant questions. The first turn efficiently combined version, features, and memory profiling. The second turned the version clue into an actionable test. The third clarified leak vs. load — a key diagnostic distinction. All questions were essential."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking about version and enabled features in the first turn directly surfaced the v2.3 correlation the reporter hadn't made themselves. The notification disablement test was well-targeted. The 'does memory drop after activity decreases?' question was particularly insightful — it distinguished a true leak from high-load memory pressure, which is a non-obvious but important distinction that the reporter wouldn't have volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it provides specific investigation steps (diff the notification subsystem, take a heap dump, check listener cleanup on disconnect), a concrete reproduction procedure, a proposed test case with pass/fail criteria, and a rollback mitigation. A developer could start investigating or coding a fix immediately."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 4,
+  "notable_strengths": [
+    "First question efficiently surfaced the v2.3 upgrade correlation that the reporter hadn't connected themselves — a key breakthrough moment",
+    "The 'does memory drop after hours?' question was diagnostically sophisticated, distinguishing a true memory leak from load-induced pressure",
+    "Root cause hypothesis correctly identified the per-request/per-event leak pattern, closely matching the actual mechanism without being told",
+    "Triage summary is comprehensive and immediately actionable, with specific investigation steps, reproduction procedure, and test case"
+  ],
+  "notable_weaknesses": [
+    "Server hardware specs (8GB RAM VM, Ubuntu 22.04) were not explicitly captured in the triage summary, though this is a minor gap",
+    "The information gap about WebSocket connection count was identified but not actively pursued before resolving"
+  ],
+  "most_insightful_question": "After most users go home but before the nightly restart, does the memory stay pinned at the ~4GB high-water mark, or does it drop back down at all once activity decreases?",
+  "missed_opportunities": [
+    "Could have asked for server specs (RAM, OS) explicitly to complete the environment picture",
+    "Could have asked whether the v2.3 changelog mentioned any changes to session handling or caching beyond notifications"
+  ]
+}

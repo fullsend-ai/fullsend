@@ -1,0 +1,42 @@
+{
+  "title": "Getting random 403 Forbidden errors on the dashboard",
+  "body": "I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — intermittent 403s are definitely frustrating, especially when permissions haven't changed.\n\nTo help us narrow this down: could you walk us through the exact steps you take when you hit the 403? For example:\n- Are you logging in fresh, or are you already logged in when it happens?\n- Is it specifically the main dashboard URL, or does it also happen on other pages?\n- When it fails with a 403, does refreshing the page fix it, or do you have to do something else (like log out and back in) to get it working again?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm usually already logged in when it happens. It's not just the dashboard — it happens on pretty much any page I try to load. Reports, settings, everything gives me 403 sometimes. The weird thing is if I just refresh the page, sometimes it works on the next try. I don't need to log out or anything, just hit refresh and it might load fine. It almost feels like a network glitch or something? Like maybe 1 out of 3 times it fails."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — the pattern of random 403s across all pages that clear on refresh is really helpful context. It does sound like something intermittent at the infrastructure level rather than a true permissions issue.\n\nCould you share some environment details so we can narrow things down further?\n- What browser and version are you using (e.g., Chrome 124, Firefox 126)?\n- What OS are you on?\n- Do you know which version of TaskFlow your team is running (there's usually a version number in the footer or the Settings page)?\n- Are you accessing TaskFlow directly or through anything like a VPN, reverse proxy, or corporate gateway?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm using Chrome, pretty sure it's up to date — maybe version 124 or 125? I'm on Windows 10. I think the TaskFlow version is 2.3.1, I saw it in the footer the other day. As far as I know we just access it through the normal URL, but I think our IT team has it behind some kind of load balancer or something? I'm not really sure about the infrastructure side of things. I don't use a VPN or anything though."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks — the load balancer detail is really interesting and could explain the intermittent pattern.\n\nOne more thing that would help us zero in on the cause: next time you hit a 403, could you open your browser's developer tools (F12 → Network tab) before refreshing, then look at the failed request? Specifically:\n- Does the 403 response body show any message — something like \"Forbidden\", \"Access Denied\", a reference to a WAF or firewall, or a TaskFlow-specific error page?\n- Are there any response headers that stand out (e.g., `X-Request-Id`, `Server`, or anything mentioning a firewall/proxy)?\n\nThis will help us tell whether the 403 is coming from TaskFlow itself or from the load balancer / infrastructure in front of it."
+    },
+    {
+      "author": "reporter",
+      "body": "Okay I tried that just now. I opened the Network tab and refreshed a few times until I got the 403. The response body looks like a TaskFlow error page — it says something like \"You do not have permission to access this resource\" so it seems like it's coming from TaskFlow itself, not like a generic firewall page or anything. I tried to look at the headers but I'm not really sure what I'm looking at honestly. I did notice there's a header called `X-Served-By` or something like that, and I think the value was different on the 403 response vs when it loaded successfully, but I didn't write them down. Want me to try again and copy the exact values?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "Yes, that would be incredibly helpful! The fact that `X-Served-By` is different on the 403 vs. the successful response is a strong clue — it likely means one of the servers behind the load balancer is misconfigured.\n\nNext time it happens, could you:\n1. Right-click the **failed** (403) request in the Network tab → Copy → **Copy response headers**, and paste them here.\n2. Then do the same for a **successful** request (one that loaded normally).\n\nThat way we can compare the two and pinpoint which backend server is returning the 403."
+    },
+    {
+      "author": "reporter",
+      "body": "Okay I just did it again. Here's what I got:\n\nThe failed request (403) had these headers:\n```\nX-Served-By: app-server-3\nContent-Type: text/html\nDate: Mon, 07 Apr 2026 14:23:11 GMT\n```\n\nAnd the successful one had:\n```\nX-Served-By: app-server-1\nContent-Type: text/html\nDate: Mon, 07 Apr 2026 14:23:15 GMT\n```\n\nI refreshed a few more times and it seems like whenever I get `app-server-3` it fails, but `app-server-1` and `app-server-2` work fine. So yeah it does seem like something is wrong with that one server specifically."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Intermittent 403 errors caused by misconfigured backend server (app-server-3)\",\"problem\":\"Users across the team are receiving intermittent 403 Forbidden errors on all TaskFlow pages. The errors occur approximately 1 in 3 page loads and resolve on refresh. The 403 response is a TaskFlow-generated permission error ('You do not have permission to access this resource'), not an infrastructure/WAF block.\",\"root_cause_hypothesis\":\"app-server-3, one of the backend servers behind the load balancer, is returning 403 for all authenticated requests. The most likely causes are: (1) a failed or incomplete deployment to app-server-3 that left it with stale or incorrect authorization configuration, (2) a session/auth store connectivity issue specific to that node (e.g., it cannot reach the session store or auth cache and defaults to denying access), or (3) a misconfigured permission or middleware change that was applied inconsistently across servers.\",\"reproduction_steps\":[\"Log in to TaskFlow as any user\",\"Load any page (dashboard, reports, settings, etc.)\",\"Observe the X-Served-By response header\",\"When routed to app-server-3, a 403 with 'You do not have permission to access this resource' is returned\",\"When routed to app-server-1 or app-server-2, the page loads normally\",\"Refreshing may re-route to a healthy server and succeed\"],\"environment\":\"TaskFlow 2.3.1, behind a load balancer with at least 3 backend servers (app-server-1, app-server-2, app-server-3). Reproduced on Chrome 124/125 on Windows 10. Multiple team members affected.\",\"severity\":\"high\",\"impact\":\"All users are affected. Approximately one-third of requests fail with 403, making the application unreliable for the entire team. No data loss, but significant productivity impact and user frustration.\",\"recommended_fix\":\"1. Immediately pull app-server-3 out of the load balancer rotation to stop user-facing errors. 2. Compare the configuration, deployment version, and auth/session store connectivity of app-server-3 against the healthy servers (app-server-1 and app-server-2). 3. Check app-server-3's application logs around the time the issue started (~April 5) for deployment events, auth errors, or connectivity failures. 4. Once the root cause is identified and fixed, return app-server-3 to the pool and monitor.\",\"proposed_test_case\":\"Send authenticated requests directly to each backend server (bypassing the load balancer) and verify all return 200 for authorized users. Additionally, add a health check to the load balancer that verifies auth-dependent routes return 200, so a misconfigured node is automatically removed from rotation.\",\"information_gaps\":[\"Exact deployment or configuration change that occurred on or around April 5 that may have affected app-server-3\",\"Whether app-server-3's application logs show auth-related errors or session store connectivity issues\",\"The load balancer's health check configuration (whether it currently checks app-level auth or only TCP/HTTP connectivity)\"]}"
+    }
+  ]
+}

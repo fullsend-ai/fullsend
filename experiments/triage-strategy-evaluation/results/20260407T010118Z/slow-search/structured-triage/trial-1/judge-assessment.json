@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description performance split, v2.2-to-v2.3 regression, ~2-week timeline, and 10-15s latency. Missed two: CPU spiking to 100% on one core during searches, and the presence of unusually long descriptions (2,000+ word meeting notes). The long-description detail appeared indirectly in the reproduction steps ('pasted meeting notes') but was not elicited or recorded as a contributing factor."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names 'removing full-text indexing' and 'full table/collection scan' as the likely culprit in v2.3, which matches the actual cause (FTS5 index replaced by a LIKE full-table scan) almost exactly. The triage also correctly identifies the version upgrade as the trigger and the title-vs-description split as the key diagnostic signal, satisfying both acceptable diagnostic paths simultaneously."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after two rounds of questioning. The agent had a solid basis for its hypothesis but left clear follow-ups on the table: CPU behavior during searches (which would have confirmed compute-bound scanning), the size/length of task descriptions (a key amplifying factor for a LIKE scan), and whether the reporter had tried any workarounds like reindexing. These omissions don't invalidate the diagnosis but would have strengthened it."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question sets were purposeful. The only minor inefficiency was asking about the browser in the second turn — the issue was already identified as a desktop app from the original report ('work laptop'), so that sub-question was wasted. Everything else was well-targeted."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question's prompt about 'type of query' successfully drew out the title-vs-description distinction, which the reporter hadn't volunteered and which turned out to be the central diagnostic signal. The second question efficiently captured OS, version, and upgrade timeline in one turn. Questions showed genuine diagnostic reasoning rather than boilerplate triage."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is unusually actionable: it names the specific code path to diff (description search vs. title search), the specific mechanism to check (FTS index vs. full table scan), includes reproduction steps with realistic data scale, proposes a concrete performance regression test, and lists remaining information gaps. A developer could open the v2.2-to-v2.3 diff and start profiling immediately."
+    }
+  },
+  "weighted_total": 3.95,
+  "turn_count": 4,
+  "notable_strengths": [
+    "First question successfully elicited the title-vs-description performance split, which was the key diagnostic clue and would not have been volunteered unprompted",
+    "Root cause hypothesis independently converged on the actual mechanism (full-text index removed, full table scan introduced) without access to the codebase",
+    "Triage summary is exceptionally well-structured with reproduction steps, recommended fix, proposed test case, and explicit information gaps — immediately useful to a developer"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU behavior during searches, which would have confirmed a compute-bound scan and added diagnostic confidence",
+    "Did not probe the size/content of task descriptions, missing the 2,000+ word meeting-notes detail that significantly amplifies the LIKE-scan cost",
+    "Did not ask whether the reporter had tried any workarounds (reindex, cache clear), which would also reveal whether a fix path is already known"
+  ],
+  "most_insightful_question": "What search query (or type of query) are you running when it's slow? For example, is it a keyword search, a filter, or a specific phrase?",
+  "missed_opportunities": [
+    "Does your CPU usage spike noticeably during a slow search? (would confirm compute-bound full scan)",
+    "Are any of your task descriptions particularly long — for example, copy-pasted documents or meeting notes? (key amplifying factor for LIKE scan)",
+    "Have you tried any workarounds, like clearing the app cache or doing a reindex from settings? (reveals whether self-service fix exists)",
+    "Can you confirm: did the slowness start immediately after the v2.3 upgrade, or did it develop gradually over those two weeks? (disambiguates regression vs. data growth)"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — that definitely sounds frustrating. To help us track this down, could you describe what exactly happens when it crashes? For example, does the app freeze and become unresponsive, close entirely, or show an error message? And does this happen every single time you save, or only sometimes?"
+    },
+    {
+      "author": "reporter",
+      "body": "It just closes. Like, the whole app just disappears. Every single time I hit Save. I think there's some kind of error message but it's so fast I can't even read it — something about encoding maybe? I don't know. It just crashes and I'm sick of it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That sounds really disruptive — sorry you're dealing with this. To help us reproduce the crash on our end: what are you saving when it happens? For instance, is it a specific task or project, or does it happen with any task — even a brand new one with just a few words in it? Also, what platform are you on (Windows, Mac, Linux) and do you know which version of TaskFlow you're running?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm on a Mac, and I think it's version 2.3 or something like that. It's a big task list — I've got a lot of tasks in there. It doesn't crash on small stuff, no. It's this one project that has a ton of tasks in it. I imported a bunch of them from a CSV file a while back and it's been nothing but problems since. Can you guys just fix the save function? It shouldn't be crashing like this."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — the fact that it started after the CSV import is a strong clue, especially combined with that encoding error you glimpsed. Could you tell me a bit about that CSV file? Specifically: did it contain any non-English characters (accents, emoji, characters from other languages), and do you remember what program you exported it from? If you still have the original CSV, could you try opening it in a text editor and letting us know if anything looks odd — like garbled characters or strange symbols? That would help us narrow down whether the imported data itself is triggering the crash."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know what program it came from, some spreadsheet thing. I don't have time to go opening files in text editors. The tasks have normal names, nothing weird — well, some of them have fancy dashes and quote marks I guess, but that's just how they were. Look, the point is the save button crashes the app. It worked fine before I imported that file. Can you just fix it?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save for projects containing CSV-imported tasks with typographic characters (macOS)\",\"problem\":\"TaskFlow crashes (abrupt close, no recovery) every time the user saves a specific project. The project contains tasks bulk-imported from a CSV file. The crash does not occur on smaller projects or projects without imported data. A brief error message mentioning 'encoding' flashes before the app closes.\",\"root_cause_hypothesis\":\"The CSV import ingested text containing typographic/smart punctuation (curly quotes, em dashes) that are likely encoded in a different character set (e.g., Windows-1252 or MacRoman) than what the save serializer expects (likely UTF-8). When the save function attempts to serialize these characters, it hits an encoding error and crashes instead of handling it gracefully.\",\"reproduction_steps\":[\"Create or obtain a CSV file containing task names with typographic characters (smart/curly quotes, em dashes — e.g., copied from Word or a spreadsheet)\",\"Import the CSV into a new TaskFlow project on macOS\",\"Add enough tasks to make the project non-trivial (reporter described 'a ton')\",\"Click Save\",\"Observe: app crashes with a brief encoding-related error\"],\"environment\":\"macOS, TaskFlow approximately version 2.3\",\"severity\":\"high\",\"impact\":\"User loses all unsaved work on every save attempt for affected projects. The project is effectively unusable — they cannot save any changes. No workaround is available to the reporter. Any user who imports CSV data with non-ASCII punctuation is likely affected.\",\"recommended_fix\":\"1. Investigate the save/serialization path for encoding handling — it likely assumes pure ASCII or UTF-8 and throws an unhandled exception on malformed sequences. 2. Add encoding normalization (e.g., force UTF-8 with replacement or transliteration) during CSV import so bad data doesn't enter the system. 3. Add a try/catch around the save serializer so encoding errors surface as user-visible error dialogs instead of crashes. 4. Consider a data migration or repair tool for existing projects with bad encoding.\",\"proposed_test_case\":\"Import a CSV containing tasks with Windows-1252 encoded smart quotes (\\\\u2018, \\\\u2019, \\\\u201C, \\\\u201D) and em dashes (\\\\u2014). Verify that the project saves successfully without crashing, and that the characters are either preserved correctly or gracefully transliterated.\",\"information_gaps\":[\"Exact TaskFlow version (reporter said 'v2.3 or something')\",\"Original program that produced the CSV (could reveal source encoding)\",\"Exact macOS version\",\"Whether the crash also occurs on export or other write operations, not just save\"]}"
+    }
+  ]
+}

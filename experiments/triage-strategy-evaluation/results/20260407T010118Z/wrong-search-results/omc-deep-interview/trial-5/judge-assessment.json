@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: search returns archived tasks when filtering for active, active tasks missing from default results, timing tied to v2.3.1 migration ~3 days ago, affects multiple users (reporter + teammate confirmed), individual task pages show correct archive status, filter behavior is inverted, and the issue is isolated to the filter/query layer rather than underlying data. The summary also adds useful detail beyond the expected extracts (impact quantification with 300 vs 150 task counts, reproduction steps, proposed regression test)."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The triage correctly identifies the v2.3.1 migration as the trigger and the archive filter as the broken component, which matches acceptable path #2. However, the root cause hypothesis and recommended fix point to application-layer query logic (a negated boolean condition or flipped enum in a WHERE clause) rather than the actual cause — an inverted field mapping in the search index configuration. A developer following the recommended fix would inspect the v2.3.1 application code diff rather than the index mapping configuration, sending them to the wrong layer. The general direction is right but the mechanism is wrong enough to cause meaningful investigative detours."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions and resolved with all 7 expected extracts captured. The key diagnostic question about task detail view behavior was asked and answered decisively. The information_gaps section honestly acknowledges what remains unknown (API vs UI layer, scope of other filters). One obvious follow-up was skipped: whether the problem correlates specifically with the search index rebuild that accompanied the schema migration (a question that might have surfaced the index layer rather than app code as the suspect). Still, the agent resolved with a strong evidential basis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two questions before resolution, both essential and non-redundant. The first established timing and interface scope; the second executed a precise diagnostic test to distinguish data corruption from filter inversion. No questions were wasted or repeated. The reporter volunteered the filter-inversion observation and task count details without being asked, which the agent efficiently incorporated."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first correctly prioritized temporal correlation (change event as cause signal) and interface scope. The second was particularly sharp: asking whether a task appearing in active results actually shows 'Archived' on its detail page is a textbook test to distinguish data-layer corruption from filter-layer corruption — exactly the distinction needed here. The reporter confirmed this unprompted, and the agent's framing made it clear why the distinction mattered. This is not a generic question; it reflects real understanding of how the system could be broken in multiple ways."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is highly structured: clear problem statement, root cause hypothesis, step-by-step reproduction instructions, severity/impact assessment, a specific recommended fix, a proposed regression test, and acknowledged information gaps. A developer can begin investigating immediately. The one limitation is that the fix recommendation points to application query code rather than search index configuration, so investigation may take a detour before converging on the actual fix. Despite this, the reproduction steps are precise enough that a developer would quickly confirm the behavior and narrow the search."
+    }
+  },
+  "weighted_total": 4.25,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question — asking whether task detail views show the correct archive status — was a precise diagnostic test that cleanly separated data corruption from filter inversion, directly leading to the key insight with zero ambiguity",
+    "The triage summary is exceptionally well-structured: it includes reproduction steps, a proposed regression test, severity/impact quantification, and explicit information_gaps — well above the typical triage output",
+    "Temporal correlation was established immediately in the first question, efficiently anchoring the investigation to v2.3.1"
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis attributes the inversion to application query logic (boolean predicate, WHERE clause) rather than the search index field mapping — this misdirects developers to the application code diff rather than the index configuration",
+    "The recommended fix ('single-character or single-line logic inversion in query code') is plausible-sounding but incorrect; the actual fix requires correcting the index field mapping and rebuilding the index, which is a more involved operation",
+    "No question probed whether a search index rebuild occurred as part of the migration, which would have been the key thread to pull toward the actual root cause"
+  ],
+  "most_insightful_question": "When you open one of those 'archived' tasks that's showing up in your active results, does the task detail view actually show it as Archived (i.e., the status label on the task itself says archived)? Or does the task detail show it as Active even though it should be archived?",
+  "missed_opportunities": [
+    "Ask whether the v2.3.1 patch included a database schema migration or search index rebuild — this thread leads directly to the actual cause and would have surfaced the index layer as a suspect rather than application query code",
+    "Ask whether searching without any active/archived filter (showing all tasks) returns correct results — this would further confirm the filter predicate as the locus and might hint at the index vs. app-code distinction",
+    "Ask whether other filters (priority, assignee) also appear inverted — the triage noted this as an information gap but never asked"
+  ]
+}

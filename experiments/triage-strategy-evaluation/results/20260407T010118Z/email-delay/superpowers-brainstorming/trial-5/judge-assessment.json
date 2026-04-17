@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, ~1 week onset, morning-worse/afternoon-better pattern, connection to daily digest batch emails, queue congestion hypothesis, transactional vs. bulk email competition, and the original <2 minute baseline. The summary also adds useful extras: impact framing, reproduction steps, and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage lands squarely on the second acceptable diagnostic path — identifying the digest email feature as the cause and queue congestion as the mechanism. The root cause hypothesis ('sharing a queue or worker pool... saturating capacity... digest backlog cleared by afternoon') is essentially correct. The recommended fix (separate high-priority queue for transactional, lower-priority for bulk) is exactly the canonical solution, even without knowing the specific priority=1 collision detail."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions led to a strong diagnosis. The agent could have followed up on the digest email timing (does it send at 9am specifically?) or asked about queue/infrastructure details before resolving, but the information_gaps section explicitly acknowledges these unknowns. Resolving after the reporter connected the digest feature to the onset is reasonable — the core hypothesis was well-supported at that point."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were necessary and non-redundant. Q1 scoped the blast radius (system-wide vs. user-specific), Q2 surfaced the correlated change that cracked the case. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 offered structured options and explicitly tied the answer to a diagnostic hypothesis (queuing vs. routing). Q2 was framed with concrete, categorized change types that prompted the reporter to recall the digest feature — information they almost certainly would not have volunteered unprompted. Both questions demonstrated genuine causal reasoning rather than generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary contains a specific root cause hypothesis, step-by-step reproduction instructions, a numbered recommended fix, a concrete load-test scenario, and explicit information gaps for the next investigator. A developer could open the email queue code immediately and know exactly what to look for."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Q2 was exceptionally well-designed: categorized options prompted the reporter to recall the digest email rollout, the single most important clue, which they would likely not have mentioned otherwise.",
+    "The root cause hypothesis in the summary is essentially correct and action-ready despite being derived from only two reporter responses.",
+    "The recommended fix and proposed test case are specific and technically sound, mapping directly to the actual fix needed (priority separation in the queue).",
+    "Information gaps are honestly catalogued rather than papered over, giving the next engineer a clear checklist of what still needs verification."
+  ],
+  "notable_weaknesses": [
+    "The triage resolved without confirming whether the digest emails actually send at 9am — the timing correlation is the strongest evidence but was left as an inference rather than a confirmed data point.",
+    "No workaround was suggested to the reporter (e.g., check the TaskFlow dashboard for assignments, or temporarily disable the digest feature), which would have reduced immediate business impact."
+  ],
+  "most_insightful_question": "Do you know if anything changed about a week ago when this started? — specifically the structured options (product update / infrastructure change / volume change / nothing obvious), which directly elicited the digest email detail that confirmed the hypothesis.",
+  "missed_opportunities": [
+    "What time does the daily digest email go out? Confirming a 9am send time would have clinched the correlation without requiring code inspection.",
+    "Are there any workarounds you can use in the meantime, such as checking the in-app dashboard for new assignments?"
+  ]
+}

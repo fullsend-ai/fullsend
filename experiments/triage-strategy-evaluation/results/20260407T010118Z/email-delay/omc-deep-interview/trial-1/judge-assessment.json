@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected items are present in the triage summary: 2-4 hour delay, ~1 week onset, morning-worst/afternoon-better pattern, digest feature as cause, queue congestion, transactional/bulk pipeline competition, and pre-regression 1-2 minute baseline. The summary also captured additional useful context: team-wide impact, multi-provider confirmation, and afternoon delay (~20-30 min) as distinct from baseline."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest email feature (rolled out ~1 week ago, sends at 9am) flooding a shared sending queue and causing transactional notifications to back up. This matches the acceptable diagnostic path of 'identifying the digest email feature as the cause and queue congestion, even without understanding the priority system.' The recommended fix explicitly calls out prioritizing transactional emails over bulk — which is precisely the correct fix — even without knowing the internal priority=1 vs priority=5 mechanism."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Three well-structured rounds of questioning established the cause, timing, shared infrastructure, and team-wide scope. One obvious follow-up was left unasked: whether in-app notifications (if they exist) are also delayed, which would help distinguish an email-layer problem from an app-layer problem. The agent acknowledged this gap in information_gaps. No other critical questions were clearly skipped given what a reporter would reasonably know."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "All three turns were productive. Q1 uncovered the digest feature. Q2 confirmed shared infrastructure and precise timing granularity. Q3 confirmed team-wide scope and ruled out provider-specific causes. The email-provider differential in Q3 was somewhat indirect — the answer (same delay on Gmail and Outlook) was predictable given the shared sender hypothesis already established — but it did eliminate a legitimate alternative hypothesis and added confirmed scope to the summary."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 ('did anything change about a week ago') is a textbook high-yield bug triage opener that immediately surfaced the digest feature — information the reporter wouldn't have volunteered unprompted. Q2 combined two targeted sub-questions efficiently: same sender (to confirm shared infrastructure) and task-assignment timing specificity (to distinguish queue latency from other causes). Q3 showed genuine diagnostic reasoning by testing whether the problem was downstream of TaskFlow or specific to a provider. Each question demonstrated real hypothesis-driven thinking."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes a clear root cause hypothesis pointing directly at the email queue, five concrete recommended fixes in priority order, specific reproduction steps with times of day, a proposed regression test case, and a well-scoped list of remaining information gaps. A developer could open the email queue configuration and begin investigating or implementing a fix immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Opening question about 'what changed a week ago' immediately surfaced the digest feature — a high-yield, hypothesis-generating move that unlocked the rest of the triage in one turn",
+    "Connected the digest → shared queue → morning backlog hypothesis early and confirmed it efficiently without needing additional turns",
+    "Triage summary is unusually detailed and actionable: includes reproduction steps, prioritized fix recommendations, a proposed test case, and explicit information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether in-app notifications (if they exist) are also delayed — this would distinguish an email-layer bottleneck from an application-layer issue and is a meaningful diagnostic question",
+    "Did not ask about the volume of digest emails, which would help quantify the queue congestion and validate the hypothesis quantitatively",
+    "No workaround was surfaced for the reporter (temporarily disabling the digest or checking the dashboard)"
+  ],
+  "most_insightful_question": "Do you know if anything changed about a week ago when this started? — This open-ended change-correlation question directly elicited the digest feature disclosure that the reporter had not connected to the problem, unlocking the entire diagnostic path in a single turn.",
+  "missed_opportunities": [
+    "Are in-app or push notifications (if available) also delayed, or is the delay specific to email? This would confirm the bottleneck is in the email sending layer.",
+    "Do you have any sense of how many users receive the daily digest? — Volume information would help engineers assess the scale of queue saturation.",
+    "As a workaround, have you tried checking the TaskFlow dashboard directly for new assignments in the morning? — Surfacing a workaround would have reduced immediate business impact."
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were extracted: ~5,000 tasks, description search slow vs title search fast, v2.2 to v2.3 regression, started ~2 weeks ago, 10-15 second latency, CPU spikes during search, and long descriptions in some tasks. The triage also captured additional useful details like query-independence of the slowdown."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause. The triage correctly identified a broken/removed full-text index on descriptions as the likely cause, which matches the ground truth (v2.3 switched from FTS5 to naive LIKE query). The hypothesis that title search still uses a working index while description search does a linear scan is exactly right. The summary correctly noted the regression nature, the CPU-bound behavior, and the workaround of using title search."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "The conversation took only 2 agent questions to extract all necessary information. Both questions were well-targeted and essential. The first question efficiently combined timing, scale, and query-specificity into one turn. The second question probed search behavior patterns and system resource usage. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question astutely asked whether the slowdown coincided with an update or data change, and whether it affected all searches or specific ones — this single question elicited the critical v2.3 upgrade timing, the 5,000 task count, and the title-vs-description distinction. The second question about query complexity independence and CPU/memory behavior helped confirm it was a scan-type problem rather than a network or memory issue. These questions led the reporter to volunteer information they wouldn't have offered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable. It provides clear reproduction steps, a precise root cause hypothesis pointing to the search index on descriptions, specific recommended fix steps (diff v2.2 vs v2.3 search implementation, check FTS index), and even a proposed performance test case with concrete thresholds. A developer could immediately start by diffing the search code between versions and checking the index state."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional diagnostic efficiency — extracted all critical information in just 2 turns",
+    "Root cause hypothesis almost exactly matches the actual cause (broken FTS index → naive scan)",
+    "First question was a masterclass in combinatorial questioning, drawing out three key facts in one turn",
+    "The summary includes concrete reproduction steps, fix recommendations, and a proposed regression test",
+    "Correctly identified the workaround (title search still fast) and assessed severity appropriately"
+  ],
+  "notable_weaknesses": [
+    "Did not capture the specific OS (Ubuntu 22.04) or hardware (ThinkPad T14, 32GB RAM), though the summary correctly notes this is unlikely to matter for a regression",
+    "Could have asked whether the reporter had tried clearing cache or reindexing, which would have been a useful diagnostic step"
+  ],
+  "most_insightful_question": "Can you recall roughly when the slowdown started? For example, did it coincide with a TaskFlow update, importing a large batch of tasks, or any other change? Also, approximately how many tasks do you have in your workspace, and does the slowdown happen with every search query or only certain ones?",
+  "missed_opportunities": [
+    "Could have asked whether the reporter tried clearing cache or reindexing to gather that data point",
+    "Could have asked about the database file size or whether the reporter noticed any changes in storage usage after the upgrade"
+  ]
+}

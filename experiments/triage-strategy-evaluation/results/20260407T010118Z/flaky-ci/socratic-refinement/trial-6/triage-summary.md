@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Task ordering tests fail intermittently in CI due to non-deterministic sort order
+
+## Problem
+The new task ordering tests added ~4 days ago pass consistently on developer machines but fail intermittently in CI. When they fail, the tasks come back in an unexpected order — no errors or timeouts, just assertion mismatches on the sequence of returned tasks.
+
+## Root Cause Hypothesis
+The sort/query used by the task ordering feature does not have a fully deterministic ORDER BY clause. When multiple tasks share the same value for the sort key (e.g., identical priority, created_at, or position), the database returns them in an arbitrary order. Locally this happens to be stable (likely due to insertion-order coincidence, SQLite behavior, or single-connection access), but CI's environment (different DB engine, parallel test execution, or connection pooling) surfaces the instability.
+
+## Reproduction Steps
+  1. Identify the task ordering tests added in the recent PR (~4 days ago)
+  2. Examine the test fixtures/setup: look for tasks that share the same value on the primary sort field
+  3. Run the tests repeatedly (e.g., in a loop or with a tool like pytest-repeat) against the same DB engine CI uses
+  4. Observe that when tied-key tasks are present, their relative order is not guaranteed
+
+## Environment
+CI environment (specific runner/DB unknown but differs from local). Failures are intermittent, suggesting environment-dependent ordering rather than a logic bug.
+
+## Severity: high
+
+## Impact
+Blocking releases for the team. Every CI run has a chance of spurious failure, requiring reruns and eroding confidence in the test suite.
+
+## Recommended Fix
+1. Inspect the query or sort logic backing the task ordering feature. 2. Add a deterministic tiebreaker to the ORDER BY clause (e.g., `ORDER BY position, id`) so that tasks with equal sort keys always return in a consistent sequence. 3. Review the test fixtures to ensure they exercise cases with distinct sort keys as well as tied sort keys. 4. If the tests are constructing tasks with identical timestamps or positions, either space them out or update assertions to account for the tiebreaker field.
+
+## Proposed Test Case
+Create a test that inserts multiple tasks with identical values for the primary sort field (e.g., same priority or position), sorts them, and asserts the result is ordered by the tiebreaker field (e.g., id). Run this test in a loop (50+ iterations) to confirm stability.
+
+## Information Gaps
+- Exact CI database engine and version vs. local setup (developer can check CI config)
+- Which specific sort field(s) the task ordering feature uses (developer can see in code)
+- Whether CI runs tests in parallel, which could also affect insertion order

@@ -1,0 +1,69 @@
+# Conversation: intermittent-403 x omc-deep-interview
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s are frustrating. A couple of things that would help narrow this down:
+
+When you get the 403, is it on the initial dashboard page load, or does it happen when you interact with something specific (e.g., clicking into a project, loading a task list, making an API call)? And does refreshing the page immediately after a 403 usually work, or does the error persist for a stretch of time before resolving on its own?
+
+---
+
+### reporter
+
+It's on the initial page load — I just go to the dashboard and sometimes I get the 403 right away. It's not like I'm clicking into anything specific. And yeah, refreshing usually fixes it. I've gotten into the habit of just hitting refresh when it happens and it almost always loads fine on the second or third try. It's annoying but at least there's that workaround. I was thinking it might be some kind of network issue on our end but I'm not sure.
+
+---
+
+### triage-agent
+
+That's really helpful — knowing it's on the initial load and that a refresh clears it points away from a permissions misconfiguration and toward something transient in the request path.
+
+Do you know if there were any deployments or infrastructure changes around the time this started a couple days ago? Also, when you hit the 403, does the error page show anything specific — like a message body, an error code, or any mention of which service is rejecting the request (e.g., is it a TaskFlow error page, a generic nginx/cloudfront 403, or something from an auth provider)? That would help us figure out *where* in the stack the request is being denied.
+
+---
+
+### reporter
+
+I think there was a deployment a couple days ago actually — that's when I got assigned the new 'analyst' role. I'm not sure if that's related or just coincidence in timing. As for the error page, I think it's a pretty plain looking page, not the normal TaskFlow styled one. It might be an nginx error page? I didn't pay super close attention to it honestly, I just hit refresh whenever it comes up. I don't remember seeing a specific error code beyond the 403.
+
+---
+
+### triage-agent
+
+That timing with the deployment and the new 'analyst' role is interesting — it could easily be connected rather than a coincidence. Quick question: the other people on your team who are also seeing the 403s — do you know if they were also assigned the 'analyst' role around the same time? And is anyone on the team who does *not* have that role seeing the issue? That would help us figure out whether this is role-specific or affecting everyone more broadly.
+
+---
+
+### reporter
+
+Good question — yeah, I think the others who mentioned it to me are also analysts. We were all moved to that role around the same time. I haven't heard anyone with the regular editor or admin roles complaining about it, but I haven't exactly done a survey or anything. It does seem like it might be an analyst role thing now that you mention it.
+
+---
+
+### triage-agent
+
+That analyst-role correlation is a strong lead — thanks for checking. One more thing that would really help the developers investigate: have you noticed any pattern to *when* the 403s happen? For example, does it tend to happen more on your first visit of the day (or after being idle for a while), or is it just as likely to happen if you refresh a page you loaded successfully 30 seconds ago? And roughly how often would you say it happens — like 1 in 5 loads, 1 in 20? Even a rough sense would help us figure out whether this is a caching issue, a load-balancer routing problem, or something else.
+
+---
+
+### reporter
+
+It doesn't seem related to being idle or anything like that — it can happen even if I just successfully loaded the page and then refresh again. It feels pretty random timing-wise. As for how often, I'd say maybe 1 in 3 times? Roughly a third of my page loads hit the 403. It's frequent enough to be really annoying but not so constant that I can't get work done since refreshing usually fixes it.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on dashboard load for users with 'analyst' role since recent deployment","problem":"Users with the newly-introduced 'analyst' role receive 403 Forbidden errors on approximately 1 in 3 initial dashboard page loads. The error page appears to be a plain nginx 403 rather than a styled TaskFlow error page. Refreshing the page typically resolves the error immediately. The issue began coinciding with a deployment a few days ago that introduced the 'analyst' role. Users with 'editor' or 'admin' roles do not appear to be affected.","root_cause_hypothesis":"The recent deployment that introduced the 'analyst' role likely has an inconsistent authorization configuration across backend instances or nginx upstream servers. Some instances correctly authorize the analyst role for dashboard access while others do not, causing the load balancer to intermittently route analyst-role requests to misconfigured instances. The plain nginx error page (rather than a TaskFlow-styled one) suggests the request is being rejected at the reverse proxy or gateway layer before reaching the application, pointing to an nginx configuration issue (e.g., a role-based access rule or auth middleware that doesn't recognize the new analyst role).","reproduction_steps":["Log in as a user with the 'analyst' role","Navigate to the TaskFlow dashboard","If the page loads successfully, refresh the page","Repeat — roughly 1 in 3 loads should return a 403 Forbidden (plain nginx error page)","Refreshing after a 403 should typically load the page successfully"],"environment":"Affects users with the 'analyst' role across at least one team. Multiple analysts report the issue. The deployment introducing the analyst role occurred approximately 2–3 days before the initial report. Error page is plain/unstyled, likely nginx-generated.","severity":"high","impact":"All users with the 'analyst' role are affected. Approximately 1 in 3 page loads fail. A refresh workaround exists, so it is not a total blocker, but it significantly degrades the experience and erodes trust in the application. If the analyst role is being broadly rolled out, the number of affected users will grow.","recommended_fix":"1. Review the recent deployment diff for changes to nginx configuration, authorization middleware, or role-permission mappings. 2. Check whether all upstream instances/containers received the updated configuration that recognizes the 'analyst' role — look for stale instances or a rolling deployment that didn't fully complete. 3. Inspect nginx access logs filtered by 403 status and correlate with the upstream instance that served each request to confirm the multi-instance hypothesis. 4. Ensure the 'analyst' role is included in whatever access-control list or authorization rule governs dashboard access at the nginx/gateway layer.","proposed_test_case":"Automated test: Authenticate as a user with the 'analyst' role and make 20 sequential requests to the dashboard endpoint. Assert that all 20 return 200. Run this against each upstream instance individually (bypassing the load balancer) to identify any misconfigured instance.","information_gaps":["Exact deployment changeset that introduced the analyst role has not been identified","Server-side logs have not been inspected to confirm which layer is returning the 403","Number of upstream instances and whether they all have consistent configuration is unknown","Whether other endpoints beyond the dashboard are also affected for analysts has not been explored"]}
+
+---

@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Large PDF attachments corrupted after upload/download — size-dependent, started ~1 week ago
+
+## Problem
+PDF files attached to tasks are returned corrupted when downloaded. The PDF viewer reports files as damaged. The file sizes appear roughly correct, but content is garbled. The issue is size-dependent: small, simple PDFs appear unaffected, while larger multi-page documents (contracts, reports, estimated >1-2 MB) are consistently corrupted. Multiple customers are affected. The issue began approximately one week ago with no changes on the customer side.
+
+## Root Cause Hypothesis
+A deployment approximately one week ago likely introduced a defect in the file upload, storage, or download pipeline that corrupts large files. The fact that file sizes are preserved but content is garbled — and that small files are unaffected — strongly suggests a chunked transfer or streaming issue: for example, incorrect reassembly of multipart upload chunks, a base64 or binary encoding error applied during storage/retrieval that only manifests when data spans multiple chunks, or a buffer/size-limit change (e.g., a new request body size limit or proxy buffer) that silently corrupts payloads beyond a threshold.
+
+## Reproduction Steps
+  1. Upload a small PDF (<500 KB, single page) to a task and download it — verify it opens correctly
+  2. Upload a large PDF (>2 MB, multi-page) to a task
+  3. Download the large PDF
+  4. Attempt to open it — expect 'file is damaged/corrupted' error
+  5. Compare the binary content of the original and downloaded files (e.g., diff or checksum) to characterize the corruption pattern
+
+## Environment
+TaskFlow file attachment feature, all users/customers affected, no specific browser or OS dependency reported. Issue is server-side (upload-store-download pipeline).
+
+## Severity: high
+
+## Impact
+Multiple customers unable to use file attachments for large documents. This blocks workflows where teams share contracts, reports, and other multi-page PDFs through TaskFlow. Customers cannot send these documents to their own clients.
+
+## Recommended Fix
+1. Review all deployments and configuration changes from approximately one week ago that touch the file upload, storage, or download codepath. 2. Binary-diff a corrupted downloaded file against its original to identify the corruption pattern (shifted bytes, encoding artifacts, truncated chunks, etc.). 3. Check for changes to: multipart upload handling, streaming/chunking logic, proxy or gateway body-size limits, binary vs. text mode in file I/O, and any encoding transformations applied during storage or retrieval. 4. Verify chunk reassembly order and completeness for files that span multiple chunks.
+
+## Proposed Test Case
+Upload PDFs of varying sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB) and verify that each downloaded file is byte-identical to the original (SHA-256 checksum match). Include both single-page and multi-page documents. This test should be added as an integration test against the upload/download pipeline.
+
+## Information Gaps
+- Exact size threshold at which corruption begins (reporter estimates ~1-2 MB but is unsure)
+- Specific deployment or configuration change that occurred ~1 week ago (requires internal investigation)
+- Whether the corruption pattern is consistent (same garbling each time) or variable
+- Whether non-PDF large files (images, Word docs, etc.) are also affected

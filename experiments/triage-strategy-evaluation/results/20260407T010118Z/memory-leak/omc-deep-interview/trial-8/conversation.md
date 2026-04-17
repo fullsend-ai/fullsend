@@ -1,0 +1,67 @@
+# Conversation: memory-leak x omc-deep-interview
+
+## Issue
+
+**TaskFlow server gets slower throughout the day, requires daily restart**
+
+Our self-hosted TaskFlow instance starts the day running fine but gets progressively slower. By late afternoon, page loads take 10+ seconds and the API times out. We've been restarting the server every evening for the past week. Memory usage on the server climbs from ~500MB at startup to 4GB+ by end of day. We have about 200 active users.
+
+I've attached a screenshot of our Grafana dashboard showing the memory climb. The pattern is very consistent day-to-day.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report and the Grafana dashboard — the consistent daily memory climb is a strong signal.
+
+To help narrow down what might be causing the memory growth: could you share what version of TaskFlow you're running, and whether you have any integrations, plugins, or background features enabled (e.g., real-time notifications, webhook listeners, scheduled reports)? Also, if you've had a chance to look at what's consuming the memory (e.g., heap dump, process-level breakdown, or database connection count), that would be really helpful.
+
+---
+
+### reporter
+
+We're running TaskFlow v2.3 — we upgraded from v2.2 about a week ago, which is actually right around when this problem started. I hadn't connected those two things until you asked. As for features, we do have real-time notifications enabled, and we use the built-in webhook integration for our Slack alerts, but nothing custom beyond that. No plugins.
+
+I haven't done a heap dump — I'm not sure how to do that with TaskFlow honestly. But I can tell you from Grafana that the memory growth looks very linear and steady throughout the work day, and it correlates pretty closely with user activity. On weekends when we have maybe 20 users, the growth is much slower but still there. The database connection count looks normal and stable.
+
+---
+
+### triage-agent
+
+That timing with the v2.3 upgrade is a really important clue — it's very likely related.
+
+Since the memory growth tracks closely with user activity and you have real-time notifications enabled: would you be able to try disabling real-time notifications for one day (or even a few hours during a busy period) and see if the memory growth pattern changes? That would help us determine whether the leak is in the notification/WebSocket subsystem specifically, or something more general that v2.3 introduced.
+
+Alternatively, if you'd rather not change production settings, do you happen to know roughly how many concurrent WebSocket or long-lived connections your server is holding at the point when memory is high?
+
+---
+
+### reporter
+
+That's a great idea — I can try disabling real-time notifications tomorrow morning and monitor the memory through the day. I'll report back on what I see. It would make sense if it's related since the v2.3 changelog specifically mentions 'improved real-time notifications' as one of the new features.
+
+As for WebSocket connections, I haven't been tracking that specifically, but I can check. I do know that with ~200 users each making maybe 25 or so API requests per hour during peak times, there's a lot of activity hitting the server. I'll see if I can pull connection stats from the server next time memory is high and share those with you too.
+
+---
+
+### triage-agent
+
+Great plan — that test should be really telling, especially given the v2.3 changelog mention.
+
+One thing I want to clarify in the meantime: after most users go home for the evening but *before* you do the nightly restart, does the memory stay pinned at the ~4GB high-water mark, or does it drop back down at all once activity decreases? That would help us confirm whether we're looking at a true leak (memory never reclaimed) versus the server just needing more memory under load than it can comfortably handle.
+
+---
+
+### reporter
+
+Good question. The memory stays pinned at the high-water mark even after everyone goes home. It doesn't drop back down at all — it just stays up there until we restart the service. That's actually one of the things that made me realize it wasn't just normal load, because even hours after peak activity the server is still sluggish and the memory usage hasn't budged.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Memory leak in v2.3 causes linear memory growth (~500MB to 4GB+/day), requiring daily restarts","problem":"After upgrading from v2.2 to v2.3 approximately one week ago, the self-hosted TaskFlow instance exhibits a steady, linear memory leak that grows from ~500MB at startup to 4GB+ by end of day. This causes progressively degraded performance (10+ second page loads, API timeouts) and requires a nightly service restart. Memory remains pinned at the high-water mark even after user activity drops to zero, confirming it is a true leak rather than a load-scaling issue.","root_cause_hypothesis":"The v2.3 release includes 'improved real-time notifications,' and the memory growth correlates closely with user activity volume (slower growth on weekends with ~20 users vs. weekdays with ~200). The most likely cause is that the revamped real-time notification or WebSocket subsystem in v2.3 is accumulating objects (e.g., event listeners, subscription state, message buffers, or connection metadata) per user interaction without releasing them. The leak is per-request or per-event rather than per-connection, given the linear growth pattern proportional to activity volume rather than connected user count.","reproduction_steps":["Deploy TaskFlow v2.3 with real-time notifications enabled","Have a user base of ~200 active users generating ~25 API requests/hour each during peak","Monitor memory usage via Grafana or equivalent over the course of a full workday","Observe steady linear memory growth that does not recede when user activity drops","Compare with v2.2 under the same conditions (no leak observed prior to upgrade)"],"environment":"Self-hosted TaskFlow v2.3 (upgraded from v2.2 ~1 week ago). ~200 active users on weekdays, ~20 on weekends. Real-time notifications enabled, built-in Slack webhook integration active, no custom plugins. Database connection count is normal and stable.","severity":"high","impact":"All ~200 active users experience progressively degraded performance throughout each workday, with page loads exceeding 10 seconds and API timeouts by late afternoon. Operations team must restart the service nightly. This has been ongoing for approximately one week since the v2.3 upgrade.","recommended_fix":"1. Diff the real-time notification subsystem between v2.2 and v2.3 — focus on WebSocket connection handling, event listener registration, subscription lifecycle, and any in-memory caches or buffers added in the 'improved' implementation. 2. Take a heap dump from a running v2.3 instance after several hours of use and analyze object retention — look for growing collections of notification events, subscriber entries, or connection metadata. 3. Check whether event listeners or subscriptions are properly cleaned up on WebSocket disconnect/reconnect. 4. The reporter is testing with real-time notifications disabled — if memory stabilizes, this confirms the notification subsystem as the source. 5. Consider whether a rollback to v2.2 is viable as a short-term mitigation.","proposed_test_case":"Start a TaskFlow v2.3 instance with real-time notifications enabled. Simulate 100+ concurrent users making repeated API requests over a 2-hour period. Verify that memory usage returns to near-baseline within a reasonable time after all users disconnect and activity stops. Compare memory behavior with real-time notifications disabled under the same load profile. A passing test means memory is reclaimed; a failing test means memory remains pinned.","information_gaps":["Results of the reporter's planned test with real-time notifications disabled (in progress — reporter will report back)","Heap dump or object-level memory profile identifying the specific leaking objects","Exact WebSocket/long-lived connection count at high-memory state","Whether the v2.3 upgrade also changed any server-side caching or session handling beyond notifications"]}
+
+---

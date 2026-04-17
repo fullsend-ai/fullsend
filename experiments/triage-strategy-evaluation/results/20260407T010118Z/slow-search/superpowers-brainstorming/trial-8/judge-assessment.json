@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 4 of 7 expected items: task count (~5,000), title-vs-description distinction, 10-15 second latency, and long descriptions. Missed: version upgrade regression (v2.2→v2.3), when slowdown started (~2 weeks ago), and CPU spikes during search. The version regression is the most consequential gap — it's the actual root cause trigger and was explicitly listed as an information gap but never asked."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis (missing FTS index, LIKE query doing full table scan) closely matches the actual cause (v2.3 switched from FTS5 to naive LIKE). This satisfies acceptable diagnostic path #2: identifying title-vs-description performance difference and suspecting an indexing issue. The hypothesis is technically precise and directionally correct, even without connecting to the version upgrade."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "Resolved after a single exchange. The triage summary itself lists 'whether the slowdown was gradual or sudden' and 'exact TaskFlow version' as information gaps — but these were never asked. One obvious follow-up (when did this start? did you recently update?) would have surfaced the v2.2→v2.3 upgrade and transformed an adequate triage into an excellent one. The agent recognized the gaps but chose to resolve anyway."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "The single question was well-constructed and bundled two targeted queries efficiently. Both sub-questions yielded high-value information. Minor deduction because 'filtering by status/tag' and 'within one project' sub-options were generic noise that didn't contribute."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Asking 'what are you typically searching for' was the key diagnostic move — it directly surfaced the title-vs-description distinction that forms the core of the triage. Asking for task count was also well-targeted. The question showed genuine diagnostic reasoning rather than generic troubleshooting. Would have scored 5 if a follow-up had probed for recency/version."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "A developer could start investigating immediately: the hypothesis (LIKE query, missing FTS index), reproduction steps, and recommended fixes (add SQLite FTS virtual table, replace LIKE with FTS operators) are specific and technically sound. Slightly penalized because missing the version upgrade context means the developer might not check the v2.3 changelog as a first step, which would be the fastest path to the root cause."
+    }
+  },
+  "weighted_total": 3.45,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Correctly identified the title-vs-description search distinction as the key diagnostic signal",
+    "Root cause hypothesis (LIKE query without FTS index) is technically accurate and matches the actual bug",
+    "Recommended fix section is specific, technically grounded, and immediately actionable",
+    "Efficiently combined multiple diagnostic questions into a single turn"
+  ],
+  "notable_weaknesses": [
+    "Resolved after a single exchange despite explicitly identifying version and regression timing as information gaps",
+    "Never asked when the slowdown started, which would have surfaced the v2.2→v2.3 upgrade — the actual root cause trigger",
+    "CPU spike behavior not captured, which is useful corroborating evidence for a compute-bound full table scan",
+    "Environment section incomplete: OS, hardware, and exact version all missing"
+  ],
+  "most_insightful_question": "What are you typically searching for? — specifically the framing that distinguished search-by-name from search-across-descriptions, which surfaced the title-vs-description performance asymmetry that anchors the entire triage.",
+  "missed_opportunities": [
+    "When did the slowness start, and did anything change around that time (app update, data import, OS change)?",
+    "What version of TaskFlow are you running?",
+    "Does your CPU or system slow down noticeably while the search is running?",
+    "Is this on a local installation or a hosted/cloud version of TaskFlow?"
+  ]
+}

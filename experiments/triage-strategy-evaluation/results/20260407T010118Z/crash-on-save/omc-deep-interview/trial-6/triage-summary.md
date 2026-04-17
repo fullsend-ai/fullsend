@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Crash on save when task list contains special characters from CSV import (encoding error)
+
+## Problem
+TaskFlow crashes immediately when the user clicks Save in the toolbar on a task list containing ~200 tasks that were imported from a CSV file. A brief error dialog mentioning 'encoding' flashes before the app closes. The user loses unsaved work each time. Smaller, manually-created task lists save without issue.
+
+## Root Cause Hypothesis
+The CSV import path accepts text with non-ASCII punctuation (curly/smart quotes, em dashes, etc.) without normalizing the encoding, but the save/serialization path fails when it encounters these characters — likely a UTF-8 encoding or serialization bug in the save routine that either doesn't handle multi-byte characters correctly or assumes ASCII-safe input. The crash (rather than graceful error) suggests an unhandled exception in the encoding/write layer.
+
+## Reproduction Steps
+  1. Launch TaskFlow 2.3.1 on macOS 14.2
+  2. Create or obtain a CSV file containing tasks with non-ASCII punctuation: curly/smart quotes (“ ” ‘ ’), em dashes (—), and similar characters
+  3. Import the CSV file into a new task list
+  4. Add additional plain-text tasks until the list contains approximately 200 items
+  5. Click Save in the toolbar
+  6. Expected: app crashes with a brief encoding-related error dialog
+
+## Environment
+macOS 14.2, TaskFlow 2.3.1
+
+## Severity: high
+
+## Impact
+Any user who imports CSV data containing non-ASCII punctuation into a task list cannot save that list, resulting in repeated data loss. The user has 200 tasks they cannot persist. Workaround is limited to working only with smaller or manually-created lists that contain no special characters.
+
+## Recommended Fix
+Investigate the save serialization path for encoding handling. Likely candidates: (1) the file writer isn't opening with UTF-8 encoding, (2) a string-to-bytes conversion assumes ASCII, or (3) a serialization library isn't configured for Unicode. Also check whether the CSV import should normalize smart punctuation to ASCII equivalents on ingest. Add a try/catch around the save path so encoding errors surface as a user-facing error message rather than crashing the app.
+
+## Proposed Test Case
+Import a CSV containing curly quotes (“”), em dashes (—), and accented characters (é, ñ) into a task list with 200+ items. Verify that Save completes successfully and the file round-trips without data loss. Additionally, verify that if encoding errors do occur, they are caught and displayed gracefully rather than crashing the app.
+
+## Information Gaps
+- Exact error message text (flashes too fast for reporter to read — reproducible on our end)
+- Whether list size is an independent factor or only the encoding matters (reporter's working 30-task list may not contain CSV-imported data)
+- Whether auto-save (if it exists) also triggers the crash or only manual toolbar Save

@@ -1,0 +1,26 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this! To help us narrow down what's going on, can you tell me what kind of search you're doing when it's slow?\n\n1. **Text search** across all tasks (e.g., typing a keyword in the search bar)\n2. **Filtered search** using specific criteria (e.g., by status, assignee, date range)\n3. **Both** — it's slow no matter how you search\n4. **Something else**\n\nAlso, roughly how many tasks are in your TaskFlow instance?"
+    },
+    {
+      "author": "reporter",
+      "body": "It's mainly when I search for keywords that appear in task descriptions. Like if I search for a phrase from meeting notes or something. I have around 5,000 tasks — I've been using TaskFlow for about 2 years now. Searching by title still seems pretty fast though, it's the full-text search that's really slow."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — full-text search being slow while title search stays fast is a strong clue.\n\nYou mentioned it \"used to be fast.\" Do you recall roughly when it started getting slow?\n\n1. **After a recent TaskFlow update** — it was fine, then you updated and it got slow\n2. **Gradually over time** — it's been getting worse as you added more tasks\n3. **Suddenly, but not tied to an update** — it just started being slow one day\n4. **Not sure** — you just noticed it recently\n\nThis will help us figure out whether we're looking at a regression in the code or a scaling issue with the data."
+    },
+    {
+      "author": "reporter",
+      "body": "I think it was after an update actually. I upgraded to v2.3 maybe two weeks ago? It was fine before that. I'm pretty sure the timing lines up with the upgrade."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Full-text search regression in v2.3: 10-15s response time on task description search\",\"problem\":\"After upgrading to TaskFlow v2.3 approximately two weeks ago, full-text search across task descriptions takes 10-15 seconds to return results. Title-based search remains fast. The user has approximately 5,000 tasks accumulated over 2 years of use. The slowdown correlates with the v2.3 upgrade, not with gradual data growth.\",\"root_cause_hypothesis\":\"A change in v2.3 likely altered how full-text search queries task descriptions — possible causes include a dropped or unbuilt full-text index on the descriptions column, a query change that bypasses an existing index (e.g., switching from indexed FTS to LIKE/ILIKE), or a migration that failed to rebuild indexes after a schema change. The fact that title search is unaffected suggests the issue is isolated to the description search path.\",\"reproduction_steps\":[\"Set up a TaskFlow instance with v2.3\",\"Populate with ~5,000 tasks that have substantive descriptions\",\"Perform a keyword search that matches terms in task descriptions\",\"Observe query time (expected: 10-15 seconds vs sub-second on v2.2)\",\"Compare with a title-only search on the same keyword (expected: fast)\"],\"environment\":\"TaskFlow v2.3, work laptop (specific OS not provided), ~5,000 tasks\",\"severity\":\"high\",\"impact\":\"Any user with a non-trivial number of tasks will experience severely degraded full-text search performance after upgrading to v2.3. This affects a core workflow — searching task content by keyword.\",\"recommended_fix\":\"Diff the full-text search code path between v2.2 and v2.3. Check whether the v2.3 migration correctly creates/maintains full-text indexes on the task descriptions column. Run EXPLAIN/ANALYZE on the description search query to confirm whether it uses an index scan or falls back to a sequential scan. If an index was dropped or altered, restore it and add a migration test.\",\"proposed_test_case\":\"Performance regression test: seed a database with 5,000+ tasks with varied descriptions, execute a full-text description search, and assert the query completes within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 schemas to catch index regressions.\",\"information_gaps\":[\"Exact version upgraded from (assumed v2.2 but not confirmed)\",\"Whether the v2.3 migration completed without errors\",\"Database engine in use (SQLite vs PostgreSQL) — may affect FTS implementation\"]}"
+    }
+  ]
+}

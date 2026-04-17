@@ -1,0 +1,71 @@
+# Conversation: flaky-ci x socratic-refinement
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it's blocking releases.
+
+To help me understand the bigger picture: can you walk me through what was happening around the time these failures started a few days ago? For example, were there any notable changes — new dependencies, infrastructure updates, changes to the test suite itself, or even a bump in the volume of tests or data? Anything that shifted around that time could be a useful thread to pull on.
+
+---
+
+### reporter
+
+Look, I don't remember every little thing that changed. A PR got merged recently that added some new tests, maybe like a week ago? Something for task ordering. That's about it. Can we focus on fixing this instead of playing detective? The tests pass on my machine every single time and then CI just randomly decides to fail.
+
+---
+
+### triage-agent
+
+Totally fair — let's zero in on the fix. The task ordering PR you mentioned is actually a really useful lead.
+
+Could you grab the output from a recent failed CI run and share which tests are failing and what the error messages look like? Specifically, I'm curious whether it's the new task ordering tests that are failing, or if previously stable tests started breaking around the same time. That distinction would tell us a lot about where to look.
+
+---
+
+### reporter
+
+Yeah it's the new ordering tests that fail. The names show up pretty clearly in the CI logs when they fail. The old tests are fine, they never break. Can you just tell me why CI would fail when my local runs pass every time? That's the part that makes no sense.
+
+---
+
+### triage-agent
+
+That's a really helpful clue — the fact that it's specifically the new ordering tests, while older tests remain rock-solid, narrows this down a lot.
+
+Here's what I'm wondering: when you run the tests locally, do they run in a fixed order or in parallel? And do you know if your CI environment runs them differently — for example, with parallel workers, randomized test order, or a shared database between test processes? The reason I ask is that "passes locally, fails randomly in CI" is a classic fingerprint for tests that accidentally depend on something about *how* they're run (order, timing, shared state) rather than having a real bug in the code. Knowing how your local setup differs from CI would help us pinpoint the mechanism.
+
+---
+
+### reporter
+
+I don't know all the details of the CI setup, I'm not the one who configured it. Locally I just run `go test` with our dev config and everything passes, every single time. CI is on Ubuntu, I'm on a Mac, but they're both Go 1.22 so that shouldn't matter. I think CI uses some kind of production-like config but I don't know exactly what's different. Can't you just look at the CI config and compare? I just want this fixed, it's been like 4 days of re-running pipelines and hoping it passes.
+
+---
+
+### triage-agent
+
+I hear you — let's get this moving toward a fix. You mentioned the failing test names show up clearly in the CI logs. Could you paste the output from one of those failures? Even just the error lines for one or two of the failing tests would be enough. For example, are they showing wrong-order assertions like `expected [A, B, C] got [C, A, B]`, or timeouts, or something else entirely? That'll tell us whether this is a sorting stability issue, a race condition, or something else — and each of those has a very different fix.
+
+---
+
+### reporter
+
+I don't have the logs in front of me right now but yeah it's the ordering thing. The tests expect tasks in a certain order and they come back in a different order. It's not timeouts or anything like that. The order is just wrong sometimes. But like I said, locally it's always correct, every single time. That's what's so maddening about this.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"New task ordering tests fail intermittently in CI with ordering mismatches (pass locally)","problem":"Task ordering tests added approximately one week ago fail randomly in CI with incorrect result ordering (e.g., expected [A, B, C] but got [C, A, B]), while passing 100% of the time on the developer's local Mac. This has been blocking releases for ~4 days.","root_cause_hypothesis":"The ordering tests rely on a sort or query result order that is not fully deterministic. Most likely causes, in order of probability: (1) An unstable sort on a field with duplicate values — Go's sort.Slice is not stable, so equal elements may appear in any order, and the local Mac environment happens to produce a consistent order while CI does not. (2) A database query missing an explicit ORDER BY clause (or an insufficient tiebreaker column), where the DB engine returns rows in a consistent order locally but not under CI's production-like config. (3) Go map iteration order randomness leaking into results. The dev-config vs production-like-config difference in CI may also affect database engine behavior, connection pooling, or parallelism in ways that surface the non-determinism.","reproduction_steps":["Check out the branch/commit that introduced the task ordering tests (~1 week ago)","Run `go test -count=10 -shuffle=on ./...` targeting the ordering test package to attempt local reproduction","Alternatively, run tests with the CI (production-like) config locally instead of the dev config","Inspect whether failures show ordering mismatches in the task ordering test assertions"],"environment":"CI: Ubuntu, Go 1.22, production-like configuration. Local (reporter): macOS, Go 1.22, dev configuration. The exact CI config differences are unknown to the reporter but are available in the CI pipeline definition.","severity":"high","impact":"Blocking all releases for the team for ~4 days. Developers are re-running CI pipelines hoping for green builds, wasting time and reducing confidence in the test suite.","recommended_fix":"1. Examine the task ordering tests and identify what field(s) tasks are sorted by. 2. If using sort.Slice, switch to sort.SliceStable, or add a tiebreaker (e.g., ID) so the sort is fully deterministic even when primary sort keys are equal. 3. If ordering comes from a database query, ensure the ORDER BY clause includes a unique tiebreaker column (e.g., `ORDER BY priority, created_at, id`). 4. Compare the dev config and CI (production-like) config for differences that could affect ordering (e.g., database engine, parallelism settings, connection pooling). 5. Validate the fix by running `go test -count=20 -shuffle=on` to confirm stability.","proposed_test_case":"Create a test with multiple tasks that have identical values for the primary sort key (e.g., same priority or same timestamp) and assert that the returned order is deterministic across 50+ iterations. This test should fail before the fix and pass after, confirming the tiebreaker works.","information_gaps":["Exact CI error output / assertion messages (reporter didn't have logs available; obtainable from CI system directly)","Specific differences between dev config and production-like CI config (obtainable from CI pipeline definition)","Whether CI uses go test -shuffle, -parallel, or -race flags (obtainable from CI config)","The exact sort key / ORDER BY clause used in the task ordering implementation (obtainable from code)"]}
+
+---

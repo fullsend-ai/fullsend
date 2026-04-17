@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks appearing in active filter results, active tasks missing from search, ~3-day timeline tied to v2.3.1 migration, multi-user confirmation, correct display on individual task pages, inverted filter behavior, and isolation to search rather than application data. The summary also added reproduction steps, a proposed regression test, severity/impact assessment, and a workaround — all beyond what was explicitly expected."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the v2.3.1 migration as the trigger, the archive filter as the broken component, the inversion (not just breakage or staleness), and the isolation to search vs. the data layer. The hypothesis explicitly includes 'search index was rebuilt with inverted logic' as a candidate, which matches the acceptable path of identifying index/database desync and the migration as trigger. The agent stops short of pinpointing the specific field mapping inversion in the index configuration, and lists Elasticsearch as an open question rather than a confirmed component — a small gap given that the actual cause is exactly an Elasticsearch index field mapping inversion."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Three well-sequenced questions each unlocked a distinct layer of understanding: (1) UI display vs. filter logic, (2) regression timing and trigger, (3) scope of filter breakage. No obvious follow-up was skipped. Remaining gaps (exact migration scripts, search index technology, API behavior) are correctly acknowledged as items for the dev team rather than things a user-facing reporter could answer. The agent resolved at the right moment — after the reporter independently articulated the inversion."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, zero wasted. Each question produced non-overlapping, high-value information. There was no redundancy and no question that could have been safely skipped or merged without losing diagnostic signal."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 was particularly sharp: by asking whether the archived task was visibly labeled and whether direct navigation worked, the agent elegantly split display correctness from filter logic in a single turn — information the reporter would not have volunteered in that structured form. Q3 was the clincher: by asking whether other filter types also misbehaved, the agent prompted the reporter to test and articulate the inversion themselves ('it's like the filter is completely inverted'), which became the central finding. Q2 was more standard but appropriately timed."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could open the v2.3.1 migration scripts immediately and know exactly what to look for: boolean column inversions, search index rebuild logic, and query predicate changes on the archive status field. The summary includes reproduction steps, a severity assessment, a concrete workaround to communicate to users, a proposed regression test, and explicit information gaps for the team to resolve internally. Very little additional context-gathering is needed before starting the fix."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q1 elegantly separated display correctness from filter logic in a single question, immediately ruling out data corruption and pointing at the search layer",
+    "Q3 prompted the reporter to actively test and articulate the inversion themselves, surfacing the most diagnostically precise finding ('it's completely inverted, not just broken')",
+    "The final summary is unusually complete for a user-facing triage: includes reproduction steps, a proposed regression test gating future migrations, impact severity, a workaround, and clearly scoped information gaps",
+    "Correctly identified the migration as the trigger and the inversion (not just breakage or staleness) as the failure mode, matching both acceptable diagnostic paths"
+  ],
+  "notable_weaknesses": [
+    "Elasticsearch was listed as an open question rather than identified as the search infrastructure, even though the index rebuild hypothesis was in the root cause — a minor precision gap that slightly reduces accuracy",
+    "Did not ask whether API-level searches (not just UI) exhibit the same behavior, though this was appropriately acknowledged as an information gap in the summary"
+  ],
+  "most_insightful_question": "Is it specifically the active/archived filter that's broken, or are other search filters also misbehaving? — This question isolated the scope of the breakage and prompted the reporter to test and verbalize the complete inversion, which became the central diagnostic finding.",
+  "missed_opportunities": [
+    "Could have asked whether the team uses a dedicated search service (e.g., Elasticsearch vs. direct DB queries) — a user-facing reporter may not know, but the answer would have narrowed the hypothesis space significantly",
+    "Could have asked whether the inversion is consistent (100% of active tasks absent, 100% of archived tasks present) or intermittent — would help distinguish a full index rebuild inversion from a partial or race-condition issue"
+  ]
+}

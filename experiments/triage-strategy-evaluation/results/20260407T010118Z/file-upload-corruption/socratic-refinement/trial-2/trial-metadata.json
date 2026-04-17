@@ -1,0 +1,7 @@
+{
+  "scenario": "file-upload-corruption",
+  "strategy": "socratic-refinement",
+  "reporter_profile": "difficult",
+  "turns": 3,
+  "parse_failures": 0
+}

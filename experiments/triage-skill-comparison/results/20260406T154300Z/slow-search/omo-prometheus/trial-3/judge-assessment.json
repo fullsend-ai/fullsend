@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted 5 of 7 expected items: ~5,000 tasks, slow on description search vs fast on title, regression after v2.2→v2.3, started ~2 weeks ago, 10-15 second response times. Missing: CPU spikes during search and long descriptions in some tasks. These weren't volunteered by the reporter and the agent didn't ask about them, but they are useful diagnostic details."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it specifically calls out 'a change from indexed/full-text search to a naive LIKE/sequential scan' which is exactly what happened. The problem description, version correlation, and all factual details are consistent with ground truth. The recommended fix directly targets the actual cause."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 1 question turn before resolving. The agent asked a well-structured compound question that extracted version info, task count, timing, and search pattern differentiation all at once. No wasted turns, no redundant questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The initial question was exceptionally well-crafted. It asked about timing/correlation with changes (which surfaced the version upgrade), quantity of tasks (which surfaced the 5,000 count), and whether all searches or specific patterns were slow (which surfaced the title vs description distinction). Three targeted sub-questions that each yielded critical diagnostic information. The framing with examples helped the reporter self-diagnose the description vs title pattern."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a precise root cause hypothesis, concrete reproduction steps, a recommended investigation path (diff search implementation, check for dropped FTS index, run EXPLAIN ANALYZE), and even a proposed regression test. A developer could immediately start diffing v2.2 vs v2.3 search code and would likely find the issue quickly."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extremely efficient — extracted nearly all critical information in a single well-structured question",
+    "Root cause hypothesis almost exactly matches the actual cause (FTS to LIKE regression)",
+    "Recommended fix is actionable and specific, including EXPLAIN ANALYZE suggestion",
+    "The compound question was designed so each sub-question independently yielded high-value diagnostic information"
+  ],
+  "notable_weaknesses": [
+    "Did not discover CPU spike behavior during searches, which would have further confirmed the full-table-scan hypothesis",
+    "Did not ask about description length/content patterns, which is relevant to understanding the performance profile",
+    "OS listed as 'unspecified' despite the reporter mentioning 'work laptop' — could have asked but correctly noted it's unlikely to be root cause"
+  ],
+  "most_insightful_question": "Is it *every* search that's slow, or only certain queries (e.g., longer search terms, searching within a specific project, using filters)?",
+  "missed_opportunities": [
+    "Could have asked whether the reporter noticed any system resource spikes (CPU/memory) during slow searches to confirm full-scan hypothesis",
+    "Could have asked about the nature of task descriptions (length, content) to understand data characteristics",
+    "Could have asked if the reporter tried any workarounds like clearing cache or reindexing"
+  ]
+}

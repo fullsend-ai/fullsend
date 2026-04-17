@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured most expected extracts: archived tasks appearing in active search, active tasks missing, issue tied to recent v2.3.1 update, and multiple users affected. However, the critical diagnostic signal — whether individual task pages show the correct archive status — was never asked or captured. This item would have confirmed the bug is index-only and not in application logic, and its absence leaves a meaningful gap."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The hypothesis correctly identifies the v2.3.1 schema migration as the trigger and the search index as the broken component, matching the acceptable diagnostic path of 'identifying the schema migration as the trigger and the archive filter as the broken component.' The agent did not discover the specific field mapping inversion (archived=true indexed as active), but this is not required by the acceptable paths. The recommended fix — checking the v2.3.1 changelog and considering a reindex — is directionally correct."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single question, which happened to elicit the key timing information only because the reporter volunteered it. Multiple obvious follow-ups were left unasked: whether individual task detail pages show the correct archive status, whether toggling the archive filter reverses the results, and whether any database or schema migrations accompanied the upgrade. These questions would have meaningfully narrowed the hypothesis and are the kinds of things a thorough triage would always ask for a search regression."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Only one question was asked before resolution. The question was useful — it obtained version and environment info — and the resolution was not padded with redundant follow-ups. A slightly more targeted question could have combined environment with archive-filter probing, but the economy was good overall."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The single question (environment, browser, version) is standard boilerplate for any bug report — it shows no specific diagnostic reasoning about search indexing or archive filtering. The version question did unlock the timing correlation, but only because the reporter volunteered it. A more insightful question would have probed the search filter behavior or the consistency between individual task views and search results."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is well-structured and gives a developer a clear starting point: examine the v2.3.1 changelog for indexing changes, compare archive-status handling between versions, and consider triggering a reindex. The proposed test case is concrete. A developer would need to do some investigation but has a solid direction. The missing piece — whether individual task pages are unaffected — would have sharpened the hypothesis further, but the summary remains useful."
+    }
+  },
+  "weighted_total": 3.25,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly linked the issue onset to the v2.3.1 upgrade and schema migration, matching an acceptable diagnostic path",
+    "Produced a detailed, well-structured summary with reproduction steps, a proposed test case, and explicit information gaps",
+    "Correctly pointed to the search index — not application logic — as the likely broken component",
+    "High economy: reached a useful conclusion with minimal back-and-forth"
+  ],
+  "notable_weaknesses": [
+    "Resolved after a single question without probing whether individual task pages display the correct archive status — the key signal that would confirm an index-only bug",
+    "Never asked the reporter to try toggling the archive filter, which is both the workaround and a critical diagnostic step",
+    "The one question asked was generic environment boilerplate, not tailored to a search-index regression",
+    "Did not confirm whether new tasks created after the upgrade are also missing from search (which would indicate ongoing indexing failure, not just a stale index)"
+  ],
+  "most_insightful_question": null,
+  "missed_opportunities": [
+    "When you open an individual task that showed up incorrectly in search (e.g., the archived 'Q2 planning' task), does its detail page correctly show it as archived?",
+    "If you toggle the search filter to show archived tasks only, do you see your active tasks there instead?",
+    "Did the v2.3.1 update involve any database schema migrations, or was it a standard application upgrade?",
+    "Is the active 'Q2 planning' task you created yesterday visible when you browse your task list directly (outside of search)?"
+  ]
+}

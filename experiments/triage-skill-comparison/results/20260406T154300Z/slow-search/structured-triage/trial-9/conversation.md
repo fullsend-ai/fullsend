@@ -1,0 +1,53 @@
+# Conversation: slow-search x structured-triage
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! The slowness you're describing definitely sounds frustrating.
+
+To help us investigate, could you walk us through the steps to reproduce the issue? Specifically:
+- What are you searching for (e.g., a keyword, a tag, a phrase)?
+- Are you searching across all tasks, or within a specific project/folder?
+- Roughly how many tasks do you have in your account?
+
+That will help us narrow down where the bottleneck might be.
+
+---
+
+### reporter
+
+I'm searching for keywords, usually just a word or two that I know is somewhere in my task descriptions. I search across all my tasks, not filtered to any specific project. I've got about 5,000 tasks built up over the past couple years. The weird thing is, if I search by task title it's still fast — it's only when I'm searching through the task descriptions that it crawls. Some of my tasks have pretty long descriptions since I paste in meeting notes and stuff.
+
+---
+
+### triage-agent
+
+Thanks for that detail — the distinction between title search (fast) and description search (slow) is really helpful and gives us a strong lead.
+
+Could you share a few environment details so we can try to reproduce this on our end?
+- What OS is your work laptop running (e.g., Windows 11, macOS Sonoma)?
+- Which browser are you using (and roughly what version)?
+- What version of TaskFlow are you on? (You can usually find this under Settings → About.)
+
+---
+
+### reporter
+
+I'm on Ubuntu 22.04, it's a ThinkPad T14. I'm not sure about the browser version off the top of my head — I usually just use Firefox whatever the latest is. TaskFlow version is 2.3, I actually just upgraded from 2.2 about two weeks ago. Now that I think about it, the slowness might have started around that time but I'm not 100% sure.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text search on task descriptions extremely slow (~10-15s) with large task count since v2.3 upgrade","problem":"Searching by keyword across task descriptions takes 10-15 seconds for a user with ~5,000 tasks, many with long descriptions (pasted meeting notes). Title search remains fast. The slowness may have started after upgrading from TaskFlow 2.2 to 2.3 approximately two weeks ago.","root_cause_hypothesis":"The v2.3 upgrade likely introduced a regression in description search — possibly a missing or dropped full-text index on the task descriptions column, a query plan change, or a switch from indexed search to unindexed LIKE/ILIKE scanning. The fact that title search is still fast suggests titles are indexed but descriptions are not (or no longer are).","reproduction_steps":["Create or use an account with ~5,000 tasks, some with lengthy descriptions (multi-paragraph text)","Perform a keyword search across all tasks (not filtered to a specific project)","Observe that the search takes 10-15 seconds to return results","Perform the same keyword search but restricted to task titles","Observe that title search returns results quickly"],"environment":"Ubuntu 22.04, ThinkPad T14, Firefox (latest stable), TaskFlow v2.3 (upgraded from v2.2 approximately two weeks ago)","severity":"high","impact":"Users with large task histories experience unusable search performance on description searches — a core workflow. Likely affects any user with a significant number of tasks and is not isolated to one environment.","recommended_fix":"Investigate changes to the search query or indexing between v2.2 and v2.3. Check whether a full-text index on the task descriptions column exists and is being used by the query planner. Run EXPLAIN/ANALYZE on the description search query with a large dataset. If the index was dropped or a migration failed to create it, restore it. If the query was changed (e.g., from full-text search to LIKE '%term%'), revert to the indexed approach.","proposed_test_case":"Performance test: seed a database with 5,000 tasks with realistic-length descriptions. Execute a keyword search across descriptions and assert the query completes in under 2 seconds. Run this test against both v2.2 and v2.3 schemas to confirm the regression and verify the fix.","information_gaps":["Exact browser version (not blocking — issue is almost certainly server-side or database-related)","Whether the slowness started exactly with the v2.3 upgrade or around that time coincidentally","Server-side logs or query timing to confirm where the bottleneck is (database vs. application layer)"]}
+
+---

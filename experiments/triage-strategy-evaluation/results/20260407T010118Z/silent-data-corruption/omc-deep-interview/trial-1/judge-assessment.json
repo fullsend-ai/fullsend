@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: ~50-100 affected records out of 2,000; truncation pattern (not random); ~2-week timeline; nightly batch import as the vector; 3+ digit country codes affected; US/UK numbers unaffected; and a recent change in the import/parsing pipeline. The summary also adds value with proposed test cases and a detailed impact statement."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage squarely hits the first acceptable diagnostic path: it identifies the nightly import as the corruption source and the 3-digit country code pattern. It also identifies the 2-week timeline and connects it to a change in the import pipeline. The root cause hypothesis explicitly names 'a parsing regex or substring operation that assumes all country codes are 1–2 digits' as a candidate — which is the actual cause. It doesn't pinpoint the normalizer by name, but that is within the acceptable paths. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered all the high-value diagnostic axes: truncation pattern, import mechanism, timing, source-of-truth check in Salesforce, and whether corruption is ongoing. The one obvious missed question is asking the reporter (or flagging internally) whether anyone on the TaskFlow side knows what changed in the import pipeline ~2 weeks ago — the reporter volunteered 'I feel like something changed around that time but I don't know what exactly on your end,' which was a clear opening to probe further. The agent noted this in information gaps but did not follow up conversationally."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four substantive questions, each with a distinct diagnostic purpose. Question 3 efficiently bundled two related sub-questions (Salesforce accuracy + format changes). No redundant questions. One minor inefficiency: asking about Salesforce format changes was low-yield given the reporter already said nothing changed on their end, but it was reasonable to confirm."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking for the truncation pattern (not just 'can you describe the issue') immediately surfaced the country-code-length hypothesis. Asking whether numbers are correct in Salesforce was the key isolation step — it definitively separated a CRM problem from an import problem. Asking whether corruption is ongoing versus a one-time event was highly actionable and led to the confirmation that every nightly sync re-corrupts the data."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: check git history for the phone number import/parsing code from ~2 weeks ago, look for regex patterns or substring operations limiting country codes to 2 characters, fix to support 1–3 digit country codes per E.164, then re-run the batch import. Reproduction steps are concrete and testable. The proposed test case covers the right edge cases. Information gaps are clearly flagged so a developer knows what they still need to determine."
+    }
+  },
+  "weighted_total": 4.5,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The first question immediately targeted the truncation pattern rather than generic bug info, surfacing the country-code-length hypothesis in turn 1",
+    "Asking whether the source data in Salesforce was correct was the critical isolation step and definitively pinpointed the import layer",
+    "Asking whether corruption is ongoing versus a one-time event revealed that every nightly sync re-corrupts data — a key severity escalator",
+    "The final summary is unusually detailed and actionable: it includes specific fix guidance, a well-constructed test case, and clearly flagged information gaps"
+  ],
+  "notable_weaknesses": [
+    "The reporter volunteered 'I feel like something changed around that time but I don't know what exactly on your end' — a clear opening to ask TaskFlow to check their deployment history or changelog, which the agent did not pursue conversationally (only noted in information gaps)",
+    "The agent did not ask about the TaskFlow version, which could help the engineering team narrow down the relevant code change"
+  ],
+  "most_insightful_question": "Could you check whether those same phone numbers (the Ireland +353 one, the Antigua +1268 one) are still stored correctly in Salesforce right now? — This definitively isolated the corruption to the TaskFlow import layer and ruled out a CRM-side format change.",
+  "missed_opportunities": [
+    "Following up on the reporter's hint that 'something changed around that time on your end' — asking whether they received a TaskFlow release notice or changelog around 2 weeks ago, or asking the agent to flag this as a prompt to check internal deployment logs",
+    "Asking whether the affected customers are clustered in specific regions or countries, which would have further confirmed the country-code-length hypothesis and helped scope the blast radius"
+  ]
+}

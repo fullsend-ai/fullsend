@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts were captured: task count (~5,000), title-fast/description-slow distinction, v2.3 upgrade correlation, ~2-week onset, 10-15 second timing, and long descriptions. The one notable gap is CPU behavior during search — the agent never asked about system resource usage, which was part of the expected information and would have reinforced the full-table-scan hypothesis."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names both the v2.2→v2.3 regression and the likely switch from indexed full-text search to an unindexed LIKE/sequential scan — matching the actual cause and satisfying both acceptable diagnostic paths simultaneously. The evidence chain in the summary (constant scan time regardless of term frequency → rules out rendering overhead → implies fixed-cost full table scan) is mechanistically correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the questions needed to form a strong diagnosis: onset timing, task scale, caching effects, term frequency sensitivity, and the title/description split. The one clear omission is CPU/resource behavior during searches, which was in the expected information and would have provided additional confirmatory evidence. Hardware/OS details were also skipped, though less critical to the diagnosis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three triage turns, each materially advancing the diagnosis. Turn 1 established scale and timing. Turn 2 discovered the title/description split — the single most diagnostic fact. Turn 3 ran a targeted experiment (common vs. rare terms) to distinguish rendering overhead from a full table scan. No wasted questions; the common/rare test was purpose-built and yielded the confirming signal."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The common-vs-rare-term experiment in turn 3 is genuinely insightful: it was designed to test whether search time is proportional to result count (rendering overhead) or constant (full scan), a distinction the reporter would never have volunteered. The title/description framing in turn 2 was also well-constructed — asking about 'all search terms vs certain queries' rather than leading directly to the title/description hypothesis allowed the reporter to surface the observation organically. Both questions demonstrated real diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate, specific path: diff the description search path between v2.2 and v2.3, run EXPLAIN to confirm a sequential scan, verify or rebuild the FTS index. It includes reproduction steps, a proposed regression test with measurable acceptance criteria, and an explicit workaround. A developer could open the codebase and start investigating without any further conversation."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The common-vs-rare-word experiment was mechanistically elegant: equal timing for both confirmed a fixed-cost full table scan rather than result-rendering overhead, providing strong evidence for the LIKE/unindexed-scan hypothesis",
+    "Root cause hypothesis is almost exactly correct, naming FTS index removal and LIKE query as the likely culprit — closely matching the actual v2.3 FTS5→LIKE regression",
+    "The triage summary is highly actionable, with specific technical steps (EXPLAIN, index verification, v2.2/v2.3 diff), a workaround, and a regression test spec with measurable criteria"
+  ],
+  "notable_weaknesses": [
+    "CPU spike behavior during search was never elicited — a missed confirmatory signal that would have further supported the full-table-scan hypothesis and is part of the expected information",
+    "Exact previous version (v2.2) was not confirmed; the agent noted 'exact v2.3 version not confirmed' but didn't ask the reporter what version they upgraded from, leaving the regression window slightly fuzzy"
+  ],
+  "most_insightful_question": "Could you try two description searches and roughly time them? First, search for a very common word... Then search for something rare or unique... Is the common-word search noticeably slower than the rare-word search, or are they both equally slow?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory usage spikes during slow searches (would confirm compute-bound full scan vs. I/O or network issue)",
+    "Ask what version they upgraded from, not just what version they're on (to confirm the v2.2→v2.3 regression boundary)",
+    "Ask whether they tried clearing any cache or reindexing (could reveal a workaround path and confirm the index hypothesis)"
+  ]
+}

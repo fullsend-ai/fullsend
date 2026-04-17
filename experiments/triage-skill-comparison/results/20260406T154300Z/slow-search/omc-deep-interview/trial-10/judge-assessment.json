@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted ~5,000 tasks, description vs title search distinction, v2.2→v2.3 regression, ~2 weeks timing, 10-15s latency, and long descriptions (meeting notes). Missed CPU spike detail. Got 6 of 7 expected items."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "Root cause hypothesis is remarkably close to the actual cause — correctly identified a dropped/altered full-text index on descriptions with title search still using the indexed path. The hypothesis of 'indexed search to sequential scan' essentially describes the FTS5-to-LIKE regression. No factual errors in the summary."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent questions to extract nearly all critical information. First question efficiently combined timing and scale. Second question smartly probed search type differences, which unlocked the key title-vs-description distinction. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The second question — asking whether it depends on what you're searching for and distinguishing simple vs complex queries — was particularly insightful and directly led to the critical discovery that description search is slow while title search is fast. The cold/warm start sub-question also showed systematic thinking."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear root cause hypothesis, specific reproduction steps with realistic parameters, a concrete debugging plan (diff migrations, check FTS index, run EXPLAIN), and even a proposed regression test. A developer could immediately start investigating the v2.3 migration scripts and search code paths."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — only 2 questions to reach a highly accurate diagnosis",
+    "Root cause hypothesis nearly exactly matches the actual cause (FTS index dropped, sequential scan on descriptions)",
+    "The title/description distinction was surfaced through a well-crafted diagnostic question rather than luck",
+    "Actionable summary with concrete debugging steps and a proposed regression test"
+  ],
+  "notable_weaknesses": [
+    "Did not capture CPU spike information (though this is a secondary detail)",
+    "Did not ask about OS/hardware despite the reporter mentioning 'work laptop' — noted as info gap but could have been quickly clarified",
+    "Listed database backend as an information gap but didn't ask about it despite it being relevant to the index hypothesis"
+  ],
+  "most_insightful_question": "Is it *every* search that's slow, or does it depend on what you're searching for? For example, does a simple one-word search like 'meeting' take just as long as a more complex search with filters?",
+  "missed_opportunities": [
+    "Could have asked about CPU/memory behavior during slow searches to confirm full-table-scan hypothesis",
+    "Could have asked about the database backend (SQLite vs other) since the hypothesis depends on indexing behavior",
+    "Could have asked if the reporter noticed anything about result counts or whether searching shorter descriptions is faster"
+  ]
+}

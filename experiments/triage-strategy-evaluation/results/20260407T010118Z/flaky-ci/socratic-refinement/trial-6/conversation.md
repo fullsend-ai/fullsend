@@ -1,0 +1,59 @@
+# Conversation: flaky-ci x socratic-refinement
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it's blocking releases.
+
+To help me understand the full picture: can you walk me through what was happening on the project around the time these failures started a few days ago? For example, were there any recent changes to the test suite itself, new dependencies, infrastructure updates, or a bump in the CI environment? I'm curious about anything that shifted around that timeframe, even if it doesn't seem obviously related.
+
+---
+
+### reporter
+
+Yeah we merged a PR about 4 days ago that added some new tests for the task ordering stuff. That's probably when it started. Look, the tests pass on my machine every single time. It's only CI that's flaky. Can someone just look at this? It's been blocking us for days.
+
+---
+
+### triage-agent
+
+I hear you — being blocked for days is rough, and I want to help move this forward quickly.
+
+You mentioned the PR that added tests for task ordering landed right around when this started, which is a really useful data point. Here's what would help me zero in: when CI fails, is it the *new* task ordering tests that are failing, or are *other, previously-stable* tests breaking? If you've got a recent failed CI run handy, even just the names of a few of the failing tests would tell us a lot about where to look. I'm trying to understand whether the new tests themselves are unstable, or whether something in that change is rippling out and affecting other parts of the suite.
+
+---
+
+### reporter
+
+It's the new tests that fail. The ones from that PR. I can see the test names in the CI logs when they fail — they're all the task ordering ones. The old tests are fine. Like I said, they pass every time on my machine so I don't get why CI is different.
+
+---
+
+### triage-agent
+
+That's really helpful — knowing it's specifically the new task ordering tests narrows things down a lot.
+
+Can you tell me a bit more about what those tests are actually doing? For instance, are they testing that tasks come back in a particular sort order, or that tasks can be reordered by the user, or something else? And when they fail in CI, what does the failure look like — are the tasks coming back in a wrong order, or is it an error/timeout, or something else entirely? I'm asking because "task ordering" tests that pass locally but fail intermittently in CI often have a specific pattern, and understanding what the assertions actually check would help me point a developer in the right direction.
+
+---
+
+### reporter
+
+They check that tasks come back in the right order after sorting. When they fail, the order is just wrong — like the tasks are shuffled or something. No errors or timeouts, the assertions just don't match because the order is different than expected. I really don't understand why this would be a CI-only problem when the exact same code passes locally every time.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Task ordering tests fail intermittently in CI due to non-deterministic sort order","problem":"The new task ordering tests added ~4 days ago pass consistently on developer machines but fail intermittently in CI. When they fail, the tasks come back in an unexpected order — no errors or timeouts, just assertion mismatches on the sequence of returned tasks.","root_cause_hypothesis":"The sort/query used by the task ordering feature does not have a fully deterministic ORDER BY clause. When multiple tasks share the same value for the sort key (e.g., identical priority, created_at, or position), the database returns them in an arbitrary order. Locally this happens to be stable (likely due to insertion-order coincidence, SQLite behavior, or single-connection access), but CI's environment (different DB engine, parallel test execution, or connection pooling) surfaces the instability.","reproduction_steps":["Identify the task ordering tests added in the recent PR (~4 days ago)","Examine the test fixtures/setup: look for tasks that share the same value on the primary sort field","Run the tests repeatedly (e.g., in a loop or with a tool like pytest-repeat) against the same DB engine CI uses","Observe that when tied-key tasks are present, their relative order is not guaranteed"],"environment":"CI environment (specific runner/DB unknown but differs from local). Failures are intermittent, suggesting environment-dependent ordering rather than a logic bug.","severity":"high","impact":"Blocking releases for the team. Every CI run has a chance of spurious failure, requiring reruns and eroding confidence in the test suite.","recommended_fix":"1. Inspect the query or sort logic backing the task ordering feature. 2. Add a deterministic tiebreaker to the ORDER BY clause (e.g., `ORDER BY position, id`) so that tasks with equal sort keys always return in a consistent sequence. 3. Review the test fixtures to ensure they exercise cases with distinct sort keys as well as tied sort keys. 4. If the tests are constructing tasks with identical timestamps or positions, either space them out or update assertions to account for the tiebreaker field.","proposed_test_case":"Create a test that inserts multiple tasks with identical values for the primary sort field (e.g., same priority or position), sorts them, and asserts the result is ordered by the tiebreaker field (e.g., id). Run this test in a loop (50+ iterations) to confirm stability.","information_gaps":["Exact CI database engine and version vs. local setup (developer can check CI config)","Which specific sort field(s) the task ordering feature uses (developer can see in code)","Whether CI runs tests in parallel, which could also affect insertion order"]}
+
+---

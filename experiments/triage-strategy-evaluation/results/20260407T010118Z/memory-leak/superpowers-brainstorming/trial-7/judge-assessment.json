@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured nearly all expected information: linear memory growth (~500MB to 4GB+), v2.3 upgrade trigger (~1 week ago), 200 active users, consistent daily pattern, restart workaround, and v2.3 changelog notification changes. Missing: server specs (8GB RAM VM, Ubuntu 22.04) — never asked and not present in summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is essentially correct and matches both the canonical cause and acceptable diagnostic paths. The agent correctly pinpointed v2.3's notification system changes, identified a per-request resource leak pattern (listeners registered per-request, never cleaned up), and correctly noted the request-volume correlation as the distinguishing signal. The specific mechanism (event listener per API request) is named explicitly in the recommended fix."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The two questions asked were well-chosen, and the reporter volunteered the critical version upgrade detail unprompted. However, the agent never asked about server specs (RAM, OS), never suggested a simple isolation test (e.g., disable real-time notifications and observe if leak stops), and never asked for heap dumps or profiler output. These are noted as information gaps in the summary but were never attempted as follow-up questions during triage."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, and neither was redundant. The first scoped the usage pattern to identify the likely subsystem; the second targeted the specific distinction between connection-level vs. per-request leak. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question's multiple-choice framing efficiently narrowed subsystem candidates. The second question was particularly sharp — asking whether WebSocket connection count grows beyond the user count is a precise, non-obvious test that directly distinguishes connection-level accumulation from a deeper per-request pipeline leak. This is exactly the kind of question a reporter wouldn't volunteer on their own."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately. The summary identifies the specific subsystem (real-time notification changes in v2.3), names the likely mechanism (event listeners/handlers registered per-request, never removed), provides a concrete diff strategy (v2.2 vs v2.3 notification subsystem), lists specific code patterns to look for, proposes a heap snapshot approach to confirm, includes a regression test specification, and clearly marks remaining unknowns."
+    }
+  },
+  "weighted_total": 4.45,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question about WebSocket connection count growth is a genuinely insightful diagnostic question that drew out the per-request vs. per-connection distinction, directly shaping the accurate root cause hypothesis",
+    "The triage summary is exceptionally actionable — the recommended fix section names specific code patterns to search for (event listeners, subscription objects, missing cleanup hooks) rather than generic advice",
+    "The agent correctly and quickly latched onto the v2.3 upgrade timing volunteered by the reporter and made it the center of the hypothesis",
+    "Proposed test case with a concrete pass/fail assertion and v2.2 baseline is developer-ready"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM VM, Ubuntu 22.04) were never captured — a simple 'what are your server specs?' would have completed the environment picture",
+    "No attempt to suggest a simple isolation test during triage (e.g., 'can you temporarily disable real-time notifications and observe whether memory growth stops?') — this would have been cheap to ask and highly confirmatory",
+    "No request for heap dump or profiler output, even as a next-step suggestion during the active conversation"
+  ],
+  "most_insightful_question": "Do you see the number of active WebSocket connections climbing throughout the day on your Grafana dashboard, even as the number of logged-in users stays roughly the same?",
+  "missed_opportunities": [
+    "What are your server specs (RAM, CPU, OS)?",
+    "Can you try temporarily disabling real-time notifications to confirm whether the memory leak stops?",
+    "Can you capture a heap dump or run a memory profiler (e.g., pprof, jmap) after a few hours of runtime to identify which object type is accumulating?"
+  ]
+}

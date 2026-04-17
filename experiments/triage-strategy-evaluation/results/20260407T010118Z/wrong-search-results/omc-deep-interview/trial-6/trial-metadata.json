@@ -1,0 +1,7 @@
+{
+  "scenario": "wrong-search-results",
+  "strategy": "omc-deep-interview",
+  "reporter_profile": "cooperative",
+  "turns": 4,
+  "parse_failures": 0
+}

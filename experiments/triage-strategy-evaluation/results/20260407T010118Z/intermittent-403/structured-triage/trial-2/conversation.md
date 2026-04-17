@@ -1,0 +1,59 @@
+# Conversation: intermittent-403 x structured-triage
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s are frustrating, especially when permissions haven't changed.
+
+To help us narrow this down: could you walk us through the steps you take when the 403 appears? For example:
+- Are you logging in fresh, or are you already in an active session?
+- Is it specifically the main dashboard page, or does it also happen on other pages?
+- When it fails, does refreshing the page fix it, or do you have to log out and back in?
+
+Any pattern you've noticed — even a rough one like "it tends to happen in the morning" — would be really helpful.
+
+---
+
+### reporter
+
+I'm usually already logged in when it happens — I don't think it's a session thing. It happens on the dashboard but also on other pages like the reports section. When I get the 403, if I just refresh the page it sometimes works on the next try, or maybe the try after that. I don't have to log out or anything. I haven't noticed a time-of-day pattern really, it feels pretty random. Like maybe 1 out of every 3 page loads fails? I assumed it was some kind of network issue on our end but my coworker who also just got set up with the new analyst role is seeing the same thing.
+
+---
+
+### triage-agent
+
+Thanks for those details — really helpful, especially the bit about refreshing sometimes clearing it.
+
+Could you share some environment details so we can try to reproduce this on our end?
+
+- What **browser and version** are you using? (e.g., Chrome 124, Firefox 126)
+- What **OS** are you on? (e.g., Windows 11, macOS Sonoma)
+- Which **version of TaskFlow** are you running, or is this the cloud-hosted version?
+- Are you connecting through a **VPN, proxy, or any corporate network layer**?
+
+Also — you mentioned your coworker was recently set up with the "new analyst role." Are you also on that same analyst role, or do you have a different role? Just want to understand whether the 403s might be tied to a specific role configuration.
+
+---
+
+### reporter
+
+I'm on Chrome, I think version 124 or 125 — not totally sure of the exact version. Windows 11. We're running TaskFlow v2.3.1, it's self-hosted. And yeah we do go through a corporate network but I don't think it's a VPN or proxy, just normal office network. My coworker is on a Mac and sees the same thing so I don't think it's browser or OS specific.
+
+And yes, I'm also on the analyst role — we both got switched to it recently, maybe like a week ago? I hadn't really connected that to the 403s but now that you mention it, the timing is kind of close. The 403s started a couple days ago though, not right when I got the role. Other people on the team with the regular editor role haven't mentioned any issues.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden errors for users with the analyst role (v2.3.1)","problem":"Users assigned the 'analyst' role are experiencing intermittent 403 Forbidden errors when accessing the dashboard, reports, and potentially other pages. Approximately 1 in 3 page loads fails. Refreshing the page sometimes resolves it on the next attempt. The issue affects multiple users with the analyst role across different browsers and operating systems, and began a few days after the role was assigned. Users with the 'editor' role are not affected.","root_cause_hypothesis":"The analyst role likely has an incomplete or inconsistent permission configuration that causes authorization checks to intermittently deny access. The intermittent nature suggests either: (1) a race condition in permission/session caching where the role's permissions are sometimes not fully loaded or are being evicted from cache, (2) a load-balanced setup where some app server instances have stale or inconsistent role-permission mappings after the analyst role was created or modified, or (3) the analyst role was granted access to some but not all required sub-resources on these pages, and the order in which resources are checked varies.","reproduction_steps":["Create or use a user account assigned the 'analyst' role in TaskFlow v2.3.1 (self-hosted)","Log in and navigate to the dashboard page","Refresh the page repeatedly (approximately 10-15 times)","Observe that roughly 1 in 3 page loads returns a 403 Forbidden error","Repeat on the reports page to confirm it occurs across multiple pages","Compare with a user assigned the 'editor' role — they should not see the issue"],"environment":"TaskFlow v2.3.1, self-hosted. Reproduced on Chrome 124/125 on Windows 11 and on macOS (coworker). Corporate network (no VPN/proxy). Issue is not browser- or OS-specific.","severity":"high","impact":"All users with the analyst role are affected. They are intermittently locked out of core application pages (dashboard, reports), disrupting their workflow. The issue appears to affect every analyst-role user, not just one individual.","recommended_fix":"1. Inspect the analyst role's permission configuration in the RBAC/authorization system — compare it to the editor role to identify missing or misconfigured permissions. 2. Check whether the application uses permission caching (in-memory, Redis, etc.) and whether the analyst role's permissions are being inconsistently cached or evicted. 3. If running multiple app server instances behind a load balancer, verify that role-permission mappings are consistent across all instances. 4. Review authorization middleware logs filtered by 403 responses to identify which specific permission check is failing. 5. Check if the analyst role was added in a recent migration or config change around the time the issue started.","proposed_test_case":"Create an integration test that: (1) assigns a test user the analyst role, (2) makes 50 sequential authenticated requests to the dashboard and reports endpoints, and (3) asserts that all requests return 200. Run this test against a multi-instance deployment if applicable to catch load-balancer-related inconsistencies.","information_gaps":["Server-side authorization logs showing which specific permission check triggers the 403","Whether the analyst role was created or modified recently in a migration or admin change","Whether the deployment uses multiple app server instances behind a load balancer","Exact browser console Network tab details (response headers, body) for the 403 responses"]}
+
+---

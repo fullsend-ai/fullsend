@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were extracted: ~5,000 tasks, title-vs-description speed difference, v2.2→v2.3 regression, started ~2 weeks ago, 10-15 seconds latency, CPU spike (fan kicking on), and long descriptions (full meeting minutes, thousands of words). The summary also adds useful context like self-hosted instance and SQLite default install."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the canonical cause — the agent explicitly identified 'removing SQLite FTS indexing, failing to migrate the FTS index during upgrade, or switching to a naive LIKE/%pattern% scan' as the likely culprit. This matches both the canonical root cause (FTS5 → LIKE regression in v2.3) and the acceptable paths (version upgrade as trigger + indexing issue hypothesis). No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about timing, search type, dataset scale, description size, hosting model, database type, and query behavior consistency — covering the diagnostic space well. Missed: OS/hardware details (Ubuntu 22.04, ThinkPad T14, 32GB RAM), and whether the reporter had tried clearing cache or reindexing (a known workaround). These were not critical to the diagnosis but represent minor gaps."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were well-bundled and mostly essential. The database type question in turn 3 was reasonable for a self-hosted setup even though SQLite was the likely default — worth confirming. The query-length-vs-latency question was a smart diagnostic probe. No clearly redundant questions; at most the database question could have been deprioritized given default-install context."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking about timing and update correlation in turn 1 surfaced the version regression. Asking about task count and description size in turn 2 elicited the critical scale context that explains the severity. Asking about query-length-vs-latency in turn 3 was a sophisticated probe that would differentiate index miss from full scan — information the reporter wouldn't have volunteered. The hypothesis presented in turn 4 was an effective way to elicit confirmation of the version jump."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin coding immediately: the summary identifies the specific area to investigate (search query construction in v2.2→v2.3 diff), the precise mechanism to check (SQLite FTS virtual table creation/migration), a concrete reproduction recipe with dataset parameters, and a proposed regression test. The fix steps are ordered and specific."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Correctly hypothesized FTS5→LIKE regression including the migration failure scenario — matching the canonical root cause without access to code",
+    "Extracted all 7 expected information items across a compact 4-turn conversation",
+    "The query-length-vs-latency question was a sophisticated diagnostic probe that ruled out query-complexity effects and pointed toward a full scan",
+    "Triage summary is exceptionally actionable: includes reproduction steps, specific fix recommendations, and a proposed regression test with concrete parameters"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about OS or hardware specs (Ubuntu 22.04, ThinkPad T14, 32GB RAM) — minor omission, not critical to diagnosis",
+    "Incorrectly concluded there was 'no known workaround other than avoiding description search' — the ground truth notes that manually rebuilding the FTS index is a valid workaround",
+    "Did not ask whether the reporter had tried cache clearing or reindexing, which would have surfaced the manual rebuild workaround"
+  ],
+  "most_insightful_question": "Asking 'does the slowdown get worse with longer search queries, or is it roughly the same 10-15 seconds regardless of what you type?' — this probe distinguished between query-complexity-sensitive behavior (suggesting partial indexing) and uniform latency (suggesting a full sequential scan), directly supporting the LIKE full-table-scan hypothesis.",
+  "missed_opportunities": [
+    "Ask whether the reporter had tried clearing the search cache or triggering a reindex — would have identified the manual FTS rebuild as a workaround",
+    "Ask for OS and hardware details (relevant for self-hosted performance profiling and reproducing the issue)",
+    "Ask whether other search modes (by tag, date, assignee) were also affected — would have further isolated description-specific indexing as the failure point"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured 4 of 7 expected items: title-vs-description performance difference, v2.3 upgrade correlation, 2-week onset, and 10-15s latency. It missed CPU spike behavior, long description lengths (which are mechanically relevant to the LIKE scan cost), and the exact task count (~5,000). The task count was noted as an information gap but the agent never asked. CPU behavior and description length were not asked at all."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis directly matches both acceptable diagnostic paths simultaneously: it identifies the v2.3 upgrade as the trigger AND the title-vs-description performance asymmetry as pointing to an indexing issue. The specific guess of 'switching from indexed full-text search to a LIKE/ILIKE pattern match' is essentially the canonical root cause (FTS5 → naive LIKE). This is an excellent hypothesis given only two turns of conversation."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after one round of questioning. It had a reasonable basis for its hypothesis, but left several obvious follow-ups on the table: it never asked how many tasks the reporter has (listed as an info gap but unasked), never asked whether CPU spikes during search (a key performance signal), and never asked about description length or content type. These would have added depth to the triage without requiring many extra turns."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "One round of two tightly grouped questions, both of which directly unlocked the key diagnostic signals. No redundant or low-value questions. Resolved cleanly without wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was well-designed: asking explicitly about search type (title vs. description vs. filter) forced the reporter to think about the distinction and revealed the title-is-fast / description-is-slow asymmetry — information the reporter hadn't volunteered and which became the cornerstone of the hypothesis. Pairing it with the onset question in the same turn was efficient. These questions demonstrated genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is highly actionable: it includes a concrete reproduction procedure, a step-by-step debugging approach (diff v2.2 vs v2.3, check index existence, check query plan for LIKE patterns), a proposed regression test with specific seed parameters, and a correct pointer to look at migration scripts. A developer could open the codebase and begin the fix immediately."
+    }
+  },
+  "weighted_total": 4.20,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The opening question was exceptionally well-targeted: explicitly listing 'title vs. description vs. filter' as search type options prompted the reporter to surface the critical title/description performance asymmetry without prompting",
+    "The root cause hypothesis (FTS index dropped/not migrated, replaced by LIKE scan) is essentially the canonical cause derived from just one reply",
+    "The triage summary is production-quality: reproduction steps, fix checklist, and regression test are all concrete and immediately usable"
+  ],
+  "notable_weaknesses": [
+    "Never asked about task count despite noting it as an information gap — a simple 'roughly how many tasks do you have?' would have filled this",
+    "CPU spike behavior was not surfaced — this is a strong signal for query-level CPU-bound processing and would have reinforced the hypothesis",
+    "Description length/content type (e.g., long meeting notes) was not explored — relevant because a LIKE scan on 2000-word descriptions is dramatically worse than on short titles"
+  ],
+  "most_insightful_question": "What are you typically searching for? (with the explicit enumeration of title/labels/description options) — this structured prompt caused the reporter to realize and articulate the title-is-fast / description-is-slow distinction, which became the foundation of an accurate root cause hypothesis",
+  "missed_opportunities": [
+    "How many tasks do you have in your instance approximately?",
+    "Do you notice your CPU or fan spinning up during a slow search?",
+    "Are some of your task descriptions very long — for example, copy-pasted meeting notes or documents?"
+  ]
+}

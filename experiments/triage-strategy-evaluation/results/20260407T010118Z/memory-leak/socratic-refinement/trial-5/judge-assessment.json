@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: memory growth curve (500MB to 4GB+), v2.3 upgrade timing (~1 week ago), ~200 active users, day-to-day consistency, restart as workaround, and v2.3 changelog mention of notification changes. Missing: server specs (8GB RAM, Ubuntu 22.04 VM), though the agent correctly flagged server runtime as an information gap."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the canonical cause: per-request event listener registration in the v2.3 notification system without cleanup, correlated with request volume rather than connected user count. The agent explicitly named event listeners as the likely leak mechanism, identified the correct subsystem, and correctly inferred that WebSocket connections themselves were managed fine while the per-request code path leaked. This matches both the canonical cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent reached a well-supported conclusion in two question rounds that uncovered the upgrade trigger, the specific v2.3 feature, and the crucial diagnostic signal (fd/thread growth correlating with request volume, not user count). Obvious unasked questions — server OS/RAM specs, whether rolling back to v2.2 was attempted — were correctly surfaced as information_gaps rather than left unacknowledged."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. The first unlocked the v2.3 upgrade and changelog clue. The second drew out the thread/fd growth pattern that confirmed the per-request leak hypothesis. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first was well-framed to surface change events without leading the reporter. The second was notably insightful: asking whether connection counts were proportional to users (vs. request volume) was the key question that let the reporter provide the distinguishing diagnostic signal — growth tracks requests, not concurrent users — which the reporter would not have volunteered unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it names the specific code area (per-request listener registration in v2.3 notification path), provides a concrete diff strategy (v2.3 vs v2.2 notification changes), suggests specific profiling artifacts (heap dump, thread dump), and includes a proposed load test with a clear pass/fail criterion. A developer could begin a targeted code review or profiling session with no additional context gathering."
+    }
+  },
+  "weighted_total": 4.7,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Second question was diagnostically sharp: asking whether thread/connection growth tracked users vs. request volume elicited the key signal the reporter wouldn't have volunteered",
+    "Root cause hypothesis precisely named event listener registration per request as the likely mechanism — matching the canonical cause without access to the codebase",
+    "Summary is immediately actionable with specific investigation targets, a diff strategy, profiling artifact suggestions, and a concrete test case"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM, Ubuntu 22.04) were never captured, leaving environment details incomplete",
+    "Did not ask whether rolling back to v2.2 had been attempted, which would have been a quick confirmation of the regression hypothesis"
+  ],
+  "most_insightful_question": "Could you tell me a bit more about what you observe with those notifications during the day? ... does the number of active connections or threads on the server grow steadily through the day the same way the memory does?",
+  "missed_opportunities": [
+    "Ask for server OS, RAM, and runtime language/version — would complete the environment picture and enable targeted profiling tool recommendations",
+    "Ask whether rolling back to v2.2 was tried or is feasible — a quick regression confirmation or ruling-out of the upgrade hypothesis"
+  ]
+}

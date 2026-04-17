@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Description search regression in v2.3: 10-15s latency on keyword search across task descriptions
+
+## Problem
+Searching by keyword across task descriptions takes 10-15 seconds consistently, whereas title search remains fast (sub-second). The reporter has ~5,000 tasks and has been using TaskFlow for 2 years. The slowdown began approximately 2 weeks ago, likely coinciding with the v2.3 update.
+
+## Root Cause Hypothesis
+v2.3 likely introduced a regression in the description search code path — most probably a dropped or broken database index on the description field, a switch from indexed/optimized search to a naive full-text scan, or a query change that bypasses an existing index. The fact that title search is unaffected and the rest of the app performs normally isolates the problem to the description search query specifically.
+
+## Reproduction Steps
+  1. Create or use an account with a large number of tasks (~5,000)
+  2. Search using a keyword known to appear in a task description
+  3. Observe response time (expected: 10-15 seconds)
+  4. Search using the same or different keyword that appears in a task title
+  5. Observe response time (expected: sub-second)
+  6. Compare the two query paths and their execution plans
+
+## Environment
+TaskFlow v2.3 (likely), work laptop, ~5,000 tasks accumulated over 2 years
+
+## Severity: high
+
+## Impact
+All users with non-trivial task counts are likely affected when searching description content. This is a core workflow — searching tasks by description keywords — and 10-15s latency makes it effectively unusable for iterative searching.
+
+## Recommended Fix
+1. Diff the description search query/code path between v2.2 and v2.3 to identify what changed. 2. Run EXPLAIN/ANALYZE on the description search query against a dataset of ~5,000 tasks — look for sequential scans where an index scan is expected. 3. Check whether a full-text search index on the description field exists and is being used. 4. If an index was dropped or a query refactored to bypass it, restore indexed search for descriptions.
+
+## Proposed Test Case
+Performance test: execute a keyword search against task descriptions with a dataset of 5,000+ tasks and assert response time is under 2 seconds. Include a regression test comparing title search and description search latency to ensure parity.
+
+## Information Gaps
+- Exact TaskFlow version not confirmed with certainty (reporter said 'I think' it was v2.3)
+- Database engine and configuration unknown (SQLite, PostgreSQL, etc.)
+- Whether this is a local/desktop app or connects to a hosted backend

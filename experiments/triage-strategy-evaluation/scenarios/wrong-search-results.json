@@ -1,0 +1,25 @@
+{
+  "title": "Search shows wrong results — finding archived tasks instead of active ones",
+  "body": "Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.",
+  "quality": "medium",
+  "reporter_profile": "cooperative",
+  "ground_truth": {
+    "description": "The reporter is a project manager. Three days ago, a database schema migration ran as part of the v2.3.1 patch. The migration added new columns and rebuilt the search index. During the rebuild, the field mapping for the 'archived' boolean was inverted — the index maps archived=true to active and archived=false to archived. So when the search filters for 'active tasks only' (the default), it actually returns archived tasks, and vice versa. Searches that don't filter by archive status return all tasks correctly but in a confusing mix. The reporter has 150 active tasks and 300 archived tasks. The inversion happened in the index mapping configuration, not in the application code, so the UI shows the correct archive status for individual tasks — it's only the search filter that's broken.",
+    "actual_cause": "The search index field mapping for the 'archived' boolean is inverted after a schema migration rebuild. archived=true in the database is indexed as active=true in the search index. The search filter for 'show active only' (the default) returns archived tasks. The fix is to correct the field mapping in the index configuration and rebuild the index.",
+    "acceptable_paths": [
+      "Identifying that the search index is out of sync with the database and suggesting a reindex, even without discovering the specific field mapping inversion",
+      "Identifying the schema migration as the trigger and the archive filter as the broken component, even without understanding the exact inversion"
+    ],
+    "environment": "TaskFlow v2.3.1, Elasticsearch search index, PostgreSQL database, 150 active + 300 archived tasks",
+    "workaround": "Manually toggle the archive filter to see the opposite of what you want; or browse tasks without using search"
+  },
+  "expected_triage_extracts": [
+    "search returns archived tasks when filtering for active",
+    "active tasks are missing from default search results",
+    "started after a recent update or migration (~3 days ago)",
+    "affects all users, not just the reporter",
+    "individual task pages show correct archive status",
+    "search filter behavior is inverted",
+    "related to search index, not application logic"
+  ]
+}

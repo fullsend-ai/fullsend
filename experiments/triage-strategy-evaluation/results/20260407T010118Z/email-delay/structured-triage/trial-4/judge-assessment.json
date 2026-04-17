@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, ~1 week onset, morning-worse/afternoon-better pattern, Daily Digest feature as the suspected batch process, queue/pipeline contention, transactional vs. bulk competition, and the original 1-2 minute baseline. The summary additionally captures severity, impact, reproduction steps, and a proposed test case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches acceptable diagnostic path #2: the agent identified the Daily Digest feature as the cause and explicitly described queue contention ('shared email-sending job whose throughput is saturated by digest processing'). The recommended fix even arrives at the core resolution — prioritizing immediate notifications over digest compilation — which maps directly to the actual priority-inversion fix. No material inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen rounds of questions and resolved only after the reporter volunteered the critical Daily Digest clue. One obvious follow-up was skipped: asking specifically when the Daily Digest sends (which would have confirmed the 9am correlation). The agent acknowledged remaining gaps in the information_gaps field, showing awareness. Given the reporter's non-admin status, further backend questions would have been unproductive."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question sets were productive. The email-provider question in round one was slightly off-target (Exchange was quickly ruled out), but it served to rule out a plausible alternative and was not wasted. No redundant or repeated questions across turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Round one effectively anchored the version and change-timeline, surfacing the 'product update about a week ago' correlation. Round two showed genuine diagnostic reasoning by asking for send-vs-created timestamps to confirm server-side queuing — a non-obvious but highly targeted ask. Questions were professional and led the reporter to volunteer the Daily Digest observation unprompted, which was the pivotal clue."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it names the feature (Daily Digest), describes the mechanism (saturated shared email-sending job at 9am), gives three concrete investigation steps, specifies what to look for in delivery logs (notification_created_at vs. notification_sent_at), and provides a precise post-fix test case with exact times. A developer could open the queue code and start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Connected the morning-peak delay pattern to a likely batch/digest job without needing backend access, arriving at the correct acceptable diagnostic path",
+    "Recommended fix explicitly mentions prioritizing immediate notifications over digest — essentially the actual fix — derived purely from user-facing clues",
+    "Triage summary includes a concrete proposed test case with specific times, making verification straightforward after a fix is deployed",
+    "Correctly and quickly ruled out Exchange as the bottleneck, narrowing scope to TaskFlow's sending pipeline"
+  ],
+  "notable_weaknesses": [
+    "Did not follow up on the Daily Digest timing (when does it send? how many recipients?) — one additional question could have locked in the 9am causation more explicitly",
+    "Did not ask whether other team members experience identical delays, which would have confirmed the issue is systemic rather than per-user"
+  ],
+  "most_insightful_question": "In TaskFlow's admin panel, is there a notification queue or delivery log that shows when notifications were *sent* versus when they were *created*? — This question targeted the exact artifact (send vs. create timestamp gap) that would definitively confirm server-side queuing delay, demonstrating real diagnostic depth.",
+  "missed_opportunities": [
+    "Ask specifically what time the new Daily Digest email arrives in the inbox — this would have directly linked the 9am batch send to the delay window",
+    "Ask whether other team members or colleagues experience the same delays, to confirm the issue is account-agnostic and systemic"
+  ]
+}

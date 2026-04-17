@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured the core inversion behavior, multi-user impact, and approximate timing. However, two expected items are entirely absent: whether individual task pages show the correct archive status (which would have pointed away from application logic toward the search index), and any indication that the issue is search-index-related rather than application-code-related. The timing was noted as an information gap rather than extracted."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly characterized the symptom — the active/archived filter is producing inverted results — which aligns with the acceptable diagnostic paths. However, the root cause hypothesis points at application code (inverted boolean, swapped enum, negated condition in the query) rather than the search index configuration. The ground truth is an index field mapping inversion from a schema migration rebuild. Neither acceptable path was fully satisfied: the agent neither identified the search index as out of sync nor identified the migration as the trigger. The directional diagnosis (filter inversion) is correct but the layer is wrong, which would send developers hunting through application code rather than index configuration."
+    },
+    "thoroughness": {
+      "score": 2,
+      "rationale": "The agent resolved after a single question-answer exchange. Several obvious follow-ups were skipped: when exactly did this start and was there a recent deployment or migration? Do individual task pages show the correct archive status? Is the issue present via API or only the UI? The reporter volunteered the filter-inversion detail unprompted, masking the fact that the agent was ready to resolve immediately. Asking about a recent deployment/migration would have been the natural next step after confirming the regression timeline, and would likely have surfaced the v2.3.1 migration as the trigger."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked before resolution, and it was well-constructed. No redundant or low-value turns were wasted."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The A/B/C framing efficiently established the expected behavior baseline and prompted the reporter to volunteer the critical inversion detail without being asked directly. It demonstrated genuine diagnostic reasoning — confirming the intended UX before assuming a bug — and the structured options made it easy for the reporter to articulate clearly. The question could have also probed for recent changes, but as a single opening question it was strong."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary is well-structured with reproduction steps, severity, and a proposed test case. However, the recommended fix directs developers to review recent code commits for inverted boolean logic, when the actual fix requires correcting the search index field mapping configuration and rebuilding the index. A developer following this guidance would audit the application layer and find nothing, requiring additional investigation to discover the real location of the bug."
+    }
+  },
+  "weighted_total": 3.20,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The structured A/B/C question efficiently anchored the expected behavior and prompted the reporter to articulate the inversion without being explicitly asked",
+    "Correctly identified and clearly documented the filter inversion as the core symptom",
+    "Reproduction steps are precise and verifiable, including the counter-intuitive toggle behavior",
+    "Correctly assessed multi-user impact and severity as high"
+  ],
+  "notable_weaknesses": [
+    "Resolved without asking about recent deployments or migrations, missing the v2.3.1 patch as the likely trigger",
+    "Did not ask whether individual task pages show the correct archive status, which would have distinguished a UI/application bug from a search index bug",
+    "Root cause hypothesis targets application code rather than the search index layer, which would misdirect developer investigation",
+    "Timing was listed as an information gap rather than pursued with a follow-up question"
+  ],
+  "most_insightful_question": "The A/B/C question clarifying whether archived tasks should be fully excluded vs. demoted vs. something else — it provided an efficient framework that led the reporter to volunteer the filter-inversion detail unprompted.",
+  "missed_opportunities": [
+    "Ask whether anything changed recently — a software update, database migration, or deployment — to establish the trigger for the regression",
+    "Ask whether individual task detail pages show the correct archive status, to determine if the bug is in search indexing/filtering vs. application display logic",
+    "Ask whether the issue manifests the same way via API or programmatic search, to narrow the scope to the search layer specifically"
+  ]
+}

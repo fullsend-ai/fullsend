@@ -1,0 +1,7 @@
+{
+  "scenario": "email-delay",
+  "strategy": "omc-deep-interview",
+  "reporter_profile": "typical",
+  "turns": 5,
+  "parse_failures": 0
+}

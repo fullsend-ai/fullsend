@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I understand how frustrating it is to lose work.\n\nTo help us investigate, I need to get specific about what's happening. Can you tell me:\n\n**What exactly are you saving when the crash occurs?** For example, are you creating a new task, editing an existing task, updating a project, or something else? And when you say \"crashes,\" what exactly do you see — does the app freeze, close unexpectedly, show an error message, or something else?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm editing my task list, it has a bunch of tasks in it. When I click Save in the toolbar the whole app just closes on me. I think there's some kind of error dialog that flashes for a split second but it's gone before I can read it. Look, I just need to be able to save my work without the app dying on me."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that's helpful. The flashing error dialog is a strong clue.\n\nA couple of things that would help me narrow this down:\n\n**How many tasks are in the task list you're saving?** And does this happen with *every* task list, or just this particular one? For example, if you create a brand new list with one or two tasks and hit Save, does it still crash?\n\nAlso, what OS and version of TaskFlow are you running?"
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know, like 200 maybe? It's a lot. And no, it doesn't crash with a small list, I tried that already. I'm on a Mac, macOS 14.2, and whatever version of TaskFlow I downloaded recently... 2.3 something I think. Can you guys just fix the save button? It used to work fine before I added a bunch of stuff to my list."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Got it — so it works fine with a small list but crashes with your big one. That's a really useful data point.\n\nTwo things that would help me figure out whether this is about the *number* of tasks or something *in* one of them:\n\n1. **Do any of your tasks have unusual content?** For example, very long descriptions, copy-pasted text from other apps, file attachments, or special characters like emoji?\n\n2. **Your Mac may have captured the crash details automatically.** Could you check for a crash report? Open **Finder → Go → Go to Folder** and paste `~/Library/Logs/DiagnosticReports`, then look for any file with \"TaskFlow\" in the name. If you find one, pasting the first 20-30 lines here would tell us exactly what went wrong."
+    },
+    {
+      "author": "reporter",
+      "body": "I mean, I imported a CSV file a while back with a bunch of tasks. Some of them probably have weird characters in them, I don't know. All I know is it worked fine before I imported that stuff. I'm not going to dig through crash reports, I'm not a developer. Can you just look into the save thing?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save with large task lists containing CSV-imported data\",\"problem\":\"TaskFlow crashes (closes unexpectedly with a briefly-flashing error dialog) when the user clicks Save in the toolbar. The crash only occurs with a large task list (~200 tasks) that includes data imported from a CSV file. Saving small, manually-created task lists works fine. The user reports it worked before the CSV import.\",\"root_cause_hypothesis\":\"The CSV import likely introduced data with malformed characters, encoding issues, or values that exceed expected field limits. The save/serialization code path does not handle these edge cases gracefully — instead of surfacing a user-facing error, it throws an unhandled exception that crashes the app. The flashing error dialog suggests an exception is caught at the UI level but the app terminates before the dialog can be displayed, pointing to a crash in a finally block, a secondary exception during error handling, or the dialog being dismissed by the process exit.\",\"reproduction_steps\":[\"Install TaskFlow ~2.3.x on macOS 14.2\",\"Create or obtain a CSV file with ~200 tasks, including entries with special characters (emoji, non-ASCII, very long text, or encoding-ambiguous characters)\",\"Import the CSV into TaskFlow\",\"Click Save in the toolbar\",\"Observe: app closes unexpectedly with a briefly-flashing error dialog\"],\"environment\":\"macOS 14.2, TaskFlow 2.3.x (exact patch version unknown)\",\"severity\":\"high\",\"impact\":\"Users who import CSV data with special characters into large task lists cannot save their work. The crash causes data loss since unsaved changes are discarded. This blocks a core workflow (bulk task import + save).\",\"recommended_fix\":\"1. Check the save/serialization code path for unhandled exceptions when processing tasks with special characters, encoding mismatches, or oversized fields. 2. Add defensive handling around the CSV-imported data — likely needs input sanitization or encoding normalization at import time. 3. Fix the error dialog lifecycle so it remains visible on crash rather than being dismissed by process exit. 4. Consider adding an autosave or recovery mechanism so crashes don't cause data loss.\",\"proposed_test_case\":\"Import a CSV containing 200+ tasks with mixed content (emoji, non-ASCII characters like accented letters and CJK characters, very long descriptions, tab/newline characters within fields, and fields with unmatched quotes). Click Save. Verify the save completes without crashing and the data round-trips correctly.\",\"information_gaps\":[\"Exact TaskFlow version (user said '2.3 something')\",\"Contents of the macOS crash report (user declined to check)\",\"The actual CSV file or its source application (would help identify the specific problematic characters)\",\"Whether the issue first appeared in a specific TaskFlow version or has always existed for large CSV imports\"]}"
+    }
+  ]
+}

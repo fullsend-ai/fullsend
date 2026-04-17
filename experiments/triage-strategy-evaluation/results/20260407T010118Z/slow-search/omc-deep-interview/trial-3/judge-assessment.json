@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected extracts: ~5,000 tasks, description vs title performance difference, v2.3 regression, ~2 weeks ago timing, 10-15 second delays, CPU spikes (fan spin-up as proxy). Missing: explicit mention of long descriptions being a contributing factor to severity (mentioned in problem but not as a distinct data point), and the reporter's specific OS/hardware was not collected (though the agent correctly noted this in information_gaps)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches an acceptable diagnostic path — it identifies the v2.3 upgrade as the trigger and specifically hypothesizes a switch to unindexed full-text scanning / removal of a search index. This is essentially correct: the actual cause was switching from FTS5 to a naive LIKE query (a table scan). The agent's framing of 'unindexed full-text scanning' and 'brute-force string matching' is accurate terminology for what a LIKE query does. Title search still being indexed is also correctly inferred."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about search patterns, timing/trigger, whether slowness varied by query type, and whether the bottleneck was query vs. rendering. These were well-chosen. The main missed question was whether the reporter had tried any workarounds (noted in information_gaps but not asked). Also did not ask about OS/version details, though the agent correctly judged these unlikely to affect the fix. No egregious gaps given the strong diagnostic picture after turn 2."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "Turn 3 asked whether speed varied between common vs. specific search terms — this was a reasonable hypothesis test but yielded little diagnostic value since the reporter confirmed it's always slow. Turn 4 asked whether slowness was during search vs. result rendering — useful for ruling out display issues, but given the reporter already said 'nothing shows up for 10-15 seconds,' this was somewhat low-value. Three questions total is reasonable, but two of the three had limited payoff."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 1's dual question about query patterns and timing trigger was efficient and led directly to the key clues. Turn 3's query-specificity test was a plausible hypothesis (selectivity affecting scan performance) even if the answer wasn't discriminating. Turn 4's query-vs-rendering distinction showed good diagnostic reasoning — ruling out a display bottleneck is legitimate, though the original report made it fairly clear. Questions were professional and showed genuine reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it identifies the likely mechanism (table scan vs. indexed lookup), points directly to diffing the search implementation between v2.2 and v2.3, specifies the description field as the likely unindexed column, provides reproduction steps with concrete dataset parameters, and proposes a performance regression test. A developer could start investigating immediately by pulling the git diff on the search module."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The agent correctly identified the v2.2-to-v2.3 regression as the trigger from the reporter's first response and built the entire hypothesis around it",
+    "The root cause hypothesis (unindexed full-text scan replacing indexed search) is precisely correct and gives developers an immediate investigation path",
+    "The triage summary is unusually detailed and actionable — reproduction steps, proposed test case, and recommended fix are all concrete and well-specified",
+    "Correctly inferred that CPU spike + consistent slowness regardless of query specificity = sequential scan, showing genuine diagnostic reasoning"
+  ],
+  "notable_weaknesses": [
+    "Turn 3's query-specificity question had low diagnostic yield — the answer didn't change the hypothesis and the reporter wasn't in a good position to answer systematically",
+    "Turn 4's query-vs-rendering question was partially answered by the original report ('takes forever' / 'sits there waiting') and added limited value",
+    "Never asked about workarounds (title-only search), which the agent itself flagged as an information gap — this would have been easy to ask and useful to the reporter"
+  ],
+  "most_insightful_question": "The initial dual question about 'which searches are slow' and 'when did this start' — it directly elicited the title-vs-description distinction and the v2.3 upgrade correlation in a single reporter turn, which were the two most diagnostic facts in the entire conversation.",
+  "missed_opportunities": [
+    "Ask whether the reporter had tried title-only search as a workaround (would confirm the title path is still usable and help the reporter immediately)",
+    "Ask whether the slowness appeared immediately after upgrading or only after task count grew further post-upgrade (would help distinguish whether the regression is purely version-based or requires a threshold dataset size)"
+  ]
+}

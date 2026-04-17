@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** SSO login redirect loop for users with email mismatches between Entra ID and TaskFlow
+
+## Problem
+After migrating from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop when authenticating via SSO. They authenticate successfully with Microsoft but are immediately redirected back to the login flow upon returning to TaskFlow. The issue is consistent per-user, not intermittent.
+
+## Root Cause Hypothesis
+TaskFlow's user-matching logic during the OIDC callback likely performs a strict email comparison between the email claim in the Entra ID token and the email stored in TaskFlow's user database. Users whose Entra primary email differs from their TaskFlow email — due to plus-addressing (jane+taskflow@company.com), email changes during migration, or alias differences — fail the lookup. The app cannot find a matching local user, so it does not establish a session and redirects back to the IdP, creating the loop. The incognito workaround for some users may indicate a stale session cookie or cached auth state is compounding the issue for a subset.
+
+## Reproduction Steps
+  1. Set up TaskFlow v2.3.1 (self-hosted) with Entra ID SSO (OIDC)
+  2. Create a user in TaskFlow with a plus-addressed email (e.g., jane+taskflow@company.com) or an email that differs from their Entra ID primary email
+  3. Attempt to log in as that user via SSO
+  4. Observe that after successful Entra authentication, the user is redirected back to TaskFlow and immediately sent back to the Entra login page in a loop
+
+## Environment
+TaskFlow v2.3.1, self-hosted, OIDC (likely), Microsoft Entra ID as IdP, multiple browsers (Chrome, Edge, Firefox)
+
+## Severity: high
+
+## Impact
+~30% of the team is completely unable to log into TaskFlow. This blocks all access to the application for affected users with no reliable workaround.
+
+## Recommended Fix
+Investigate the OIDC callback handler's user-matching logic. Check whether the email claim from the Entra ID token is being compared to the stored TaskFlow email using a strict exact match. The fix should normalize emails before comparison (strip plus-addressing, case-insensitive match) and/or match on a more stable identifier such as the OIDC `sub` claim or UPN. Also check whether the app falls through silently on user-not-found instead of showing an error, which would explain the redirect loop rather than an error page.
+
+## Proposed Test Case
+Create test users with: (a) a plus-addressed email, (b) an email that differs between IdP and local DB by alias, (c) a straightforward matching email. Assert that all three can authenticate via SSO and are correctly matched to their local accounts. Additionally, verify that a failed user lookup produces an error message rather than a redirect loop.
+
+## Information Gaps
+- Server-side logs from TaskFlow during a failed login attempt (would confirm the exact failure point)
+- Whether the incognito workaround correlates with a specific browser or scenario
+- Exact authentication protocol configuration (OIDC vs SAML) — reporter believes OIDC but is unsure
+- Whether all affected users fit the email mismatch pattern or if there are other factors

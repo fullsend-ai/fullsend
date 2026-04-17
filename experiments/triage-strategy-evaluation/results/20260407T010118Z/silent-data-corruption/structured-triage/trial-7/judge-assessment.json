@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items are present in the triage summary: record count (~50-100 of 2,000), truncation pattern, ~2-week timeline, nightly batch import vector, 3+ digit country code pattern, US/UK numbers unaffected, and the recent phone number formatting change. The summary also adds useful extras: reproduction steps, a proposed test case, ongoing re-corruption risk, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage follows both acceptable diagnostic paths: it identifies the nightly import as the corruption source, correctly characterizes the country code truncation pattern (3+ digits → 2), connects the ~2-week timeline to a recent import pipeline change, and points directly to the phone number formatting/validation logic. While the exact mechanism (a regex capture group limiting to \\d{1,2}) isn't named, the hypothesis ('hard limit of 2 characters for the country code field') is directionally correct and would lead developers straight to the defect."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the high-value questions: corruption examples, data entry method, whether numbers were previously correct, and what changed recently. It appropriately flagged remaining unknowns (logs, exact commit, UI path vs import path) in the summary's information_gaps rather than leaving them invisible. Docking one point because asking about import error logs during the conversation could have been valuable and was available to ask."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, each non-overlapping and well-targeted. Question 1 established the corruption pattern. Question 2 established the ingestion method and historicity in one turn. Question 3 narrowed to the causal change. No question was redundant or could have been meaningfully omitted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated genuine diagnostic reasoning. The first question's framing ('format/length difference is what matters most') primed the reporter to give the precise examples needed to identify the country-code-length pattern. The second question's pairing of 'how do numbers enter TaskFlow?' with 'were they previously correct?' was efficient and elicited the critical timeline in a single turn. The third question's enumerated sub-options (version, script, schema) gave the reporter enough structure to surface the developer's phone-number-formatting work."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding immediately: the summary names the nightly Salesforce import pipeline as the locus, specifies the phone number parser as the component to inspect, describes the exact symptom (country codes truncated at 2 chars), names the E.164 standard as the correctness target, provides reproduction steps with concrete test numbers (+353, +1268), supplies a unit-test scaffold, and suggests the remediation path (fix parser + re-import from Salesforce). Information gaps are honestly disclosed."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the 3+ digit country code pattern from the reporter's first examples and articulated it precisely back to them, confirming shared understanding before moving on",
+    "Combined two related sub-questions into single turns (ingestion method + historicity; version + what changed), keeping turn count low without sacrificing depth",
+    "Triage summary goes well beyond prose: includes reproduction steps, a concrete unit-test scaffold with all four country-code lengths, and an ongoing re-corruption risk note that a developer might not have thought to check",
+    "Explicitly catalogued information gaps rather than silently omitting them, giving the next handler a clear research agenda"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about import error logs or monitoring output — a corrupted record count could have been verified and the exact start date narrowed, potentially identifying the exact deployment",
+    "Did not ask whether manually correcting a number in TaskFlow UI would survive the next nightly sync, which is directly relevant to workaround advice",
+    "Did not probe whether the CRM backup is accessible or what the restore procedure looks like, leaving the workaround section incomplete"
+  ],
+  "most_insightful_question": "Question 2: 'Do you know if numbers that were previously correct have changed, or if they've looked this way since they were first added?' — this single framing established both the historicity (data was good before) and the timeline (started ~2 weeks ago), which together ruled out a data-entry or initial-import problem and pointed squarely at a recent pipeline change.",
+  "missed_opportunities": [
+    "Ask whether import logs or monitoring dashboards show any errors or warnings for the affected records, to establish whether the corruption is silent or logged",
+    "Ask whether a manually corrected phone number in TaskFlow survives the next nightly sync (to assess re-corruption risk and inform the workaround)",
+    "Ask for the approximate date of first observed bad record, or whether TaskFlow has audit/change history that could timestamp the corruption onset precisely"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I can see how frustrating it must be to lose work repeatedly. To help us get to the bottom of this, could you walk me through what you were doing when the crash happened? For example, what kind of task or document were you working on, and what did the crash actually look like — did the app freeze, close suddenly, or show an error message?"
+    },
+    {
+      "author": "reporter",
+      "body": "Look, I was just trying to save my task list like I always do. I hit Save and the app just dies. I think there's some error that flashes for a split second but it closes too fast to read it. I have a bunch of tasks in there — maybe 200 or so. I just need this to work, I've already lost stuff multiple times."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful context — 200 tasks is a solid amount of data, and that fleeting error message is an important clue.\n\nCan you tell me more about when this started happening? You mentioned saving \"like I always do,\" so it sounds like this used to work fine — do you remember roughly when it stopped working, or whether anything changed around that time (like an app update, or your task list growing past a certain size)?"
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know exactly when it started. I think it was maybe a week or two ago? I imported a bunch of tasks from a CSV file around that time, but I don't see why that would matter. I just need to be able to save my work."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That CSV import is actually a really interesting detail — it lines up timing-wise with when the crashes started, so it's worth exploring. Could you tell me a bit more about that import? For instance, where did the CSV come from (another app, a spreadsheet, hand-edited?), and did it include anything beyond simple task names — like descriptions with special characters, dates, links, or any unusually long fields? Also, if you happen to still have that CSV file, that could be really valuable for us to reproduce this."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't remember exactly where the CSV came from, I think I exported it from some other tool. It had task names in it, nothing crazy. I guess some of the names might have had fancy punctuation or whatever — like dashes and quotes that aren't the normal kind. I don't have the file anymore. Can you just fix the save button? That's all I need."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for bearing with me — I think we're getting close to the root cause. Here's what the picture looks like so far: about 1–2 weeks ago you imported tasks from a CSV, and around that same time saves started crashing. The imported task names likely contain non-standard punctuation (curly quotes, em dashes, etc.) that may be tripping up the save process.\n\nTo help us confirm that theory, would you be willing to try a quick test? If you create a brand-new task list with just a couple of simple tasks (no imported data) and hit Save, does that work fine? That would tell us whether the problem is with the save function itself or specifically with the imported data — and if it saves fine, you'd at least have a workaround to avoid losing new work while we fix this."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah fine, a small list saves okay. But I shouldn't have to start over with a new list — I have 200 tasks in there that I need. That's the whole point."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Save crashes with imported CSV data containing non-standard Unicode characters\",\"problem\":\"The app crashes immediately on save when the task list contains ~200 tasks imported from a CSV file. A brief error message flashes before the app closes. Saving a new list with simple manually-created tasks works fine, confirming the issue is data-dependent, not a general save failure.\",\"root_cause_hypothesis\":\"The save/serialization path does not handle non-standard Unicode characters (curly quotes, em dashes, and similar typographic punctuation) that were present in the CSV-imported task names. The serializer likely throws an unhandled exception on encountering these characters, crashing the app instead of gracefully handling or sanitizing the input.\",\"reproduction_steps\":[\"Create a new task list in TaskFlow\",\"Import or manually create tasks with non-standard Unicode punctuation in names — e.g., curly quotes (“ ” ‘ ’), em dashes (—), or other typographic characters\",\"Add enough tasks to approximate the reporter's scale (~200), or test with fewer to find the minimum trigger\",\"Click Save\",\"Observe app crash with brief error flash\"],\"environment\":\"Not specified — reproduce on all supported platforms. Reporter's list contains ~200 tasks imported from CSV.\",\"severity\":\"high\",\"impact\":\"Users with imported data cannot save their work at all, leading to repeated data loss. The reporter has lost work multiple times. Any user who imports CSV data with typographic characters will hit this.\",\"recommended_fix\":\"Investigate the save/serialization code path for Unicode handling. Likely candidates: (1) character encoding mismatch during serialization, (2) unescaped characters breaking a format like JSON or XML, (3) the CSV import not normalizing Unicode on ingest. Fix should ensure all valid Unicode is handled in the save path. Additionally, the CSV importer should sanitize or normalize non-ASCII punctuation on import. The crash should also be caught gracefully with a user-visible error rather than an abrupt close.\",\"proposed_test_case\":\"Create a task list containing task names with curly quotes, em dashes, en dashes, ellipsis characters, and other common typographic Unicode. Verify that save completes without error. Also test round-trip: import CSV with these characters, save, close, reopen, and confirm data integrity.\",\"information_gaps\":[\"Exact error message (flashes too fast for reporter to read — check application logs or crash reports)\",\"Specific platform and app version the reporter is using\",\"Whether the issue is character-specific or also scale-dependent (does a list of 5 tasks with curly quotes also crash?)\"]}"
+    }
+  ]
+}

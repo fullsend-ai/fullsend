@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "Extracted nearly all expected information: ~5,000 tasks, slow on description search vs fast on title search, v2.2 to v2.3 upgrade correlation, ~2 weeks timing, 10-15 second latency, and long descriptions. The only item not explicitly surfaced was CPU spikes during search, but this was not volunteered by the reporter in the conversation. The triage also discovered additional useful context (meeting notes pasted as descriptions)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it correctly identifies the likely switch from indexed full-text search to unindexed LIKE/ILIKE scanning, which matches the actual cause (FTS5 index to naive LIKE query). The hypothesis that titles remain indexed while descriptions lost their index is exactly correct. The environmental details are all accurate."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 agent turns before resolution, which is very efficient. The first question batch was well-targeted. The second question asking about browser version was low-value (as the agent itself acknowledged in information gaps), but it was bundled with the important OS and version questions, so minimal waste overall."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question effectively drew out the critical title-vs-description distinction and task count. The second question appropriately targeted version information, which revealed the v2.2→v2.3 upgrade correlation. Questions were well-framed and professional. Could have asked about CPU/memory behavior during searches or whether the user had tried reindexing, but the questions asked were well-targeted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable. It provides a specific root cause hypothesis (check FTS index on descriptions column, compare v2.2 and v2.3 query plans), concrete reproduction steps, a recommended fix path (EXPLAIN/ANALYZE, check migration, restore index), and even a proposed regression test with specific parameters. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.65,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Correctly identified the FTS-to-LIKE regression hypothesis with high precision despite limited information",
+    "Efficiently extracted the critical title-vs-description distinction in the first question",
+    "Highly actionable summary with specific debugging steps (EXPLAIN/ANALYZE) and a proposed regression test",
+    "Appropriately noted that browser version is non-blocking and the issue is likely server/database-side"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU or memory behavior during searches, which would have further confirmed the full-table-scan hypothesis",
+    "Browser version question was low-value for what is clearly a backend performance issue"
+  ],
+  "most_insightful_question": "What are you searching for (e.g., a keyword, a tag, a phrase)? Are you searching across all tasks, or within a specific project/folder? Roughly how many tasks do you have in your account?",
+  "missed_opportunities": [
+    "Could have asked whether CPU or memory spikes during the slow searches",
+    "Could have asked if the user had tried clearing cache or reindexing",
+    "Could have asked about the specific timing correlation with the v2.3 upgrade more directly in the first question, since the reporter mentioned it 'used to be fast'"
+  ]
+}

@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Desktop app crashes on save with large task list (~200 tasks)
+
+## Problem
+The desktop app crashes (completely closes) every time the user clicks Save in the toolbar while editing a large task list of approximately 200 tasks. A brief error dialog flashes before the app disappears. The issue started recently without any user-side changes.
+
+## Root Cause Hypothesis
+A recent change (likely in the 2.3.x release) introduced a regression in the save path that fails under large task lists. Possible causes include a memory limit or buffer overflow when serializing ~200 tasks, a timeout on the write operation, or a UI-thread-blocking operation that triggers the OS watchdog. The recency of the issue and the large dataset size point toward a scaling-related regression.
+
+## Reproduction Steps
+  1. Create or load a task list with approximately 200 tasks in TaskFlow desktop app
+  2. Edit one or more tasks in the list
+  3. Click the Save button in the toolbar
+  4. Observe that the app crashes and closes entirely, with a brief error dialog flashing before exit
+
+## Environment
+macOS 14 (Sonoma), TaskFlow desktop app version 2.3.x (likely 2.3 or 2.3.1)
+
+## Severity: high
+
+## Impact
+Users with large task lists (~200+ tasks) cannot save their work at all, leading to data loss on every attempt. The crash is deterministic (every time), making the app unusable for this workflow.
+
+## Recommended Fix
+Investigate the save code path for regressions introduced in the 2.3.x release. Focus on how large task lists are serialized and written to disk — check for memory allocation issues, synchronous I/O blocking the main thread, or new validation logic that fails on large datasets. Review git history for recent changes to the save/persistence layer. Test with task lists of varying sizes (50, 100, 200, 500) to find the threshold.
+
+## Proposed Test Case
+Create a task list with 200+ tasks, modify at least one task, and invoke save. Verify the app saves successfully without crashing. Additionally, add a performance/stress test for the save path with task lists of 100, 500, and 1000 tasks to prevent future regressions.
+
+## Information Gaps
+- Exact app version (2.3 vs 2.3.1) — reporter was unsure
+- macOS crash report from Console.app or ~/Library/Logs/DiagnosticReports that would reveal the exact exception or signal
+- Whether the issue occurs with smaller task lists (e.g., 50 tasks) — would help identify the threshold
+- Whether the task list contains any unusual content (attachments, special characters, very long descriptions) that might trigger a serialization edge case

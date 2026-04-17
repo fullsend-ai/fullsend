@@ -1,0 +1,41 @@
+# Conversation: wrong-search-results x omc-deep-interview
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — that's definitely disruptive. To help us narrow down what's going on: do you recall roughly when this started happening? For instance, was search working correctly last week and then broke, or has it always been a bit off? And did anything change around that time — like a workspace migration, a bulk archive operation, or a software update you noticed?
+
+---
+
+### reporter
+
+Yes, I can actually pinpoint it pretty well. It started about three days ago, right after the v2.3.1 patch was applied. Search was working fine before that. I remember because there was a scheduled maintenance window for a database migration — they mentioned something about schema updates and search improvements, ironically. Ever since that update, search has been returning the wrong tasks. I have about 150 active tasks and 300 archived ones, and it feels like search is showing me the archived ones instead of the active ones. If I look at a task individually, it shows the correct status (active or archived), but the search results are just wrong.
+
+---
+
+### triage-agent
+
+That timing with the v2.3.1 migration is really helpful — gives us a clear starting point to investigate. One thing that would help us figure out exactly what went wrong: when you browse your task list without searching (e.g., using filters like 'Status: Active' or just scrolling the main task view), do you see the correct set of active tasks there? Or is it only when you use the search bar that archived tasks show up where they shouldn't?
+
+---
+
+### reporter
+
+Good question. Yes, when I browse my task list normally without using search — like just scrolling through or using the sidebar filters — everything looks correct. I can see my active tasks, and archived ones are hidden as expected. It's specifically when I use the search bar that things go wrong. The search results seem to be flipped — it's showing me archived tasks when I'm searching with the default 'active tasks only' filter. And if I manually switch the filter to show archived tasks, I actually see my active ones instead. It's like the filter is reversed, but only in search.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search index filter inverted after v2.3.1 migration — 'active' filter returns archived tasks and vice versa","problem":"Since the v2.3.1 patch (applied ~3 days ago, which included a database schema migration), the search feature returns results with inverted status filtering. Searching with the default 'active tasks only' filter returns archived tasks, and switching the filter to 'archived' returns active tasks. Non-search browsing and sidebar filters work correctly, indicating the underlying task data and status fields are intact.","root_cause_hypothesis":"The v2.3.1 database migration likely rebuilt or re-indexed the search index with an inverted status/archived flag. Since normal browsing queries the primary data store correctly but search queries a separate index, the inversion is isolated to the search index layer. Possible causes: a boolean flag was flipped (e.g., `is_active` vs `is_archived` semantics changed), a migration script inverted a WHERE clause, or an enum mapping was reversed during the index rebuild.","reproduction_steps":["Log in to any account with both active and archived tasks","Use the search bar to search for a known term (e.g., 'Q2 planning') with the default 'active tasks only' filter","Observe that archived tasks appear in results while known active tasks are missing","Switch the search filter to show archived tasks","Observe that active tasks now appear instead of archived ones","Compare with sidebar/browse view to confirm non-search filtering is correct"],"environment":"TaskFlow v2.3.1 (post-patch), observed by multiple users in the same workspace. Issue began immediately after the scheduled maintenance window that applied the v2.3.1 database migration.","severity":"high","impact":"All users performing searches see inverted results. Active tasks are effectively hidden from search, degrading task discovery and daily workflows. A workaround exists (manually select the opposite filter), but it is unintuitive and unreliable for users unaware of the inversion.","recommended_fix":"Inspect the v2.3.1 migration script that modified the search index schema. Look for an inverted boolean or status mapping in the search index rebuild logic (e.g., `is_archived` written where `is_active` was expected, or a NOT condition flipped). Fix the mapping and re-index. If the search uses a separate engine (e.g., Elasticsearch), check the document ingestion pipeline for the same inversion. A targeted re-index of the search data from the primary store should resolve the issue without further schema changes.","proposed_test_case":"Create a workspace with known active and archived tasks. Run a search query with the 'active only' filter and assert that only active tasks are returned. Run the same query with the 'archived' filter and assert that only archived tasks are returned. This test should be run both before and after applying the migration to catch regressions.","information_gaps":["Exact number of affected users/workspaces (reporter confirmed at least two users, likely org-wide)","Whether the issue affects all search backends or only specific index types (e.g., full-text vs. faceted)","Whether the v2.3.1 migration has a rollback path or if a forward fix is required"]}
+
+---

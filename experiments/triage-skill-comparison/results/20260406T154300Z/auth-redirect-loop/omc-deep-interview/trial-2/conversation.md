@@ -1,0 +1,35 @@
+# Conversation: auth-redirect-loop x omc-deep-interview
+
+## Issue
+
+**Login redirect loop after SSO change**
+
+We recently switched our company's SSO provider from Okta to Microsoft Entra ID. Since the switch, some users are getting stuck in an infinite redirect loop when trying to log into TaskFlow. They click login, get redirected to Microsoft, authenticate successfully, get redirected back to TaskFlow, and then immediately get sent back to Microsoft again. Not all users are affected — maybe 30% of our team. The rest can log in fine.
+
+We've already verified that the Entra ID app registration is correct and matches our redirect URIs. The affected users can log into other apps that use the same SSO just fine.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report. The fact that only ~30% of users are affected is a strong clue — can you identify anything that the affected users have in common that the working users don't? For example: were some users previously provisioned through Okta and others created directly? Do the affected users have a different email domain, role, or group membership in Entra ID? Also, if you check the browser dev tools (Network tab) on an affected user's session, do you see any difference in the claims or tokens coming back from Microsoft compared to a working user's session?
+
+---
+
+### reporter
+
+Good question — I did look into what the affected users have in common. A lot of them use plus-addressed emails (like jane+taskflow@company.com), and a few others had their email addresses changed or aliased when we migrated to Entra ID. The users who can log in fine are generally the ones whose plain email address is the same in both systems.
+
+I did peek at the Network tab in Chrome dev tools for one affected user. I noticed that when they get redirected back from Microsoft to TaskFlow, there's a Set-Cookie header in the response, but the cookie doesn't seem to actually stick — on the very next request back to TaskFlow, the cookie isn't there. It just keeps bouncing back and forth. For a working user, the cookie gets set and stays. I'm not a developer so I'm not sure what to make of that, but it definitely seems like the cookie isn't being saved for the affected users.
+
+Also worth mentioning — a couple of affected users found that opening an incognito window sometimes lets them get in, which is weird.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"SSO login redirect loop for users with plus-addressed or migrated email addresses after Okta-to-Entra ID switch","problem":"After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. Authentication with Microsoft succeeds, but TaskFlow fails to establish a session — the Set-Cookie header is present in the response but the cookie does not persist on subsequent requests, causing the app to redirect back to the IdP indefinitely.","root_cause_hypothesis":"TaskFlow's session establishment logic likely compares the email claim in the OIDC token from Entra ID against the user's stored email in the TaskFlow database. For users with plus-addressed emails (e.g., jane+taskflow@company.com) or emails that were changed/aliased during the Entra ID migration, the email claim returned by Entra ID does not match what TaskFlow expects. The session creation fails silently — the app either never writes a valid session cookie or immediately invalidates it — causing the redirect loop. Users with unchanged, plain email addresses match correctly and log in fine. The incognito workaround occasionally working suggests that stale cookies or cached auth state from the old Okta integration may also interfere with the flow.","reproduction_steps":["Identify or create a test user in Entra ID with a plus-addressed email (e.g., testuser+taskflow@company.com)","Ensure this user exists in TaskFlow's user database (possibly under a different email variant)","Attempt to log in to TaskFlow via SSO","Observe the redirect loop: Microsoft auth succeeds, redirect to TaskFlow occurs, but the session cookie does not persist and the user is immediately redirected back to Microsoft","Compare the email claim in the OIDC token (visible in browser dev tools Network tab) with the email stored in TaskFlow's user record"],"environment":"TaskFlow with SSO, recently migrated from Okta to Microsoft Entra ID. Affects users in Chrome (and likely all browsers). Entra ID app registration and redirect URIs confirmed correct. Affected users can authenticate with other Entra ID apps successfully.","severity":"high","impact":"~30% of the team cannot log into TaskFlow at all. No reliable workaround exists (incognito is intermittent). This blocks affected users entirely from using the application.","recommended_fix":"1. Inspect TaskFlow's SSO callback handler — find where it matches the incoming OIDC email claim against stored user records. 2. Check whether the comparison is exact-match or normalized. Plus-addressing (RFC 5233) and email aliasing likely cause mismatches. 3. Implement email normalization: strip plus-address suffixes and/or perform case-insensitive comparison when matching token claims to user records. 4. Alternatively, match on a stable claim like `sub` (subject identifier) or `oid` (object ID) instead of email, which is more robust across identity provider migrations. 5. Clear any stale Okta session cookies that may still be present in users' browsers (set explicit expiry/deletion on the old cookie names). 6. Add logging to the session creation path so silent failures surface as errors rather than redirect loops.","proposed_test_case":"Write an integration test that performs SSO login with a user whose OIDC email claim contains a plus-address suffix (user+tag@domain.com) while the TaskFlow database stores the base address (user@domain.com). Verify that the session is established successfully and the user is not redirected back to the IdP. Add a second test case for a user whose email was aliased (old@domain.com in DB, new@domain.com in token) to verify matching by subject identifier works.","information_gaps":["Exact field TaskFlow uses to match OIDC token claims to user records (email vs. sub vs. UPN)","Whether TaskFlow's session middleware logs the reason for session creation failure","Whether the stale Okta cookies are actively interfering or are merely present"],"clarity_scores":{"symptom":0.9,"cause":0.75,"reproduction":0.8,"impact":0.85,"overall_ambiguity":0.17}}
+
+---

@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted ~5,000 tasks, description vs title search difference, v2.2→v2.3 regression, ~2 weeks ago, and 10-15 second timing. Missed CPU spike during search and long descriptions in some tasks, but those were not volunteered by the reporter and would have required additional questions."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it specifically calls out 'a switch from indexed full-text search to a naive LIKE/ILIKE scan' which is almost exactly what happened (FTS5 index to LIKE query). The regression framing, the query-plan diagnosis, and the distinction between title and description search paths are all correct."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only one question turn was needed, and it asked exactly the right things: timing of onset, task count, and whether slowness was universal or conditional. The reporter's answer to the conditional question naturally revealed the title vs description distinction. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions were well-bundled and strategically chosen. Asking whether slowness happened 'with certain search terms or filters' was the key question that drew out the critical title-vs-description distinction the reporter hadn't initially mentioned. The framing of 'sudden regression vs gradual degradation' also efficiently guided the reporter to connect it to the v2.3 upgrade."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a precise hypothesis (dropped/missing index on descriptions, switch from FTS to LIKE scan), clear reproduction steps, a specific debugging approach (diff migrations, run EXPLAIN/ANALYZE), and even a proposed regression test. A developer could start investigating immediately with high confidence in the direction."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extracted the critical title-vs-description distinction in a single well-crafted question",
+    "Root cause hypothesis almost perfectly matches the actual cause (FTS5 to LIKE regression)",
+    "Excellent actionability with specific debugging steps (diff migrations, EXPLAIN/ANALYZE)",
+    "Correctly identified this as a query-plan regression rather than resource contention"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during searches, which would have further confirmed the full-scan hypothesis",
+    "Did not discover that some tasks have very long descriptions (2000+ words), which is a contributing factor to severity",
+    "Environment details (OS, hardware) were noted as gaps but not asked about"
+  ],
+  "most_insightful_question": "Does the slowness happen on every search, or only with certain search terms or filters?",
+  "missed_opportunities": [
+    "Asking about CPU or memory usage during slow searches would have confirmed the full-scan hypothesis",
+    "Asking about task description lengths could have revealed the 2000+ word descriptions as an aggravating factor",
+    "Asking whether the reporter had tried any workarounds like reindexing or cache clearing"
+  ]
+}

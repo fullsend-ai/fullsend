@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured nearly all expected information: affected record count (~50-100 of 2,000), truncation pattern, 2-week timeline, nightly import connection, country code >2-digit pattern, and US/UK numbers being fine. The only gap is that the specific 'phone number normalizer' component was not identified — the agent offered multiple hypotheses (schema change, parsing, format mask) rather than homing in on a normalizer specifically."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: the nightly import as the corruption source with the country code >2-digit pattern, and the ~2-week timeline connected to a recent import pipeline change. The root cause hypothesis is well-aligned with the actual cause even without pinpointing the exact regex. No inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions before resolving, gathering the nature of corruption and the timeline/source. It resolved with a solid, defensible hypothesis and explicitly flagged information gaps (overwriting behavior, import tech stack, exact date). One obvious unasked question: whether there was a known deployment or code change ~2 weeks ago would have been a natural follow-up, but the agent appropriately directed the developer to check git history instead."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two questions, both essential and non-redundant. The first pinpointed the corruption pattern; the second established the timeline and data source. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question offered a structured taxonomy of corruption types with concrete examples, which directly elicited the key diagnostic finding (country code-specific truncation to 2 characters). The second question cleanly bifurcated between a recent regression and a long-standing issue, prompting the reporter to volunteer the nightly import context unprompted. Both questions demonstrated genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a precise problem description, multiple specific root cause candidates (schema field length, substring op, format mask), step-by-step reproduction instructions, a concrete recommended fix with git history investigation, a repair strategy (re-sync from Salesforce), and a proposed test case covering 1-, 2-, and 3-digit country codes."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question's structured taxonomy of corruption types efficiently produced the key diagnostic finding without needing follow-up",
+    "Agent recognized the 2-digit truncation boundary immediately from the reporter's examples and articulated it precisely",
+    "Summary explicitly flags ongoing corruption risk (nightly re-corruption) and the Salesforce backup as a recovery path",
+    "Reproduction steps are concrete and verifiable without requiring developer guesswork"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether manually corrected records revert on the next nightly run — this would have confirmed ongoing corruption directly rather than flagging it as a gap",
+    "Did not specifically probe for recent deployments or changes to the import pipeline, though the recommended fix directs the developer to check git history"
+  ],
+  "most_insightful_question": "The first question offering a structured taxonomy of phone number corruption types (truncated end vs. dropped leading digits vs. garbled vs. formatting) — it directly produced the reporter's observation that country codes specifically were truncated to 2 characters, which was the central diagnostic finding.",
+  "missed_opportunities": [
+    "Ask whether records that are manually corrected in TaskFlow revert to the truncated value after the next nightly import (would confirm ongoing corruption without relying on inference)",
+    "Ask whether anything changed in the import pipeline or TaskFlow around the time the issue started — this might have surfaced the normalizer change directly from the reporter"
+  ]
+}

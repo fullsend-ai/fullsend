@@ -1,0 +1,26 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this! I'd like to understand the timeline a bit better. Can you recall roughly when the search started feeling slow — was it a gradual change you noticed over time, or did it seem to happen suddenly? And if it was sudden, did anything change around that time (e.g., a TaskFlow update, importing a batch of tasks, a change in your setup)?"
+    },
+    {
+      "author": "reporter",
+      "body": "It was pretty sudden, actually. I think it started about 2 weeks ago, right around when I upgraded from v2.2 to v2.3. I didn't import any new tasks or change anything else — just the upgrade. Before that, search was snappy, under a second usually."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — the timing with the v2.3 upgrade is a strong clue. Before I wrap this up, I'm curious about the pattern of the slowness: is every search equally slow (10-15 seconds regardless of what you type), or have you noticed that some searches are worse than others? For example, does searching for a single common word feel different from searching for something very specific? And when the results do come back, are they what you'd expect, or have you noticed anything off about them (like missing results or unexpected ones)?"
+    },
+    {
+      "author": "reporter",
+      "body": "Good question — now that you mention it, I have noticed a pattern. When I search by task title, it's still pretty fast, like it used to be. But when I search across task descriptions, that's when it gets really slow. And I have some tasks with really long descriptions — like copy-pasted meeting notes that are probably a couple thousand words each. The results themselves seem correct when they finally come back, I haven't noticed anything missing. It's just the wait that's killing me."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Search on task descriptions regressed to 10-15s after v2.3 upgrade (title search unaffected)\",\"problem\":\"After upgrading from TaskFlow v2.2 to v2.3, searching across task descriptions takes 10-15 seconds, whereas it previously completed in under a second. Searching by task title remains fast. The reporter has tasks with lengthy descriptions (multi-thousand-word meeting notes). Search results are accurate — only latency is affected.\",\"root_cause_hypothesis\":\"The v2.3 release likely introduced a change to description search — possible causes include a dropped or missing full-text index on the description field, a switch from indexed search to naive substring/regex scanning, or a new search code path that doesn't handle large text fields efficiently. The fact that title search is unaffected suggests the regression is isolated to the description search path.\",\"reproduction_steps\":[\"Install TaskFlow v2.3\",\"Create or import tasks with lengthy descriptions (2000+ words each) — at least 50-100 tasks to approximate a realistic dataset\",\"Perform a search query that matches content in task descriptions\",\"Observe response time (expected: 10-15 seconds, should be under 1 second)\",\"Perform the same search targeting task titles only and confirm it completes quickly\",\"Optionally repeat on v2.2 with the same dataset to confirm the regression\"],\"environment\":\"TaskFlow v2.3 (upgraded from v2.2), running on a work laptop (OS and specs not specified)\",\"severity\":\"medium\",\"impact\":\"Users who search across task descriptions experience 10-15 second delays, significantly disrupting workflow. Users with large/verbose task descriptions are disproportionately affected. Title-only search users are unaffected.\",\"recommended_fix\":\"Review the v2.3 changelog and diff for changes to the search subsystem, particularly the description search path. Check whether a full-text index on the description field was dropped or altered during a migration. If the search implementation changed (e.g., from database-level full-text search to application-level scanning), restore indexed search or add appropriate indexing. Profile the description search query against a dataset with large description fields to identify the bottleneck.\",\"proposed_test_case\":\"Create a test dataset with 100+ tasks, some containing descriptions of 2000+ words. Execute a description search and assert that results return within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 code paths to validate the regression and confirm the fix.\",\"information_gaps\":[\"Exact number of tasks in the reporter's dataset\",\"Database backend in use (SQLite, PostgreSQL, etc.)\",\"Whether the v2.3 release notes mention any search-related changes\",\"Hardware specs of the work laptop (CPU, RAM, disk type)\"]}"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were captured: record count (~50-100 of 2,000), truncation nature, 2-week timeline, nightly import connection, 3+ digit country code pattern, US/UK codes unaffected, and recent normalizer change. The summary goes further with reproduction steps, a proposed test case, and clearly enumerated information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly import as the corruption source, the country code truncation pattern (3+ digits → 2 digits), the 2-week timeline linked to a developer change, and the ongoing re-corruption cycle. The root cause hypothesis ('a bug that hard-codes or truncates the country code field to a maximum of 2 characters') maps directly to the actual regex capture group `(\\d{1,2})`. The suggested code smell `country_code[:2]` is a valid analog. Satisfies both the canonical cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-structured rounds of questions and left no major diagnostic gaps open. The one missed follow-up: given the reporter described this as a 'serious data integrity issue' and manual fixes were being overwritten daily, the agent never asked whether backups existed or whether the nightly import should be paused immediately as a workaround. That is an obvious operational question for a high-severity data corruption issue."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Nearly every question earned its turn. The slight inefficiency in turn 3 was asking for the developer's name as a fallback identifier — a low-value sub-question since the agent correctly noted that searching recent commits would be more reliable anyway. Everything else was well-targeted and non-redundant."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Turn 1 immediately sought to characterize the corruption (position of mangling, timing). Turn 2 connected the observed pattern to the import pipeline and checked whether corruption was ongoing. Turn 3's pattern-confirmation sub-question — asking the reporter to verify whether the country code is stored as exactly 2 digits, not some other truncation — was particularly sharp: it disambiguated between a fixed-length country code field and some other failure mode, and the reporter's confirmation locked in the hypothesis."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin investigation immediately: the summary names the import pipeline as the entry point, specifies the symptom as a 2-character country code truncation, points at phone number parsing/normalization code changed ~2 weeks ago, provides concrete code patterns to search for (`country_code[:2]`, VARCHAR(2), substring ops), includes reproduction steps with a concrete example, and proposes a unit test covering 1-, 2-, 3-, and 4-digit country codes. Information gaps are honest and clearly scoped."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Recognized the country-code-length pattern from the very first reporter response and immediately focused all subsequent questions on confirming and localizing it",
+    "The pattern-confirmation sub-question in turn 3 precisely ruled out alternative truncation modes (e.g., total number length cap) and locked in the '2-digit max' hypothesis",
+    "The final summary is unusually complete: reproduction steps, a proposed unit test, a concrete fix strategy referencing E.164 standard, and honestly scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether the nightly import could be paused immediately to stop ongoing corruption — a critical mitigation step for a high-severity data integrity issue",
+    "Did not ask whether correct numbers were recoverable from the Salesforce CRM backup, leaving the remediation path incomplete"
+  ],
+  "most_insightful_question": "Do you happen to have an example with a 3-digit country code (like +353 Ireland) where you can confirm the stored number is exactly 2 digits for the code — not, say, the whole number being cut to a fixed length?",
+  "missed_opportunities": [
+    "Should the nightly import be disabled immediately to prevent further corruption while this is investigated?",
+    "Are the original correct phone numbers recoverable from Salesforce or another backup source?",
+    "Is there a TaskFlow audit log or change history that shows when each record was last modified, which could help scope the full impact?"
+  ]
+}

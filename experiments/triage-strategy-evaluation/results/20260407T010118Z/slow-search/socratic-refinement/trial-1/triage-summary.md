@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Search regression in v2.3: full-text search across task descriptions extremely slow (~10-15s) with large task count
+
+## Problem
+After upgrading to v2.3, searching across task descriptions takes 10-15 seconds and blocks the UI. Title-only search remains fast. The reporter has ~5,000 tasks accumulated over 2 years, some with very long descriptions (pasted meeting notes). Search was consistently fast before the upgrade.
+
+## Root Cause Hypothesis
+The v2.3 release likely introduced a change to how description search is performed — most probably a dropped or missing full-text index on the description field, a query change that bypasses an existing index, or a switch from indexed search to naive string scanning. The fact that title search is unaffected suggests the regression is isolated to the description search code path.
+
+## Reproduction Steps
+  1. Create or import a dataset with ~5,000 tasks, some with long descriptions (several paragraphs each)
+  2. Run TaskFlow v2.2 (or prior) and perform a search that matches against description content — confirm it is fast
+  3. Upgrade to v2.3
+  4. Perform the same description-targeted search and observe the ~10-15 second hang
+  5. Compare with a title-only search on v2.3 to confirm title search is still fast
+
+## Environment
+TaskFlow v2.3, work laptop (OS unspecified), ~5,000 tasks with some containing long descriptions (pasted meeting notes)
+
+## Severity: high
+
+## Impact
+Any user with a moderately large task database (~5,000+ tasks) who searches by description content will experience a multi-second UI freeze. This degrades a core workflow — search — from instant to unusable. Users with long-form descriptions are likely hit hardest.
+
+## Recommended Fix
+Diff the search implementation between v2.2 and v2.3, focusing on the description search query path. Check for: (1) dropped or missing full-text index on the description column, (2) query changes that cause a full table scan instead of using an index, (3) any new processing (e.g., snippet extraction, highlighting) that iterates over full description text in-memory. Also investigate why the search blocks the UI thread — the search should be async regardless of backend performance.
+
+## Proposed Test Case
+Performance test: with a dataset of 5,000 tasks (including 500+ with descriptions over 1,000 characters), a description search query should return results in under 2 seconds. Additionally, verify the UI remains responsive (shows a loading indicator, does not freeze) during any search operation.
+
+## Information Gaps
+- Exact OS and platform (desktop app vs. web) — unlikely to affect the core search regression but may matter for UI thread blocking behavior
+- Whether the reporter's database was migrated as part of the v2.3 upgrade (migration could have dropped an index)
+- Exact prior version (v2.2 assumed but not confirmed)

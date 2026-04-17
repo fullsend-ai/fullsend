@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured several key items: the ~30% user impact, the plus-addressing and alias pattern, the email claim mismatch, correctly configured redirect URIs, and the fact that other SSO apps work fine. However, three significant expected items were never surfaced: the SameSite=Strict cookie issue and the browser dropping the session cookie on cross-origin redirect, the browser dev tools observation of a cookie being set then dropped, and the incognito/clearing cookies workaround. These gaps are meaningful because the SameSite issue is the primary cause."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the email claim mismatch as a root cause, which is an explicitly acceptable diagnostic path. The hypothesis is factually correct and well-supported by the evidence gathered. The primary inaccuracy is the claim that 'no workaround has been identified' — clearing cookies or using incognito sometimes helps, which the ground truth confirms. This is a minor but notable error. Otherwise the diagnosis is sound and consistent with one of the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked two good questions and resolved after gathering solid evidence for the email mismatch hypothesis. However, it stopped short of probing the session/cookie layer entirely. Asking whether incognito or clearing cookies helps is a standard SSO debugging question that could have surfaced the SameSite issue. The agent had a reasonable basis to resolve, but the cookie angle was an obvious follow-up that was skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, and both were precise and productive. The first identified the affected user pattern; the second directly confirmed the email claim mismatch with a concrete verification step. No redundant or low-value questions were asked."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. The first question efficiently explored multiple possible differentiators (groups, browser, OS, prior sessions) in a single structured ask. The second question was particularly strong — it asked the reporter to check the actual token claims in Entra ID sign-in logs against the stored TaskFlow identity, which is exactly the right verification step and led directly to the key finding. The gap is the absence of any question about cookie or session behavior on redirect."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The recommended fix is specific and actionable: investigate the OAuth callback's email matching logic, normalize or replace email-based matching with a stable claim like the oid, write a migration script, and improve error handling. A developer could begin investigating immediately. The one limitation is that they will discover the SameSite cookie issue independently during investigation, which the triage didn't flag — so there is a real (and primary) issue that won't be on the developer's radar from this summary."
+    }
+  },
+  "weighted_total": 3.7,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Quickly converged on the plus-addressing and alias pattern with a well-structured first question",
+    "The second question was exemplary: it gave the reporter a specific, actionable verification step (check Entra ID sign-in logs for the actual email claim) rather than asking a vague question",
+    "The recommended fix is multi-layered and technically sound — especially the suggestion to switch from email-based matching to a stable claim like the Entra ID object ID (oid)",
+    "The information_gaps section correctly acknowledges the exact claim field used for matching is unknown, which is honest and useful"
+  ],
+  "notable_weaknesses": [
+    "The SameSite=Strict cookie issue — the primary cause — was never investigated or mentioned; the agent never probed the session/cookie layer at all",
+    "The triage states 'no workaround has been identified', which is factually incorrect — the ground truth confirms that clearing cookies or using incognito sometimes resolves the loop",
+    "Never asked whether symptoms varied by browser or incognito mode, which would have been a natural SSO debugging question and could have surfaced the cookie issue",
+    "Never asked the reporter to check browser dev tools for network or cookie behavior on the redirect"
+  ],
+  "most_insightful_question": "Could you check what email address Entra ID is actually returning in the authentication token for one of the affected users? For example, if a user is registered in TaskFlow as `jane+taskflow@company.com`, does Entra ID send back `jane+taskflow@company.com` or just `jane@company.com` in the token claims?",
+  "missed_opportunities": [
+    "Ask whether clearing all cookies or using an incognito/private window allows affected users to log in — this would have pointed toward a cookie/session issue rather than a pure identity mismatch",
+    "Ask the reporter to open browser dev tools on the Network tab and observe what happens to the Set-Cookie header when Entra ID redirects back to TaskFlow — this is the standard diagnostic for SameSite/cross-origin cookie issues",
+    "Ask whether the redirect loop is 100% consistent or sometimes resolves on retry — inconsistency would also suggest a cookie timing issue rather than a deterministic user-lookup failure"
+  ]
+}

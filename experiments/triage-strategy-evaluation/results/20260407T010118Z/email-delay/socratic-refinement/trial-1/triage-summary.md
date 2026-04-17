@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Task assignment email notifications delayed 2-4 hours, likely due to new daily digest emails saturating the send queue
+
+## Problem
+Task assignment notifications that previously arrived within 1-2 minutes are now delayed by 2-4 hours. The delays are worst in the morning (9-10am) and affect multiple team members, causing missed deadlines.
+
+## Root Cause Hypothesis
+The daily digest email feature, introduced approximately one week ago, is sending a large volume of emails through the same queue/pipeline as transactional task notifications. The digest runs in the morning, flooding the queue and causing task notifications to wait behind digest emails. Notifications trickle out as the queue slowly drains rather than arriving in a batch, consistent with a rate-limited or serialized email sender processing a backlogged queue.
+
+## Reproduction Steps
+  1. Assign a task to a user around 9-10am when daily digest emails are being sent
+  2. Observe that the assignment notification email is delayed by 2-4 hours
+  3. Repeat the same assignment in the afternoon and observe a shorter (but still present) delay
+  4. Check the email sending queue depth during morning hours vs. afternoon
+
+## Environment
+Affects multiple users on at least one team. Started approximately one week ago, coinciding with the introduction of daily digest emails. Not limited to a single email provider or user.
+
+## Severity: high
+
+## Impact
+Team members are missing task assignment deadlines because they don't learn about assignments for hours. At least one confirmed missed deadline. Affects the core value proposition of task notifications.
+
+## Recommended Fix
+1. Inspect the email sending infrastructure — confirm whether digest and transactional emails share a queue. 2. Separate transactional notifications (task assignments, deadline reminders) into a high-priority queue distinct from bulk/marketing sends like digests. 3. If a single queue must be used, implement priority levels so transactional emails skip ahead of digest batches. 4. Consider rate-limiting or staggering the digest send to avoid a morning spike.
+
+## Proposed Test Case
+Send a batch of N digest emails followed by a task assignment notification. Verify the assignment notification is delivered within the SLA (e.g., 2 minutes) regardless of digest queue depth. Repeat at various digest volumes to confirm the priority mechanism holds under load.
+
+## Information Gaps
+- Exact email infrastructure architecture (queue system, rate limits, provider)
+- Volume of daily digest emails being sent and how many users/teams receive them
+- Whether the delay affects teams or organizations beyond the reporter's team
+- Whether other transactional emails (e.g., deadline reminders, comment notifications) are also delayed

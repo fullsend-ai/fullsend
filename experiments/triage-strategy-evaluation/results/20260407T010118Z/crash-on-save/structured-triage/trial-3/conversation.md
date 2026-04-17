@@ -1,0 +1,51 @@
+# Conversation: crash-on-save x structured-triage
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can see how frustrating it must be to lose work to crashes.
+
+To help us track this down, could you describe exactly what happens when the app crashes? For example:
+- Does the app freeze, close suddenly, or show an error message?
+- What kind of task or content are you saving when it happens (e.g., a new task, editing an existing one)?
+- Does it happen every single time you save, or only sometimes?
+
+---
+
+### reporter
+
+It just closes. Like, boom, gone. No warning, no chance to do anything. I think there's some kind of error box that flashes for a split second but I can't read it before the whole thing disappears. And yeah it happens every single time I hit Save. I'm just trying to edit my task list, nothing crazy.
+
+---
+
+### triage-agent
+
+Thanks for those details — that sudden close with a flashing error box is a helpful clue.
+
+Could you tell us a bit about your setup? Specifically:
+- What operating system are you on (e.g., Windows 11, macOS Sonoma, Ubuntu 24.04)?
+- Which browser are you using, and roughly what version (e.g., Chrome 124, Firefox 128)?
+- Do you know which version of TaskFlow you're running? (You can usually find this under Settings or Help → About.)
+
+---
+
+### reporter
+
+I'm on macOS, the latest one. I don't know the browser version, it's a desktop app not a browser thing. Version is like 2.3 something, I don't remember exactly. Can you guys just look into the crash? It's been happening for days now.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Desktop app crashes immediately on save when editing tasks (macOS, v2.3.x)","problem":"The TaskFlow desktop app force-closes every time the user clicks Save while editing their task list. A brief error dialog flashes on screen but disappears too quickly to read. The user loses all unsaved work each time.","root_cause_hypothesis":"An unhandled exception during the save/serialization path causes a fatal crash. The flashing error box suggests the app does catch the error and attempts to display it, but the process terminates before the dialog can persist — possibly an uncaught exception in an async save handler or a segfault in the native layer that tears down the window.","reproduction_steps":["Open TaskFlow desktop app (~v2.3.x) on macOS","Open or navigate to the task list","Edit any existing task","Click Save","Observe: app closes immediately with a briefly flashing error dialog"],"environment":"macOS (latest version, likely Sequoia), TaskFlow desktop app version ~2.3.x","severity":"critical","impact":"Complete data loss on every save attempt. The user cannot use the core save functionality at all, making the app effectively unusable for editing. Any user on a similar macOS + v2.3.x configuration is likely affected.","recommended_fix":"1. Check macOS crash logs (~/Library/Logs/DiagnosticReports or Console.app) for TaskFlow crash reports to identify the exact exception and stack trace. 2. Review the save/serialization code path for unhandled exceptions, particularly around file I/O, data validation, or async callbacks. 3. Investigate whether a recent change in v2.3.x introduced a regression in the save handler. 4. Ensure the error dialog is modal and blocks process exit so users can read error messages.","proposed_test_case":"Create or open a task list, modify a task field, and invoke Save. Verify the save completes without crashing and the edited data persists after reopening the app. Additionally, test with malformed or edge-case task data to confirm the save path handles errors gracefully rather than crashing.","information_gaps":["Exact macOS version (assumed latest/Sequoia)","Exact TaskFlow version (reporter said ~2.3)","Crash log or diagnostic report content from macOS Console","Whether the crash started after a specific app update or macOS update","Whether the issue is specific to editing existing tasks or also affects creating new tasks"]}
+
+---

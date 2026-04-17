@@ -1,0 +1,24 @@
+{
+  "title": "Memory leak in v2.3: notification listeners registered on every API request but never cleaned up",
+  "problem": "After upgrading from v2.2 to v2.3, the TaskFlow server process leaks memory steadily throughout the day, growing from ~500MB at startup to 4GB+ by end of day. This causes progressive slowdowns (10+ second page loads) and API timeouts, requiring daily server restarts. The leak is traced to the new 'improved real-time notifications' feature introduced in v2.3.",
+  "root_cause_hypothesis": "The v2.3 real-time notifications feature registers a notification listener for every API request — including simple GETs like loading task lists — but never deregisters or cleans them up. With ~200 users making ~25 requests/hour each, approximately 5,000 listeners accumulate per hour with no corresponding removal. These orphaned listeners hold references that prevent garbage collection, causing the linear memory growth observed on Grafana. WebSocket connections themselves are cleaned up properly on disconnect; the leak is in the listener registration layer, not the connection layer.",
+  "reproduction_steps": [
+    "Deploy TaskFlow v2.3 using the all-in-one deployment on a server with 8GB RAM",
+    "Configure with Postgres and default built-in connection pooling",
+    "Have users (or simulate load from ~200 users) make normal API requests over several hours",
+    "Monitor server process memory via top/htop — observe steady linear growth",
+    "Check server logs for 'registering notification listener' messages on every API request",
+    "Confirm no corresponding 'deregistering' or cleanup log messages exist",
+    "Compare behavior with v2.2 where no such listener registration occurs and memory is stable"
+  ],
+  "environment": "Ubuntu 22.04 VM, 8GB RAM, all-in-one TaskFlow deployment, Postgres with default built-in connection pooling, TaskFlow v2.3, ~200 active users",
+  "severity": "high",
+  "impact": "All 200 active users are affected. Server becomes unusable by late afternoon each day, requiring manual daily restarts. No data loss reported, but significant productivity disruption and operational burden.",
+  "recommended_fix": "Investigate the notification listener registration code introduced in v2.3 (likely in the real-time notifications feature). The listener is being registered on every API request handler but lacks a corresponding deregistration/cleanup step. The fix should either: (1) add cleanup logic to remove the listener when the API request completes, (2) reuse a single listener per session/connection rather than per-request, or (3) scope listeners to WebSocket connections only (where real-time notifications are actually delivered) rather than all API requests. Diff the request middleware/handler chain between v2.2 and v2.3 to find the new registration call.",
+  "proposed_test_case": "Write a load test that simulates 100+ API requests in sequence, then checks that the number of registered notification listeners does not grow linearly with request count. After requests complete, listener count should return to baseline. Also add a unit test for the notification listener lifecycle ensuring that every register call has a corresponding deregister path.",
+  "information_gaps": [
+    "Exact code path where the listener is registered (needs source inspection of v2.3 diff)",
+    "Whether the leak also occurs in split deployments (API server separate from WebSocket server) or only in all-in-one mode",
+    "Precise memory footprint per leaked listener (would help estimate time-to-OOM under different loads)"
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured most expected items: small PDFs fine, started ~1 week ago, multiple customers affected, other file types affected (images), and size correlation. The exact 1MB threshold wasn't pinned down (reporter was resistant to testing), and the upload path / proxy change wasn't explicitly surfaced — though it's correctly hypothesized in the summary. Binary mangling vs. metadata corruption was partially addressed via the content-type/transfer-encoding hypothesis."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage cleanly hits both acceptable diagnostic paths: it identified size-dependent behavior and explicitly suspected different upload paths, and it named 'reverse proxy... configuration change' and 'content-type or transfer-encoding handling that mangles non-text payloads' as leading hypotheses — very close to the actual cause. It doesn't pinpoint the specific Content-Type header stripping mechanism, but the direction is correct and actionable."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about upload method, local file integrity, onset timing, size correlation, and other file types — all the right areas. The reporter's impatience limited further probing. One missed opportunity: the agent never asked explicitly whether any server-side deployments or infrastructure changes happened around the 1-week mark, which would have corroborated the cause more directly. Still, the agent got the critical size and cross-type signals."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three agent turns, each combining 2–3 questions efficiently. The 'browser update' sub-question in turn 2 was slightly generic and unlikely to yield useful signal for a multi-customer server-side issue, but it didn't waste a full turn. All other questions were well-targeted and non-redundant."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The size question and the 'other file types' question in turn 3 were genuinely insightful — neither was information the reporter volunteered, and both turned out to be diagnostically critical. The 'browser update' prompt was a mild miss given this was already confirmed multi-customer. Overall, the questions demonstrated real diagnostic reasoning rather than boilerplate triage."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it includes a specific investigation checklist (check deployments from ~1 week ago, byte-compare corrupted files, inspect proxy body limits and transfer-encoding headers, check storage config), reproduction steps with explicit size ranges, and a proposed regression test. A developer could begin investigating immediately without gathering additional context."
+    }
+  },
+  "weighted_total": 4.1,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Elicited the size-correlation signal despite reporter resistance, which is the key diagnostic indicator",
+    "Proactively asked about other file types, revealing image corruption and widening the scope from 'PDF bug' to 'large file upload bug'",
+    "Triage summary explicitly identifies chunked transfer handling, proxy configuration, and content-type/transfer-encoding as hypotheses — directly implicating the actual failure mechanism",
+    "Proposed test case with specific file sizes and byte-level integrity checking is immediately executable"
+  ],
+  "notable_weaknesses": [
+    "Never asked about server-side deployments or infrastructure changes, missing the most direct corroboration of the 1-week onset",
+    "The 'browser update' question was unlikely to be relevant for a confirmed multi-customer, server-side issue",
+    "Did not attempt to narrow the size threshold beyond 'bigger files' — even a rough 1MB vs 10MB split would have been valuable"
+  ],
+  "most_insightful_question": "Does your team ever attach other types of files — like Word docs, images, or spreadsheets? If so, are those coming through fine, or is the corruption happening across the board?",
+  "missed_opportunities": [
+    "Ask whether any deployments, updates, or infrastructure changes were made on TaskFlow's side around the time the issue started (~1 week ago)",
+    "Follow up on the size signal with a more precise probe: 'Would you say the broken files are consistently over 1MB, or could even a 500KB file be affected?' — even without a formal test, this could tighten the threshold estimate",
+    "Ask whether the image corruption looked similar to the PDF corruption (same error message / unopenable) or different in nature, to assess whether it's the same root cause"
+  ]
+}

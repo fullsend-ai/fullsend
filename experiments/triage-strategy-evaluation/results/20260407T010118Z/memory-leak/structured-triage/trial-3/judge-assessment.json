@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: memory growth from ~500MB to 4GB+, v2.3 upgrade as the trigger (~1 week ago), ~200 active users, consistent day-to-day pattern, daily restart as workaround, v2.3 changelog mentioning notification system changes, and 8GB RAM VM. The environment section also captures additional useful detail (bare metal, PostgreSQL)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely identifies the v2.3 notification system as the source and specifically calls out 'event listener or subscription leaks where notification handlers accumulate without cleanup' — this matches the canonical cause (per-request listener registration without cleanup) and fully satisfies both acceptable diagnostic paths. No factual inaccuracies relative to the ground truth."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen rounds of questions and resolved with a well-founded hypothesis. It correctly noted remaining gaps (runtime version, user-count threshold). One obvious follow-up was skipped: asking whether rolling back to v2.2 reproduced the fix, which would have definitively confirmed the version as the trigger without requiring deeper investigation."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both turns were well-targeted. The first bundled all environment questions efficiently; the second focused specifically on logs and error patterns. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was notably effective: by asking about recurring log patterns and specifically mentioning what to look for, it prompted the reporter to notice and volunteer the unexpected WebSocket log volume — information the reporter hadn't thought to mention and wouldn't have surfaced without the prompt. This is the diagnostic thread that led directly to the root cause hypothesis."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The recommended fix gives a developer four concrete, ordered investigation steps (connection cleanup, listener leak audit, v2.2-vs-v2.3 diff, heap profiling), plus a proposed test case covering both load testing and unit verification. A developer could start immediately without gathering additional context."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Immediately flagged the v2.3 upgrade timing as a key diagnostic clue after the first reporter reply",
+    "Second question's framing (asking about recurring log patterns) surfaced the WebSocket log volume detail the reporter hadn't volunteered, directly enabling the root cause hypothesis",
+    "Root cause hypothesis specifically names event listener/subscription leaks — matching the canonical cause without over-specifying beyond what evidence supported",
+    "Recommended fix is structured and immediately actionable, with distinct investigation steps and a concrete proposed test case"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether rolling back to v2.2 was feasible or had been tested — this would have been the fastest confirmation that v2.3 is the trigger",
+    "Did not ask whether any heap dumps or memory profiles had already been captured, which could have accelerated the investigation"
+  ],
+  "most_insightful_question": "The second question asking about server log patterns — specifically prompting for recurring errors and noting examples like OOM warnings and connection pool exhaustion. This framing caused the reporter to actively review logs and surface the unexpectedly high volume of WebSocket-related entries, which was the critical clue for identifying the notification system as the leak source.",
+  "missed_opportunities": [
+    "Ask whether rolling back to v2.2 (even temporarily) reproduced the fix — would definitively confirm the version trigger",
+    "Ask whether heap dumps or memory profiles had been captured during degradation — could accelerate pinpointing the leak source",
+    "Ask whether the memory growth rate correlates with user activity (e.g., lower on weekends or low-traffic periods) — would help confirm a per-request leak pattern"
+  ]
+}

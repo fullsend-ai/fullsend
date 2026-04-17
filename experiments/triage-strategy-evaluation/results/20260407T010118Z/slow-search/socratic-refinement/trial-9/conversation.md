@@ -1,0 +1,59 @@
+# Conversation: slow-search x socratic-refinement
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — slow search is definitely frustrating, especially when it used to work well.
+
+Can you tell me more about when you first noticed the slowdown? For example, did it start after a particular event — like adding a bunch of new tasks, updating TaskFlow, or changing something about your setup? And when you say it "used to be fast," roughly how long ago was that?
+
+---
+
+### reporter
+
+I think it started about 2 weeks ago. I'm pretty sure I updated TaskFlow around that time — went from 2.2 to 2.3 I believe. Before that, searches were basically instant, like under a second. I haven't added a huge number of new tasks recently or changed anything else on my setup that I can think of.
+
+---
+
+### triage-agent
+
+That's really helpful — the timing lining up with the 2.2 → 2.3 update is a strong clue.
+
+I'd love to understand more about the searches themselves. When it takes 10-15 seconds, what kind of search are you running? For instance, are you searching by keyword, filtering by tags or dates, or something else? And does *every* search feel slow, or are some searches still fast while others drag? If you've noticed a pattern in which searches are slow versus which aren't, that would be really useful to know.
+
+---
+
+### reporter
+
+Now that you mention it, I think searching by task title is still pretty fast actually. It's when I search for something that would be in the task description that it gets really slow. Like if I'm looking for a keyword I know is buried in one of my task descriptions, that's when it takes forever. I have some pretty long descriptions — I sometimes paste meeting notes into tasks so some of them are quite lengthy. But yeah, title searches seem fine, it's the full-text stuff that drags.
+
+---
+
+### triage-agent
+
+That's a really useful distinction — title search being fast while full-text description search is slow tells us a lot.
+
+I'm curious about the scale of what the search is working through. Roughly how many tasks do you have in TaskFlow, and when you say some descriptions are quite lengthy from pasted meeting notes, are we talking a few paragraphs or more like pages of text? And when you do one of these slow description searches, is it *consistently* 10-15 seconds every time, or does it vary — like sometimes 5 seconds, sometimes 20? I'm wondering whether it feels like it's grinding through everything from scratch each time or if there's some inconsistency to it.
+
+---
+
+### reporter
+
+I have around 5,000 tasks — I've been using TaskFlow for about 2 years now so they've built up. Some of the descriptions with meeting notes are pretty long, like maybe a page or two of text? I'm not great at estimating but some are definitely over a thousand words. As for the timing, it feels pretty consistently slow — like every time I search descriptions it takes roughly that 10-15 second range. It doesn't really vary much. It definitely feels like it's crunching through everything each time rather than having anything cached or whatever.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text description search regression in v2.3: 10-15s response time with large task sets","problem":"After upgrading from TaskFlow 2.2 to 2.3, searching by task description content takes 10-15 seconds consistently. Title-based search remains fast (sub-second). The reporter has approximately 5,000 tasks, some with lengthy descriptions (1000+ words from pasted meeting notes). Prior to the upgrade, all searches were near-instant.","root_cause_hypothesis":"The v2.3 update likely introduced a regression in full-text description search — most probably a dropped or unused full-text index on the task description field, a switch from indexed queries to sequential scanning, or removal of a query result cache. The consistent 10-15 second timing across all description searches (rather than variable latency) suggests the system is performing a full table scan or unindexed text search on every query.","reproduction_steps":["Set up a TaskFlow 2.3 instance with a large dataset (~5,000 tasks), including some tasks with long descriptions (1000+ words)","Perform a search by task title keyword — confirm it returns quickly (sub-second)","Perform a search by a keyword that appears only in task descriptions — observe 10-15 second response time","Repeat the description search to confirm the slowness is consistent (not a cold-cache effect)","Optionally: repeat on TaskFlow 2.2 with the same dataset to confirm the regression"],"environment":"TaskFlow v2.3 (upgraded from v2.2), running on a work laptop (OS not specified), ~5,000 tasks accumulated over 2 years, some descriptions with 1000+ words","severity":"high","impact":"Any user with a moderately large task set who relies on full-text description search is affected. The feature is effectively unusable at 10-15 seconds per query. Title search users are unaffected.","recommended_fix":"Diff the search implementation between v2.2 and v2.3, focusing on how description/full-text search queries are constructed and executed. Check for: (1) missing or unused full-text index on the description column, (2) query planner choosing a sequential scan instead of an index scan, (3) removed or broken query caching. If an index was dropped or a migration missed rebuilding it, restoring it should resolve the issue. Profile the actual query execution plan for a description search against a large dataset.","proposed_test_case":"Performance test: with a dataset of 5,000+ tasks (including 100+ tasks with descriptions over 1,000 words), assert that a full-text description search returns results in under 2 seconds. Run this test against both title search and description search to ensure parity.","information_gaps":["Exact operating system and hardware specs of the work laptop (unlikely to matter given this appears to be a query-level regression)","Whether the search results themselves are correct (just slow) or also missing expected matches","Which database backend TaskFlow is using (SQLite, PostgreSQL, etc.) — relevant for fix implementation but not for identifying the regression"]}
+
+---

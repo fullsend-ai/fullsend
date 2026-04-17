@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent 403 Forbidden for users with new 'analyst' role — likely inconsistent deployment across backend servers
+
+## Problem
+Users assigned the newly created 'analyst' role receive 403 Forbidden errors approximately one-third of the time when loading the dashboard. Refreshing usually succeeds on the next attempt. The issue began immediately after a deployment that introduced the analyst role. Only analyst-role users appear affected.
+
+## Root Cause Hypothesis
+The deployment that added the 'analyst' role was not applied consistently across all backend servers behind the load balancer. One out of approximately three servers is missing the analyst role definition (or has a stale permission/policy configuration), so requests routed to that server fail authorization while the other servers handle them correctly.
+
+## Reproduction Steps
+  1. Assign a user the 'analyst' role
+  2. Attempt to load the TaskFlow dashboard repeatedly (10+ times)
+  3. Observe that roughly 1 in 3 requests returns a 403 Forbidden (TaskFlow's own branded error page)
+  4. Refresh after a 403 — subsequent request typically succeeds
+
+## Environment
+Multi-server deployment behind a load balancer. A deployment introducing the 'analyst' role occurred approximately 2 days before the report. Specific infrastructure details (LB type, server count) not confirmed but the ~33% failure rate suggests 3 backend instances with 1 misconfigured.
+
+## Severity: high
+
+## Impact
+All users with the 'analyst' role are affected. They cannot reliably access the dashboard, requiring repeated refreshes. This is a new role with multiple team members recently migrated to it, so the affected population is likely growing.
+
+## Recommended Fix
+1. Verify deployment status across all backend servers — check that the analyst role definition and its associated permissions exist on every instance. 2. Compare the authorization/RBAC configuration (database records, config files, or policy definitions) across servers to find the inconsistency. 3. Redeploy or sync the missing role configuration to the out-of-date server(s). 4. Consider adding a health check or deployment verification step that validates all defined roles are present on each server before marking a deployment as complete.
+
+## Proposed Test Case
+Send 20+ sequential authenticated requests to the dashboard endpoint as an analyst-role user and verify all return 200. Optionally, pin requests to each backend server individually (bypassing the load balancer) and confirm each one returns 200 for the analyst role.
+
+## Information Gaps
+- Exact number of backend servers and load balancer configuration
+- Whether the issue is in application-level RBAC config, a database migration, or a cached policy file
+- Whether non-analyst roles on the same servers work correctly (confirmed anecdotally but not verified systematically)
+- Server-side access logs correlating 403 responses to specific backend instances

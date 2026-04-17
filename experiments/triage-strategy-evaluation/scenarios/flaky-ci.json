@@ -1,0 +1,25 @@
+{
+  "title": "Tests keep failing in CI but pass on my machine",
+  "body": "Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.",
+  "quality": "poor",
+  "reporter_profile": "difficult",
+  "ground_truth": {
+    "description": "The reporter is a developer. The failing tests are in the task ordering module. The tests assert that tasks come back in insertion order after a sort operation, but the sort is stable only when using the same hash seed. Locally, the hash seed is deterministic (fixed in the dev config). In CI, the hash seed is randomized per run (production-like config). A recent PR added 5 new tests for the task ordering feature, and those are the ones that fail intermittently. The original test suite didn't have ordering-sensitive assertions. The failures started 4 days ago when the PR was merged. The CI runs on Ubuntu 22.04 runners with Go 1.22. The reporter runs macOS 14 with Go 1.22 locally. The CI logs show the test names clearly when they fail.",
+    "actual_cause": "The new task ordering tests rely on Go map iteration order, which is intentionally randomized in Go. The tests pass locally because the dev config sets GOFLAGS=-race with a fixed seed, making map iteration deterministic. In CI, no fixed seed is set, so map iteration order is random. The fix is to sort the results explicitly in the test assertions or use ordered data structures.",
+    "acceptable_paths": [
+      "Identifying that the failures are in the recently-added ordering tests and suspecting an environment difference between local and CI, even without pinpointing the hash seed",
+      "Identifying the non-deterministic ordering as the root cause, even if attributed to a different mechanism than map iteration randomization"
+    ],
+    "environment": "CI: Ubuntu 22.04, Go 1.22, randomized hash seed. Local: macOS 14, Go 1.22, fixed hash seed via dev config",
+    "workaround": "Re-run the CI pipeline until it passes (unreliable), or pin the hash seed in CI (masks the real bug)"
+  },
+  "expected_triage_extracts": [
+    "failures are intermittent, not consistent",
+    "specific to recently-added task ordering tests",
+    "started ~4 days ago after a specific PR merge",
+    "passes locally on macOS, fails in CI on Ubuntu",
+    "related to non-deterministic ordering",
+    "CI environment differs from local dev environment",
+    "CI logs show which specific tests fail"
+  ]
+}

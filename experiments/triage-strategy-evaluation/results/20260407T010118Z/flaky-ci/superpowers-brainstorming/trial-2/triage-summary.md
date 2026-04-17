@@ -1,0 +1,33 @@
+# Triage Summary
+
+**Title:** Non-deterministic task ordering causes flaky test failures in CI
+
+## Problem
+Tests introduced in a recent task ordering PR produce intermittent assertion failures in CI. The tests expect a specific ordering of tasks but sometimes receive a different order. The tests pass locally (likely due to differences in database engine, dataset size, or execution timing) but fail randomly in CI.
+
+## Root Cause Hypothesis
+The task ordering implementation uses a sort that is not fully deterministic — most likely a database query with an ORDER BY on a non-unique column (e.g., priority, created_at) without a tiebreaker (e.g., id). When multiple tasks share the same sort key value, the database returns them in arbitrary order, which varies across runs and environments.
+
+## Reproduction Steps
+  1. Identify the task ordering PR merged approximately one week ago
+  2. Run the failing tests repeatedly (e.g., in a loop of 20-50 iterations) to reproduce the non-deterministic ordering
+  3. Alternatively, inspect the ordering query/logic for sort stability — look for ORDER BY clauses on non-unique fields or in-memory sorts without tiebreakers
+
+## Environment
+Failures occur in CI but not locally, suggesting the local environment happens to return a consistent order by coincidence (e.g., smaller dataset, different DB engine, or insertion-order bias in SQLite vs. PostgreSQL)
+
+## Severity: high
+
+## Impact
+Blocking all releases due to flaky CI. The entire team is affected and the issue has persisted for several days.
+
+## Recommended Fix
+Add a deterministic tiebreaker to the task ordering logic. If ordering by a non-unique field (e.g., priority or due_date), add a secondary sort on a unique field (e.g., ORDER BY priority, id). Update the corresponding tests to use data with distinct sort keys or to assert based on the full deterministic ordering.
+
+## Proposed Test Case
+Create multiple tasks with identical values for the primary sort field (e.g., same priority). Verify that the returned order is consistent across repeated calls and matches the expected tiebreaker order (e.g., ascending by id).
+
+## Information Gaps
+- Exact PR and test names (available in CI logs and git history — team can locate without reporter)
+- Whether the backing database differs between CI and local (e.g., PostgreSQL vs. SQLite)
+- Whether the ordering is implemented at the database query level or in application code

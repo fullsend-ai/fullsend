@@ -1,0 +1,22 @@
+{
+  "title": "App crashes on save when task list contains CSV-imported data with non-standard character encoding",
+  "problem": "After importing approximately 200 rows of tasks from a CSV file exported from another application, the app crashes (closes entirely) whenever the user attempts to save. A brief error dialog mentioning 'encoding' flashes before the crash. Saving works normally for task lists that do not contain imported data.",
+  "root_cause_hypothesis": "The CSV import preserved characters in their original encoding (likely Latin-1, Windows-1252, or another non-UTF-8 encoding). The save/serialization path assumes UTF-8 (or another single encoding) and throws an unhandled encoding exception when it encounters these characters, causing the app to crash instead of failing gracefully.",
+  "reproduction_steps": [
+    "Create or obtain a CSV file with ~200 rows of task data containing non-ASCII characters (e.g., curly quotes, accented characters, em dashes) encoded in a non-UTF-8 encoding such as Windows-1252",
+    "Import the CSV into TaskFlow using the CSV import feature",
+    "Verify the imported tasks appear in the task list",
+    "Click Save",
+    "Observe: app crashes with a brief encoding-related error dialog"
+  ],
+  "environment": "Not specified; likely reproducible across platforms since the issue is in the data layer, not platform-specific UI",
+  "severity": "high",
+  "impact": "Any user who imports CSV data containing non-UTF-8 characters is unable to save their work and loses unsaved changes on each crash. The reporter is actively blocked and losing work.",
+  "recommended_fix": "Investigate the save/serialization code path for encoding assumptions. The fix likely involves either (1) normalizing imported data to UTF-8 at import time, or (2) handling encoding errors gracefully during save (e.g., with replacement characters or a user-facing error that doesn't crash the app). Also add a try/catch or equivalent around the save path so encoding errors surface as a recoverable error dialog rather than crashing the app.",
+  "proposed_test_case": "Import a CSV file containing non-ASCII characters in Windows-1252 encoding (e.g., curly quotes U+2018/U+2019, em dash U+2014) into a task list, then save. Verify: (1) the save completes without crashing, (2) the characters are either preserved correctly or replaced with safe equivalents, and (3) if any encoding issue is detected, a clear, persistent error message is shown instead of a crash.",
+  "information_gaps": [
+    "Exact error message from the crash dialog (reporter unable to capture it)",
+    "Operating system and app version",
+    "Exact source application the CSV was exported from (may reveal specific encoding)"
+  ]
+}

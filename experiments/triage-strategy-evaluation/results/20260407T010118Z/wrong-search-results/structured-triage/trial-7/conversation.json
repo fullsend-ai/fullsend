@@ -1,0 +1,26 @@
+{
+  "title": "Search shows wrong results — finding archived tasks instead of active ones",
+  "body": "Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for the clear description — I can see the core issue: searches are surfacing archived tasks while missing active ones, and it's affecting multiple users.\n\nTo help us reproduce this, could you walk us through the exact steps? Specifically:\n- Where are you searching — the main search bar at the top of the app, or a search/filter within a specific project or board?\n- Are you using any filters (e.g., date range, assignee, status) along with your search term, or just typing 'Q2 planning' into the search field and hitting enter?\n\nJust the steps as you'd walk a colleague through it would be perfect."
+    },
+    {
+      "author": "reporter",
+      "body": "Sure! I'm just using the main search bar at the top of the app. I type in my search term — like 'Q2 planning' — and hit enter. I'm not adding any extra filters manually. But I believe the default is set to show active tasks only, which is what I'd expect. The weird thing is it seems like that default filter is doing the opposite — it's showing me archived tasks instead of active ones. If I flip the filter to 'show archived,' I actually see my active tasks. It's like the filter is backwards. This started about three days ago, right after we got the v2.3.1 update."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for walking through those steps — the detail about the filter appearing to work backwards is really helpful, and the timing with the v2.3.1 update is a strong clue.\n\nOne more thing to round out the picture: could you let us know what browser and operating system you're using? (For example, Chrome on Windows, Safari on macOS, etc.) I'd also like to confirm — are you using the web app, or a desktop/mobile client?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm using Chrome on Windows 10, and it's the web app. But I don't think it's a browser issue since my teammate is seeing the same thing on her Mac with Safari. It really seems like something changed on the backend with that v2.3.1 update — the search filter is just inverted for everyone."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Search filter inverted since v2.3.1 — 'active' filter returns archived tasks and vice versa\",\"problem\":\"Since the v2.3.1 update (approximately three days ago), the search status filter is inverted. When the default 'active tasks only' filter is applied, search returns archived tasks instead. When the user manually switches to 'show archived,' active tasks appear. This affects all users and all search queries.\",\"root_cause_hypothesis\":\"The v2.3.1 update likely introduced a boolean inversion or swapped enum/flag values in the search filter logic — the predicate that maps the UI filter selection (active vs. archived) to the backend query is reversed. This could be a negated condition, swapped constant values, or an inverted boolean parameter in the search API call.\",\"reproduction_steps\":[\"Log into TaskFlow web app (v2.3.1)\",\"Use the main search bar at the top of the app\",\"Type a search term (e.g., 'Q2 planning') and press Enter\",\"Observe that results include archived tasks and omit known active tasks\",\"Toggle the filter to 'show archived'\",\"Observe that active tasks now appear in the results\"],\"environment\":\"TaskFlow v2.3.1, web app. Reproduced on Chrome/Windows 10 and Safari/macOS — browser-independent, likely a backend or shared frontend logic issue.\",\"severity\":\"high\",\"impact\":\"All users are affected. Every search returns wrong results by default, making the search feature effectively broken for normal use. Users must manually invert the filter as a workaround, which is non-obvious.\",\"recommended_fix\":\"Inspect the v2.3.1 diff for changes to search filter logic — look for inverted booleans, swapped enum values, or negated conditions in the code that maps the UI filter state (active/archived) to the search query parameters. Check both the frontend filter serialization and the backend query construction.\",\"proposed_test_case\":\"Create one active task and one archived task with the same keyword. Search with the default 'active' filter and assert the active task is returned and the archived task is not. Then switch to 'archived' filter and assert the reverse.\",\"information_gaps\":[\"Exact database or search index technology in use (e.g., Elasticsearch, PostgreSQL full-text) — useful for the developer but discoverable from the codebase\",\"Whether the issue also affects API-level search or only the UI-driven search path\"]}"
+    }
+  ]
+}

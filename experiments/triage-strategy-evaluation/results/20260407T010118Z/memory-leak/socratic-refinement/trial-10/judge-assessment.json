@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items: memory growth pattern (500MB to 4GB+), v2.3 upgrade as trigger (~1 week ago), 200 active users, day-to-day consistency, restart workaround, and notification system changelog mention. Missing: server specs (8GB RAM, Ubuntu 22.04) — neither elicited nor captured. The agent acknowledged missing the runtime/language but didn't ask about hardware specs."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The summary not only hits both acceptable diagnostic paths (v2.3 + notification system as trigger; per-request resource leak from growth rate analysis) but essentially identifies the precise mechanism — 'a listener/callback registered on each request but never deregistered' matches the actual cause almost exactly. The per-request volume math (~4,000-6,000 requests/hour) correctly connects user count to leak rate. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions reached an actionable conclusion. The agent acknowledged remaining gaps (runtime/language, feature flags) in the summary rather than leaving them invisible. The main miss is server specs (OS, RAM) which would narrow profiling tool choices — but these were correctly flagged as gaps. Resolving after 2 turns is reasonable given the reporter's highly informative responses."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. The first established the timeline and change trigger; the second probed usage patterns and notification behavior to distinguish per-connection vs per-request leak. No wasted turns, no repeated asks."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was genuinely insightful — by asking about notification behavior and connection patterns, it prompted the reporter to reflect and volunteer the critical observation that memory growth correlates with API request volume rather than connected user count. That distinction (per-request vs per-connection) is the diagnostic linchpin and was not in the original report. The reporter likely would not have shared this unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides specific code locations to diff, a prioritized checklist of what to look for (listeners not deregistered, unbounded collections, closure captures), concrete heap profiling steps, a proposed load test with pass/fail criteria, and an immediate mitigation (rollback or disable feature). A developer could begin investigating or writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.7,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Second question drew out the critical per-request vs per-connection distinction that the reporter wouldn't have volunteered without prompting",
+    "Root cause hypothesis independently converged on the actual leak mechanism (listener registered per request, never deregistered) via reasoning from growth rate and request volume",
+    "Actionability is exceptional: specific code diff targets, heap dump procedure, load test spec with baseline comparison, and immediate rollback mitigation all provided",
+    "Information gaps were honestly surfaced in the summary rather than omitted"
+  ],
+  "notable_weaknesses": [
+    "Server specs (8GB RAM, Ubuntu 22.04, server runtime/language) were never elicited — affects which profiling tools to recommend",
+    "Did not ask whether disabling real-time notifications via a feature flag was possible, which would be a quick confirmation of the subsystem"
+  ],
+  "most_insightful_question": "The second question asking whether the memory growth seemed tied to the number of connected users vs overall API activity — this reframing prompted the reporter to share the key diagnostic observation that growth is proportional to request volume, not connection count, which ruled out a connection-lifecycle leak and pointed to the per-request hot path.",
+  "missed_opportunities": [
+    "Ask about server OS, total RAM, and runtime/language to enable specific profiling tool recommendations",
+    "Ask whether v2.3 provides a feature flag or configuration option to disable real-time notifications (would allow rapid confirmation without a rollback)",
+    "Ask whether they could briefly roll back to v2.2 to confirm the regression boundary"
+  ]
+}

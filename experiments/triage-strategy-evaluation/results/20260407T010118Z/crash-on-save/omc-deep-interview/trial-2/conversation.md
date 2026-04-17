@@ -1,0 +1,63 @@
+# Conversation: crash-on-save x omc-deep-interview
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — sorry you're dealing with crashes and lost work.
+
+Could you describe what exactly happens when it crashes? For example:
+- Does the app freeze, close completely, or show an error message?
+- Are you saving a new task, editing an existing one, or does it happen on any save?
+- Which platform are you using (web, desktop, mobile) and which browser/OS?
+
+---
+
+### reporter
+
+It just closes. The whole app shuts down. I'm on Mac if that matters. I'm trying to save my task list and it just crashes every time I hit Save. I think there's some kind of error dialog that flashes for a split second but it's gone before I can read it. Something about encoding maybe? I don't know. I just need it to work.
+
+---
+
+### triage-agent
+
+That 'encoding' error flash is a really useful clue — let's try to capture it. Could you check if there's a crash log we can look at? On Mac, open **Console.app** (search for it in Spotlight), filter by "TaskFlow", then reproduce the crash. Any recent entries should show the full error message. Alternatively, if you're using the desktop app, there may be a log file under `~/Library/Logs/TaskFlow/`. Even a screenshot of whatever you find would help us narrow this down quickly.
+
+---
+
+### reporter
+
+Look, I'm not really a tech person. I don't know what Console.app is and I don't want to dig through log files. Can you just fix the saving? It was working fine before I imported a bunch of tasks from a CSV file. Now every time I hit Save the whole thing just dies. I have like 200 tasks in there and I need this to work.
+
+---
+
+### triage-agent
+
+That's really helpful — the CSV import is likely the key here. No need to dig through logs. A couple of quick things that would help us track this down:
+
+1. Could you share the CSV file you imported (or even just a few rows from it)? You can attach it right here in this issue. If it contains private info, even a dummy version with the same column structure would work.
+2. Before we dig deeper — if you create a brand new task list with just one or two tasks (no CSV import), does saving work fine? That would confirm the imported data is the trigger.
+
+This should help us pinpoint whether it's something in the file's formatting or a specific task causing the crash.
+
+---
+
+### reporter
+
+I don't have the CSV file anymore, I deleted it after importing. And yeah, saving works fine if I make a new list with just a couple tasks. It's only when I try to save this big list with the imported stuff that it crashes. The imported tasks had a bunch of weird characters in them like fancy quotes and dashes from wherever my coworker originally typed them up. Can you just fix it?
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save when task list contains Unicode characters from CSV import","problem":"The TaskFlow Mac desktop app crashes (force-closes) immediately when the user saves a task list that was populated via CSV import. The imported tasks contain non-ASCII characters such as curly/smart quotes and em dashes. A brief error dialog mentioning 'encoding' flashes before the app terminates. Saving works normally for task lists created manually without imported data.","root_cause_hypothesis":"The save/serialization path does not handle non-ASCII Unicode characters (smart quotes, em dashes, etc.) correctly. The CSV import likely ingests these characters verbatim, but the save routine either assumes ASCII encoding, uses a codec that cannot represent these characters, or fails to encode them properly — resulting in an unhandled encoding exception that crashes the app.","reproduction_steps":["Create a CSV file with task data containing Unicode characters: smart/curly quotes (“ ” ‘ ’), em dashes (—), and other non-ASCII punctuation","Import the CSV file into TaskFlow on Mac desktop app","Verify the tasks appear in the list after import","Click Save","Observe: app crashes immediately with a brief encoding-related error dialog"],"environment":"Mac desktop app (macOS version unknown, app version unknown)","severity":"high","impact":"User is completely blocked from saving a 200-task list representing real work. Data loss occurs on every crash since unsaved changes are discarded. Any user who imports CSV data with non-ASCII characters will hit this.","recommended_fix":"Investigate the save/serialization code path for encoding assumptions. Ensure all string data is encoded as UTF-8 (or the appropriate Unicode encoding) before writing. Add proper error handling around the save operation so encoding failures surface a user-facing error message rather than crashing the app. Also audit the CSV import path to either normalize Unicode characters on ingest or ensure downstream code handles them.","proposed_test_case":"Create a task list containing entries with smart quotes (“”), em dashes (—), accented characters (é, ñ), and emoji. Verify that saving and re-loading the list preserves all characters without errors or crashes.","information_gaps":["Exact macOS version and TaskFlow app version","Full error message / stack trace from the crash (reporter unable to retrieve logs)","Original CSV file structure and content (deleted by reporter)","Whether the issue is specific to certain Unicode characters or affects all non-ASCII text","Whether the crash occurs with a smaller subset of the imported tasks (e.g., 10 rows with special characters)"]}
+
+---

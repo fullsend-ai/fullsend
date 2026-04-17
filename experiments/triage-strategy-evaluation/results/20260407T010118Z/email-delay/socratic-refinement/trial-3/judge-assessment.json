@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items were captured: 2-4 hour delay, ~1 week onset, morning/afternoon timing pattern, connection to marketing digest batch emails, queue congestion hypothesis, transactional vs. bulk competition for the same pipeline, and the original <2 minute baseline. The summary also surfaced additional useful context: team-wide impact, severity, a proposed test case, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest email feature as the cause and queue congestion/saturation as the mechanism, which matches the second acceptable diagnostic path exactly. The agent did not identify the priority-level inversion specifically (attributing it to rate limits or throughput saturation rather than identical priority weights), but this is explicitly covered by the acceptable path 'Identifying the digest email feature as the cause and the queue congestion, even without understanding the priority system.' The hypothesis is directionally correct and would lead a developer to the right fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions and reached a well-supported hypothesis in two turns. The information_gaps section honestly acknowledges what remains unknown (queue depth, recipient count, whether other transactional emails are also delayed). One obvious follow-up was left on the table — asking about whether other transactional emails (e.g., password resets) were also delayed would have further confirmed the queue-wide impact — but the resolution was otherwise well-supported."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two turns, each yielding critical information. The first question efficiently established the change-event that caused the issue (the reporter identified the digest emails). The second question confirmed sequencing (digest first, then delay) and scope (team-wide). No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question prompted the reporter to surface the digest email feature — information they would not have volunteered without the prompt. The second question was cleverly split: confirming that digest emails themselves arrive on time (establishing they are at the front of the queue, not delayed themselves) while also probing scope. These questions were specific, well-framed, and led directly to the resolution."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it includes a clear root cause hypothesis, step-by-step reproduction instructions (including checking queue logs at 9am), three specific fix options in priority order, a concrete test case for validating the fix, and a scoped list of information gaps. A developer could open the email infrastructure code and start investigating within minutes of reading this."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The first question efficiently prompted the reporter to identify the digest email feature without leading them — the reporter made the connection themselves, making it a strong signal rather than agent-suggested speculation.",
+    "The second question's structure — asking whether digest emails themselves arrive on time before asking about scope — demonstrates real diagnostic thinking about queue ordering and sequencing.",
+    "The triage summary includes a proposed test case with specific observable outcomes, making it immediately usable for both debugging and regression testing.",
+    "The information_gaps section is honest and well-scoped, acknowledging what remains unknown without undermining the confident core hypothesis."
+  ],
+  "notable_weaknesses": [
+    "The agent did not ask whether other transactional email types (password resets, comment notifications) were also delayed, which would have further confirmed the hypothesis and helped isolate whether the issue is queue-wide or task-notification-specific.",
+    "The agent did not ask about the scale of the digest send (number of recipients), which is the key variable explaining why queue drain takes hours rather than minutes — a question that would have added quantitative grounding to the hypothesis."
+  ],
+  "most_insightful_question": "Can you tell me a bit more about what you see in the morning? For instance, do the digest emails themselves arrive on time, and then it's the task-assignment notifications that get backed up behind them?",
+  "missed_opportunities": [
+    "Are other transactional emails (e.g., password resets, comment notifications, due date reminders) also delayed in the morning, or is it specifically task assignment notifications?",
+    "Roughly how many people receive the daily digest email — is it just your team, or does it go out to all users of the product? (This would have revealed the 10K-recipient scale driving the multi-hour drain time.)"
+  ]
+}

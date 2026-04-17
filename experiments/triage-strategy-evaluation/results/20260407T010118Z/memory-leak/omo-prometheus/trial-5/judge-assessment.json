@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured nearly all expected information: linear memory growth (~500MB to 4GB+), v2.3 upgrade as trigger (~1 week ago), ~200 active users, consistent daily pattern, restart as workaround, and notification system changes in changelog. Missing: explicit mention of server specs (8GB RAM VM, Ubuntu 22.04). The triage notes 'exact OS/runtime not specified' as an information gap, suggesting it wasn't asked."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely matches the actual cause — per-request listener registration that is never cleaned up in the v2.3 real-time notifications feature. The agent even correctly calculated the accumulation rate (~200 users × ~25 req/hr) and corroborated it with the observed 4,000-5,000 connection count. This matches the canonical root cause almost exactly."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked targeted questions that progressively narrowed the cause: version/upgrade timing, log analysis and connection counts, and then a quantification of the connection leak. One notable gap: the agent never asked about server specs (RAM, OS), which is in the expected information list. Also didn't ask about v2.2 rollback test. However, the agent had a solid enough basis to resolve accurately without these."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns, each building directly on the previous response. No redundant or low-value questions. The progression from 'is this a regression?' to 'what do logs/connections show?' to 'how bad is the connection accumulation?' was tight and efficient."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated strong diagnostic reasoning. The second turn's request for connection count comparison (morning vs. afternoon) was particularly insightful — it directly surfaced the per-request leak pattern without the reporter having to understand the mechanism. The third turn's follow-up asking for a specific number relative to user count was excellent: it turned a vague 'higher than expected' into quantitative evidence that confirmed the per-request (not per-session) leak hypothesis."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start coding a fix immediately. The summary identifies the specific code area (v2.3 real-time notifications), the exact mechanism (per-request listener registration without cleanup), points to the v2.3 diff as the starting point, suggests the fix pattern (deregister on session end/request completion), and even proposes a concrete test case to verify the fix."
+    }
+  },
+  "weighted_total": 4.7,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Immediately identified the version upgrade as the key diagnostic pivot in the first question, which unlocked the entire investigation",
+    "The connection count comparison request (morning vs. afternoon) was a highly effective diagnostic move that provided quantitative confirmation of the leak pattern",
+    "The final summary is exceptionally actionable — it identifies the specific subsystem, mechanism, fix pattern, and a concrete regression test"
+  ],
+  "notable_weaknesses": [
+    "Never asked about server hardware specs (RAM, OS), leaving a minor gap in the expected information",
+    "Did not suggest or ask about rolling back to v2.2 as a diagnostic confirmation step, which would have provided stronger causal evidence"
+  ],
+  "most_insightful_question": "Can you check the number of active WebSocket or long-lived HTTP connections on the server... during morning (when it's fast) vs. late afternoon (when it's slow) and compare the counts?",
+  "missed_opportunities": [
+    "Ask about server specs (RAM, OS, whether containerized) — listed as expected information and relevant for reproduction",
+    "Ask whether rolling back to v2.2 was tested or feasible — would confirm causality and is a natural follow-up to learning the upgrade triggered the issue"
+  ]
+}

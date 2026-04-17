@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The agent captured most expected items: small PDFs fine, started ~1 week ago, binary content mangled, multiple customers affected, size-dependent behavior implying different upload paths. The 1MB threshold was implied but not confirmed. 'Other large file types may also be affected' was noted as an information gap rather than extracted — the agent never asked directly. The upload proxy connection was approached but not named."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis closely matches acceptable path 1 (size-dependent behavior suggesting different upload paths) and even anticipates the actual mechanism: the agent specifically identified binary-data-treated-as-text, mentioned 'chunked upload threshold triggers different code paths,' and explicitly listed 'content-type handling' as the first thing to check in the recommended fix. This is remarkably close to the actual cause without inside knowledge."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about upload method, timing/size patterns, and corruption signature — all useful. The reporter was resistant to further investigation, and the agent extracted the critical clues (timing, size pattern, corruption type) before resolving. The main gap was never asking whether other file types (images, spreadsheets) are also affected, which would have strengthened the diagnosis. One obvious follow-up was left on the table."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns, all reasonably targeted. The first question about upload method (drag-and-drop vs. file picker) was the weakest — it was dismissed by the reporter and the answer turned out not to matter. Turns 2 and 3 were high-value and well-timed. Overall efficient given reporter friction."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Turn 2 was genuinely insightful: pairing the timing question with 'have you noticed any difference with smaller versus larger files?' drew out the size-dependent observation the reporter hadn't volunteered and wouldn't have framed that way on their own. Turn 3 (asking what the corruption looks like — cut short vs. garbled vs. empty) is a precise diagnostic move that confirmed binary encoding corruption vs. truncation. These demonstrate real diagnostic reasoning, not generic questions."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names binary encoding transformation as the mechanism, explicitly tells developers to check content-type handling and chunked upload thresholds, provides a 5-step investigation plan, includes a concrete test case with SHA-256 checksums at multiple file sizes, and clearly lists information gaps a developer would need to resolve. A developer could begin investigating the upload proxy immediately."
+    }
+  },
+  "weighted_total": 4.55,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The size-pattern question in turn 2 was the key diagnostic move — it elicited 'smaller PDFs might be going through okay' from a resistant reporter who hadn't connected that observation",
+    "The corruption-signature question in turn 3 (garbled vs. truncated vs. empty) correctly distinguished binary encoding corruption from chunking/truncation failures",
+    "The recommended fix specifically calls out content-type handling and chunked upload thresholds, which are essentially the actual root cause without the agent having access to the codebase",
+    "The proposed test case (SHA-256 checksums at 100KB / 1MB / 5MB / 20MB) is exactly what a developer would design to isolate a size-dependent upload bug"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether other file types (images, Word docs, spreadsheets) are also affected — this would have confirmed the issue is not PDF-specific and strengthened the upload-path hypothesis",
+    "First question about upload method (drag-and-drop vs. file picker) was quickly invalidated and contributed little diagnostic value",
+    "Did not attempt to confirm the ~1MB threshold more precisely, though reporter resistance made this difficult"
+  ],
+  "most_insightful_question": "Also, is it every single PDF that comes back corrupted, or are some getting through fine? For instance, have you noticed any difference with smaller versus larger files?",
+  "missed_opportunities": [
+    "Asking whether other binary file types (images, ZIP files, Word documents) are also corrupted when uploaded — would have confirmed the issue is not PDF-specific and pointed more directly at the upload proxy/path rather than a PDF-processing layer",
+    "Asking whether customers can confirm the corruption is present immediately after upload (before downloading) — would help distinguish upload-time vs. download-time corruption, which the agent correctly flagged as a gap but never attempted to probe with the reporter"
+  ]
+}

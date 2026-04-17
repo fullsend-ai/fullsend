@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected information items were captured: linear memory growth from ~500MB to 4GB+, v2.3 upgrade as the trigger (~1 week ago), ~200 active users, consistent day-to-day pattern, daily restart as workaround, v2.3 changelog mentioning notification changes, and 8GB RAM VM specs. The agent also extracted additional useful details like the Saturday/lighter-day comparison that quantitatively confirmed the per-user correlation."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis precisely identifies the v2.3 'improved real-time notifications' feature and specifically calls out WebSocket connections and event listeners not being cleaned up — which matches the actual cause (event listener leak where each API request registers a listener that is never deregistered). This satisfies both the canonical root cause and the first acceptable diagnostic path. The usage-correlated linear growth analysis is also correct."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen rounds of questions before resolving, surfacing the critical v2.3/notification link and environment details. It did not ask for server-side error logs or a heap dump during the degraded state, which are acknowledged in information_gaps. Given that the diagnostic picture was already very clear after round two, resolving was reasonable rather than premature."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both question turns were productive. The first round efficiently surfaced the v2.3 upgrade and notification system connection. The second round captured OS and RAM (useful) but also asked for database version and exact CPU count, which the reporter noted were unlikely to matter — these were low-value adds given the version-regression framing. One or two sub-questions could have been dropped."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was particularly insightful: by asking which features the team uses heavily and enumerating 'real-time notifications' as an example, it guided the reporter to volunteer the v2.3 changelog connection — information the reporter might not have offered unprompted. The usage-correlation probe also yielded the Saturday/lighter-day comparison, which quantitatively confirmed the per-user leak pattern. These questions demonstrated genuine diagnostic reasoning rather than generic checklisting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer a concrete starting point: investigate WebSocket connection lifecycle and event listener registries in the v2.3 notification changes, do a heap snapshot comparison between v2.2 and v2.3, and run a load test simulating connect/disconnect cycles. The reproduction steps are specific and realistic. A developer could open the v2.3 diff on the notification subsystem and start reviewing immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The first question strategically listed 'real-time notifications' as an example feature, which prompted the reporter to connect the v2.3 changelog entry — a key diagnostic breakthrough the reporter hadn't volunteered in the original report.",
+    "The usage-correlation probe (weekday vs. Saturday) produced quantitative evidence confirming a per-user leak pattern, strengthening the hypothesis beyond what the original report contained.",
+    "The final summary is exceptionally actionable: it names specific investigation areas (connection lifecycle, listener registries, notification buffers), proposes a concrete heap snapshot comparison, and includes a realistic load-test specification."
+  ],
+  "notable_weaknesses": [
+    "The second question asked for database version and exact CPU count, which are unlikely to be diagnostic for a version-regression memory leak and added noise to an otherwise tight investigation.",
+    "The agent did not ask for server-side logs or stack traces from the degraded state, which could have revealed GC pressure signals or listener accumulation warnings — though these gaps were correctly noted in information_gaps."
+  ],
+  "most_insightful_question": "Are there particular features your team uses heavily (e.g., file attachments, real-time notifications, recurring task schedules, webhooks/integrations)?",
+  "missed_opportunities": [
+    "Ask whether any server-side error logs or warnings appear during the degraded period (e.g., GC pressure warnings, memory threshold alerts)",
+    "Ask whether rolling back to v2.2 was attempted or considered, which would definitively confirm the regression"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "title": "Search is really slow",
+  "body": "The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this. A few things to help me narrow this down quickly:\n\nWhen did you first notice the slowdown? Can you tie it to a specific update or change — for example, did it start after upgrading TaskFlow, adding a large batch of tasks, or changing any settings?\n\nAlso, when you say \"search,\" are you using the main search bar, a filtered view, or something else? And roughly how many tasks are we talking about?"
+    },
+    {
+      "author": "reporter",
+      "body": "I think the slowdown started maybe 2 weeks ago? I did upgrade to v2.3 around that time, so it might be related but I'm not totally sure. I'm using the main search bar — I have around 5,000 tasks built up over a couple years. It used to be snappy, like under a second, and now it just hangs for a while before showing results."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — the v2.3 upgrade timing is a useful lead.\n\nIs every search slow, or does it depend on what you're searching for? For example, does searching for a single common word like \"meeting\" take just as long as searching for something very specific? And does the slowness happen on the very first search after opening TaskFlow, or is it consistently slow even on repeated searches in the same session?"
+    },
+    {
+      "author": "reporter",
+      "body": "Hmm, good question. Now that I think about it, searching by task title seems to be fine — it's still pretty fast. But when I'm searching through the actual task descriptions, that's when it gets really slow. Like if I search for a word that I know is in a task description, it takes ages. And it's consistently slow, not just the first time. Every search through descriptions is like that."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's a really helpful distinction — title search being fast while description search is slow points strongly toward how descriptions are being queried.\n\nWhen a slow description search is running, can you tell what your system is doing? For example, does your laptop's fan spin up or CPU spike (check Task Manager or Activity Monitor), or does it feel more like it's waiting on something over the network? Also, are you running TaskFlow locally with a local database, or does it connect to a server/cloud backend?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah, I've noticed the CPU fans kick in when I do a description search. I checked the system monitor once and it looked like one core was pegged at 100% during the search. It's running locally with a local database — no cloud or server stuff. My laptop has plenty of RAM (32GB) so I don't think that's the issue. It really does feel like it's grinding through something locally."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks — a single core pegging at 100% with a local database is very telling. Here's my working theory:\n\nThe v2.3 upgrade likely changed how description search works under the hood. Previously it was probably using a database-level full-text search index, which is fast. Now it appears to be loading descriptions into memory and scanning them one by one — hence the CPU spike on a single core and the ~10-15 second delay across 5,000 tasks. Title search still works fast because that index wasn't affected.\n\nTwo quick things to confirm this:\n1. Do you know what database TaskFlow uses on your machine — is it SQLite (a single `.db` or `.sqlite` file), or something else like PostgreSQL?\n2. If you happen to still have v2.2 installed or could briefly roll back, does description search go back to being fast?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm pretty sure it's SQLite — I think I've seen a `.db` file in the TaskFlow data folder, but I'm not a database person so I couldn't tell you much more than that. As for rolling back to v2.2, I haven't tried that. I don't have the old version installed anymore and honestly I'd rather not mess with downgrading if I can avoid it. But your theory sounds like it could be right — it definitely feels like it's grinding through everything one by one instead of just looking it up like it used to."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Description search performs full table scan instead of using FTS index after v2.3 upgrade (~10-15s for 5,000 tasks)\",\"problem\":\"After upgrading to TaskFlow v2.3, searching by task description takes 10-15 seconds on a dataset of ~5,000 tasks. Title search remains fast (<1 second). The slowdown is consistent across all description searches within a session, not just the first query.\",\"root_cause_hypothesis\":\"The v2.3 upgrade likely removed, broke, or bypassed the SQLite full-text search (FTS) index on the task descriptions column. Description searches now appear to perform a sequential scan — loading each description into memory and pattern-matching one by one — rather than using an FTS index lookup. Evidence: single CPU core pegs at 100% during search (characteristic of a single-threaded sequential scan), title search is unaffected (its index is intact), and the timing (~10-15s for 5,000 rows) is consistent with row-by-row LIKE or in-application string matching rather than indexed retrieval.\",\"reproduction_steps\":[\"Install TaskFlow v2.3 with a local SQLite database\",\"Populate the database with ~5,000 tasks that have non-trivial descriptions\",\"Open the main search bar and search for a term that appears in task descriptions (not just titles)\",\"Observe that the search takes 10-15 seconds and CPU usage spikes on one core\",\"Compare by searching for a term that appears only in task titles — this should return quickly\"],\"environment\":\"TaskFlow v2.3, local SQLite database (.db file in TaskFlow data folder), laptop with 32GB RAM, running locally with no cloud/server backend\",\"severity\":\"medium\",\"impact\":\"Users with large task databases (thousands of tasks) experience severe search degradation when searching by description content. Title-only search is unaffected. No data loss, but the feature is effectively unusable for description searches at scale. Likely affects all local SQLite users who upgraded to v2.3.\",\"recommended_fix\":\"1. Diff the search/query code between v2.2 and v2.3 — look for changes to how description search queries are constructed (e.g., switched from FTS MATCH to LIKE '%term%', or moved to in-application filtering). 2. Check whether the SQLite FTS virtual table for descriptions still exists and is being populated on v2.3 databases. 3. If the FTS index was dropped or is no longer used, restore it and ensure the description search query uses FTS MATCH syntax. 4. If the FTS table exists but a migration failed to populate it, add a repair migration. 5. Consider adding a query execution plan check (EXPLAIN QUERY PLAN) to integration tests to catch index regression.\",\"proposed_test_case\":\"Create a test database with 5,000+ tasks with varied descriptions. Run a description search query and assert it completes in under 2 seconds. Additionally, verify via EXPLAIN QUERY PLAN that the description search uses the FTS index rather than a sequential scan.\",\"information_gaps\":[\"Exact v2.3 changelog or migration scripts (developer-side investigation, not reporter-facing)\",\"Whether this affects other database backends or only SQLite\",\"Exact search query syntax used in v2.3 vs v2.2 (code review needed)\"]}"
+    }
+  ]
+}

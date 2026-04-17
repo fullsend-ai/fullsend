@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present in the triage summary: record count (50-100 of 2,000), truncation pattern (not random corruption), 2-week timeline, nightly batch import as the vector, 3+ digit country code pattern, US/UK numbers unaffected, and a recent developer change to phone number handling. The last item is correctly flagged as an information gap (reporter couldn't confirm details) rather than ignored."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the nightly import as the corruption source and connects it to the 2-week timeline and a recent code change — satisfying both acceptable diagnostic paths. The root cause hypothesis ('regex pattern, substring operation, or field length constraint that assumes country codes are at most 2 digits') is consistent with the actual regex bug (\\d{1,2} capture group). No inaccuracies introduced."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the critical questions: concrete examples of corruption, entry method and timeline, Salesforce source integrity, and sync status. One obvious follow-up left unasked: whether numbers entered directly via the TaskFlow UI (not through the import) are also affected, which would help isolate whether the bug is in the import pipeline only or in a shared normalizer. This is noted as an information gap but was never probed."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Four turns, each serving a distinct diagnostic purpose: characterize the corruption, establish the data entry path and timeline, confirm source data integrity and probe for recent changes, and assess ongoing impact. No redundancy; multiple sub-questions were efficiently bundled within single turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Questions demonstrated genuine diagnostic reasoning. Asking for concrete examples in turn 1 immediately surfaced the 3-digit country code pattern. Asking the reporter to verify Salesforce data in turn 3 cleanly isolated the bug to the import pipeline. The turn 4 observation that the running sync was actively re-corrupting records — and suggesting a pause — went beyond information gathering to proactive triage guidance that the reporter found immediately actionable."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides reproduction steps, a precise root cause hypothesis pointing to a specific class of parsing bug, a four-step recommended fix, proposed unit and integration test cases, and a workaround (pause sync, restore from Salesforce backup). A developer could open the Salesforce sync pipeline code and search for the relevant parsing logic immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The request for concrete examples in turn 1 immediately surfaced the defining pattern (3+ digit country codes), which anchored the entire subsequent investigation.",
+    "Asking the reporter to verify Salesforce data was a textbook isolation step that confirmed the bug was in TaskFlow's import layer, not the source.",
+    "Proactively flagging that the still-running nightly sync would overwrite any manual corrections was high-value guidance the reporter would not have volunteered."
+  ],
+  "notable_weaknesses": [
+    "The agent never asked whether phone numbers entered or edited directly in the TaskFlow UI (outside the import path) are also affected, which would determine whether the bug is in a shared normalizer or specific to the batch import.",
+    "The agent did not ask about the TaskFlow version, which is captured in the ground truth (v2.3.1) and useful for developers reproducing the issue."
+  ],
+  "most_insightful_question": "Can you check whether those same phone numbers (like the Ireland +353 example) are still showing correctly in Salesforce right now? — This cleanly isolated the bug to the import pipeline and ruled out CRM-side corruption in a single confirmation.",
+  "missed_opportunities": [
+    "Ask whether phone numbers added or edited directly in TaskFlow (not via import) show the same truncation — would confirm whether the bug is import-specific or in a shared normalizer used across all entry paths.",
+    "Ask about the TaskFlow version currently running in production.",
+    "Ask whether there is any import job logging that might show when phone numbers changed, to more precisely bound the start date of the corruption."
+  ]
+}

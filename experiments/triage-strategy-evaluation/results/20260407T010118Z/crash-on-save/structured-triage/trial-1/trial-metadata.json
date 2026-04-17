@@ -1,0 +1,7 @@
+{
+  "scenario": "crash-on-save",
+  "strategy": "structured-triage",
+  "reporter_profile": "difficult",
+  "turns": 4,
+  "parse_failures": 0
+}

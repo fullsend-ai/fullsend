@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks appearing in active filter, active tasks missing from results, timing tied to v2.3.1 migration ~3 days ago, multi-user impact (from issue body + impact section), individual task pages showing correct status, filter behavior confirmed inverted, and issue localized to search index rather than application logic. The summary also adds a proposed test case and information gaps beyond what was expected."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the schema migration as the trigger, the archive filter as the broken component, and specifically characterizes the inversion (not just 'index out of sync'). This meets the canonical cause and both acceptable diagnostic paths. The root cause hypothesis — boolean/enum semantics flipped during migration, primary data store unaffected — is consistent with the actual cause. The recommended fix includes correcting the field mapping and rebuilding the index, which matches the actual fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the right number of questions and confirmed the inversion experimentally before resolving. Information gaps noted in the summary (index technology, whether new post-migration tasks are also affected) would have been useful to probe during triage, but they are developer-side questions that don't meaningfully change the diagnosis. No obvious reporter-facing follow-ups were skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns, both well-targeted. The first covered timing and platform. The second proposed a direct diagnostic test that confirmed the inversion hypothesis conclusively. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question is exemplary: rather than asking abstractly about behavior, the agent proposed a concrete test ('switch the filter to archived-only and see if your active tasks appear') that a reporter would never volunteer on their own but that directly confirms or falsifies the inversion hypothesis. The first question was solid though slightly diluted by the platform sub-question, which turned out to be irrelevant for a backend index issue."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear problem statement, specific root cause hypothesis with mechanistic detail, step-by-step reproduction instructions, environment context (v2.3.1, post-migration), severity rating, user impact with task counts, a 5-step recommended fix, a proposed test case for verification, and explicit information gaps. A developer could begin investigating the migration script and search index configuration immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The diagnostic test in turn 2 — proposing to invert the filter to confirm the inversion hypothesis — is genuinely clever and led directly to confirmation without requiring additional turns",
+    "Complete coverage of all expected extracts, with nothing missing",
+    "The triage summary is exceptionally well-structured: it includes reproduction steps, a proposed test case, and explicitly flags remaining information gaps for the developer"
+  ],
+  "notable_weaknesses": [
+    "The platform question (web app vs. mobile vs. API) was low-value — the issue is in the search index, making the client platform irrelevant to the diagnosis",
+    "The search index technology (Elasticsearch, etc.) was not asked despite being relevant to the fix; it appears only as an information gap in the summary"
+  ],
+  "most_insightful_question": "Could you try searching with the filter explicitly set to show archived tasks only? If my theory is right, you should see your active tasks appear in the archived filter results.",
+  "missed_opportunities": [
+    "Asking which search index technology is in use (Elasticsearch, Solr, database-backed, etc.) — this would have directly informed the recommended fix",
+    "Asking whether tasks created after the migration (post v2.3.1) also exhibit the inversion, or only pre-existing tasks — this determines scope of the corrective migration"
+  ]
+}

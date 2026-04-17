@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present in the triage summary: memory growth pattern (500MB to 4GB+), v2.3 upgrade timing (~1 week ago), 200 active users, consistent daily pattern, restart as workaround, v2.3 changelog notification changes, and 8GB RAM VM specs. The reporter also volunteered the changelog detail unprompted after the agent's version question, and the agent captured it."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the v2.3 upgrade as the trigger and the real-time notification system as the source, matching acceptable path 1. The hypothesis of 'in-process data structures accumulating without eviction' is directionally correct — the actual cause is per-request event listener registration without cleanup. The triage appropriately rules out connection-level leaks after the ss -s check. It doesn't pinpoint the listener-per-API-request mechanism specifically, but the recommended fix (look for subscriber registries that add on connect but don't remove on disconnect) is close enough to be actionable."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about version/setup, usage correlation, and connection accumulation — all necessary questions. The usage correlation question was particularly well-timed. One obvious follow-up was skipped: asking whether rolling back to v2.2 was feasible to confirm the regression definitively. The agent notes this in information_gaps, showing awareness, but didn't pursue it as a question."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three focused question turns, each meaningfully advancing the diagnosis. The third turn asked two things at once (connection count check and memory-at-lunchtime), which was slightly inelegant but both were valuable and the reporter answered both. No questions were redundant or off-target."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. The usage-correlation question (turn 2) was excellent — it directly confirmed the per-request leak pattern and distinguished a leak from steady-state high usage. The WebSocket connection count question (turn 3) was particularly insightful: it tested a specific hypothesis, got a negative result, and the agent used that negative to sharpen the hypothesis toward in-process data structures rather than socket accumulation. The reporter would not have volunteered the ss -s data unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it names the likely subsystem (v2.3 real-time notification code), lists specific candidates to inspect (subscriber maps, event buffers, notification queues), recommends diffing v2.2 vs v2.3, provides a concrete reproduction strategy with expected observable behavior, and proposes a test case that could be turned into a regression test. A developer could begin a code review immediately."
+    }
+  },
+  "weighted_total": 4.5,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Correctly identified the v2.3 upgrade as the trigger and notification system as the source within the first reporter reply, then continued to refine rather than closing prematurely",
+    "Used the negative WebSocket connection count result (ss -s showed normal counts) to sharpen the hypothesis from 'connection leak' to 'in-process data structure leak' — good use of diagnostic evidence",
+    "Captured all expected information including the v2.3 changelog detail about 'improved real-time notifications'",
+    "Final summary is exceptionally actionable: includes reproduction steps, specific fix candidates, a proposed test case, and clearly scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether rolling back to v2.2 was feasible to confirm the regression — this would have been a high-value diagnostic step and is noted only as an information gap rather than pursued",
+    "Root cause hypothesis focuses on disconnect-time cleanup failures rather than the actual per-API-request listener registration pattern; slightly off mechanistically but still in the right subsystem"
+  ],
+  "most_insightful_question": "Does the memory growth seem to correlate with how many users are actively online? — This question directly confirmed the per-user/per-request leak pattern by comparing weekend (20-30 users, slow climb) vs. weekday (200 users, steep climb) behavior, and the follow-up about off-hours plateauing sealed the leak diagnosis.",
+  "missed_opportunities": [
+    "Ask whether rolling back to v2.2 was feasible or had been attempted — would confirm the regression definitively",
+    "Ask approximately how many requests per user per hour to estimate leak rate and correlate with observed memory growth (would have helped narrow the mechanism)",
+    "Ask whether a memory profiler or heap dump had been taken, or offer guidance on how to capture one"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected items: task count (~5,000), description-vs-title performance split, v2.2→v2.3 regression, ~2 weeks ago onset, 10-15s latency, and long descriptions. CPU spike behavior during search was never asked about and is absent from the summary."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly names both acceptable diagnostic paths and lands extremely close to the canonical cause: option (2) in the hypothesis ('search query was changed from an indexed full-text search to an unindexed pattern match (LIKE/ILIKE)') is essentially the exact regression. Correctly identified the v2.3 upgrade as the trigger and the description-vs-title indexing split as the mechanism. No meaningful inaccuracies."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after 2 questions with a solid hypothesis. However, CPU spike behavior — an obvious diagnostic signal for a full-table-scan scenario — was never probed. OS/hardware details and whether the v2.3 migration ran cleanly were also skipped, though the agent acknowledged the latter as an information gap. The hypothesis was strong enough to close without these, but at least one more question would have rounded out the picture."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two questions, both compound and high-yield. No redundancy, no low-value turns. The first question simultaneously narrowed search type and established temporal context, efficiently drawing out the title-vs-description distinction."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-constructed: framing 'full-text search across all task content' created the conceptual space that led the reporter to volunteer the title-vs-description split — information they likely wouldn't have offered unprompted. The task-count question was targeted and directly relevant to scan-complexity reasoning. Not a 5 because the agent never asked about observable system behavior (CPU, memory) which would have clinched the full-table-scan hypothesis without needing to infer it."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is developer-ready: it names the suspected code path (FTS index vs LIKE), specifies the exact diagnostic command (EXPLAIN/EXPLAIN ANALYZE), provides reproduction steps with realistic data sizes, proposes a concrete regression test, and lists a prioritized fix sequence. A developer could open the v2.2→v2.3 diff and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.3,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Resolved in just 2 turns with a hypothesis that essentially names the canonical root cause (FTS index replaced by LIKE query)",
+    "First question was compound and strategically framed to surface the title-vs-description distinction without directly asking for it",
+    "Triage summary is exceptionally actionable: includes EXPLAIN/EXPLAIN ANALYZE guidance, reproduction steps with realistic data sizes, and a proposed performance regression test"
+  ],
+  "notable_weaknesses": [
+    "CPU spike behavior during search — a direct indicator of computational intensity consistent with a full-table scan — was never asked about and is absent from the summary",
+    "OS and hardware details (Ubuntu 22.04, ThinkPad T14) were not captured, leaving the environment section incomplete",
+    "Migration success was flagged as an information gap but not asked — a single follow-up question could have resolved it"
+  ],
+  "most_insightful_question": "When you search, what are you typically searching for? [with the full-text / filtering / specific search bar breakdown] — framing the question around search type created the conceptual scaffold that led the reporter to spontaneously distinguish title search (fast) from description search (slow), which was the single most diagnostic data point in the conversation.",
+  "missed_opportunities": [
+    "Did you notice any CPU or system slowdown during a slow search? (would have confirmed full-table scan compute profile)",
+    "Did the v2.3 upgrade complete without errors, and did any migration steps run? (would directly point at the failed FTS index migration)",
+    "What OS and hardware are you running on? (ground truth environment details were never captured)"
+  ]
+}

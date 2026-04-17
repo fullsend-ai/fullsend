@@ -1,0 +1,22 @@
+{
+  "title": "Email notifications delayed 2-4 hours since daily digest feature rollout (v2.3.1, self-hosted)",
+  "problem": "Task assignment email notifications that previously arrived within 1-2 minutes are now delayed by 2-4 hours. The delay is worst for notifications sent in the morning (9-10am) and less severe in the afternoon. In-app notifications appear unaffected. Multiple team leads across the organization report the same issue.",
+  "root_cause_hypothesis": "The new daily digest email feature (introduced ~1 week ago, coinciding with the start of delays) is likely flooding the email sending queue each morning. The digest batch job probably runs at a scheduled morning time, enqueuing a large volume of digest emails that block or throttle individual notification emails behind them. This explains why morning delays are worst (digest batch is fresh) and afternoon delays are shorter (digest backlog has cleared).",
+  "reproduction_steps": [
+    "Log into TaskFlow web UI (self-hosted, v2.3.1)",
+    "Open any task and assign it to a user",
+    "Note the assignment timestamp",
+    "Check the assignee's Outlook/Exchange inbox for the notification email",
+    "Observe that the email arrives 2-4 hours later (worst if assigned around 9-10am)"
+  ],
+  "environment": "TaskFlow v2.3.1, self-hosted instance, Outlook/Exchange email provider",
+  "severity": "high",
+  "impact": "Organization-wide — multiple teams are missing task deadlines because assignment notifications arrive hours late. Only email notifications are affected; in-app notifications appear to work normally.",
+  "recommended_fix": "Investigate the email sending queue and its interaction with the daily digest feature. Specifically: (1) Check if the daily digest batch job shares the same email queue as transactional notifications; (2) Check SMTP rate limits and queue concurrency settings; (3) Consider separating transactional notification emails into a priority queue distinct from bulk digest emails, or throttling digest sends to avoid starving real-time notifications.",
+  "proposed_test_case": "Assign a task via the web UI at 9:30am (peak delay window) and verify the email notification arrives within 2 minutes. Run this test both with and without the daily digest feature enabled to confirm the digest is the cause of the delay.",
+  "information_gaps": [
+    "Server-side email queue logs showing queue depth and send times (developer must check directly)",
+    "Exact schedule and configuration of the daily digest batch job",
+    "Whether in-app notifications are truly unaffected or also slightly delayed (reporter was uncertain)"
+  ]
+}

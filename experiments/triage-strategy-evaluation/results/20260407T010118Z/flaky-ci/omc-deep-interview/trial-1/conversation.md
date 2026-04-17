@@ -1,0 +1,61 @@
+# Conversation: flaky-ci x omc-deep-interview
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — flaky CI is really frustrating, especially when it's blocking releases.
+
+Could you share the error output from a recent failed CI run? Specifically, which tests are failing and what the failure messages look like. Even a couple of examples would help a lot — I'm trying to understand whether the failures cluster around a particular area (e.g., database tests, API tests, timing-sensitive tests) or if they're truly scattered across the whole suite.
+
+---
+
+### reporter
+
+I don't have the logs in front of me right now but they're all in the task ordering module. It's the tests from that PR we merged last week — the 5 new ones for task ordering. They don't fail every time, that's what's so annoying. I just re-run the pipeline and sometimes they pass. Can we just fix this? It's been days.
+
+---
+
+### triage-agent
+
+That's really helpful — knowing it's isolated to the 5 task-ordering tests from last week's PR narrows things down a lot.
+
+Quick question: do your CI tests run in parallel or in a randomized order? And when you run them locally, are you running just that module or the full suite? I'm wondering whether these tests might depend on a specific execution order or shared state that behaves differently in CI — that's a common pattern with intermittent failures in ordering-related logic.
+
+---
+
+### reporter
+
+I don't know the details of how CI runs them honestly. I run them locally with `go test ./...` and they pass every time. CI is whatever our pipeline config says — I think it's pretty standard. Look, the tests are straightforward, they just check that tasks come back in the right order after sorting. They're not doing anything weird. Can someone just look at the actual test code?
+
+---
+
+### triage-agent
+
+Totally hear you — let's get this moving. One more question that I think will crack it:
+
+In the test data for those 5 task-ordering tests, do any of the tasks share the same sort value (e.g., same priority, same due date, or whatever field you're sorting by)? And when the tests assert the expected order, do they check the *exact* position of every item, or just that higher-priority items come before lower-priority ones?
+
+I'm asking because the most common cause of "passes locally, randomly fails in CI" for ordering tests is an unstable sort — when two items have equal sort keys, their relative order isn't guaranteed and can flip between runs. If that's the case here, the fix is usually quick: either make the sort stable (add a tiebreaker like ID) or relax the assertion to only check the ordering contract rather than exact positions.
+
+---
+
+### reporter
+
+Yeah, I think some of them might have the same priority or whatever. The tests check exact order — like, task A should be first, task B second, etc. That's the whole point, we want a deterministic order. And it IS deterministic when I run it locally, every single time. So I don't think it's the sort being unstable, it works fine on my machine. Something about CI is different.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Flaky task-ordering tests due to unstable sort with equal sort keys","problem":"Five task-ordering tests added in a recent PR fail intermittently in CI while passing consistently on the developer's local machine. The tests assert exact element positions after sorting, but some test items share the same sort key (e.g., priority). This makes the expected order depend on sort stability, which is not guaranteed.","root_cause_hypothesis":"The sort implementation (likely Go's sort.Slice, which is not stable) does not guarantee a deterministic order for elements with equal sort keys. Tests assert exact positions, so when two equal-keyed items swap — which happens nondeterministically across environments and runs — the test fails. Local runs appear stable because the same compiled binary on the same machine tends to produce the same memory layout.","reproduction_steps":["Identify the 5 task-ordering tests in the task ordering module (from last week's merged PR)","Examine test data for items with equal sort keys (same priority, due date, etc.)","Run the tests in a loop: `go test -count=100 ./path/to/task/ordering/...`","Observe that some runs fail when equal-keyed items appear in a different order"],"environment":"CI pipeline (exact runner unknown); locally reproduced with `go test ./...` on developer's machine (always passes). Go project.","severity":"high","impact":"Blocking releases for the team for several days. Developers are working around it by re-running the pipeline, wasting CI resources and time.","recommended_fix":"Two complementary changes: (1) Make the sort stable by adding a tiebreaker field (e.g., task ID or creation timestamp) so that items with equal primary sort keys always resolve to the same order. Use sort.SliceStable or add the tiebreaker to the comparator in sort.Slice. (2) Review the test assertions — if the product requirement is only that higher-priority items precede lower-priority ones, relax assertions to check the ordering contract rather than exact positions. If exact order IS required, the tiebreaker in step 1 is the fix.","proposed_test_case":"Add a test with multiple tasks sharing identical sort keys and verify that the output order is deterministic across 100+ runs (`go test -count=100`). Assert that the tiebreaker field (e.g., ID) governs the order of equal-keyed items.","information_gaps":["Exact sort field(s) used and whether a tiebreaker already exists but isn't applied","Whether the product requirement demands a fully deterministic order or only relative ordering by priority","CI runner configuration details (parallelism, Go version) — unlikely to change the fix direction but could explain why local vs CI behavior diverges"]}
+
+---

@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Crash on save when task list contains CSV-imported data (encoding error)
+
+## Problem
+TaskFlow crashes immediately when the user clicks Save on a task list containing ~200 tasks that were previously imported from a CSV file. A brief error message mentioning 'encoding' flashes before the app closes. Smaller, manually-created task lists save without issue.
+
+## Root Cause Hypothesis
+The CSV import path does not normalize character encoding (likely accepts raw bytes in Latin-1, Windows-1252, or mixed encoding). When the save/serialization path later attempts to encode the full task list (probably as UTF-8), it hits an invalid byte sequence and throws an unhandled encoding exception that crashes the app.
+
+## Reproduction Steps
+  1. Create a CSV file containing task data with non-UTF-8 characters (e.g., Windows-1252 curly quotes, accented characters, or raw Latin-1 bytes)
+  2. Import the CSV into TaskFlow to create a task list with a large number of tasks (~200)
+  3. Click Save
+  4. Observe: app crashes with a brief encoding-related error
+
+## Environment
+macOS 14.2, TaskFlow 2.3.1
+
+## Severity: high
+
+## Impact
+User cannot save their primary task list and loses work on every attempt. Any user who has imported tasks via CSV with non-UTF-8 encoded content is likely affected. Workaround: smaller lists without imported data save normally.
+
+## Recommended Fix
+1. Inspect the save/serialization code path for unhandled encoding exceptions — add a try/catch that surfaces a user-friendly error instead of crashing. 2. Audit the CSV import path to normalize all incoming text to UTF-8 (or the app's canonical encoding) at import time. 3. Consider adding a migration or repair pass that re-encodes existing task data to fix already-imported lists.
+
+## Proposed Test Case
+Import a CSV containing text in multiple encodings (UTF-8, Latin-1, Windows-1252 with smart quotes) into a task list with 200+ entries, then save. Verify: (a) no crash, (b) characters are preserved or gracefully replaced, (c) if any characters can't be converted, a clear error message is shown instead of a crash.
+
+## Information Gaps
+- Exact error message from crash logs (reporter declined to retrieve logs)
+- Contents of the original CSV file (reporter no longer has it)
+- Whether the issue is specific to certain characters/rows or affects the entire serialization of imported data

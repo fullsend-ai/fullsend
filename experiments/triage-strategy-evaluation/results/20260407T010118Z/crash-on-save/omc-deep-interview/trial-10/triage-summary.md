@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Crash on save with encoding error after importing CSV containing non-ASCII characters
+
+## Problem
+TaskFlow crashes immediately on save in any project that contains tasks imported from a CSV file with typographic characters (curly quotes, em-dashes). The user sees a brief flash of an error dialog mentioning 'encoding' before the app closes, resulting in lost work. A separate project without imported tasks saves normally.
+
+## Root Cause Hypothesis
+The CSV import ingested text containing non-ASCII typographic characters (e.g., Unicode curly quotes U+2018/U+2019, em-dashes U+2014) that the save/serialization path cannot handle. The save routine likely assumes ASCII or a specific encoding and throws an unhandled encoding exception when it encounters these characters, crashing the app instead of gracefully handling or replacing them.
+
+## Reproduction Steps
+  1. Install TaskFlow ~2.3.x on macOS Sonoma
+  2. Create or obtain a CSV file containing tasks with typographic characters (curly/smart quotes, em-dashes, etc.)
+  3. Import the CSV into a new or existing project
+  4. Edit any task and click Save
+  5. Observe: app crashes with a brief encoding-related error dialog
+
+## Environment
+macOS Sonoma, TaskFlow version 2.3.x
+
+## Severity: high
+
+## Impact
+Any user who imports CSV data containing non-ASCII characters is completely unable to save their project, losing all unsaved work on every attempt. The user reports this affects ~200 tasks and has persisted for days.
+
+## Recommended Fix
+1. Investigate the save/serialization path for encoding assumptions — ensure it handles UTF-8 and common Unicode characters. 2. Add proper error handling around the save path so encoding failures surface as a user-visible error rather than a crash. 3. Audit the CSV import path to either normalize or validate character encoding at import time. 4. Consider adding an auto-save/recovery mechanism so crashes don't lose work.
+
+## Proposed Test Case
+Import a CSV containing tasks with Unicode typographic characters (curly quotes U+2018/U+2019, em-dashes U+2014, non-breaking spaces U+00A0) into a project, then save. Verify the save completes without error and the characters are preserved (or gracefully normalized) in the saved output.
+
+## Information Gaps
+- Exact TaskFlow version (user only recalls '2.3 something')
+- Whether the crash is caused specifically by the special characters vs. the number of tasks (user's smaller project works but also lacks imported data)
+- Exact encoding of the original CSV file (UTF-8, Windows-1252, etc.)
+- Whether the error dialog text mentions a specific character or encoding name

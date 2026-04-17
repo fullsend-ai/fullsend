@@ -1,0 +1,34 @@
+{
+  "title": "Email notifications arriving hours late",
+  "body": "Task assignment notifications used to arrive within a minute or two. For the past week, they've been arriving 2-4 hours late. This is causing people to miss deadlines because they don't know they've been assigned a task until hours later. It seems to be worse in the morning — notifications sent around 9-10am take the longest to arrive. Afternoon notifications are usually faster but still delayed.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for the detailed report — the time-of-day pattern is a really useful clue.\n\nTo narrow this down: did anything change about a week ago when this started? A deployment, infrastructure update, or change to the email/notification service? And is this affecting all users across the board, or have you only confirmed it for specific users or teams?"
+    },
+    {
+      "author": "reporter",
+      "body": "I'm not aware of any infrastructure changes, but I did notice that we started getting these new daily digest emails around the same time — like a marketing summary or something. I think that started about a week ago too. Not sure if that's related. As for who's affected, I've heard from a few people on my team and at least one person on another team complaining about the same thing, so it seems pretty widespread. The morning delays are definitely the worst part — I'll assign someone a task at 9am and they won't see the email until lunchtime."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That daily digest email is a really promising lead — the timing lines up well.\n\nCan you tell me: are those digest emails sent out in the morning (around 9-10am)? And do you know whether the digest and the task-assignment notifications go through the same email service or queue, or are they handled separately?\n\nIf you're not sure about the infrastructure side, that's fine — knowing the digest send time would still be very helpful."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah, I think the digest emails go out around 9am — that's when I usually see them in my inbox (well, when they actually arrive on time). As for whether they use the same email system... I'm not really sure how it's set up on the backend. They do come from the same TaskFlow sender address if that helps. It does seem like a big coincidence that the delays started right when those digest emails appeared, especially since the worst delays are right in the morning when those digests would be going out."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Here's my working theory: the new daily digest emails go out around 9am to a large number of users, and they share the same email queue as task-assignment notifications. The digest batch floods the queue, so any task notifications sent around that time get stuck behind hundreds (or thousands) of digest emails. The queue gradually drains, which is why afternoon notifications are faster — they're not competing with a big batch.\n\nTwo things would help me confirm this:\n1. Roughly how many people in your organization receive that daily digest? (Dozens? Hundreds? Thousands?)\n2. When you see afternoon delays, is there any pattern — for example, do they tend to happen right on the hour, or after any other automated emails go out?\n\nIf you don't know exact numbers, a rough estimate is fine."
+    },
+    {
+      "author": "reporter",
+      "body": "We have about 200 people using TaskFlow, so I'd guess most of them get the digest email. As for the afternoon delays, I haven't noticed a specific pattern like on-the-hour or anything. They're just generally less bad than the morning ones — maybe 30 minutes to an hour instead of several hours. I don't think there are other big automated email blasts going out during the day, but I'm not 100% sure about that."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Task assignment email notifications delayed 2-4 hours due to shared queue contention with daily digest emails\",\"problem\":\"Since the introduction of a daily digest email feature approximately one week ago, task assignment notifications that previously arrived within 1-2 minutes are now delayed by 2-4 hours in the morning and 30-60 minutes in the afternoon. This causes users to miss task deadlines because they are unaware of assignments.\",\"root_cause_hypothesis\":\"The new daily digest email feature, which sends to ~200 users around 9am, shares the same email queue as transactional task-assignment notifications. The digest batch floods the queue each morning, causing task notifications to wait behind the digest backlog. The queue drains over several hours, explaining why morning delays are worst (2-4 hours) and afternoon delays are shorter (30-60 minutes).\",\"reproduction_steps\":[\"Wait for 9am when daily digest emails are sent to ~200 users\",\"Assign a task to a user shortly after 9am\",\"Observe that the assignment notification email arrives 2-4 hours late\",\"Repeat the assignment in the afternoon and observe a shorter delay (30-60 minutes)\"],\"environment\":\"TaskFlow instance with approximately 200 users. Daily digest feature was introduced about one week ago. Digest and transactional notifications appear to share the same email sending infrastructure (same sender address).\",\"severity\":\"high\",\"impact\":\"Widespread across the organization (~200 users). Users miss task deadlines because assignment notifications arrive hours late. Morning assignments are most severely affected, which is a high-activity period.\",\"recommended_fix\":\"1. Verify whether digest and transactional emails share the same queue (check email service config and queue metrics). 2. If confirmed, separate transactional notifications into a high-priority queue distinct from bulk/digest emails. 3. Alternatively, throttle or stagger digest sends so they don't flood the queue in a single burst. 4. Consider sending digests during off-peak hours (e.g., 7am or 6pm) as a short-term mitigation.\",\"proposed_test_case\":\"Send a batch of 200 digest-equivalent emails, then immediately enqueue a task assignment notification. Verify the assignment notification is delivered within 2 minutes regardless of digest queue depth. Test both with shared and separated queues to confirm the fix.\",\"information_gaps\":[\"Exact email service and queue implementation (e.g., SES, SendGrid, self-hosted SMTP with a queue table)\",\"Whether there are other automated bulk emails besides the daily digest\",\"Server-side queue metrics confirming queue depth spike at 9am\"]}"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+# Conversation: wrong-search-results x omo-prometheus
+
+## Issue
+
+**Search shows wrong results — finding archived tasks instead of active ones**
+
+Something is wrong with search. When I search for tasks, I'm getting results that include old archived tasks that should be hidden, and I'm not seeing some active tasks that I know exist. For example, I searched for 'Q2 planning' and got an archived task from last year but not the active one I created yesterday. This is happening for all my searches. My teammate says she sees the same thing.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report — that's clearly disruptive if search is returning stale results and hiding active work.
+
+To help me scope this: **did search work correctly before, and if so, when did you first notice it returning wrong results?** Specifically:
+
+- Was there a point where searching for 'Q2 planning' (or similar terms) gave you the right results?
+- Did this start suddenly, or has it been gradually getting worse?
+- Are you using the main search bar, an API, or a filtered/saved search?
+
+This will help us determine whether something broke recently or if this is a longer-standing indexing issue.
+
+---
+
+### reporter
+
+Yes, search was working perfectly fine until about three days ago. It broke suddenly — I remember because we had a patch update to v2.3.1 around that time, and I started noticing the wrong results shortly after. I use the main search bar with the default filters (which I believe is set to show active tasks only). That's when I noticed it was pulling up archived tasks instead of my active ones. Before that update, searching for 'Q2 planning' would show me the correct active task no problem.
+
+---
+
+### triage-agent
+
+Thanks — that's very helpful. A regression tied to v2.3.1 gives us a clear starting point.
+
+I'd like to narrow down whether this is a **filter problem** or a **data/indexing problem**. Could you try this quick test?
+
+1. Search for 'Q2 planning' with the default filters (as you normally do).
+2. Then manually change the filter to **show all tasks (active + archived)** and search again.
+
+What I'm looking for: when you switch to 'show all,' do you see **both** the archived task from last year *and* your active task from yesterday? Or is the active task missing entirely even when all filters are removed?
+
+This will tell us whether the active task exists but is being hidden, or whether something went wrong with how it was indexed.
+
+---
+
+### reporter
+
+I just tried that. When I search for 'Q2 planning' with the default filter (active tasks only), I get the archived task from last year but NOT my active one. When I switch the filter to show all tasks, I can see both — the archived one and the active one are both there. So the active task definitely exists, it's not missing from the system. It seems like the filter is somehow mixed up — like it's showing me archived tasks when I ask for active ones. Actually, now that I think about it, if I explicitly filter for archived tasks only, I see my active tasks there instead. It's like the filter is backwards.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Search filter predicate inverted since v2.3.1 — 'active only' returns archived tasks and vice versa","problem":"Since the v2.3.1 patch update (~3 days ago), the search filter for task status is inverted. Filtering for 'active tasks only' returns archived tasks, and filtering for 'archived tasks only' returns active tasks. The underlying data and index are correct — tasks are properly categorized — but the filter logic applies the wrong predicate.","root_cause_hypothesis":"The v2.3.1 patch introduced a bug that inverted the boolean logic or enum mapping in the search filter's status predicate. Likely a negation error, swapped enum values, or an inverted conditional in the query construction for the task status filter. Diff the search/filter query-building code between v2.3.0 and v2.3.1.","reproduction_steps":["Update to v2.3.1","Create an active task with a known name (e.g., 'Q2 planning')","Ensure an archived task with the same or similar name exists","Search for 'Q2 planning' using the main search bar with the default filter (active tasks only)","Observe that the archived task appears but the active task does not","Switch the filter to 'archived tasks only'","Observe that the active task appears instead of the archived one","Switch the filter to 'all tasks' and confirm both tasks are present"],"environment":"TaskFlow v2.3.1, main search bar, default filters. Reproduced by at least two users (reporter and teammate).","severity":"high","impact":"All users performing filtered searches see inverted results. Active tasks are effectively hidden under default search settings, meaning users cannot find their current work through search. This affects core daily workflow for all users on v2.3.1.","recommended_fix":"Diff the search filter/query construction code between v2.3.0 and v2.3.1. Look for an inverted boolean, swapped enum value, negated condition, or flipped comparison in the status filter predicate. The fix is almost certainly a one-line logic inversion. Verify that the filter values ('active', 'archived') map to the correct query predicates.","proposed_test_case":"Unit test the search filter query builder: given a filter set to 'active only', assert that the generated query excludes archived tasks and includes active ones. Add a complementary test for 'archived only'. Add an integration test that creates one active and one archived task with the same name, searches with each filter mode, and verifies the correct task appears in each case.","information_gaps":["Exact changelog or commit log for v2.3.1 (not available from reporter, but accessible to developers)","Whether other filter dimensions (priority, assignee, etc.) are also inverted or only status"]}
+
+---

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: task count (~5,000), title-vs-description performance split, v2.2-to-v2.3 regression, two-week timeline, 10-15 second latency, and long descriptions. The one notable miss is CPU spiking to 100% during searches — the agent never asked about system resource behavior, which would have been a useful data point for confirming a compute-bound scan vs. I/O bottleneck."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage summary precisely matches both acceptable diagnostic paths. It correctly identifies the v2.2-to-v2.3 upgrade as the trigger and suspects a search implementation regression, and it correctly identifies the title-vs-description performance split as evidence of an indexing issue. The root cause hypothesis explicitly calls out 'a change from indexed search to sequential scanning' and 'switching from indexed FTS to LIKE/ILIKE scanning,' which is exactly what happened. The summary does not contain any inaccurate claims."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-chosen questions and uncovered the key diagnostic split (title fast, description slow) plus confirmed the version regression. It appropriately closed once it had a strong, actionable hypothesis. The main omission is CPU/resource behavior during slow searches — asking whether the machine slows visibly or a process spikes would have added useful confirmation. OS and hardware details were noted as gaps rather than investigated, which is a minor shortcoming given they were available to ask."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three question turns were productive and non-redundant. Q1 established the search type and timing context. Q2 drew out the what-vs-when pattern distinction, directly leading to the title-vs-description insight. Q3 disambiguated regression vs. new feature. No question repeated information already given, and none could reasonably be cut without losing something important."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q2 is the standout — framing the diagnostic choice as 'what you search for vs. when you search' gave the reporter a concrete mental model that led them to independently surface the title-vs-description split, which they had not yet connected themselves. Q3 was also sharp: asking whether description search was a new feature in v2.3 is exactly the right question to distinguish regression from new-feature-with-bugs. Both questions demonstrated genuine diagnostic reasoning rather than generic information-gathering."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is developer-ready: it provides a clear root cause hypothesis pointing specifically at FTS vs. LIKE/sequential scan, explicit reproduction steps with a dataset size, a recommended investigation checklist (diff search implementation, check query plans, inspect migration scripts), and a concrete proposed regression test with pass criteria. A developer could open the v2.2-to-v2.3 diff and know exactly where to look."
+    }
+  },
+  "weighted_total": 4.65,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q2's 'what vs. when' framing was a genuinely clever diagnostic move that caused the reporter to surface the title-vs-description split unprompted — the single most valuable piece of information in the entire conversation.",
+    "The root cause hypothesis is unusually specific and accurate, explicitly naming FTS-to-LIKE regression and migration failure as candidate causes, which maps directly onto the actual bug.",
+    "The triage summary includes a proposed regression test with concrete pass criteria, giving the fixing developer an immediate validation target.",
+    "The agent correctly synthesized two independent signals (version upgrade timing + title-vs-description performance difference) into a coherent, well-supported hypothesis."
+  ],
+  "notable_weaknesses": [
+    "CPU behavior during searches was never asked about — this would have confirmed a compute-bound full table scan and added useful diagnostic depth.",
+    "The agent noted OS and hardware details as 'information gaps' in the summary rather than asking about them during the conversation, even though the reporter mentioned 'work laptop' which was an easy prompt to follow up on.",
+    "The 'intermittent' pattern the reporter mentioned in their first reply was implicitly resolved by the title-vs-description distinction, but the agent never explicitly closed that loop or confirmed the reporter agreed."
+  ],
+  "most_insightful_question": "Can you think of any differences between the searches that come back quickly and the ones that drag? For instance, are the slow ones searching for more common words, or longer phrases? Or does it seem more like it depends on *when* you search — like it's slow first thing in the morning but faster later, or slow right after opening the app?",
+  "missed_opportunities": [
+    "Ask whether the machine shows any visible slowdown (CPU fan, sluggishness) during a slow search — would have surfaced the 100% CPU spike and confirmed a compute-bound scan.",
+    "Ask for the OS and hardware details directly, rather than leaving them as noted gaps — the reporter's 'work laptop' mention was an easy opening.",
+    "Ask whether the reporter had tried any workarounds (reindexing, cache clearing, searching only by title) to establish whether a temporary mitigation was available to offer."
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: archived tasks returned for active filter, active tasks missing from results, started ~3 days ago after update, affects multiple users, filter behavior is inverted, and the issue is server-side (search layer). The one notable gap is that the triage never established whether individual task pages show the correct archive status — a key data point that would distinguish a search index bug from an application-layer bug."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identifies the boolean inversion, ties it to the recent deployment ~3 days ago, and points to the search index or query layer as the locus of the bug. This aligns with the acceptable diagnostic path of identifying the archive filter as broken and the migration/update as the trigger. The recommended fix correctly directs developers to inspect index-building logic. Minor deduction because the triage leaves open the possibility of a frontend filter bug, and lists 'API/backend vs frontend' as an information gap, which slightly dilutes the accuracy of the server-side index diagnosis."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked one question, received a highly informative response (the reporter volunteered the 3-day timing, the teammate confirmation, and the filter-toggle workaround), and then resolved. The key missed question was whether individual task pages display the correct archive status — this would have confirmed the bug is isolated to the search index rather than application logic, ruling out the frontend hypothesis and sharpening the diagnosis considerably. The timing question was also not explicitly asked, though the reporter provided it unprompted."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one turn of questioning was used, and both sub-questions within it were targeted and non-redundant. No information was asked for twice. The agent correctly resolved after getting a sufficiently informative response."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The question about which search interface was used (main bar vs. advanced/filtered) and whether all searches are affected are both reasonable diagnostic checks. However, they are fairly generic triage questions. The agent did not probe for more discriminating information such as 'do individual task detail pages show the correct archive status?' or 'when did this start?' (the reporter answered the latter unprompted). The questions were adequate but did not demonstrate deep diagnostic reasoning about this specific failure mode."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary includes a clear problem statement, reproduction steps, a root cause hypothesis pointing to the search index or query layer, a recommended fix with specific guidance, and a proposed test case. A developer could begin investigating the index-building logic from the recent deployment immediately. The summary is somewhat weakened by the unresolved frontend-vs-backend ambiguity in the information gaps, but the reproduction steps and fix recommendation are concrete enough to be useful."
+    }
+  },
+  "weighted_total": 3.8,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Resolved in a single question turn while still capturing most critical information",
+    "Correctly identified the boolean inversion as the mechanism and tied it to the recent deployment",
+    "Produced a highly actionable summary with reproduction steps, a proposed test case, and a specific recommended fix",
+    "Identified and documented the workaround (manually toggling the archive filter) for affected users"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether individual task pages show the correct archive status — the single most discriminating question for isolating the bug to the search index vs. application logic",
+    "Left frontend vs. backend ambiguity unresolved, which the missed question above would have largely settled",
+    "Timing of the issue onset was provided by the reporter unprompted; the agent did not ask for it"
+  ],
+  "most_insightful_question": "Does this happen only with certain search terms, or is every search returning archived results and missing active ones? — This efficiently established that the failure is systematic rather than query-specific, which strengthened the inversion hypothesis.",
+  "missed_opportunities": [
+    "Ask whether individual task detail pages show the correct archive status for the same tasks that appear incorrectly in search — this would confirm the bug is isolated to the search index and rule out a broader data corruption or UI rendering issue",
+    "Ask when the issue first appeared / whether it coincided with any system update or maintenance — the reporter volunteered this but it should have been explicitly elicited",
+    "Ask whether searching without any archive filter (i.e., returning all tasks) works correctly — this would help confirm whether the predicate itself is inverted or whether the index is simply corrupt"
+  ]
+}

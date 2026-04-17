@@ -1,0 +1,22 @@
+{
+  "title": "SSO redirect loop after Okta→Entra ID migration for users with plus-addressed or aliased emails",
+  "problem": "After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. Users authenticate successfully with Microsoft but are immediately redirected back to the SSO provider upon returning to TaskFlow. The affected population correlates with users who have plus-addressed emails (e.g., jane+taskflow@company.com) or emails that were aliased/changed in the directory. Clearing cookies and incognito mode provide inconsistent temporary relief.",
+  "root_cause_hypothesis": "Two interacting issues are likely: (1) TaskFlow's session cookie is set with SameSite=Strict, which causes the browser to drop the cookie on the cross-domain redirect back from Microsoft's auth endpoint, preventing session establishment and restarting the login flow. (2) The email claim returned by Entra ID may not match the stored user identity for plus-addressed or aliased email accounts — if TaskFlow looks up users by exact email match and Entra ID normalizes or strips the plus-address tag, the lookup fails, no session is created, and the user is sent back to authenticate again. The combination of these two issues explains why cookie-clearing works inconsistently: it may temporarily clear stale state but doesn't fix the underlying identity mismatch.",
+  "reproduction_steps": [
+    "Set up TaskFlow v2.3.1 (self-hosted) with Microsoft Entra ID SSO, migrated from Okta",
+    "Create or identify a user account with a plus-addressed email (e.g., user+taskflow@company.com) or an aliased email",
+    "Attempt to log in via SSO",
+    "Observe: user authenticates with Microsoft successfully, is redirected back to TaskFlow, and is immediately redirected to Microsoft again in a loop"
+  ],
+  "environment": "TaskFlow v2.3.1, self-hosted deployment. Browser-agnostic (reproduced on Chrome, Edge, Firefox). SSO provider: Microsoft Entra ID (migrated from Okta). Server OS, Node version, reverse proxy, and auth library details pending from reporter's sysadmin.",
+  "severity": "high",
+  "impact": "Approximately 30% of the team is completely unable to log into TaskFlow. These users are fully blocked from using the application. The affected group includes users with plus-addressed or aliased email addresses.",
+  "recommended_fix": "Investigate two areas: (1) **Cookie SameSite policy** — Check the session cookie configuration and change SameSite from Strict to Lax, which permits cookies to be sent on top-level navigations from external origins (the standard setting for OAuth/OIDC redirect flows). (2) **Email claim matching** — Compare the email claim returned by Entra ID (inspect the id_token or userinfo response) against the stored user identifiers in TaskFlow's database. Check whether the auth module does exact-match lookup and whether Entra ID normalizes plus-addressed emails or returns a different primary alias than Okta did. The fix likely involves normalizing email comparison (stripping plus-address tags or matching against all known aliases) and correcting the SameSite cookie attribute.",
+  "proposed_test_case": "Create test users with plus-addressed emails and aliased emails in the identity provider. Verify that: (a) the SSO login flow completes without redirect loops, (b) the session cookie is set with SameSite=Lax and persists across the cross-domain redirect, and (c) the email claim from the identity provider correctly resolves to the user record regardless of plus-addressing or alias changes.",
+  "information_gaps": [
+    "Exact server environment (OS, Node.js version, reverse proxy) — reporter is checking with sysadmin",
+    "Which auth library/module TaskFlow uses for SSO — reporter is looking into config files",
+    "Whether the Entra ID token's email claim actually differs from what's stored in TaskFlow's user database (requires developer inspection)",
+    "Whether the SameSite=Strict observation from browser dev tools is the root cause or a contributing factor"
+  ]
+}

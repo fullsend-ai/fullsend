@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected information items are present: archived tasks surfacing in active search, active tasks missing from results, onset correlated with the v2.3.1 migration (~3 days ago), multi-user confirmation, correct status on individual task pages, inverted filter behavior, and isolation to the search index layer. The summary also adds reproduction steps, a proposed test case, and severity/impact assessment beyond what was required."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — a boolean inversion in the search index field mapping introduced by the v2.3.1 migration — matches both the canonical cause and the acceptable diagnostic paths. The agent correctly localized the fault to the search index (not application code), identified the migration as the trigger, and described the inversion precisely. The only minor inaccuracy is stating 'No workaround exists' when the ground truth notes that toggling the archive filter manually works as a workaround."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions before resolving, and the second question (live create/archive test) definitively confirmed the inversion hypothesis. One obvious follow-up was skipped: asking whether there was a way to temporarily work around the issue (e.g., manually toggling archive filters), which would have surfaced the workaround the ground truth describes. Asking about the search infrastructure type (Elasticsearch vs. DB-backed) would also have been valuable, though the agent appropriately flagged it as a gap."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked. The first efficiently covered onset timing, change events, and filter state in a single message. The second was a targeted live diagnostic that directly confirmed or refuted the inversion hypothesis. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first question correctly anticipated that a deployment event or configuration change was likely correlated with the onset, and probed filter state to rule out user-side misconfiguration. The second question — asking the reporter to create and then archive a task and observe search behavior — is an elegant live experiment that the reporter would not have thought to try independently, and it produced definitive evidence of the inversion."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary gives a developer everything needed to begin immediately: a specific version and trigger (v2.3.1 migration), a clear root cause hypothesis (boolean inversion in index mapping), step-by-step reproduction instructions, a recommended fix path (inspect migration script, correct field mapping, rebuild index), a concrete post-fix test case, and explicitly scoped information gaps. A developer could open the migration script and start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The live create-then-archive diagnostic test in the second question was exceptionally well-targeted — it produced definitive proof of the inversion in a single exchange rather than requiring additional follow-up",
+    "All expected information items were captured, plus substantial additional value (reproduction steps, proposed test case, severity/impact framing)",
+    "The root cause hypothesis is specific and accurate, correctly pointing developers at the migration script and index field mapping rather than application code"
+  ],
+  "notable_weaknesses": [
+    "Incorrectly stated no workaround exists; the ground truth confirms that manually toggling the archive filter to its opposite provides a functional workaround",
+    "Did not ask about search infrastructure type (Elasticsearch vs. database-backed full-text search), which is directly relevant to the fix path — though appropriately flagged as a gap in the summary"
+  ],
+  "most_insightful_question": "Create a brand-new task right now and search for it — does it appear? Then archive it and search again — does it appear after archiving? This directly tested the inversion hypothesis as a live experiment and produced the definitive evidence that confirmed the root cause.",
+  "missed_opportunities": [
+    "Ask whether toggling the archive filter to 'show archived only' would reveal the active tasks — this would have surfaced the workaround and further confirmed the inversion",
+    "Ask whether the search uses a dedicated search engine or queries the database directly, which affects where developers should look for the mapping bug"
+  ]
+}

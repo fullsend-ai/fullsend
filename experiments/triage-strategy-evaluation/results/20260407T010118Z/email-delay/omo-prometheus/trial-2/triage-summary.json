@@ -1,0 +1,23 @@
+{
+  "title": "Transactional email notifications delayed 2-4 hours, likely caused by daily digest emails saturating shared email queue",
+  "problem": "Task assignment email notifications that previously arrived within 1-2 minutes are now delayed by 2-4 hours. The delays are worst in the morning (9-10am) and improve through the afternoon. This has been happening consistently for approximately one week, affecting all ~200 users on the instance, causing missed deadlines due to late awareness of task assignments.",
+  "root_cause_hypothesis": "A new daily digest email feature, launched approximately one week ago, sends ~200 emails at approximately 9am through the same SMTP relay/queue used for transactional notifications. This bulk send saturates the email queue, pushing transactional notifications (task assignments, etc.) to the back of the line. The queue gradually drains throughout the day, explaining why afternoon notifications are faster but still somewhat delayed (residual queue depth).",
+  "reproduction_steps": [
+    "Wait for ~9am when the daily digest batch is sent to all ~200 users",
+    "Assign a task to a user in TaskFlow immediately after or during the digest send window",
+    "Observe that the assignment notification email arrives 2-4 hours late",
+    "Repeat the same task assignment in the afternoon (e.g., 3pm) and observe a shorter but still present delay",
+    "Compare against expected delivery time of 1-2 minutes"
+  ],
+  "environment": "TaskFlow instance with ~200 users, using an SMTP relay (specific provider unknown — managed by infrastructure admin). Daily digest email feature recently enabled.",
+  "severity": "high",
+  "impact": "All ~200 users on the instance are affected. Users are missing task deadlines because they are not notified of assignments in a timely manner. The delay is worst during peak morning working hours when timely notification is most critical.",
+  "recommended_fix": "1. **Immediate investigation:** Check the email queue depth and processing logs around 9am to confirm the digest batch is causing the backlog. 2. **Separate queues:** Split transactional notifications (task assignments, mentions, etc.) and bulk/marketing emails (daily digest) into separate queues with independent throughput, prioritizing transactional emails. 3. **Rate-limit or stagger the digest:** Instead of sending all ~200 digests at once, drip them over a longer window (e.g., 50/minute) to avoid queue saturation. 4. **Schedule off-peak:** Move the digest send to an off-peak time (e.g., 6am or 7am) so the queue clears before the workday starts. 5. **Long-term:** Consider using a dedicated email service or separate sending infrastructure for bulk emails.",
+  "proposed_test_case": "After implementing queue separation or digest throttling: send 200 digest emails and simultaneously trigger 5 task assignment notifications. Verify that all 5 transactional notifications are delivered within 2 minutes, regardless of digest queue state. Repeat at 9am to confirm the fix holds during peak hours.",
+  "information_gaps": [
+    "Exact email infrastructure (SMTP provider, queue implementation, rate limits) — must be obtained from the infrastructure admin",
+    "Whether the digest feature has its own queue or shares the transactional notification queue — requires codebase/config inspection",
+    "Server-side email queue metrics (queue depth, processing rate, error rates) to quantitatively confirm the hypothesis",
+    "Whether any email rate limits from the SMTP provider are being hit, which could compound the issue"
+  ]
+}

@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Full-text search across task descriptions regressed to 10-15s response times (v2.3)
+
+## Problem
+Full-text search over task description content takes 10-15 seconds to return results. Title-based search remains fast. The regression appeared approximately 2 weeks ago, correlating with the upgrade to v2.3. The reporter has a large number of tasks with substantial description content (meeting notes pasted in).
+
+## Root Cause Hypothesis
+The v2.3 release likely introduced a change to the full-text search path — possibilities include a dropped or misconfigured full-text index on the description/comments fields, a switch from indexed search to sequential scan, or a change in the search query logic that bypasses existing indexes. The fact that title search is unaffected suggests the title field still has a working index while the description/body search path was altered.
+
+## Reproduction Steps
+  1. Set up a TaskFlow instance on v2.3 with a non-trivial number of tasks containing substantial description text
+  2. Perform a full-text search using a keyword that appears in task descriptions
+  3. Observe response time (expected: 10-15 seconds)
+  4. Perform the same search by title — observe it completes quickly
+  5. Optionally downgrade to v2.2 and repeat to confirm the regression
+
+## Environment
+TaskFlow v2.3, work laptop (specific OS/specs not provided but not needed to reproduce — this appears to be a server-side/application-level regression, not hardware-dependent)
+
+## Severity: high
+
+## Impact
+Any user performing full-text search across task descriptions experiences 10-15 second delays. Users who rely heavily on description search (e.g., storing meeting notes in tasks) are most affected. Title search users are unaffected.
+
+## Recommended Fix
+Diff the search-related code between v2.2 and v2.3. Specifically check: (1) database migration scripts for any index changes on description/body/comments columns, (2) search query construction — look for changes that might cause a sequential scan instead of an index lookup, (3) any search backend changes (e.g., switching from an FTS engine to LIKE queries). Profile the full-text search query with EXPLAIN/ANALYZE to confirm whether an index is being used.
+
+## Proposed Test Case
+Create a performance regression test that seeds the database with N tasks containing realistic description content, executes a full-text search, and asserts the response time is under an acceptable threshold (e.g., 1 second). Run this test against both v2.2 and v2.3 to confirm the regression and validate the fix.
+
+## Information Gaps
+- Exact number of tasks in the reporter's workspace (helps calibrate performance expectations but doesn't change investigation approach)
+- Whether the issue is present on a fresh v2.3 install or only on upgraded instances (could indicate a migration issue vs. code issue)

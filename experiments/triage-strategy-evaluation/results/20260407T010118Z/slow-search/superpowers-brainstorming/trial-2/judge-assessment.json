@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 4 of 7 expected items: title-vs-description performance difference, v2.2-to-v2.3 regression, ~2 weeks ago timing, and 10-15s latency. Missing: task count (~5,000), CPU spikes during search, and long descriptions. The agent actually acknowledged the task count gap but dismissed it as 'unlikely to change the fix direction' — which is debatable, as scale is relevant for reproduction."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly mentions 'switching from indexed search to LIKE/ILIKE scan' which is precisely the actual cause (FTS5 index replaced by naive LIKE query). The agent also correctly identified both acceptable diagnostic paths: the v2.2-to-v2.3 upgrade as the trigger and the title-vs-description performance asymmetry as evidence of an indexing issue. Essentially nailed the root cause without access to the codebase."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after a single exchange. The agent had a solid diagnostic basis — the title/description asymmetry combined with the v2.3 timing is compelling — but left obvious follow-ups unasked: task count (relevant for reproduction), CPU behavior during search, and description length (relevant for confirming the scan hypothesis). Noting these as 'information gaps' in the summary is better than nothing, but not asking them at all is a missed opportunity."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question asked, and it was well-constructed: it covered search type classification and timing in a single turn, and the multiple-choice framing made it easy for the reporter to respond precisely. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The single question was genuinely insightful. The structured options for search type directly elicited the title-vs-description distinction, which is the key diagnostic signal the reporter hadn't volunteered. Asking about when it started in the same question was efficient. The reporter's response confirmed both hypotheses simultaneously. This question did real diagnostic work."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is highly actionable: it suggests diffing the v2.2-to-v2.3 search query path, running EXPLAIN/ANALYZE, checking for index presence, and includes a concrete performance regression test. A developer could open the relevant query files and start debugging immediately. Slightly dinged because the reproduction steps say 'hundreds+' tasks when the actual scale is ~5,000, which could produce a false negative on a smaller test dataset."
+    }
+  },
+  "weighted_total": 4.10,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Single question elicited the two most diagnostically critical facts: title-vs-description asymmetry and v2.3 upgrade timing",
+    "Root cause hypothesis explicitly named LIKE/ILIKE scan as a candidate — directly matching the actual bug",
+    "Triage summary includes actionable debugging steps (EXPLAIN/ANALYZE, v2.2 vs v2.3 query diff) that a developer can execute immediately",
+    "Proposed regression test case is concrete and well-scoped"
+  ],
+  "notable_weaknesses": [
+    "Did not ask for task count, leaving reproduction steps underspecified (scale matters for replicating a full-table-scan issue)",
+    "CPU spike behavior was not surfaced — useful corroborating evidence that would have strengthened the hypothesis",
+    "Long description lengths not captured — relevant to why the LIKE scan is so expensive in this specific case",
+    "Environment details (OS, hardware) not collected, leaving the summary vague on the reporter's setup"
+  ],
+  "most_insightful_question": "The structured search-type classification question that specifically distinguished title search from full-text/description search — this directly uncovered the key diagnostic asymmetry the reporter hadn't thought to mention.",
+  "missed_opportunities": [
+    "How many tasks do you have in total? (establishes scale for reproduction and confirms the full-table-scan hypothesis)",
+    "Do you notice CPU or disk activity spiking during the slow searches? (would corroborate a full-table-scan vs. I/O-bound or network issue)",
+    "Are your tasks' descriptions typically short or do some contain large amounts of text, like pasted notes? (relevant to understanding why the scan is so expensive)"
+  ]
+}

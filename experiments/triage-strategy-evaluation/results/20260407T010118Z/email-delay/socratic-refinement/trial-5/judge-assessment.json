@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, started ~1 week ago, worse 9-10am/better afternoon, related to marketing digest batch, queue congestion hypothesis, shared pipeline between transactional and bulk, and prior 1-2 minute delivery time. The summary also adds useful information not explicitly in the issue (in-app notifications unaffected, ~200 org size, detailed reproduction steps, proposed test case)."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly follows an acceptable diagnostic path: identifying the digest email feature as the cause and suspecting queue congestion on a shared pipeline. The recommended fix even explicitly mentions priority queues. The main inaccuracy is scale: the agent assumed ~200 digest emails (one per user) when the actual volume is ~10,000, which affects the severity estimate. The agent did not identify the priority inversion mechanism specifically, but that is not required by the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen rounds of questions before resolving, covering timeline (what changed), timing correlation, org scale, and email-vs-in-app isolation. Correctly flagged remaining gaps in the summary. One obvious question was skipped: explicitly asking how many digest emails go out (not just how many users), which would have revealed the 10K volume and refined the hypothesis. Otherwise coverage was strong."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns were used, both high-value. The second turn efficiently combined two sub-questions (timing correlation and in-app isolation) without feeling bloated. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question (what changed ~1 week ago?) was a well-framed open probe that surfaced the digest feature — information the reporter might not have volunteered. The second question's in-app notification check was particularly insightful diagnostic reasoning: it successfully isolated the problem to email delivery specifically, ruling out task assignment pipeline issues. Both questions demonstrated genuine causal reasoning rather than generic checklists."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary gives a developer an immediate starting point: check whether digest and transactional emails share a queue, apply priority separation, check rate limiting, and consider staggering. Reproduction steps are specific (9am vs 3-4pm assignment comparison, queue depth logging). The proposed test case is directly implementable. Even with the scale underestimate, a developer could begin investigating and likely arrive at the correct fix."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The in-app notification isolation question was a genuinely insightful diagnostic move that cleanly scoped the problem to email delivery and ruled out broader pipeline issues",
+    "The first open-ended question ('what changed around that time?') successfully surfaced the digest feature without leading the reporter",
+    "The recommended fix independently arrives at priority queue separation, closely matching the actual fix, despite not knowing the internal queue architecture"
+  ],
+  "notable_weaknesses": [
+    "The agent assumed one digest email per user (~200 total) rather than asking about email volume explicitly; the actual 10K volume is what creates the multi-hour backlog, and the scale matters for the fix",
+    "Did not confirm the exact date the digest feature was enabled relative to when delays began, leaving a minor evidentiary gap noted only as an information_gap"
+  ],
+  "most_insightful_question": "Does TaskFlow show you in-app notifications (like a bell icon or notification panel) when tasks are assigned? If so, do those appear on time, or are they delayed too?",
+  "missed_opportunities": [
+    "How many digest emails go out each morning — is it one per user or a larger batch? (Would have revealed the 10K volume)",
+    "Have you confirmed with other teammates that they're also experiencing the same email delays, or is it just you? (Would have confirmed systemic scope)",
+    "Do you know approximately when the digest feature was first enabled — was it exactly one week ago or thereabouts? (Would have tightened the timeline correlation)"
+  ]
+}

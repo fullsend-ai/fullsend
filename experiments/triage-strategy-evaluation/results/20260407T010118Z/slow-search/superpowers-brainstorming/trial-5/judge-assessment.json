@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The agent extracted 5 of 7 expected items: title-vs-description performance difference, v2.2-to-v2.3 regression, ~2 weeks ago timing, 10-15 second latency, and CPU spike (via fan observation). Two expected extracts were missed: approximate task count (~5,000) and the presence of long descriptions. The agent explicitly noted task count as an information gap but dismissed it as 'not critical' — a judgment call that loses important context for a developer reproducing the issue."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably precise. The agent identified the v2.2-to-v2.3 upgrade as the trigger, connected the title-fast/description-slow split to an indexing regression, and specifically named 'unindexed LIKE/regex query' and 'full table scan' as the likely mechanism — which is exactly what happened (FTS5 index replaced by a LIKE query). This satisfies both acceptable diagnostic paths simultaneously and closely matches the canonical root cause without access to the code."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after two well-structured turns and had a strong evidential basis for its hypothesis. However, it left obvious questions unasked: how many tasks are in the database, and whether any tasks have unusually long descriptions. Both are expected extracts and both are directly relevant to the LIKE-query-with-large-dataset failure mode. The agent dismissed task count as non-critical, but for a developer writing a regression test or estimating severity, the scale matters."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two turns, zero wasted questions. The first turn bundled search-type classification and regression-timing into a single question. The second turn combined hypothesis confirmation with a structured disambiguation of result-count dependency. No redundancy."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Both questions showed genuine diagnostic reasoning. The first question's parallel probe of search type and timing was efficient and non-obvious — it elicited both the title/description split and the version upgrade connection in a single response. The second question's hypothesis-confirmation format was sophisticated: rather than fishing for more facts, the agent presented its reasoning and asked the reporter to falsify it, simultaneously testing result-count dependency. Slightly short of 5 because the questions never probed task scale or description length, which are directly mechanistically relevant."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary gives a developer everything needed to start: a specific diff target (v2.2 vs v2.3 description search path), a concrete checklist of what to look for (dropped FTS index, LIKE substitution, in-app filtering), an EXPLAIN/ANALYZE recommendation, a proposed regression test with dataset specifications, and clear reproduction steps. A developer could open the codebase and begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Root cause hypothesis was technically precise — naming 'unindexed LIKE/regex query' and 'full table scan' without access to the code is a strong diagnostic inference",
+    "The title-vs-description distinction was surfaced in the very first reporter response, thanks to a well-framed opening question",
+    "Triage summary is immediately actionable with specific technical guidance (EXPLAIN/ANALYZE, diff target, checklist of causes, proposed test case)",
+    "Exceptional economy — two turns, no wasted questions, resolved with a high-confidence hypothesis"
+  ],
+  "notable_weaknesses": [
+    "Task count (~5,000) was never elicited and was incorrectly dismissed as non-critical — it is relevant to severity assessment and to writing a meaningful regression test",
+    "Long descriptions were never surfaced — this is a key contributing factor to the performance problem and an expected extract",
+    "Environment details (OS, hardware) were noted as gaps but never asked; the agent rationalized this away rather than collecting them"
+  ],
+  "most_insightful_question": "The opening question that asked both about search type (text vs filter vs combined) and regression timing in a single turn — this efficiently elicited the title/description performance split and the v2.3 upgrade connection simultaneously, which were the two pivotal diagnostic facts.",
+  "missed_opportunities": [
+    "How many tasks do you have in your TaskFlow instance? (Would have surfaced the ~5,000 figure and confirmed scale as a factor)",
+    "Do any of your tasks have very long descriptions — for example, copy-pasted documents or meeting notes? (Directly relevant to LIKE-scan cost)",
+    "Can you share your OS and any system resource observations during a slow search — e.g., does CPU spike? (The fan observation was volunteered, not prompted; explicit CPU question would have been more precise)"
+  ]
+}

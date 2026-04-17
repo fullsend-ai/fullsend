@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: title-vs-description performance difference, v2.2-to-v2.3 regression, ~2 weeks ago timing, 10-15 second latency, and long descriptions (meeting notes). Missing: approximate task count (~5,000) — acknowledged as an information gap but not asked — and CPU spiking during search, which was never surfaced or requested."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both acceptable diagnostic paths: the v2.2→v2.3 upgrade as trigger and the title-vs-description performance split pointing to an indexing regression. The root cause hypothesis explicitly includes 'switching from an FTS engine to LIKE queries' and checking migration scripts for index changes — this precisely describes the actual cause without having access to the codebase. No inaccuracies present."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after one round of questions. The agent had strong diagnostic signal and made a correct hypothesis, but left notable follow-ups unasked: task count (which would quantify the scale of the full-table scan), CPU behavior during searches (a useful confirmation of a compute-bound scan), and whether the issue appeared on fresh v2.3 installs vs. upgraded instances (the agent noted this gap but didn't pursue it). The early close was justified by the quality of the hypothesis, but a second targeted question could have filled the key gaps."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question turn was used, and it was well-constructed. No redundant or low-value questions were asked. The single multi-part question efficiently extracted the most diagnostic information available."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was genuinely insightful: breaking search into distinct types (title, filters, full-text, other) is a precise diagnostic move that directly surfaced the title-vs-description discrepancy the reporter hadn't consciously noticed. Coupling this with a timing/trigger question in the same turn was efficient. The reporter explicitly said 'searching by title actually still seems pretty fast now that I think about it' — information they wouldn't have volunteered without the structured prompt."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is immediately actionable: it specifies diffing v2.2→v2.3 migration scripts for index changes on description columns, checking for FTS-to-LIKE query changes, running EXPLAIN/ANALYZE to confirm a sequential scan, and includes concrete reproduction steps and a proposed regression test. A developer could open the v2.3 diff and start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The structured search-type breakdown in the first question directly elicited the title-vs-description performance split — the single most diagnostic data point in the entire conversation.",
+    "The root cause hypothesis independently arrived at FTS-to-LIKE as a candidate, matching the actual cause, despite having no codebase access.",
+    "The recommended fix section is specific and immediately actionable, naming migration scripts, EXPLAIN/ANALYZE, and FTS vs. LIKE as concrete investigative targets.",
+    "Correctly identified fresh-install vs. upgrade-path as a meaningful diagnostic dimension and flagged it as an open question."
+  ],
+  "notable_weaknesses": [
+    "Task count (~5,000) was never asked — it's listed as an information gap but was easily available and would have quantified the scale of the performance problem.",
+    "CPU behavior during searches was never surfaced; a spike to 100% on one core would have strongly confirmed a compute-bound full-table scan hypothesis.",
+    "OS and hardware details were dismissed as unnecessary, but on a borderline machine they can matter for performance bugs; noting them would have cost nothing."
+  ],
+  "most_insightful_question": "The four-part search-type breakdown ('searching by task title/name', 'using filters', 'doing a full-text search across descriptions/comments', 'something else') — it prompted the reporter to consciously compare search types and independently notice that title search was still fast, which is the key diagnostic signal.",
+  "missed_opportunities": [
+    "How many tasks are in your workspace? (Would have confirmed the scale driving the full-table scan)",
+    "Do you notice anything happening to your CPU or system responsiveness during a slow search? (Would have surfaced the 100% single-core spike, confirming a compute-bound scan)",
+    "Is the slowness present on a colleague's machine running v2.3, or only on your upgraded install? (Would have distinguished migration-path bug from general regression)"
+  ]
+}

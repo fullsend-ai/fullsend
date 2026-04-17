@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Search regression in v2.3: full-text description search is orders of magnitude slower than in v2.2
+
+## Problem
+After upgrading from TaskFlow 2.2 to 2.3, searches that match against task description content take 10-15 seconds to return results, while title-only matches remain fast. This affects users with large task corpuses (~5,000 tasks) and long description fields. The slowdown is consistent across all description searches, not just cold starts.
+
+## Root Cause Hypothesis
+The v2.3 release likely changed the search query strategy or indexing for task descriptions. The most probable cause is that full-text indexing on the description field was dropped, altered, or is not being rebuilt after migration — forcing the search to do a sequential scan/regex match across all description text. The single-core CPU saturation at 100% during searches is consistent with synchronous, unindexed text scanning rather than an indexed lookup.
+
+## Reproduction Steps
+  1. Install or upgrade to TaskFlow v2.3
+  2. Have a dataset of ~5,000 tasks, some with long description fields (e.g., pasted meeting notes)
+  3. Search for a term that appears only in task descriptions, not titles
+  4. Observe 10-15 second delay with CPU spike on one core
+  5. Compare: search for a term that matches a task title — this returns quickly
+
+## Environment
+TaskFlow v2.3 (upgraded from v2.2), desktop app on a work laptop. Dataset: ~5,000 tasks accumulated over ~2 years, some with long descriptions.
+
+## Severity: high
+
+## Impact
+Any user with a non-trivial number of tasks who searches by description content is affected. The feature is functionally degraded — 10-15 second waits on a previously instant operation disrupts workflow. Title-only search works as a partial workaround but limits search utility. Likely affects all v2.3 users proportional to their task count and description length.
+
+## Recommended Fix
+Diff the search implementation between v2.2 and v2.3, focusing on how description fields are queried. Specifically investigate: (1) whether a full-text index on the description column was dropped or not created during the 2.2→2.3 migration, (2) whether the query planner is falling back to a sequential scan (check EXPLAIN output if SQL-backed), (3) whether a search library upgrade in 2.3 changed tokenization or index format without triggering a re-index. Fix should restore indexed full-text search on descriptions and include a migration path for users who already upgraded to 2.3.
+
+## Proposed Test Case
+Create a test dataset with 5,000+ tasks where at least 100 tasks have description fields >500 words. Search for a term that appears only in descriptions. Assert that search completes in under 1 second (matching v2.2 baseline performance). Run this test against both v2.2 and v2.3 to confirm the regression and validate the fix.
+
+## Information Gaps
+- Exact operating system and hardware specs (unlikely to affect root cause but may influence performance thresholds)
+- Whether the user ran any migration scripts during the upgrade or if it was automatic
+- Whether the search backend is SQLite FTS, a dedicated search library, or custom implementation (developer will know this from the codebase)

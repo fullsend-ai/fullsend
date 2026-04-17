@@ -1,0 +1,63 @@
+# Conversation: intermittent-403 x socratic-refinement
+
+## Issue
+
+**Getting random 403 Forbidden errors on the dashboard**
+
+I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent 403s are tricky, so I'd like to understand the full picture.
+
+Can you walk me through what you're typically doing when the 403 hits? For example, are you loading the dashboard fresh after logging in, navigating to it from another page, or returning to a tab that's been open for a while? And when you say it started "a couple days ago" — do you recall anything that changed around that time, like a deployment, a permissions change, or even something as simple as switching browsers or networks?
+
+---
+
+### reporter
+
+It happens in all cases really — fresh login, navigating around, doesn't matter. Sometimes I'll load the dashboard and it's fine, then I refresh and get a 403. The only thing I can think of that changed is I was assigned a new role — I think it's called 'analyst' — around the same time this started. But my manager said that role should give me access to everything I need. I kind of assumed it was network issues on our end but it's been going on for two days now so I figured I should report it.
+
+---
+
+### triage-agent
+
+That's really helpful — the timing with the new 'analyst' role is interesting and worth exploring.
+
+When you hit the 403, is it always on the same dashboard URL, or does TaskFlow have different dashboard views or sections? I'm curious whether the 403 blocks the entire dashboard or whether certain parts load fine while others don't.
+
+Also, when you get the 403 and then refresh — does it usually come back after one or two tries, or are there stretches where you're locked out for minutes at a time? I'm trying to get a sense of the pattern, even if it feels random.
+
+---
+
+### reporter
+
+It's the whole dashboard — when I get the 403 it's just a full 403 page, nothing loads at all. It's not like some parts work and others don't.
+
+As for the pattern, when I refresh it usually comes back after one or two tries. I don't think I've ever had to refresh more than like 3 times. It almost feels like every third attempt fails or something, but that might just be my perception. I haven't been counting exactly.
+
+---
+
+### triage-agent
+
+That 'every third attempt' observation is actually really useful — it suggests this might not be random at all.
+
+You mentioned other people on your team are seeing this too. Do you know if they were also assigned the 'analyst' role around the same time you were? Or are some of them on different roles and still hitting the 403s? That would help narrow down whether this is tied to the role change or something broader on the infrastructure side.
+
+---
+
+### reporter
+
+Good question — I'm pretty sure the others on my team who are seeing it were also moved to the analyst role around the same time. I haven't checked with everyone, but the people I've talked to about it are all analysts. I don't think anyone with a different role has mentioned having this problem, but I'm not 100% sure about that.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Intermittent 403 Forbidden on dashboard for users with 'analyst' role — likely permissions inconsistency across backend instances","problem":"Users assigned the 'analyst' role receive intermittent 403 Forbidden errors when accessing the TaskFlow dashboard. The error is a full-page 403 (not partial), occurs regardless of navigation method (fresh login, refresh, internal navigation), and typically resolves after 1-3 retries. Multiple users with the analyst role are affected; users with other roles are not reporting the issue.","root_cause_hypothesis":"The 'analyst' role's permissions are not consistently applied across all backend instances behind the load balancer. The quasi-periodic failure pattern ('every third attempt') strongly suggests round-robin load balancing across ~3 instances, where one or more instances have stale or missing permission grants for the analyst role. This could be a permissions cache that wasn't invalidated on all instances after the role was created/assigned, or a configuration deployment that didn't reach all nodes.","reproduction_steps":["Assign a user the 'analyst' role in TaskFlow","Log in as that user and navigate to the dashboard","Refresh the dashboard repeatedly (5-10 times)","Observe that roughly every 2nd or 3rd request returns a 403 Forbidden page","Compare with a user on a different role (e.g., the previous role these users had) — no 403s expected"],"environment":"TaskFlow dashboard, multiple users affected, load-balanced backend (inferred from failure pattern). Issue began approximately 2 days before report, coinciding with analyst role assignments.","severity":"high","impact":"All users with the 'analyst' role are intermittently locked out of the dashboard entirely. This is a team-wide access disruption for a recently provisioned role, making the dashboard unreliable for this user group.","recommended_fix":"1. Check the number of backend instances and verify the analyst role's permission grants are present and identical on all of them. 2. Inspect any permissions caching layer (Redis, in-memory cache, etc.) — look for stale entries or instances that weren't invalidated when the analyst role was created. 3. If permissions are stored in a database, check whether all instances are reading from the same source and whether there's replication lag. 4. As an immediate mitigation, restart or force-refresh the permissions cache on all instances. 5. Long-term: ensure role/permission changes trigger cache invalidation across all nodes.","proposed_test_case":"After fix: assign a fresh user the analyst role, then make 20 sequential dashboard requests and verify all return 200. Automate this by hitting the dashboard endpoint in a loop across all backend instances directly (bypassing the load balancer) to confirm each instance individually grants access for the analyst role.","information_gaps":["Exact number of backend instances and load-balancing strategy (round-robin vs. other)","Whether server-side access logs show the 403s correlating to a specific instance","Whether the analyst role was added via a migration, admin UI, or config change — and whether that change required propagation","Whether any other recently-created roles exhibit the same behavior"]}
+
+---

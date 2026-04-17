@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Flaky CI: task ordering tests fail intermittently due to likely unstable sort with duplicate keys
+
+## Problem
+Five new task-ordering tests added in a recent PR fail intermittently in CI (Ubuntu) but pass 100% of the time locally (macOS). Failures are always a subset of these same tests; old tests are unaffected. The tests assert that tasks come back in a specific order after sorting.
+
+## Root Cause Hypothesis
+The task ordering tests likely sort tasks that share equal values for the sort key (e.g., same priority or due date). Go's sort.Slice uses an unstable sort (pattern-defeating quicksort), meaning elements with equal keys can appear in any order, and that order can vary across runs and platforms. The tests appear to assert exact positional ordering of all elements, so when equal-key items land in a different arrangement, the assertion fails. The reason it passes consistently on macOS but not on Linux is likely due to differences in memory layout, allocation patterns, or initial element ordering between platforms, which influence the unstable sort's tie-breaking behavior.
+
+## Reproduction Steps
+  1. Identify the 5 ordering/sort tests from CI logs (names contain 'ordering' or 'sort')
+  2. Inspect the test data for tasks with duplicate values in the field being sorted
+  3. Run `go test -count=100 ./path/to/ordering/tests` on Linux to reproduce the flakiness
+  4. Observe that failures occur when equal-key items are ordered differently than the assertion expects
+
+## Environment
+CI: Ubuntu (Go version unspecified). Local: macOS. Test runner: `go test ./...`. No database or external dependencies involved — pure in-memory sorting logic.
+
+## Severity: high
+
+## Impact
+Blocking releases for the team. Every CI run has a chance of spurious failure, requiring manual re-runs and eroding confidence in the test suite.
+
+## Recommended Fix
+1. Inspect the sort implementation — if using `sort.Slice`, switch to `sort.SliceStable` if a stable order is desired, or add a secondary sort key (e.g., task ID) to guarantee deterministic ordering for equal primary keys. 2. Fix the test assertions — either relax them to only verify ordering by the sort key (allowing any order among equal-key items), or ensure test data has unique sort keys. Option 1 (fixing the sort) is preferred since the application likely also wants deterministic ordering for users.
+
+## Proposed Test Case
+Create a test with multiple tasks sharing the same sort key value. Sort them and assert only that equal-key items are grouped correctly and that the overall sort-key ordering is correct, without asserting the relative order of equal-key items. Run with `-count=100` to verify no flakiness. Alternatively, if a tiebreaker is added, assert the full deterministic order and run with `-count=100` on both macOS and Linux.
+
+## Information Gaps
+- Exact test names and test file paths (obtainable from CI logs)
+- Whether sort.Slice or sort.SliceStable is used (obtainable from source code)
+- Which sort key(s) are used and whether test data contains duplicates (obtainable from source code)
+- Go version used in CI vs locally (could contribute but unlikely to be primary cause)

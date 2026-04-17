@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, started ~1 week ago, worse 9-10am/better afternoon, marketing digest as related batch process, queue congestion hypothesis, transactional vs bulk email pipeline competition explicitly called out in recommended fix, and prior 1-2 minute baseline. The summary also adds useful detail beyond the expected list (email header confirmation of server-side delay, multi-workspace scope confirmation, reproduction steps)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the marketing digest as the cause of queue congestion, aligning with acceptable path 2. The recommended fix explicitly calls out separating transactional emails into a high-priority queue — which is precisely the canonical fix. The email header analysis cleverly confirmed the bottleneck is in the application-side dispatch pipeline, not downstream delivery. No significant inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered scope (system-wide vs isolated), differential diagnosis (in-app vs email), temporal correlation (digest timing vs delay window), and pipeline location (header inspection). The in-app notification check remained unconfirmed but was correctly flagged as an information gap. Minor gap: never asked about recent deployments from someone with access — reporter lacked visibility, but the agent could have flagged this for internal follow-up earlier."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Four question turns, each adding distinct value. Turn 3 combined scope and isolation questions efficiently. Turn 5 combined the in-app check with digest timing — both targeted. The header inspection request in turn 5 was creative and productive. Slight inefficiency: asking whether the issue was isolated to one workspace while also asking if teammates were affected covers overlapping ground, but neither was wasteful."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The email header inspection question was genuinely sophisticated — it operationalized a hypothesis (server-side vs downstream delay) into a concrete, reproducible test a non-technical user could perform. The digest arrival time question directly tested the temporal correlation hypothesis. The in-app vs email differentiation question was a textbook isolation move. Questions demonstrated real diagnostic reasoning rather than generic bug report prompts."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: inspect queue depth and worker throughput around 9am, confirm whether transactional and marketing emails share a queue, and separate them by priority if so. Reproduction steps are specific and time-anchored. A proposed test case with a clear pass condition is included. Information gaps are enumerated so the developer knows exactly what remains uncertain."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "The email header inspection technique was a standout move — it transformed a vague 'emails are late' complaint into a confirmed server-side pipeline bottleneck with evidence from the reporter's own inbox.",
+    "The triage correctly and early latched onto the marketing digest as a causal candidate and methodically confirmed it through timing correlation, turning a reporter aside into the central hypothesis.",
+    "The final summary is highly structured with reproduction steps, a proposed test case, and enumerated information gaps — immediately actionable for a developer."
+  ],
+  "notable_weaknesses": [
+    "The in-app notification check was never completed, leaving open whether the issue is email-pipeline-specific or affects all notification dispatch. This was acknowledged but could have been deprioritized earlier once the header check yielded stronger evidence.",
+    "The agent never surfaced the deployment/change question to someone who might actually have visibility (i.e., flagging internally that engineering should check recent releases) — it accepted the reporter's 'I don't have visibility' and moved on."
+  ],
+  "most_insightful_question": "Regarding the email headers request: 'If that timestamp is already hours old when it arrives, the delay is on our side in the sending queue. If the Date: header is close to when it actually appeared in your inbox, the delay might be happening further downstream.' This precisely operationalized the server-side vs downstream hypothesis and yielded confirmation that the bottleneck was in the application dispatch pipeline.",
+  "missed_opportunities": [
+    "Asking whether the reporter (or their team) had noticed any new email types or volume changes in their inboxes more broadly — could have surfaced the digest faster.",
+    "Flagging that engineering should cross-reference the ~1 week timeline against deployment logs, even if the reporter lacked visibility — this would have been a useful internal action item in the summary.",
+    "Asking approximately how many users are on the system — would help developers estimate queue pressure and validate the queue saturation hypothesis quantitatively."
+  ]
+}

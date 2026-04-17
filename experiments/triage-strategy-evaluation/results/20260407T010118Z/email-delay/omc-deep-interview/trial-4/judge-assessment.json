@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were captured: 2-4 hour delays, ~1 week onset, morning-worst/afternoon-better pattern, digest email correlation, queue congestion hypothesis, transactional vs. bulk competition, and prior 1-2 minute baseline. The agent also surfaced additional useful information: email header evidence ruling out the provider, universal team impact, and absence of project/task-type specificity."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest feature as the cause and queue congestion as the mechanism, matching acceptable path #2 exactly. The recommended fix even explicitly includes 'Prioritize assignment notifications over batch digest emails,' which is precisely the actual fix. The agent did not know the internal priority queue architecture, but its hypothesis is directionally correct and actionable."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about deployment changes, email timestamps (sending vs. delivery), team-wide vs. individual scope, task-type specificity, digest opt-out behavior, and digest arrival time. These cover the key diagnostic axes. A minor gap: the agent never asked about the volume of digest recipients, which would have directly explained the queue depth. Otherwise, no obvious follow-ups were skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns, each targeting a distinct diagnostic dimension: (1) onset/timeline and sending-vs-delivery, (2) scope and isolation, (3) digest timing correlation. No redundancy, no wasted turns. Each answer meaningfully advanced the hypothesis."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The email header/timestamp question in turn 1 was particularly sharp — it definitively localized the problem to TaskFlow's sending pipeline before the reporter would have thought to check it. The digest-disabled-user question in turn 2 was a clever isolation test. The digest arrival time question in turn 3 directly tested the causal hypothesis. All three demonstrated genuine diagnostic reasoning rather than generic bug-report prompting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear problem statement, root cause hypothesis, step-by-step reproduction instructions with timing specifics, three concrete fix options ranked by likely impact, a proposed regression test case, and explicit information gaps. A developer could open the email queue code immediately and know exactly what to look for."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The email header/timestamp question in turn 1 immediately ruled out the email provider as a suspect, focusing all subsequent investigation on TaskFlow's internal pipeline — a high-leverage diagnostic move.",
+    "The agent recognized the digest email as a strong lead after the reporter's first reply and built every subsequent question around testing that hypothesis rather than branching to unrelated causes.",
+    "The final summary is exceptionally thorough: reproduction steps with explicit time-of-day instructions, three ranked fix options including the correct priority-separation approach, and a concrete post-fix test case."
+  ],
+  "notable_weaknesses": [
+    "The agent never asked how many users receive the daily digest. Volume (10K emails) is the key reason the queue backs up for hours; without it, the severity of congestion is harder to convey to developers.",
+    "The agent could not confirm the digest-disabled isolation test because the reporter didn't know if opt-out was possible — a dead end the agent could have anticipated and offered to route as a developer-side verification instead."
+  ],
+  "most_insightful_question": "Do you know whether the emails are sent late (email timestamp itself is hours after the assignment) or whether they're sent on time but delivered late by the email provider?",
+  "missed_opportunities": [
+    "How many users or teams are enrolled in the daily digest? (Would quantify queue load and explain why the backlog takes hours to drain)",
+    "Do you know the exact date the digest feature rolled out? (Would let developers correlate with deployment logs and confirm the one-week onset precisely)"
+  ]
+}

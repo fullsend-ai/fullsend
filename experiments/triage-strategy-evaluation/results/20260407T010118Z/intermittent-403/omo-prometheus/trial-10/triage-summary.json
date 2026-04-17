@@ -1,0 +1,23 @@
+{
+  "title": "Intermittent 403 Forbidden errors for users assigned the new 'analyst' role",
+  "problem": "Users who were recently assigned the newly created 'analyst' role experience intermittent 403 Forbidden errors on all pages (~1 in 3 page loads). Refreshing the page usually resolves it within one or two attempts. No re-login is required. Users on other roles (admin, editor, viewer) are unaffected.",
+  "root_cause_hypothesis": "The new 'analyst' role's permissions are not consistently recognized across all server instances or through the permissions caching layer. The intermittent nature (not every request, resolves on refresh) strongly suggests either: (1) a rolling deployment that hasn't fully propagated the analyst role's permission set to all application servers, or (2) a permissions cache that intermittently evicts or fails to resolve the analyst role, falling back to a deny-by-default behavior. A consistently missing permission would produce 403 on every request, not 1-in-3.",
+  "reproduction_steps": [
+    "Ensure a user account is assigned the 'analyst' role",
+    "Navigate to any page in TaskFlow (dashboard, task lists, reports)",
+    "Observe that approximately 1 in 3 page loads returns a generic 403 Forbidden page",
+    "Refresh the page — it typically loads successfully on the next attempt",
+    "Repeat with a user on a different role (admin/editor/viewer) to confirm they are unaffected"
+  ],
+  "environment": "Production TaskFlow instance. Issue began approximately 2 days ago, coinciding with the introduction of the 'analyst' role. Multiple users on the same team affected. Specific infrastructure details (number of app servers, load balancer config, caching layer) need to be checked server-side.",
+  "severity": "high",
+  "impact": "All users assigned the 'analyst' role are affected. Roughly 1 in 3 page loads fail, significantly disrupting their workflow. Workaround exists (refresh the page), but it degrades the user experience and erodes trust. No data loss observed.",
+  "recommended_fix": "1. Audit the analyst role's permission configuration across all application server instances — check for inconsistencies in deployment or config propagation. 2. Inspect the permissions/authorization caching layer (e.g., Redis, in-memory cache) for how role-to-permission mappings are stored and evicted — verify the analyst role is cached consistently. 3. Check if the role was added to the database but not to a static permission map or config file that some servers read. 4. Compare the analyst role definition with working roles (viewer, editor, admin) to find structural differences. 5. Review server-side access logs filtered by 403 responses to see if failures correlate with specific server instances (would confirm uneven deployment).",
+  "proposed_test_case": "Create an integration test that assigns a user the 'analyst' role and makes 20+ sequential authenticated requests to various endpoints. Assert that all requests return 200 (not 403). Run this test against each application server instance individually to detect per-instance inconsistencies.",
+  "information_gaps": [
+    "Exact number and topology of application server instances behind the load balancer",
+    "Whether the 403 responses correlate with specific server instances (X-Server header — reporter is attempting to capture this)",
+    "Exact previous role of affected users (reporter unsure if it was 'viewer' or 'editor')",
+    "Whether the analyst role was added via a migration, config file update, or admin UI — and whether that change required a restart or cache flush"
+  ]
+}

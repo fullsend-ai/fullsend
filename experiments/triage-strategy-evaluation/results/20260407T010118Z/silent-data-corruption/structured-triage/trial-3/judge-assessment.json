@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured most expected items: scale (~50-100/2,000), truncation pattern, nightly import as source, 3+ digit country code pattern, US/UK numbers unaffected. The agent noted the start date as an information gap but did not surface the ~2-week timeline or probe for a recent pipeline change — both key expected extracts."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "Correctly identified the nightly Salesforce import as the corruption source, the exact truncation-to-2-digits pattern, and the country-code-length discriminator. The recommended fix explicitly says to look for 'a hard-coded 2-character substring or regex group capturing the country code,' which closely matches the actual bug. Satisfies the first acceptable diagnostic path. The 2-week timeline/recent-change connection was not made, falling short of full accuracy."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Only two questions were asked before resolving. The agent listed 'precise date the truncation started' as an information gap in the summary — acknowledging it was relevant — but never actually asked. A simple question about when the issue began could have surfaced the 2-week timeline and prompted the reporter to recall the recent pipeline change, which is the root cause."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. Q1 established the data entry path; Q2 elicited the concrete examples that drove the diagnosis. No wasted turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Q1 efficiently narrowed from 'manual vs. automated' to identify the import pipeline. Q2 requesting a concrete before/after comparison was highly diagnostic and directly surfaced the truncation pattern and the country-code discriminator. Neither question is generic boilerplate. The missing question about timeline/recent changes is the primary gap."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: clear root cause hypothesis, reproduction steps, explicit guidance to look for a 2-digit regex group or hard-coded substring, a proposed test case covering all country-code lengths, and a suggested repair path. A developer could begin coding immediately."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Q2 (before/after examples) was extremely well-targeted and single-handedly surfaced the truncation pattern, the 3+-digit country code discriminator, and the US/UK exemption in one turn",
+    "Root cause hypothesis is remarkably precise — correctly infers a 2-digit limit in a regex capture group without access to the code",
+    "Summary is production-quality: includes reproduction steps, a multi-case test plan, impact assessment, and an ongoing-corruption warning"
+  ],
+  "notable_weaknesses": [
+    "Never asked when the issue first appeared; the 2-week timeline was not captured and appears only as a named information gap the agent never attempted to fill",
+    "Did not ask whether any recent changes were made to the import pipeline or CRM integration, which is the question that would have led to the normalizer update",
+    "The 'environment' field in the summary omits the TaskFlow version (v2.3.1) because it was never asked"
+  ],
+  "most_insightful_question": "Could you grab one or two examples of an affected record and share what the phone number looks like in TaskFlow versus what it should be in Salesforce?",
+  "missed_opportunities": [
+    "When did you first notice this issue, and has anything changed in your import setup or TaskFlow configuration around that time?",
+    "Have you or your team made any recent updates to the Salesforce integration, import pipeline, or phone number handling?"
+  ]
+}

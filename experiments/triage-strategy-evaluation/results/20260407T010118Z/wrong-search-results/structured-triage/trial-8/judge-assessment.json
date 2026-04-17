@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: inverted filter returning archived instead of active, active tasks missing from default results, timing tied to v2.3.1 patch ~3 days ago, multi-user confirmation (Sarah on macOS/Safari), individual task pages showing correct status, inverted filter behavior as the core finding, and the fix being in the search/filter layer rather than underlying data. The summary also adds task counts, reproduction steps, a proposed test case, and information gaps not explicitly required."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage matches the canonical root cause and the acceptable diagnostic paths. It correctly identifies the v2.3.1 database patch as the trigger, the archive filter as the broken component, and the inversion being in the search/filter layer rather than the data itself (evidenced by correct status on individual task pages). The root cause hypothesis explicitly lists 'a migration that flipped the boolean/enum mapping for active vs. archived status' — which precisely describes the actual field mapping inversion. The recommended fix correctly targets the search index/filter configuration and rules out a data rollback."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent gathered the key facts needed to resolve: filter behavior, multi-user scope, version, timing, and data-layer vs. search-layer distinction. The reporter volunteered most critical details organically. One minor gap: the agent never directly asked whether the issue started recently or coincided with an update — the timing came out because the reporter mentioned it, not because it was probed. However, the second question round confirmed environment and cross-browser reproduction, which was useful. No major unasked questions remain."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Two question rounds for a two-turn conversation is efficient. The first round appropriately targeted the search path and filter state. The second round asked for browser/OS/version — somewhat standard but the exact browser version turned out to be secondary since cross-browser reproduction was already implied by the teammate's report. Asking for browser version after the teammate confirmation was marginally redundant, but it was a natural grouping. No egregious waste of turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question set was well-targeted: asking specifically about which search surface, interaction method, and active filters led directly to the reporter describing the inverted filter behavior. The second round was more procedural (browser, OS, version) — reasonable but generic. A more incisive follow-up might have directly asked whether the issue started recently or after any system update, or whether browsing tasks without search shows the correct pool. The agent did not ask about individual task status — the reporter volunteered this critical clue unprompted, which was lucky."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable. It provides clear reproduction steps, an environment pin (v2.3.1, database patch), a precise root cause hypothesis pointing to the search index field mapping or filter predicate, a specific investigation path (v2.3.1 migration scripts and search service filter-to-query mapping), a proposed regression test, and a reasoned argument for why no data rollback is needed. A developer could begin reviewing the migration and search index configuration without any additional context gathering."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Captured all expected diagnostic information, including the critical clue that individual task pages show correct status — isolating the bug to the search/filter layer",
+    "Root cause hypothesis is precise and matches the actual cause (field mapping inversion in the search index after migration rebuild)",
+    "Summary is exceptionally actionable: includes reproduction steps, investigation path, proposed test case, and explicit reasoning for ruling out a data migration rollback",
+    "Correctly confirmed multi-user, cross-browser reproduction, establishing server-side causation early"
+  ],
+  "notable_weaknesses": [
+    "Never directly probed timing or recent changes — the v2.3.1 migration detail came out because the reporter volunteered it, not because the agent asked",
+    "Second question round (browser/OS) was somewhat generic; the cross-browser nature was already implied by the teammate report, making exact browser versions a lower-value ask"
+  ],
+  "most_insightful_question": "The first question's explicit ask about active filters ('Do you have any filters applied when this happens?') prompted the reporter to describe the inverted filter behavior and volunteer the individual-task-page observation — the two most diagnostic facts in the entire conversation.",
+  "missed_opportunities": [
+    "Ask directly: 'Did this issue start recently, or after any system update or maintenance?' — would have surfaced the v2.3.1 timing proactively rather than relying on the reporter volunteering it",
+    "Ask whether browsing or listing tasks without search returns the correct active/archived split — would confirm whether the inversion is exclusive to search indexing or also affects list views",
+    "Ask whether any searches without an archive filter (showing all tasks) return the expected full set — would help isolate whether the bug is in the filter predicate specifically or broader index corruption"
+  ]
+}

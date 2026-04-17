@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All eight expected extracts are present: the ~30% affected rate, the plus-addressing and aliasing patterns, the SameSite cookie issue, the email claim mismatch, the dev tools showing the cookie being set then dropped, incognito/clearing cookies helping, redirect URIs being correctly configured, and other SSO apps working fine. The summary also surfaces additional useful detail (GET vs POST callback, stale OIDC config as a fourth investigation path, proposed test cases)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both compounding issues — SameSite cookie rejection as the primary cause and email identity mismatch (plus addressing + aliasing) as secondary — with the causal hierarchy matching the ground truth. The agent even uses Sarah's failed email-change test as evidence that the cookie issue is primary, which is exactly right. This matches both the canonical root cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about user patterns, incognito mode, server logs, dev tools cookie details, HTTPS enforcement, URL changes, and pre-switch session state. No critical question was fully skipped. The 'old sessions' hypothesis in turn 4 was somewhat speculative and ultimately wrong, but the reporter's correction surfaced the aliasing lead, so it was not wasted. The agent could have more directly asked for Entra ID token claims or the TaskFlow OIDC claims-mapping config, which would have been a high-value question, but this is a minor gap."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Most questions were well-targeted. The HTTPS and URL-change questions in turn 3 were somewhat generic but defensible given that cookie SameSite behavior can be affected by scheme and domain. The 'old active sessions' hypothesis in turn 4 was the weakest question — it was a reasonable guess but slightly off-track. No questions were repeated or clearly redundant."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The standout question — asking about warning triangles next to the Set-Cookie header in dev tools — was genuinely insightful and drew out a piece of evidence (the flagged cookie warning) the reporter had observed but hadn't connected to the problem and wouldn't have volunteered. Asking about incognito mode early was also a strong diagnostic move. The SameSite framing in the follow-up showed genuine technical depth and gave the reporter the vocabulary to confirm what they'd seen."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: a four-step prioritized investigation path, specific cookie attributes to inspect, specific log entries and OIDC claims to compare, clear reproduction steps, and proposed integration test cases. A developer could open the OIDC callback handler and start checking SameSite attributes immediately without needing any additional context."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Correctly identified both root causes (SameSite cookie rejection + email claim mismatch) with the right causal hierarchy, matching the ground truth without overfitting to either cause alone",
+    "The dev tools cookie warning question was a high-leverage move that surfaced a critical clue the reporter had noticed but not understood — this single question unlocked the SameSite hypothesis",
+    "The final summary is exceptionally actionable: prioritized investigation steps, specific attributes/claims to check, and proposed test cases give a developer an immediate starting point",
+    "Correctly used Sarah's failed email-change experiment as disconfirming evidence for the plus-address theory and updated the hypothesis accordingly"
+  ],
+  "notable_weaknesses": [
+    "The 'old active sessions before the switch' hypothesis in turn 4 was off-track and consumed a full exchange to disprove, though it did yield the aliasing lead as a side effect",
+    "The agent never directly asked for the Entra ID token claims or the TaskFlow OIDC claims-mapping configuration, which would have been the most direct way to confirm the email mismatch hypothesis",
+    "TaskFlow version (v2.3.1) was not captured in the summary despite being relevant for a self-hosted deployment"
+  ],
+  "most_insightful_question": "When you had dev tools open, do you remember if there were any yellow warning triangles next to the Set-Cookie response header? Chrome will flag cookies it's blocking and usually says why (e.g., 'SameSite', 'Secure', or domain mismatch).",
+  "missed_opportunities": [
+    "Ask which specific claim TaskFlow uses to look up users after SSO authentication (email, preferred_username, sub, upn) — this would directly confirm or refute the email mismatch hypothesis",
+    "Ask the reporter to capture and share the exact Entra ID token claims (or compare them to what Okta was sending) for an affected user vs. a working user",
+    "Ask what TaskFlow version is running, since self-hosted deployments may have version-specific cookie or OIDC handling bugs"
+  ]
+}

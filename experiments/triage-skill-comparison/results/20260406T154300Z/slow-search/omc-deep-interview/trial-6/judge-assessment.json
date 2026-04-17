@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted ~5,000 tasks, description vs title search distinction, v2.3 regression, ~2 weeks timing, 10-15 second duration, and long descriptions. Missed CPU spike detail, but that wasn't volunteered by the reporter in this conversation. Got 6 of 7 expected items, with the missing one (CPU spikes) being information the reporter never mentioned."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate — it lists the actual cause (FTS index dropped/not migrated, query changed to sequential scan/LIKE) as its top two hypotheses. The description-specific vs title-specific distinction is correctly identified. All facts in the summary match the ground truth."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions asked, both essential and well-targeted. The first question established the timeline and dataset size. The second question distinguished description vs title search, which was the key diagnostic differentiator. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions were excellent. The first combined temporal correlation with dataset size in a single turn. The second asked about search type differentiation (keyword vs tags vs filters) and caching behavior (first vs subsequent), which directly elicited the critical description-vs-title distinction. The reporter even said 'Good question' — the questions demonstrated genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a precise root cause hypothesis (FTS index issue in v2.3 migration), specific reproduction steps, a recommended fix (diff v2.2 vs v2.3 search implementation, check migration scripts for index changes), and a concrete test case with thresholds. A developer could immediately start investigating the v2.3 migration and search query paths."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted nearly all critical information in just 2 turns",
+    "Root cause hypothesis accurately identified the FTS index regression as the most likely cause",
+    "Questions were compounding — each built on the previous answer to narrow the diagnosis",
+    "The summary is well-structured with reproduction steps, recommended fix, and a concrete test case",
+    "Correctly identified the description-field-specific nature of the regression"
+  ],
+  "notable_weaknesses": [
+    "Did not collect OS/hardware details (though the summary correctly notes this is unlikely to be root cause)",
+    "Did not ask about CPU/memory behavior during slow searches, which would have further confirmed the full-table-scan hypothesis"
+  ],
+  "most_insightful_question": "Does the slowness happen on every search, or only certain kinds? For instance, is it slow when you search by keyword, when you filter by tags/labels/status, or both?",
+  "missed_opportunities": [
+    "Could have asked about CPU/memory usage during slow searches to gather evidence for the full-table-scan hypothesis",
+    "Could have asked whether the reporter tried reindexing or clearing cache, which would help confirm the index-related root cause"
+  ]
+}

@@ -1,0 +1,65 @@
+# Conversation: crash-on-save x socratic-refinement
+
+## Issue
+
+**app crashes when I save**
+
+The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — I can understand how frustrating it must be to lose your work.
+
+To help us get to the bottom of this, could you walk me through what you were doing when the crash happened? Specifically, what were you working on in TaskFlow at the time — for example, were you editing a task, updating a project, or something else? And when you say the app "crashes," what exactly do you see — does the window close, do you get an error message, does it freeze? Any details about what you experience in that moment would be really helpful.
+
+---
+
+### reporter
+
+I'm editing my task list and when I hit Save it just dies. The whole app closes. I think there's some kind of error dialog that flashes for a second but it's too fast to read — something about encoding maybe? I don't know. I just need to be able to save my work without the app crashing on me.
+
+---
+
+### triage-agent
+
+That's really helpful — the flash of an encoding-related error is a good clue.
+
+Could you tell me a bit more about the content of the task list you're saving when this happens? For instance, are you using any special characters, emoji, or text copied from another source (like a web page or a Word document)? And does this happen every single time you save, or only with certain task lists?
+
+If you're able to try saving a very simple task (just a few plain words) and let me know whether that also crashes, that would help us narrow things down quickly.
+
+---
+
+### reporter
+
+Look, I imported a bunch of tasks from a CSV file a while back and yeah those probably have weird characters in them — dashes and fancy quotes and stuff. The crash happens every time I hit Save. I haven't tried making a simple task list because I have like 200 tasks in there and I need to save THOSE, not some test list. Can you just fix the save button?
+
+---
+
+### triage-agent
+
+I hear you — you need your actual data saved, not a workaround, and we want to get this fixed.
+
+One quick question that will help the team zero in on the right fix: was saving working fine *before* you imported that CSV, and it only started crashing afterward? Or has Save always been a problem for you in TaskFlow?
+
+Also, are you on Windows, Mac, or Linux, and do you happen to know which version of TaskFlow you're running? (It's usually in the Help → About menu.)
+
+That should be enough for the team to start digging into this.
+
+---
+
+### reporter
+
+Yeah it was fine before the CSV import. It only started crashing after that. I'm on a Mac, and I think it's version 2.3 something. Can't remember exactly.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"App crashes on save with encoding error after CSV import containing typographic characters","problem":"TaskFlow crashes (full app close) every time the user saves a task list that was populated via CSV import. A brief error dialog flashes mentioning 'encoding' before the app dies. The crash is 100% reproducible and began immediately after the CSV import. The CSV contains typographic characters such as smart quotes and em dashes.","root_cause_hypothesis":"The CSV import ingested text containing non-UTF-8 or mixed-encoding characters (e.g., Windows-1252 smart quotes and em dashes). The save/serialization path likely assumes clean UTF-8 and hits an unhandled encoding exception when it encounters these characters, causing the app to crash instead of gracefully handling or sanitizing the input.","reproduction_steps":["Create a CSV file containing tasks with typographic characters (curly/smart quotes, em dashes, etc. — common in text copied from Word or macOS)","Import the CSV into TaskFlow","Edit the task list (or leave as-is)","Click Save","Observe: app crashes with a brief encoding-related error dialog"],"environment":"macOS, TaskFlow ~v2.3.x","severity":"high","impact":"User is completely unable to save their work — 200 tasks at risk of data loss on every edit. Any user who imports CSV data with non-ASCII characters will hit this. The crash is not intermittent; it blocks all saves.","recommended_fix":"Investigate the save/serialization code path for encoding assumptions. Likely needs to: (1) ensure the save path handles or normalizes non-UTF-8 characters gracefully, (2) consider sanitizing or re-encoding imported CSV data at import time, and (3) add a proper error dialog with recovery instead of crashing. Check the CSV import path as well — it may need to detect source encoding and transcode to UTF-8 on ingest.","proposed_test_case":"Import a CSV containing a mix of smart quotes (U+2018, U+2019, U+201C, U+201D), em dashes (U+2014), and other common Windows-1252 characters into a task list. Verify that saving completes without error and that the characters are preserved (or gracefully normalized) in the saved output.","information_gaps":["Exact TaskFlow version (reporter said '2.3 something')","Exact text of the flashed error dialog","Original CSV file encoding and content sample"]}
+
+---

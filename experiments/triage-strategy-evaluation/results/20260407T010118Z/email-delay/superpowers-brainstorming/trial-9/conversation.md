@@ -1,0 +1,57 @@
+# Conversation: email-delay x superpowers-brainstorming
+
+## Issue
+
+**Email notifications arriving hours late**
+
+Task assignment notifications used to arrive within a minute or two. For the past week, they've been arriving 2-4 hours late. This is causing people to miss deadlines because they don't know they've been assigned a task until hours later. It seems to be worse in the morning — notifications sent around 9-10am take the longest to arrive. Afternoon notifications are usually faster but still delayed.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report — the morning vs. afternoon pattern is a really helpful clue.
+
+Do you know if anything changed about a week ago when this started? For example:
+
+- A) A new version of TaskFlow was deployed
+- B) A change to your email provider or mail server configuration
+- C) A spike in the number of users or tasks being created
+- D) Nothing obvious — it just started happening
+- E) Something else
+
+Even a rough sense would help us narrow down where the bottleneck is.
+
+---
+
+### reporter
+
+I'm not 100% sure, but I think there was some kind of update or new feature around that time. I noticed I started getting these daily digest emails — like a summary of project activity — that I don't remember getting before. Not sure if that's related or just a coincidence. I don't recall hearing about a server change or anything like that.
+
+---
+
+### triage-agent
+
+That daily digest detail is really helpful — that's likely connected.
+
+Just to make sure I understand the relationship: are the delayed notifications you're seeing the same individual "you've been assigned a task" emails you used to get (just arriving late), or are some of those assignments now only showing up inside the daily digest email instead of as separate notifications?
+
+- A) I still get separate assignment emails, but they arrive hours late. The digest is a different email on top of that.
+- B) Some assignments that used to be separate emails now only appear in the digest.
+- C) I'm not sure — I haven't compared them closely.
+
+---
+
+### reporter
+
+A — I still get the separate assignment emails, they're just showing up way late. The digest is a totally different email, it's more like a summary of what happened on the project. The assignment notifications are the ones that used to come right away and now take hours.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Task assignment email notifications delayed 2-4 hours since daily digest feature was introduced","problem":"Individual task assignment notification emails, which previously arrived within 1-2 minutes, are now arriving 2-4 hours late. The delays are worst for notifications sent around 9-10am and somewhat better in the afternoon. This started approximately one week ago, coinciding with the introduction of a new daily project activity digest email feature. The individual assignment notifications are still being sent as separate emails (not folded into the digest), but they are significantly delayed.","root_cause_hypothesis":"The new daily digest feature most likely shares the same email sending queue or pipeline as real-time assignment notifications. When the digest job runs (likely in the morning), it generates a large batch of digest emails that flood the queue, causing assignment notifications to wait behind them. This explains why morning notifications (sent around the same time the digest job runs) experience the longest delays, while afternoon notifications — sent after the digest backlog has cleared — are faster but still affected by general queue congestion.","reproduction_steps":["Assign a task to a user in the morning (9-10am) and record the timestamp","Monitor when the assignment notification email is actually delivered","Compare the email queue depth before and after the daily digest job runs","Repeat the assignment in the afternoon and compare delivery latency"],"environment":"TaskFlow application with recently deployed daily digest email feature. Specific version and infrastructure details not available from reporter.","severity":"high","impact":"All users receiving task assignment notifications are affected. Delayed notifications cause people to miss deadlines because they are unaware of new task assignments for hours. Morning assignments are most impacted, which is likely peak task-assignment time for most teams.","recommended_fix":"1. Investigate whether the daily digest email job and real-time notifications share the same email queue or sending pipeline. 2. If so, separate them — use a dedicated high-priority queue for real-time notifications and a separate lower-priority queue for batch digest emails, or rate-limit the digest job so it doesn't monopolize the sender. 3. Check the email sending infrastructure for concurrency limits or throttling that the digest volume may be hitting. 4. Consider scheduling the digest job during off-peak hours (e.g., early morning before business hours) to minimize contention.","proposed_test_case":"After separating the queues (or applying the fix), assign a task during peak morning hours while the digest job is actively running. Verify that the assignment notification email is delivered within the original SLA (1-2 minutes) regardless of digest job activity.","information_gaps":["Exact email infrastructure in use (self-hosted SMTP, third-party service like SendGrid/SES, etc.)","Whether the digest feature was the only change in the deployment that introduced it","Number of users/projects generating digest emails (scale of the batch job)","Whether other notification types (e.g., comment notifications, due date reminders) are also delayed"]}
+
+---

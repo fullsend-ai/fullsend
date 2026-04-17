@@ -1,0 +1,49 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured the CSV import connection, manual save trigger, and the workaround (removing imported tasks). However, it missed: the OS/version (macOS 14.2, TaskFlow v2.3.1), the encoding-related error message the user sees, and the size-dependent nature (200 tasks vs. under 50 working fine). These are listed as expected extracts but weren't gathered."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified CSV import as the trigger and encoding/special characters as a likely mechanism — matching the first acceptable diagnostic path. The root cause hypothesis explicitly lists 'special characters or encoding issues in text fields' as the top candidate, which aligns well with the actual cause. The hypothesis is a bit broad (also includes schema/type mismatches) but the primary hypothesis is correct."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent identified the CSV connection and confirmed it via the 'remove imported tasks' workaround. However, it never asked about: error messages seen before crash, app version/OS, whether the crash scales with list size, or what the CSV contained. The encoding error flash and version info were left on the table — these would have been natural follow-ups after confirming the CSV was the trigger."
+    },
+    "economy": {
+      "score": 3,
+      "rationale": "The multiple-choice question about which field was being edited (turn 2) was low-value given the user had already said they were editing tasks generally. It burned a turn before the user volunteered the CSV detail. The other questions were well-targeted. Three turns is lean, but one turn was suboptimal."
+    },
+    "question_quality": {
+      "score": 3,
+      "rationale": "The third question — asking whether new tasks save fine — was the most insightful and led directly to the confirmation that imported tasks were the cause. The second question (which field) was generic and didn't demonstrate specific diagnostic reasoning. The questions were professional but not particularly tailored to crash debugging (no ask about error messages, logs, or version info)."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary gives a developer a clear starting point: look at the CSV import pipeline and save serialization for data it can't handle. The reproduction steps and recommended fixes are concrete. The missing version info and encoding error message are noted as gaps. A developer could begin investigating the serializer without much additional context, though they'd need to reproduce it themselves to find the 64KB threshold."
+    }
+  },
+  "weighted_total": 3.4,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Correctly pivoted on the CSV import detail the reporter volunteered and recognized it as likely the root cause",
+    "Confirmed the causal link via the 'remove imported tasks and save worked' evidence — strong logical move",
+    "Root cause hypothesis correctly prioritized encoding/special characters as the leading candidate",
+    "Triage summary is well-structured and actionable despite limited information gathered"
+  ],
+  "notable_weaknesses": [
+    "Never asked for app version or OS — these are basic environment fields listed as expected and were noted as gaps in the summary",
+    "Never asked about any error message displayed before the crash — the encoding-related dialog flash would have been highly diagnostic",
+    "Never probed the size dimension — did not ask how many tasks were imported or whether smaller datasets behaved differently",
+    "Second question (which field being edited) was generic and wasted a turn before the reporter volunteered the CSV detail"
+  ],
+  "most_insightful_question": "Does the crash also happen if you create a brand-new task from scratch (not one that was imported) and try to save it? — This directly tested the causal hypothesis and the reporter's answer (removing imported tasks fixed it) confirmed the CSV import as the root trigger.",
+  "missed_opportunities": [
+    "Did you see any error message or dialog before the app closed? (Would have surfaced the encoding-related flash)",
+    "What version of TaskFlow are you using, and what OS/version? (Basic environment info, listed as expected, noted as a gap)",
+    "About how many tasks did you import? Does the crash still happen with just a few imported tasks, or does it require a large list? (Would have surfaced the size-dependent nature of the bug)",
+    "What did the CSV file look like — were there any special characters, non-English text, or unusual formatting in the task names? (Would have directly pointed to encoding as the mechanism)"
+  ]
+}

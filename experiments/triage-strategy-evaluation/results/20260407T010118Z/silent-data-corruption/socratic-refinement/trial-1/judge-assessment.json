@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage extracted nearly all expected information: the ~50-100 affected records out of 2,000, the truncation pattern, the ~2-week timeline, the nightly batch import as the vector, the country code length pattern (3+ digits affected, US/UK fine), and a recent change in the import pipeline. The one gap is that 'recent change to phone number normalizer' was not specifically identified — the agent hypothesized several possibilities (column width, parsing bug, validation rule) without narrowing to the normalizer component, which the reporter also didn't know about."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage clearly satisfies both acceptable diagnostic paths: it identified the nightly import as the corruption source, precisely characterized the country code length pattern (3+ digit codes truncated, 1-2 digit codes fine), connected the ~2-week timeline, and hypothesized a recent change in the import pipeline's phone number parsing logic. The root cause hypothesis explicitly includes 'a substring/parsing bug in the import code' which directly describes the regex issue. No significant inaccuracies are present."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about data entry source, before/after examples, recent changes on both sides, re-corruption behavior, and onset timing. The re-corruption question was a particularly smart probe. The one obvious gap: the agent never explicitly asked about TaskFlow version or recent deployments/updates to the TaskFlow application itself, instead relying on the reporter's uncertain recollection that nothing changed. A direct 'was there a TaskFlow release or update two weeks ago?' question would have been valuable."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three rounds of questions, each yielding essential diagnostic information. No question was redundant or low-value. The first established the import source, the second revealed the truncation pattern, the third probed ongoing vs. one-time corruption. Efficient and well-paced."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Asking for concrete before/after examples (round 2) was the key move that unlocked the country code length pattern — information the reporter likely wouldn't have volunteered in that form. The re-corruption question (round 3) was particularly insightful: it directly tests whether the sync is actively mangling on each run vs. preserving an old corruption, which has immediate implications for mitigation. Both questions surfaced information beyond what the reporter volunteered."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: check git history for the Salesforce sync/import code ~2-3 weeks ago, focus on phone number parsing logic, look for anything capping country codes at 2 characters. Reproduction steps are concrete and testable. The proposed test case with country codes of varying digit lengths (+1, +44, +353, +1268) is exactly the right regression test. A developer could open the repo and start searching immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Precisely characterized the truncation pattern from reporter examples: country codes truncated to exactly 2 characters, with 1-2 digit codes unaffected",
+    "The re-corruption question was a high-value diagnostic probe that directly informed the severity and urgency of the issue",
+    "Reproduction steps and proposed test case are specific and immediately actionable, including the right mix of country code lengths to validate a fix",
+    "Connected the 2-week timeline to a likely recent code change without the reporter explicitly drawing that conclusion"
+  ],
+  "notable_weaknesses": [
+    "Never explicitly asked about TaskFlow application updates or deployments around the 2-week mark — relied on the reporter's uncertain 'nothing changed on our side' rather than pushing for a concrete check",
+    "Root cause hypothesis lists several possibilities without narrowing further; a question about whether the phone number field schema or a dedicated normalizer/parser was recently modified might have narrowed it"
+  ],
+  "most_insightful_question": "Since the nightly sync runs every night, do you know if numbers that get corrected manually in TaskFlow stay fixed, or do they get re-corrupted the next morning when the sync runs again?",
+  "missed_opportunities": [
+    "Asking explicitly whether there was a TaskFlow software update, deployment, or migration approximately 2 weeks ago (rather than asking the reporter who self-admittedly doesn't manage updates)",
+    "Asking whether the sync produces any logs or error output that could be checked for warnings around phone number processing"
+  ]
+}

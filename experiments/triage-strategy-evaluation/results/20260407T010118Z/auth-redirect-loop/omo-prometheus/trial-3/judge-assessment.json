@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected extracts are present: the ~30% affected rate, the pattern among affected users (plus addressing and email aliases), the SameSite=Strict cookie issue, the email claim mismatch between Okta and Entra, the browser dev tools observation of cookie being set then dropped, incognito/clearing cookies sometimes helping, redirect URIs being correctly configured, and other SSO apps working fine for affected users. The agent also surfaced additional useful information like the specific fix recommendation (SameSite=Lax vs None) and the suggestion to use stable identifiers like `sub` or `oid`."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies both root causes described in the ground truth: SameSite=Strict as the primary cause and email claim mismatch as secondary. The causal hierarchy matches the canonical root cause exactly. The explanation of why SameSite=Strict causes the loop (cookie dropped on cross-origin redirect from Entra back to TaskFlow) is technically accurate. The email normalization behavior attributed to Entra ID for plus-addressed emails is correct."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent asked about user patterns distinguishing affected from unaffected, the specific claim mapping, prompted the email change test as a confirmation step, and then picked up on the reporter's incidental cookie observation and followed it to a complete second root cause. No obvious follow-ups were left unasked. The agent even identified information gaps explicitly in the final summary, showing awareness of what remained unconfirmed."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were generally well-targeted. The request to look at the OIDC/SAML claim mapping in turn 3 and again in turn 5 is slightly redundant — the agent asked twice without getting an answer and could have consolidated. Otherwise, each turn moved the investigation forward meaningfully, and the cookie investigation pivot in turn 7 was timely and essential."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The opening question zeroing in on the 30% split as 'the key clue' showed strong diagnostic reasoning. The follow-up about plus-addressing and aliased emails was well-targeted. Most impressively, the agent recognized the significance of the reporter's offhand cookie observation and immediately translated it into a precise technical hypothesis (SameSite=Strict dropping cookies on cross-site redirects) with specific attributes to check. This drew out the SameSite=Strict finding that the reporter wouldn't have volunteered on their own."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary includes specific, prioritized fix recommendations with concrete implementation guidance (change SameSite to Lax, not None; switch to `sub` or `oid` as stable identifiers), reproduction steps, proposed test cases for both fixes, and clearly documented information gaps. A developer could begin implementing fixes immediately from this summary."
+    }
+  },
+  "weighted_total": 4.9,
+  "turn_count": 8,
+  "notable_strengths": [
+    "Immediately identified the 30% split as the diagnostic key and oriented all early questions around finding the distinguishing pattern",
+    "Recognized and amplified the reporter's incidental cookie observation into a precise SameSite=Strict hypothesis, uncovering the primary root cause that the reporter didn't know to report",
+    "Correctly identified both compounding issues and their causal hierarchy, matching the ground truth exactly",
+    "Final summary is exceptionally actionable: prioritized fixes, specific attributes to change, alternative identifier strategies, test cases, and explicit information gaps"
+  ],
+  "notable_weaknesses": [
+    "Asked about the claim mapping configuration twice (turns 3 and 5) without getting an answer — could have moved on or reframed rather than repeating",
+    "The incognito explanation in the summary ('no pre-existing cookie state interfering') is slightly inaccurate — incognito helps primarily because of different cookie jar behavior, but the SameSite=Strict issue applies equally in incognito; the actual reason incognito sometimes works is more nuanced"
+  ],
+  "most_insightful_question": "Could you also check the cookie details from that Network tab capture? Specifically, look at the Set-Cookie header on the response that redirects back to TaskFlow and note: (1) The SameSite attribute — is it set to Strict, Lax, None, or not present at all?",
+  "missed_opportunities": [
+    "Could have asked whether affected users had ever successfully logged in via Okta before the migration, which would confirm the aliased-email hypothesis more directly",
+    "Could have asked for the TaskFlow version to help scope known issues or check changelogs related to SSO or cookie configuration"
+  ]
+}

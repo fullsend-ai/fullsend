@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "5 of 7 expected items were extracted: search returns archived tasks when filtering active, active tasks missing from results, started ~3 days ago after v2.3.1, affects multiple users, and filter behavior is inverted. Two items were missed: (1) whether individual task pages show correct archive status — not asked at all; (2) that the issue is related to the search index rather than application logic — the agent concluded it was an application-layer predicate inversion, not an index configuration problem."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified v2.3.1 as the trigger and the active/archived filter as the broken component, matching acceptable diagnostic path 2 ('Identifying the schema migration as the trigger and the archive filter as the broken component, even without understanding the exact inversion'). The root cause hypothesis points at application code (inverted boolean/enum in filter predicate) rather than the search index field mapping, which is directionally close but misses the layer. The mention of 'index query' in the recommended fix is glancing but not precise. Still meets the acceptable path threshold."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked two well-chosen questions and resolved after getting strong confirming signals. However, one obvious follow-up was skipped: asking whether individual task detail pages show the correct archive status. That single question would have differentiated application logic from search index configuration — a key diagnostic branch — and is the most important question the agent left unasked. Resolving without it is premature given how much it narrows the root cause."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two turns, both essential. No redundancy, no padding. Q1 established the search surface and filter context; Q2 established the onset timeline and version. Could not be more compact without sacrificing coverage."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Q2 ('do you remember roughly when this started?') was excellent — it drew out the v2.3.1 update timing, which is the most actionable data point in the entire conversation. Q1 was solid and appropriately scoped. Neither question was generic boilerplate; both were grounded in the reported symptoms. The agent correctly pivoted after the reporter confirmed filter inversion. Deducted one point because neither question probed the application vs. index layer, which would have been a higher-order diagnostic move."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "A developer receives: clear reproduction steps, version anchoring (v2.3.1 vs v2.3.0), confirmed user impact, a specific workaround, and a proposed regression test. The recommended fix ('diff search filter logic between v2.3.0 and v2.3.1') is a reasonable starting point even though it points at application code rather than index configuration — a developer diffing that range would likely find the migration and index rebuild. One point deducted because the misdirection toward application-layer code could cost investigation time before the developer examines index configuration."
+    }
+  },
+  "weighted_total": 3.7,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Immediately recognized the significance of the filter inversion behavior reported by the user and reflected it back precisely, confirming the scope before closing",
+    "Q2 efficiently extracted the version and onset timing in a single question, which is the highest-value piece of information in the entire triage",
+    "The triage summary is highly structured: reproduction steps, severity, impact, workaround, proposed test case, and explicitly acknowledged information gaps — unusually thorough output for two turns of questioning"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether individual task detail pages display the correct archive status — this is the canonical question for distinguishing a search index problem from an application logic problem, and its absence led the agent to the wrong layer in its root cause hypothesis",
+    "Root cause hypothesis targets application code (filter predicate, enum mapping) rather than the search index configuration, which would direct developer investigation to the wrong place initially",
+    "Did not ask whether search without the active/archived filter (i.e., returning all tasks) produced correct results — another quick differentiator for index vs. filter logic"
+  ],
+  "most_insightful_question": "Do you remember roughly when this started? Was search working correctly last week, or did you notice it break after a specific point — maybe after a recent update or after some bulk operation on your tasks?",
+  "missed_opportunities": [
+    "Ask whether individual task detail pages show the correct archive status (active vs. archived) — would have revealed that the UI is correct and the bug is isolated to the search index layer",
+    "Ask whether searching without any active/archived filter returns all tasks correctly (or a confusing mix) — would help determine if the problem is in the filter mapping or in the base index",
+    "Ask whether the issue affects other filter dimensions (e.g., status, assignee) or only the active/archived toggle — helps scope whether it's a general index problem or specific to this field"
+  ]
+}

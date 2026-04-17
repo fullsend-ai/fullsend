@@ -1,0 +1,23 @@
+{
+  "title": "Search on task description fields is 10-15s slower since v2.3 upgrade (~5k tasks)",
+  "problem": "Searching for keywords that match task description bodies takes 10-15 seconds to return results, while searches matching task titles return almost instantly. The reporter has ~5,000 tasks and the slowdown began around the time they upgraded from TaskFlow 2.2 to 2.3 approximately two weeks ago.",
+  "root_cause_hypothesis": "The v2.3 upgrade likely introduced a regression in how task description fields are indexed or queried. Possible causes: a full-text index on the description column was dropped or not migrated during the upgrade, the search query plan changed to a sequential scan on descriptions while titles retain an index, or a new search implementation in v2.3 handles description fields differently (e.g., dropped an index, changed to unoptimized LIKE/ILIKE queries, or broke an existing full-text search configuration).",
+  "reproduction_steps": [
+    "Create or use an account with a large number of tasks (~5,000) that have text in both title and description fields",
+    "Open the main search bar in TaskFlow 2.3",
+    "Search for a keyword (e.g., 'budget') that exists only in task descriptions, not titles",
+    "Observe that results take 10-15 seconds to return",
+    "Search for a keyword that exists in a task title",
+    "Observe that results return almost instantly"
+  ],
+  "environment": "Ubuntu 22.04, ThinkPad T14, 32GB RAM, TaskFlow v2.3 (upgraded from v2.2 ~2 weeks ago), ~5,000 tasks",
+  "severity": "high",
+  "impact": "Any user with a significant number of tasks experiences severely degraded search performance when searching task descriptions — a core workflow. This is a regression from v2.3 affecting usability for power users.",
+  "recommended_fix": "Compare the database schema and query plan for description search between v2.2 and v2.3. Check whether a full-text index on the task description column was dropped or altered in the v2.3 migration. Run EXPLAIN ANALYZE on the search query with a description match vs. a title match to confirm the difference. If an index was dropped, restore it; if the query changed, revert or optimize the description search path.",
+  "proposed_test_case": "Create a test with 5,000+ tasks with known keywords in descriptions. Assert that a keyword search matching description text completes within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 schemas to confirm the regression and validate the fix.",
+  "information_gaps": [
+    "No server-side logs or query timing data to confirm whether the bottleneck is database, application, or network",
+    "Unknown whether other v2.3 users with large task counts experience the same issue",
+    "No information on database engine or configuration (PostgreSQL, SQLite, etc.)"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "title": "App crashes on save when task list contains CSV-imported tasks with Unicode smart punctuation (curly quotes, em dashes)",
+  "problem": "The application abruptly closes when the user saves a task list that contains tasks imported from a CSV file. The CSV data was copy-pasted from a Word document and contains Unicode smart punctuation characters (curly/typographic quotes and em dashes). A brief error message referencing 'encoding' flashes before the app closes. Removing the imported tasks restores normal save behavior.",
+  "root_cause_hypothesis": "The save/serialization path does not handle non-ASCII Unicode characters (specifically Windows-1252 or UTF-8 smart punctuation like U+201C/U+201D curly quotes and U+2014 em dash). The data likely passes through a code path that assumes ASCII or a narrow encoding, causing an unhandled encoding exception that crashes the application instead of being caught and surfaced to the user.",
+  "reproduction_steps": [
+    "Create a CSV file with two columns: task name and due date",
+    "Include task names containing Unicode smart punctuation — e.g., curly quotes (“ ”), em dashes (—), and other typographic characters typically inserted by Word",
+    "Include enough rows to approximate a realistic list (50+ should suffice, reporter had ~200)",
+    "Import the CSV into TaskFlow",
+    "Click Save",
+    "Observe: app closes abruptly with a brief encoding-related error flash"
+  ],
+  "environment": "Not specified (reporter did not provide OS, app version, or browser). Likely desktop application given the 'app closes entirely' behavior rather than a browser tab crash.",
+  "severity": "high",
+  "impact": "Users who import CSV data containing non-ASCII characters (common when copy-pasting from Word or other rich-text sources) cannot save their task lists, resulting in data loss. Workaround exists (remove imported tasks) but is impractical for users who need that data.",
+  "recommended_fix": "1. Investigate the save/serialization code path for encoding assumptions — ensure it handles UTF-8 throughout. 2. Check the CSV import path: either sanitize/normalize smart punctuation on import (e.g., replace curly quotes with straight quotes) or ensure the data store and serializer support the full Unicode range. 3. Wrap the save operation in proper error handling so encoding failures surface a user-visible error message instead of crashing the app. 4. Consider adding a CSV import validation step that warns about potentially problematic characters.",
+  "proposed_test_case": "Import a CSV containing task names with Unicode smart punctuation (curly quotes U+201C/U+201D, em dash U+2014, ellipsis U+2026) and verify that: (a) the import succeeds, (b) the task list saves without error, and (c) the characters round-trip correctly when the list is reopened. Additionally, test that a save failure due to encoding produces a user-visible error rather than a crash.",
+  "information_gaps": [
+    "Exact error message (reporter could not read it; logs or a debugger would reveal this)",
+    "Application version and platform/OS",
+    "Whether the issue is specific to CSV import or would also occur if the same characters were typed directly into a task name",
+    "Original CSV file (deleted by reporter; reproduction CSV must be constructed from description)"
+  ]
+}

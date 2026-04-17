@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Email notifications delayed 2-4 hours, likely caused by daily digest feature saturating email queue
+
+## Problem
+Task assignment email notifications that previously arrived within 1-2 minutes are now delayed 2-4 hours. The delay is isolated to the email sending path — in-app notifications arrive instantly. The problem is worst in the morning (9-10am sends take the longest) and improves through the afternoon.
+
+## Root Cause Hypothesis
+The daily digest email feature, introduced approximately one week ago (coinciding with the start of the problem), sends bulk emails to ~200 org members around 9am. This likely saturates the email queue or hits rate limits on the mail provider, causing transactional notification emails to back up behind the digest batch. As the digest queue drains through the day, afternoon transactional emails experience shorter delays.
+
+## Reproduction Steps
+  1. Ensure the daily digest feature is active for an org with ~200 users
+  2. Assign a task to a user around 9:15-9:30am (shortly after digest emails begin sending at ~9am)
+  3. Observe that the in-app notification appears immediately
+  4. Observe that the email notification arrives 2-3 hours later (around noon)
+  5. Repeat the assignment in the afternoon and observe a shorter (but still present) delay
+
+## Environment
+Organization with ~200 users, daily digest feature enabled, digest send time ~9am
+
+## Severity: high
+
+## Impact
+Org-wide (200 users). Team members are missing task deadlines because they rely on email notifications for assignment awareness and those notifications arrive hours late.
+
+## Recommended Fix
+1. Investigate the email sending infrastructure — check whether digest emails and transactional emails share the same queue/worker pool. 2. Separate transactional emails (task assignments, etc.) into a higher-priority queue distinct from bulk/digest emails. 3. Consider rate-limiting or staggering digest sends to avoid saturating the mail provider. 4. Review mail provider rate limits and sending quotas to ensure the digest volume (~200 emails at 9am) isn't triggering throttling.
+
+## Proposed Test Case
+With the fix applied, assign a task at 9:15am (peak digest window) and verify the email notification arrives within the expected SLA (e.g., under 2 minutes), matching the in-app notification timing. Run this across multiple mornings to confirm consistency.
+
+## Information Gaps
+- Exact email infrastructure setup (shared queue vs. separate queues, mail provider identity and rate limits)
+- Whether other transactional emails (password resets, comment notifications) are also delayed or only task assignments
+- Server-side email queue metrics and logs from the past week to confirm the queue backup hypothesis

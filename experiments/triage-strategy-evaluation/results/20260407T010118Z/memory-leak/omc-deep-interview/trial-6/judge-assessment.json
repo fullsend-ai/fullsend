@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present in the summary: linear memory growth from ~500MB to 4GB+, v2.3 upgrade as trigger ~1 week ago, ~200 active users, consistent day-to-day pattern, restart as workaround, v2.3 changelog notification changes, and 8GB RAM VM on Ubuntu 22.04. The summary also captured additional useful detail: DB isolation, WebSocket stability, request rate (~5,000/hour), and a proposed regression test."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis closely matches both the actual cause and both acceptable diagnostic paths. The agent explicitly identified the v2.3 notification system as the trigger, a per-request resource leak (not tied to connection count), and even named 'event listener registrations' as the likely leaked object type in the recommended fix — which is precisely the actual bug. The hypothesis is well-supported by evidence and would not mislead a developer."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent conducted three rounds of substantive questioning before resolving: version/architecture/DB, WebSocket connection growth, and endpoint-specific patterns. The WebSocket question was particularly valuable and its negative result redirected the investigation productively. The one obvious unasked question — 'does disabling real-time notifications for all users stop the leak?' — was acknowledged in information_gaps rather than pursued, which is a reasonable choice given the reporter had already identified the per-request pattern."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "The first two agent questions were essential. The third question (asking about specific endpoints or running a load test) was slightly lower value because the reporter had already begun articulating the per-request hypothesis themselves. However, it did productively confirm no single endpoint was responsible and elicited the useful request-rate quantification (~5,000/hour), so it was not wasted. At most one question could have been trimmed or reframed."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The opening multi-part question immediately targeted version history (unlocking the key v2.3 insight), deployment topology, and database isolation — all high-value diagnostic axes. The WebSocket connection-count question demonstrated genuine hypothesis-testing: it directly probed whether connections were accumulating, and the negative finding was as diagnostically valuable as a positive one would have been, redirecting toward per-request leakage. The final question about endpoint patterns was reasonable and elicited useful quantitative confirmation."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to begin immediately: a specific v2.3 diff target (notification system and new middleware/request hooks), concrete objects to look for (event listener registrations, notification context objects, subscription maps, long-lived closures), step-by-step reproduction instructions, a proposed automated regression test with pass/fail criteria, and an immediate mitigation (downgrade to v2.2). Acknowledged information gaps are honest and do not block investigation."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 7,
+  "notable_strengths": [
+    "The version question in turn 1 immediately surfaced the v2.3 upgrade as the trigger — the single most important diagnostic fact.",
+    "The WebSocket connection-count question was a textbook hypothesis test: the negative result (stable connections) cleanly ruled out connection accumulation and redirected toward per-request leakage.",
+    "The final summary is unusually actionable: it names specific object types to hunt for in a heap snapshot, provides a regression test with concrete pass/fail criteria, and offers an immediate mitigation."
+  ],
+  "notable_weaknesses": [
+    "The agent never explicitly asked the reporter to check the v2.3 changelog for specifics about the notification system changes — the changelog mention came from the reporter unprompted, and following up on its contents could have further narrowed the search.",
+    "The suggestion to 'try disabling real-time notifications for a subset of users' was floated in a question but never followed up on, even though the reporter offered to test it — pursuing this would have confirmed or ruled out the notification subsystem as the source."
+  ],
+  "most_insightful_question": "Could you check whether the number of open WebSocket or long-lived HTTP connections grows throughout the day, or stays roughly proportional to your active user count? — This directly tested the connection-accumulation hypothesis, and the negative result was pivotal in redirecting toward per-request leakage rather than connection leakage.",
+  "missed_opportunities": [
+    "Asking the reporter to follow through on disabling real-time notifications for a few users as a live test — the reporter offered this and the agent let it drop.",
+    "Asking for the specific v2.3 changelog text or release notes about 'improved real-time notifications' to identify what code paths changed.",
+    "Asking whether any heap profiling or memory profiling tools (e.g., pprof, /proc/pid/smaps) were available on the VM to get an object-level breakdown without waiting for a developer."
+  ]
+}

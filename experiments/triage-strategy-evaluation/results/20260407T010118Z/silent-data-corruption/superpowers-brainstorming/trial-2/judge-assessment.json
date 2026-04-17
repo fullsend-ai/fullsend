@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are present in the final summary: ~50-100 affected records, truncation pattern, ~2-week timeline, nightly batch import as the source, 3+ digit country code pattern, US/UK numbers unaffected, and a hypothesis about a recent normalizer change. The summary also adds value with reproduction steps, proposed test cases, and information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage matches both acceptable diagnostic paths: it identifies the nightly import as the corruption source, surfaces the 3+ digit country code pattern, and connects the issue to a change ~2-3 weeks ago. The root cause hypothesis ('truncating country codes to at most 2 digits, possibly a regex change') is a precise description of the actual bug even without confirming the exact regex."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent gathered all diagnostically critical information in 3 turns. The main gap is not asking about recent changes to the sync pipeline or codebase (which would have directly confirmed the 2-week timeline is tied to a deployment), and not exploring CRM backup availability for immediate remediation. These were left to the information_gaps section rather than surfaced in conversation."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "All three questions were targeted and non-redundant. Each turn unlocked a distinct layer: data entry method → corruption locus → affected pattern. No question could have been reasonably skipped or combined without losing diagnostic value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question — asking whether Salesforce had the correct number — was the pivotal diagnostic question that immediately established the sync as the corruption point rather than an upstream data quality issue. The third question — US vs. international — surfaced the country code pattern the reporter wouldn't have volunteered. Both showed genuine reasoning, not boilerplate troubleshooting."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer can start immediately: check git history for phone normalizer changes ~3 weeks ago, look for a regex constraining country codes to 1-2 digits, fix to support E.164, and re-sync from Salesforce. Reproduction steps and a proposed test matrix are included. The recommended fix is specific and correct."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The Salesforce-vs-TaskFlow comparison question was a textbook diagnostic split that immediately scoped the investigation to the sync layer and eliminated upstream data quality as a cause.",
+    "The US/international follow-up question surfaced the 3+ digit country code pattern — the key discriminator — which the reporter would not have volunteered on their own.",
+    "The final summary is developer-ready: it includes reproduction steps, a proposed test matrix covering 1-, 2-, and 3-digit country codes, and a concrete git history search recommendation."
+  ],
+  "notable_weaknesses": [
+    "The agent never asked whether any recent changes were made to the sync configuration or codebase, which would have directly confirmed that the 2-week timeline corresponds to a specific deployment rather than leaving it as a gap.",
+    "CRM backup availability for immediate data recovery was not explored in conversation; the fix recommendation implies restoring from Salesforce but doesn't confirm that's feasible."
+  ],
+  "most_insightful_question": "Are the phone numbers still correct in Salesforce itself? — this immediately bifurcated the problem into upstream data quality vs. sync-layer corruption, directing all subsequent investigation to the correct layer.",
+  "missed_opportunities": [
+    "Ask whether any changes were deployed to the sync pipeline or related code approximately 2-3 weeks ago — this would have confirmed the regression hypothesis and potentially identified the exact commit.",
+    "Ask whether historical TaskFlow records (pre-corruption) are available or whether the CRM backup is the only recovery path, to inform the urgency and feasibility of the workaround."
+  ]
+}

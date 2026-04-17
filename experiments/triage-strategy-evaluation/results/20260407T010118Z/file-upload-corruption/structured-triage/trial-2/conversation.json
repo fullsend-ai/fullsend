@@ -1,0 +1,34 @@
+{
+  "title": "PDF attachments are corrupted after upload",
+  "body": "When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — corrupted file uploads are definitely something we want to get to the bottom of quickly.\n\nCould you walk me through the exact steps you're taking when uploading a PDF? For example:\n- Where in TaskFlow are you uploading (e.g., task detail view, a specific form)?\n- How are you uploading (drag-and-drop, the attach button, etc.)?\n- What happens after you upload — does the upload appear to succeed, or do you see any errors?\n\nAlso, are the original PDF files fine before uploading (i.e., can you open them locally without issues)?"
+    },
+    {
+      "author": "reporter",
+      "body": "Yes the PDFs are fine before uploading, we can open them no problem on our end. We upload through the task detail view using the attach button usually. The upload seems to go through fine — no errors or anything — but when we or the customer tries to download and open the file, it's just broken. Look, this started happening maybe a week ago and it's causing real problems for our team. We need this fixed."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for those details — that's really helpful and gives us a clear picture of the workflow.\n\nCould you let us know what environment you're using? Specifically:\n- **Browser and version** (e.g., Chrome 124, Firefox 126)\n- **Operating system** (e.g., Windows 11, macOS Sonoma)\n- **TaskFlow version** if you know it (you can usually find this in Settings → About)\n\nThis will help us narrow down whether this is tied to a specific browser or platform."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know the exact browser version, I think it's Chrome, whatever the latest version is. Windows 10. I'm not sure about the TaskFlow version — how is that going to help? The PDFs were working fine until about a week ago and now they're broken. It's not a browser issue, it happens for everyone on my team."
+    },
+    {
+      "author": "triage-agent",
+      "body": "I understand the urgency and I hear you that it's not browser-specific — that's useful to know.\n\nOne thing that would really help our developers diagnose this: when you download one of the corrupted PDFs, **does the file size look roughly the same as the original**, or is it noticeably smaller (or larger)? You can check by right-clicking the original file and the downloaded file and comparing their sizes.\n\nAlso, does this happen with **every PDF** you upload, or only certain ones (e.g., larger files, files from a specific source)?"
+    },
+    {
+      "author": "reporter",
+      "body": "I haven't compared the exact file sizes, I don't have time to go checking every file. All I know is the PDFs are broken. Now that you mention it though, I think the smaller PDFs might actually be fine? Like quick one-page documents seem to work. But the bigger ones with multiple pages or images in them, those are the ones that come through corrupted. I don't know if that helps but can you guys just look into what changed a week ago? Something obviously broke."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Large/multi-page PDF attachments corrupted after upload (regression ~1 week ago)\",\"problem\":\"PDF files uploaded via the task detail view attach button are corrupted when downloaded. The corruption appears to affect larger, multi-page, or image-heavy PDFs, while small single-page PDFs upload and download correctly. The upload process itself shows no errors. This is a regression that began approximately one week ago.\",\"root_cause_hypothesis\":\"A recent change (approximately one week ago) likely introduced a problem in the file upload or storage pipeline that truncates or corrupts files above a certain size. Possible causes include: a misconfigured upload size limit or chunked upload handling, a change in encoding or content-type handling for binary files, or a storage layer change that corrupts multi-part uploads. The size-dependent nature strongly suggests a chunking, streaming, or buffer size issue.\",\"reproduction_steps\":[\"Open a task in the task detail view\",\"Click the attach button\",\"Select a multi-page PDF file (e.g., 5+ pages with embedded images)\",\"Upload completes with no visible errors\",\"Download the uploaded file\",\"Attempt to open the downloaded PDF — it will be reported as damaged/corrupted\",\"Repeat with a small single-page PDF to confirm it works correctly\"],\"environment\":\"Chrome (latest) on Windows 10. Confirmed across multiple team members and not browser-specific.\",\"severity\":\"high\",\"impact\":\"Multiple customers and internal team members are unable to use PDF attachments for anything beyond simple single-page documents. The file attachment feature is heavily used in their workflow, making this a significant productivity blocker.\",\"recommended_fix\":\"1. Check deployment/change history from approximately one week ago for changes to the file upload pipeline, storage configuration, or any infrastructure changes (e.g., reverse proxy body size limits, API gateway timeouts, storage SDK updates). 2. Compare the byte size of a known-good original PDF with its uploaded/downloaded counterpart to determine if data is being truncated or altered. 3. Inspect upload handling for chunked transfer or streaming issues — check whether large files are being fully read before storage. 4. Check content-type and transfer-encoding headers for binary file handling.\",\"proposed_test_case\":\"Upload PDFs of varying sizes (e.g., 100KB single-page, 2MB multi-page, 10MB image-heavy) and verify that a byte-for-byte comparison (checksum) of the original and downloaded files matches for all sizes.\",\"information_gaps\":[\"Exact file size threshold where corruption begins\",\"Whether non-PDF file types (images, Word docs) are also affected\",\"Server-side logs from the upload and download requests\",\"Exact deployment or configuration change from ~1 week ago\"]}"
+    }
+  ]
+}

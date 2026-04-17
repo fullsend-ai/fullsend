@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: archived tasks surfacing in active filter, active tasks missing from default results, timing tied to v2.3.1 update (~3 days ago), multi-user impact, individual task pages showing correct status, inverted filter behavior, and the hypothesis pointing to the search layer rather than application logic. The summary also adds reproduction steps, a proposed test case, and explicit information gaps — all genuinely useful."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the search layer (not application data) as the locus of the bug, the v2.3.1 update/maintenance as the trigger, and explicitly hypothesizes that 'if the maintenance window included a search index rebuild, the indexer may have written the archived flag with inverted values' — which is essentially the actual root cause. The summary also lists 'search index schema field mapping change' as a specific check, directly matching the actual cause. This satisfies both the canonical root cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two targeted rounds of questions and resolved with a solid basis. The reporter volunteered key details (filter-is-backwards behavior, task detail page correctness, timing) without needing to be prompted further. One obvious follow-up was left unasked: whether searches without any archive filter return a confusing mix of both active and archived tasks, which would have disambiguated whether the index data itself is inverted vs. only the query predicate. The agent acknowledged this gap in the summary, but asking it directly could have narrowed the hypothesis further."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns were used before resolution. Both were essential: the first established the exact symptom pattern and that the per-task data is correct; the second established the timing and trigger. No questions were redundant or could have been profitably combined further."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was diagnostic gold: asking specifically whether the archived task appeared with a label or section versus looking like a normal result drew out the reporter's key observation that 'the task itself knows it's archived, but search is treating it as if it's active' — and the reverse. This is information the reporter would not have framed so precisely without the prompt. The second question about timing directly surfaced the version update connection. Both questions demonstrated genuine diagnostic reasoning rather than generic bug-report checklist items."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin investigating immediately: the summary specifies checking the search query builder for an inverted boolean, the index schema for a field mapping change, and the reindex process for inverted writes. A concrete reproduction procedure and a proposed regression test are included. The information gaps section correctly identifies the one remaining unknown (query predicate vs. index data inversion) and notes it is resolvable by direct index inspection."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The first question specifically probed whether archived tasks appeared labeled as such vs. as normal results, which unlocked the reporter's 'filter is completely backwards' and 'task detail page shows correct status' observations — the two most diagnostic facts in the conversation.",
+    "The root cause hypothesis explicitly calls out search index rebuild with inverted flag values, which matches the actual cause almost exactly despite having no access to server logs or changelogs.",
+    "The triage summary is production-quality: it includes reproduction steps, a proposed regression test, severity/impact assessment, and a ranked list of specific code locations to inspect."
+  ],
+  "notable_weaknesses": [
+    "The agent did not ask whether searching without any archive filter (i.e., 'all tasks') returns a correct but mixed result set — this would have definitively distinguished 'index data inverted' from 'query predicate inverted' and is noted as an unresolved gap.",
+    "No question probed whether the scheduled maintenance involved a database migration or index rebuild specifically, which would have sharpened the hypothesis from 'something in v2.3.1' to 'the index rebuild during maintenance.'"
+  ],
+  "most_insightful_question": "When the archived task from last year showed up, was it mixed in with active results, or was there some kind of section or label indicating it was archived?",
+  "missed_opportunities": [
+    "Ask whether searching with no archive filter at all (showing all tasks) returns a correct but mixed result — this would distinguish a query-predicate inversion from an index-data inversion.",
+    "Ask whether the scheduled maintenance involved any database or index rebuild work, which would have connected the maintenance event more specifically to the search index rather than application code changes."
+  ]
+}

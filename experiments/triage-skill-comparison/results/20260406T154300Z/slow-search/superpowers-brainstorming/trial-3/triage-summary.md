@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Search across task descriptions regressed to ~10-15s after v2.3 upgrade (title search unaffected)
+
+## Problem
+After upgrading to TaskFlow v2.3, searching by task description takes 10-15 seconds, while searching by task title remains fast. The user has approximately 5,000 tasks. The slowdown appeared immediately after the upgrade, not gradually.
+
+## Root Cause Hypothesis
+The v2.3 release likely introduced a regression in the description search path — most probably a dropped or missing database index on the description column, a switch from indexed/full-text search to a naive LIKE/ILIKE scan, or an unoptimized new query pattern that performs a full table scan on descriptions.
+
+## Reproduction Steps
+  1. Set up a TaskFlow instance with v2.3
+  2. Populate the database with ~5,000 tasks that have non-trivial descriptions
+  3. Perform a search query targeting task descriptions
+  4. Observe response time (~10-15s expected)
+  5. Compare with the same search using task titles (expected to be fast)
+  6. Optionally repeat on v2.2 to confirm the regression boundary
+
+## Environment
+TaskFlow v2.3, ~5,000 tasks, running on a standard work laptop (OS and DB engine not specified but likely defaults)
+
+## Severity: high
+
+## Impact
+Any user with a meaningful number of tasks experiences unusable description search times after upgrading to v2.3. Title-only search is unaffected, so users relying on description search are disproportionately impacted.
+
+## Recommended Fix
+Diff the search-related code and migration scripts between v2.2 and v2.3. Check whether a database index on the task descriptions column was dropped or altered. Run EXPLAIN/ANALYZE on the description search query to confirm whether it's doing a sequential scan. If an index was removed, restore it. If the query pattern changed (e.g., from full-text search to LIKE '%term%'), revert to an indexed approach.
+
+## Proposed Test Case
+Create a performance test that populates 5,000+ tasks and asserts that a description search completes within an acceptable threshold (e.g., under 2 seconds). Run this test as part of the release regression suite to catch future search performance degradations.
+
+## Information Gaps
+- Exact database engine in use (PostgreSQL, SQLite, etc.) — though the fix investigation is the same regardless
+- Whether the v2.3 changelog or migration scripts mention any search-related changes

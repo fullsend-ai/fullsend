@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Extracted 4 of 7 expected items: description vs title search distinction, v2.2→v2.3 regression, 10-15s latency, and long descriptions. Missing: ~5,000 task count (listed as info gap but never asked), CPU spikes during search (never explored), and the '~2 weeks ago' timeline appears in conversation but was dropped from the final summary."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is impressively close to the actual cause — it specifically mentions a dropped full-text index or switch from indexed search to naive substring scanning, which is essentially what happened (FTS5 → LIKE query). It correctly identifies the regression as isolated to the description search path. Docked one point because it doesn't mention SQLite/FTS5 specifically and frames it as one of several possibilities rather than the leading hypothesis."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 questions were asked, and both were essential and highly productive. The first question established the timeline and surfaced the version upgrade correlation. The second question surfaced the critical title-vs-description distinction and the long descriptions factor. No wasted turns whatsoever."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first combined timeline and change-event probing into a single well-framed question. The second was particularly insightful — asking about search pattern variation led the reporter to volunteer the title-vs-description distinction, which is the single most diagnostic piece of information in the conversation. The reporter explicitly said 'good question' and then provided information they hadn't thought to mention."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is well-structured with clear reproduction steps, a strong root cause hypothesis pointing to the search subsystem diff, and a recommended fix that correctly identifies checking for index changes in the migration. A developer could start investigating the v2.3 search code path immediately. Missing dataset size (50-100 tasks suggested vs actual 5,000) could lead to under-reproducing the issue, and not knowing the DB backend is a minor gap."
+    }
+  },
+  "weighted_total": 4.10,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — extracted the two most diagnostic facts (version regression, title-vs-description distinction) in just 2 turns",
+    "Root cause hypothesis is remarkably close to the actual cause without any codebase access",
+    "Second question used a clever indirect approach (asking about search patterns) that let the reporter discover the title/description distinction themselves",
+    "Summary is well-organized with actionable reproduction steps and investigation guidance"
+  ],
+  "notable_weaknesses": [
+    "Never asked about dataset size — 5,000 tasks is a key factor in the performance profile and was hinted at in the original issue ('I have a lot of tasks')",
+    "Never explored system resource behavior (CPU spike to 100% on one core would have strongly confirmed full-table-scan hypothesis)",
+    "The '~2 weeks ago' timeline from the conversation was dropped from the final summary",
+    "Reproduction steps suggest 50-100 tasks, which would dramatically understate the actual 5,000-task scenario"
+  ],
+  "most_insightful_question": "Is every search equally slow, or have you noticed that some searches are worse than others? For example, does searching for a single common word feel different from searching for something very specific?",
+  "missed_opportunities": [
+    "Asking how many tasks the reporter has — the original issue said 'a lot of tasks' which was a clear opening to quantify",
+    "Asking about system resource usage during slow searches (CPU, memory, disk) — would have confirmed the full-scan hypothesis",
+    "Asking whether the reporter had tried any workarounds or if they'd noticed anything in logs"
+  ]
+}

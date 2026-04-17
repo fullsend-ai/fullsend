@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected extracts are present: ~30% affected users, plus addressing/email alias pattern, SameSite cookie issue, email claim mismatch, browser dev tools showing cookie being set then dropped, incognito/clearing cookies sometimes helping, redirect URIs correctly configured (mentioned in issue body and acknowledged), and other SSO apps working fine for affected users. The agent even captured the information gap about server environment and auth library details."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both the SameSite=Strict cookie issue and the email claim mismatch between Okta and Entra ID — matching the canonical root cause precisely. The agent correctly describes the mechanism (cookie dropped on cross-domain redirect, email lookup failure) and correctly identifies SameSite=Lax as the fix. The causal hierarchy is also correct, with SameSite as the primary mechanism and email mismatch as secondary."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about browser differences, user provisioning history, cookies, environment details, and auth library. It picked up on the plus-addressing lead and pursued the SameSite observation. One minor gap: the agent could have asked the reporter to specifically compare which users in the affected 30% match the plus-address/alias pattern versus those who don't, to fully confirm the hypothesis. But overall the agent resolved with a solid evidential basis."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were well-targeted. The third turn asking about server environment (OS, Node version, reverse proxy, auth library) was less productive since the reporter was an IT/SSO admin without server infrastructure knowledge — a developer could discover this directly. Otherwise questions were efficient and non-redundant."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question was sharply diagnostic, asking specifically about browser differences, account provisioning differences (migrated vs. fresh), and existing cookies — all directly relevant. The follow-up on email patterns was well-framed. Most impressively, the agent recognized the significance of the reporter's SameSite=Strict observation immediately and synthesized it with the email claim hypothesis in the final summary, demonstrating genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start implementing fixes immediately: change SameSite from Strict to Lax, inspect the id_token email claim from Entra ID against stored user records, and normalize email comparison for plus-addressed/aliased accounts. The recommended fix section is specific and actionable, and the proposed test case gives clear verification criteria."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Immediately recognized the diagnostic significance of the reporter's unprompted SameSite=Strict observation and integrated it into a coherent two-cause hypothesis",
+    "First question was well-structured and targeted three distinct diagnostic dimensions simultaneously, drawing out the plus-addressing pattern the reporter hadn't initially highlighted",
+    "Final summary is exceptionally actionable — specific fix recommendations, proposed test cases, and clear information gaps"
+  ],
+  "notable_weaknesses": [
+    "Third turn asked for server environment details from a reporter who explicitly handles SSO/identity rather than server infrastructure — predictably led to a dead end and added latency",
+    "Did not explicitly ask the reporter to confirm what percentage of the 30% affected users can be accounted for by the plus-address/alias pattern"
+  ],
+  "most_insightful_question": "Were the affected users' accounts set up differently in Entra ID — for example, were they migrated from Okta vs. freshly provisioned?",
+  "missed_opportunities": [
+    "Ask the reporter to enumerate how many of the affected users have plus-addressed or aliased emails to confirm the pattern accounts for the full 30%",
+    "Ask whether affected users see any error message on the TaskFlow side before being redirected back, which could have surfaced the 'account not found' behavior earlier"
+  ]
+}

@@ -1,0 +1,47 @@
+# Conversation: file-upload-corruption x structured-triage
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — corrupted PDF uploads definitely sounds disruptive, especially if you rely heavily on attachments.
+
+To help us narrow this down: could you walk us through the exact steps you follow when uploading a PDF? For example, where in the app do you go, how do you attach the file, and at what point do you notice the corruption — is it immediately after uploading, or when you (or someone else) later downloads and tries to open it?
+
+Also, just to confirm: the expected behavior is that the uploaded PDF should be downloadable and open normally in a PDF viewer — is that right, or is there additional processing (like previewing inline) that's also failing?
+
+---
+
+### reporter
+
+Look, it's pretty straightforward — we upload PDFs through the task attachment button, same way we always have. Click attach, pick the file, it uploads. Then when anyone tries to download and open it, it's corrupted. The PDF viewer just says it's damaged or can't be opened. And yes, obviously the expected behavior is that the file should just work when you download it. This was all working fine until recently, maybe a week or two ago? Something changed on your end.
+
+---
+
+### triage-agent
+
+Thanks for walking through those steps — that's clear and helpful. You mentioned this started about a week or two ago, which is a useful clue.
+
+Could you let us know what browser and operating system you're using when uploading? And if you happen to know what version of TaskFlow you're on (you can usually find this in Settings → About), that would help us cross-reference with recent releases to pinpoint what changed.
+
+---
+
+### reporter
+
+I don't know, Chrome I think? Whatever the latest version is. And I have no idea what version of TaskFlow we're on, that's not really my department. Can someone just look into what changed on the backend? Like I said, this was working fine before and now it's not. Our team uploads dozens of PDFs a day and this is killing our productivity.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"PDF attachments corrupted during upload/download — regression in last 1-2 weeks","problem":"PDF files uploaded via the task attachment button are corrupted when subsequently downloaded. The PDF viewer reports the file as damaged or unable to be opened. This affects multiple customers and is a regression — the feature was working correctly until approximately 1-2 weeks ago.","root_cause_hypothesis":"A recent backend change (within the last 1-2 weeks) is corrupting PDF files during the upload processing or storage pipeline. Likely candidates include: a change in encoding/transfer encoding (e.g., binary vs. base64), a file streaming bug that truncates or mangles content, a middleware change affecting multipart form uploads, or a storage layer change that alters file bytes.","reproduction_steps":["Open a task in TaskFlow","Click the attachment button","Select a known-good PDF file from the local filesystem","Upload the file","Download the uploaded attachment","Attempt to open the downloaded PDF in any PDF viewer — it will report the file as damaged or corrupted"],"environment":"Browser: Chrome (latest version). OS and TaskFlow version unknown. Issue is reported across multiple customers, suggesting a server-side problem independent of client environment.","severity":"high","impact":"Multiple customers are affected. Teams that rely heavily on PDF attachments (reporter's team uploads dozens per day) have lost a core workflow capability. No workaround is available.","recommended_fix":"1. Review all backend deployments from the last 2 weeks for changes to the file upload, storage, or download pipeline. 2. Upload a test PDF and compare the stored bytes against the original to identify where corruption occurs (upload processing, storage, or download serving). 3. Check for changes in content-type handling, transfer encoding, streaming/chunking logic, or middleware affecting multipart uploads. 4. Verify that binary files are not being inadvertently processed as text (e.g., charset conversion or line-ending normalization).","proposed_test_case":"Upload a PDF of known size and checksum via the attachment button. Download it and verify the checksum matches the original. Test with multiple file sizes (small <100KB, medium ~1MB, large >10MB) to check for size-dependent corruption patterns.","information_gaps":["Exact OS of the reporter (asked but not provided)","TaskFlow version (reporter indicated this is managed by another team)","Whether non-PDF file types are also affected","Whether the corruption is consistent (same bytes corrupted every time) or variable","Exact file sizes involved","Whether the issue is specific to uploading or also affects previously-uploaded PDFs"]}
+
+---

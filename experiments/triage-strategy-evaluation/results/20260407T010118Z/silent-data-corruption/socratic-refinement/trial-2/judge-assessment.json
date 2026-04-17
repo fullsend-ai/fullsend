@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All expected information was extracted: ~50-100 affected records out of 2,000, truncation pattern, ~2-week timeline, nightly batch import connection, 3+ digit country code pattern, US/UK numbers unaffected, and the recent changelog change to phone number formatting. The summary also adds reproduction steps, a proposed test case, and information gaps — genuinely useful extras."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the nightly import as the corruption source, the 2-week timeline tied to a recent change, and the exact pattern (3+ digit country codes truncated to 2 digits). This fully satisfies the canonical root cause hypothesis and both acceptable diagnostic paths. The root cause hypothesis about the parser assuming 1-2 digit country codes aligns precisely with the actual regex bug."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "In just two questions, the agent established the data ingestion path, confirmed the source of truth (Salesforce), elicited concrete before/after examples, identified the country code length pattern, and surfaced the changelog mention of a recent change. No obvious follow-up questions were left on the table — the conversation covered all the key diagnostic dimensions."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, both tightly packed with multiple sub-questions. There was no redundancy. The first question efficiently established the data flow and whether numbers were ever correct; the second asked for concrete examples and recent changes simultaneously. Nothing was wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question proactively probed data ingestion path and historical correctness — exactly the right diagnostic axis for a data integrity issue. The second question was exemplary: asking for before/after examples with an anonymization note, and simultaneously asking about recent changes. Asking for specific examples is what surfaced the Antigua/Ireland country code pattern, which the reporter would not have articulated without prompting. The questions showed genuine diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start working immediately: the summary specifies where to look (Salesforce sync pipeline, phone number parsing logic, ~2 weeks of commits), what to look for (hardcoded 1-2 digit country code length assumptions), provides reproduction steps with specific test cases (Antigua +1268, Ireland +353), and recommends a workaround (re-sync after fix). The ITU E.164 reference and the NANP edge case (+1 vs +1268) add expert-level precision."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Identified the 3+ digit country code truncation pattern in only 2 turns by asking for concrete examples",
+    "Connected the reporter's vague 'two weeks ago' timeline to a changelog change without leading the witness",
+    "Triage summary is immediately actionable with specific reproduction steps, a test matrix, and an ITU E.164 reference",
+    "Correctly flagged that corruptions are overwritten nightly, meaning manual fixes won't survive the next sync — a critical operational detail"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly ask whether the old (correct) numbers are recoverable from TaskFlow's own history vs. only from Salesforce — though this was noted as an information gap in the summary",
+    "Could have confirmed the exact TaskFlow version or asked for the changelog entry directly, but this is a minor omission given the 2-turn efficiency"
+  ],
+  "most_insightful_question": "Can you tell me more about what the corrupted numbers actually look like compared to the correct ones in Salesforce? If a correct number is `+1 (555) 867-5309`, what does the mangled version look like in TaskFlow — is it missing digits, missing the country code, has extra characters, or something else?",
+  "missed_opportunities": [
+    "Ask whether TaskFlow maintains its own change history for contact records, to determine if pre-corruption values are recoverable without the CRM backup",
+    "Ask for the specific changelog entry or version number from ~2 weeks ago to confirm the exact commit range to audit"
+  ]
+}

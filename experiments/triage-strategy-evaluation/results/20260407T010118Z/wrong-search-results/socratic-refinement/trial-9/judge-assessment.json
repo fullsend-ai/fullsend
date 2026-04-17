@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: archived tasks appearing in active filter results, active tasks missing from default search, onset tied to migration ~3 days ago, multi-user impact confirmed (teammate + 'all users'), individual task pages showing correct status, filter behavior being inverted, and the issue isolated to search rather than task data. The summary also adds useful extras: task counts (150 active / 300 archived), reproduction steps, a proposed test case, and an explicit information-gaps section."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis correctly identifies the v2.3.1 database migration as the trigger, the archive/active boolean inversion as the mechanism, and the search layer (not task data) as the broken component. This squarely matches the acceptable diagnostic path: 'Identifying the schema migration as the trigger and the archive filter as the broken component.' The triage hedges appropriately between search-index misconfiguration and query-logic mismatch — it does not definitively land on index field mapping vs. application code, but it names both possibilities and directs developers to check migration files and index polarity, which is the right investigative path. A minor deduction for not pinpointing the index configuration specifically over application code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two questions extracted all user-accessible diagnostic information: onset/trigger and direct-browse behavior. The agent correctly recognized that the remaining unknowns (search technology, migration SQL) are developer-accessible from the codebase, not from the reporter. One slightly missed opportunity: asking whether a search with no archive filter (show all tasks) returns a correct mixed set would have further confirmed the inversion hypothesis and distinguished a filter-logic bug from a broader index corruption. Otherwise no obvious follow-ups were skipped."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked, each essential and non-overlapping. No redundancy, no restatement of information already given. The agent resolved immediately after the reporter volunteered the filter-inversion detail, which was the diagnostic keystone."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. The first ('when did you first notice this, and did anything change recently?') was the canonical trigger-isolation question and successfully surfaced the migration. The second ('when you browse tasks directly, do archived/active statuses look correct?') was excellent: it separated search-index issues from underlying data corruption, and its framing prompted the reporter to articulate the exact filter-inversion behavior unprompted — information the reporter had not volunteered in the original issue. That second question drove the most important diagnostic insight in the conversation."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start investigating immediately: the summary names the specific version (v2.3.1), the migration as the trigger, the archive boolean inversion as the hypothesis, and directs them to inspect migration files and verify search-layer polarity. The recommended fix lists two concrete options (correct the index field mapping or reindex), and the proposed test case specifies exactly what assertions to run. The information gaps section appropriately flags what the developer needs to look up internally without blocking action."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The second question ('does direct task browsing show correct status?') was exceptionally well-targeted: it simultaneously ruled out data corruption and prompted the reporter to articulate the exact filter-inversion behavior, which became the cornerstone of the diagnosis.",
+    "Exceptional economy — two questions, zero wasted turns, resolved with full diagnostic confidence.",
+    "The final summary is highly actionable: it includes reproduction steps, two concrete fix options, a proposed regression test case, and an explicit information-gaps section that correctly identifies what only a developer can answer."
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis hedges between search-index misconfiguration and application query-logic mismatch without landing on either; a developer reading this would need to check both paths rather than going straight to the index configuration.",
+    "The triage notes 'which specific search technology is used' as an information gap, but this was a missed opportunity to ask the reporter if they recalled any mention of search infrastructure in the v2.3.1 release notes or maintenance window communication."
+  ],
+  "most_insightful_question": "When you browse your tasks directly (not through search — just looking at your task list or opening a specific task), do the active and archived tasks still appear in the right places?",
+  "missed_opportunities": [
+    "Ask whether searching with no archive filter at all (i.e., 'show all tasks') returns a correct mix — this would confirm the inversion is in the filter logic specifically rather than in result ordering or ranking.",
+    "Ask whether the reporter or teammates had seen any release notes or communication about what the v2.3.1 database migration changed — might have surfaced the index rebuild detail without needing a developer to look it up."
+  ]
+}

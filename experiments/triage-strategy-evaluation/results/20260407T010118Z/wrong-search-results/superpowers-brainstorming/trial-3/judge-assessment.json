@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured most key items: inverted filter behavior, active tasks missing, started after v2.3.1 (~3 days ago), affects all users, and filter inversion confirmed. However, it never extracted that individual task pages show the correct archive status — a key distinguishing signal. It also did not capture any hint that the issue is search-index-related rather than application logic, missing the 'related to search index' expected extract entirely."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The agent correctly identified the acceptable diagnostic path: v2.3.1 as the trigger and the archive filter as the broken component. However, the root cause hypothesis points squarely at application filtering code (negated boolean, swapped enum in query logic), whereas the actual cause is an inverted field mapping in the search index configuration. The recommended fix — diffing application code between versions — would likely send a developer in the wrong direction. The general direction is right but the hypothesis would mislead on implementation."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent resolved after a single exchange, which happened to yield very useful information. However, at least one obvious follow-up was skipped: asking whether individual task detail pages display the correct archive status. This question would have been highly diagnostic — it would distinguish a search index issue (where the DB truth is correct but the index is wrong) from an application logic bug (where the UI might also be wrong). The reporter also volunteered the v2.3.1 update detail, which could have been probed: 'Was there a database migration in that release?' would have been revealing."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only one question was asked, and it was well-targeted and essential. The reporter's response provided the core diagnostic insight (inverted filter confirmed, version identified). No turns were wasted."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The multiple-choice framing was genuinely clever and diagnostic — it distinguished between indexing issues, filtering issues, and UX expectation mismatches in a way the reporter could easily engage with. Option 3 was specifically designed to detect filter inversion, and it succeeded. The question demonstrated real diagnostic reasoning rather than generic bug-report intake. It fell just short of a 5 because it didn't include a follow-up angle about the task detail page or recent infrastructure changes."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary is well-structured with reproduction steps, severity, impact, a proposed test case, and an information-gaps section — all genuinely useful. However, the recommended fix ('diff the search filter logic') would direct a developer to application code when the actual fix is in the search index configuration. A developer following this summary could spend significant time in the wrong layer before finding the issue."
+    }
+  },
+  "weighted_total": 3.35,
+  "turn_count": 1,
+  "notable_strengths": [
+    "The multiple-choice diagnostic question was exceptionally well-designed — it framed three distinct hypotheses in reporter-accessible language and efficiently confirmed the filter-inversion hypothesis in a single exchange",
+    "The triage summary is thorough and professional, with a proposed regression test case that would catch this class of bug in future releases",
+    "Correctly identified the v2.3.1 release as the trigger and confirmed multi-user scope from the original report"
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis points to application filtering code rather than the search index, which is the actual locus of the bug — the recommended fix would likely send a developer to the wrong layer",
+    "Never asked whether individual task detail pages show the correct archive status, which is the clearest signal distinguishing a search index problem from an application logic problem",
+    "Did not probe the nature of the v2.3.1 change (migration vs. code change) despite the reporter volunteering the version; this would have been a natural and highly diagnostic follow-up"
+  ],
+  "most_insightful_question": "The multiple-choice question distinguishing between 'archived tasks should never appear', 'archived tasks ranked lower', and 'a filter that should be hiding archived tasks isn't working' — this framing efficiently surfaced the filter-inversion nature of the bug in a single turn.",
+  "missed_opportunities": [
+    "Ask whether individual task detail pages show the correct archive status for tasks that search is misclassifying — this distinguishes a search index issue from a UI/application logic bug",
+    "Ask what specifically changed in v2.3.1: 'Was there a database migration or schema change in this release?' — given the timing, this would have pointed toward the index rebuild as the trigger",
+    "Ask whether unfiltered searches (no active/archived filter applied) return correct results — this would have helped isolate whether the issue is in the filter predicate specifically or in the index data itself"
+  ]
+}

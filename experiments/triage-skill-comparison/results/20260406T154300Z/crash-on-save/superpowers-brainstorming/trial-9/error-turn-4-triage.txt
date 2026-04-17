@@ -1,0 +1,28 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "After three exchanges the picture is clear: manual save crashes on large task lists containing Word-originated special characters (curly quotes, em-dashes — Windows-1252 characters). Auto-save works fine, meaning the two code paths handle encoding differently. The size threshold suggests the manual save path may also have a buffer or batch-processing issue that compounds the encoding failure. A developer can act on this without further reporter input.",
+  "triage_summary": {
+    "title": "Manual save crashes with encoding error on large task lists containing Windows-1252 characters (em-dashes, curly quotes)",
+    "problem": "When a user manually saves (toolbar 'Save' button) a task list containing special characters originating from Microsoft Word (curly/smart quotes, em-dashes, etc.), the app crashes with a briefly-visible encoding error dialog. Auto-save handles the same data without issue. The crash only manifests when the task list is large (50+ tasks); smaller lists with the same special characters save successfully.",
+    "root_cause_hypothesis": "The manual save code path uses a different serialization or encoding routine than auto-save — likely one that does not handle Windows-1252 characters (or assumes strict ASCII/UTF-8). When the payload is large enough (50+ tasks), this encoding failure escalates to an unhandled exception that crashes the app. The auto-save path likely serializes incrementally or uses a more tolerant encoding, which is why it succeeds. The size dependency suggests either a buffered write that only flushes (and fails) above a threshold, or an in-memory encoding pass that accumulates errors until they overflow.",
+    "reproduction_steps": [
+      "Create a CSV file containing task names with Windows-1252 characters — em-dashes (—), curly/smart quotes (" "), etc. (e.g., copy-paste from a Word document into the CSV)",
+      "Import the CSV into TaskFlow to create a task list with 50+ tasks",
+      "Open the imported task list and make any edit to a task",
+      "Click the 'Save' button in the toolbar",
+      "Observe: app crashes with a brief encoding-related error dialog"
+    ],
+    "environment": "Not yet confirmed, but likely reproducible across platforms since the root cause is in the save serialization path. CSV data originated from Microsoft Word (Windows-1252 encoding).",
+    "severity": "high",
+    "impact": "Any user who imports task data containing non-ASCII punctuation (common when sourcing from Word, Outlook, or similar tools) and has large task lists will lose unsaved work on every manual save attempt. Auto-save mitigates data loss but users relying on explicit saves are blocked.",
+    "recommended_fix": "1. Audit the manual save code path and compare its encoding/serialization logic to the auto-save path. 2. Ensure the manual save path normalizes or correctly handles non-ASCII characters (specifically Windows-1252 → UTF-8 conversion for characters like curly quotes U+201C/U+201D and em-dashes U+2014). 3. Investigate why list size affects the crash — check for fixed-size buffers, batch encoding, or error accumulation thresholds. 4. Add a catch around the save operation so encoding failures surface as a user-visible error message rather than crashing the app.",
+    "proposed_test_case": "Create a task list with 100 tasks whose names contain em-dashes, curly quotes, and other Windows-1252 special characters. Edit one task and trigger a manual save. Verify the save completes without error and all special characters round-trip correctly. Additionally, test with exactly 50 tasks (boundary) and with mixed ASCII/non-ASCII content.",
+    "information_gaps": [
+      "Exact platform and TaskFlow version not confirmed (likely not relevant to the fix but useful for regression testing)",
+      "The precise error message in the dialog was not fully captured",
+      "Whether the size threshold is exactly 50 tasks or approximate"
+    ]
+  }
+}
+```

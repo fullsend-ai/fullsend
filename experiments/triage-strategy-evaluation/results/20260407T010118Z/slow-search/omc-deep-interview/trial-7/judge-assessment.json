@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected items were captured: task count (~5,000), title-vs-description performance split, v2.2→v2.3 regression, ~2-week timeline, 10-15 second latency, and long descriptions. The one missing item is CPU spiking during searches — the agent never asked about system resource behavior and the reporter never volunteered it."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage matches both acceptable diagnostic paths and comes remarkably close to the actual root cause. The root cause hypothesis explicitly calls out 'switching from FTS5 MATCH to LIKE' as option (2), which is precisely what happened. The agent also correctly identified the title-vs-description split and the v2.3 regression. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked three well-structured rounds of questions and captured nearly all key information. The one obvious gap is never asking about system behavior during searches (CPU, memory, disk I/O), which would have surfaced the CPU spike and confirmed a compute-bound rather than I/O-bound problem. The agent did note hardware in 'information_gaps' but never asked the reporter directly. Also, workaround attempts (cache clear, reindex) were not explored."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns with no redundant questions. The first turn bundled two questions (search scope and term characteristics), where the term-characteristics sub-question ('special characters') was somewhat speculative and generic. However, the scope question indirectly prompted the reporter to volunteer the critical title-vs-description insight, so it was not wasted. Overall efficient."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question — asking when the slowness started and whether it coincided with an update — was genuinely diagnostic and directly surfaced the version regression. The third question about storage backend (SQLite vs external) showed good domain knowledge and was relevant for reproduction. The first question's 'special characters' angle was generic but the scope question led to useful information. No questions were poorly framed."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "Exceptionally actionable. The summary includes specific reproduction steps (5,000 tasks with long descriptions on Ubuntu + SQLite), a concrete diagnostic command (EXPLAIN QUERY PLAN), a specific fix recommendation (restore FTS5 indexing on descriptions), and a proposed performance regression test with pass/fail criteria. A developer could begin coding a fix or writing a test immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Identified 'FTS5 MATCH to LIKE' as an explicit hypothesis, matching the actual root cause without access to the codebase",
+    "The second agent question (timing + version correlation) was highly targeted and unlocked the key regression clue",
+    "The final summary includes a proposed regression test case with concrete performance criteria, going beyond what most triage summaries provide",
+    "Correctly identified and highlighted the title-vs-description asymmetry as the central diagnostic signal"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU or system resource behavior during searches — the spike to 100% CPU would have confirmed a compute-bound full-table-scan hypothesis",
+    "Never asked whether the reporter had tried any workarounds (cache clearing, reindexing) — this would have surfaced whether a manual FTS rebuild resolves the issue",
+    "First question's 'special characters' angle was generic and unlikely to yield useful diagnostic information for a performance regression"
+  ],
+  "most_insightful_question": "Do you have a sense of when it started slowing down? For example, did it coincide with a TaskFlow update, or was it more gradual as your task count grew over time?",
+  "missed_opportunities": [
+    "Ask whether CPU or memory spikes during searches (would confirm compute-bound full-table-scan vs I/O-bound or memory-pressure explanation)",
+    "Ask whether the reporter has tried reindexing or clearing any application cache (would test whether a manual FTS rebuild resolves the issue, confirming the index-corruption theory)",
+    "Ask approximately when they accumulated most of their tasks — would help distinguish a scaling threshold from a version regression if the reporter had been uncertain about the v2.3 timing"
+  ]
+}

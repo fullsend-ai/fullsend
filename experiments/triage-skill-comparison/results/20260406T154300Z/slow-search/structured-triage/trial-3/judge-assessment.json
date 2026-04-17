@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most expected information: ~5,000 tasks, slow on description search vs fast on title search, v2.2 to v2.3 upgrade correlation, ~2 weeks timing, 10-15 second delay, and long descriptions. Missed CPU spike detail, but that wasn't volunteered by the reporter either — would have required a targeted question about system resource usage."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is close — correctly identifies a likely dropped or missing search index on descriptions and mentions switching from indexed search to sequential scan, which is essentially what happened (FTS5 index to LIKE query). Doesn't pinpoint SQLite FTS5 specifically but the general direction is accurate. No factual errors in the summary."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 question rounds before resolving. First question gathered the critical search behavior details, second gathered environment and version info which revealed the upgrade correlation. No wasted questions. Could arguably have asked about CPU/resource usage in round 2 but that's a minor miss."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "First question was well-structured with multiple targeted sub-questions that efficiently drew out the title-vs-description distinction — the most critical diagnostic detail. Second question appropriately followed up on environment and version. Questions were professional and led the reporter to volunteer the upgrade timing naturally. Not quite a 5 because no question probed system resource behavior or asked about database/storage details."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is excellent for a developer starting work. It includes clear reproduction steps, a strong root cause hypothesis pointing to the search index/query strategy change between versions, specific recommendations to diff the search implementation and check query plans, and even a proposed regression test with concrete parameters. A developer could immediately start investigating the v2.2→v2.3 search implementation diff."
+    }
+  },
+  "weighted_total": 4.15,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Efficiently extracted the critical title-vs-description search distinction in the first question",
+    "Root cause hypothesis accurately points toward index/query strategy regression",
+    "Excellent actionability with specific investigation steps and a proposed regression test",
+    "Clean, well-organized summary that correctly identifies severity and impact"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/memory behavior during slow searches, missing the CPU spike signal",
+    "Did not probe for database backend details (SQLite vs other), which would have further narrowed the root cause",
+    "Could have asked if the reporter had tried any workarounds or if clearing cache/reindexing was attempted"
+  ],
+  "most_insightful_question": "What are you searching for? Does it happen with every search query, or only certain ones? — This multi-part question efficiently drew out the critical distinction between title search (fast) and description search (slow), which is the key diagnostic finding.",
+  "missed_opportunities": [
+    "Asking about CPU/memory usage during slow searches would have revealed the 100% single-core CPU spike",
+    "Asking about database backend (SQLite, etc.) would have helped narrow the root cause to FTS5",
+    "Asking whether the reporter had tried reindexing or clearing cache could have confirmed the index issue"
+  ]
+}

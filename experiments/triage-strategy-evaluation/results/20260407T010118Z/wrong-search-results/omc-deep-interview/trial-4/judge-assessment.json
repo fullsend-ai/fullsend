@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks appearing in active filter results, active tasks missing from search, onset tied to v2.3.1 migration ~3 days ago, multi-user impact confirmed, individual task pages showing correct status, filter behavior being inverted, and the issue being isolated to the search index layer rather than application logic. The summary also captures additional useful details like task counts (150 active / 300 archived) and the maintenance window context."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage accurately identifies the schema migration as the trigger, the archive filter inversion as the mechanism, and the search index as the layer where the bug lives (distinct from application code and primary data store). The root cause hypothesis explicitly names boolean flag inversion and even anticipates Elasticsearch as the search engine — precisely matching the ground truth. This satisfies both the canonical cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The two questions asked were well-chosen and sufficient to resolve the issue. However, the agent did not explicitly probe the scope of impact (e.g., 'Is this limited to your workspace or affecting other teams?'), which the reporter had already hinted at ('My teammate says she sees the same thing'). The information gap is noted in the summary but was never actively investigated. One obvious follow-up was left on the table."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two questions were asked before resolving. Both were essential: the first established the timeline and migration trigger; the second isolated the issue to the search layer by distinguishing search from non-search browsing. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated real diagnostic reasoning. The first question correctly probed for a recent change event as a potential trigger. The second question — asking whether non-search browsing shows correct results — was genuinely insightful: it was the exact probe needed to determine whether the bug lived in the primary data store or the search index, and the reporter's answer confirmed the inversion mechanism almost completely."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear root cause hypothesis, detailed reproduction steps, a specific recommended fix (inspect migration script for boolean inversion, fix index mapping, reindex from primary store, check Elasticsearch ingestion pipeline), a proposed regression test case, and an explicit list of remaining unknowns. A developer could begin investigating the migration script immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question precisely isolated the bug to the search index layer — a high-value diagnostic move that unlocked the full picture in a single turn",
+    "The root cause hypothesis is technically specific and accurate, naming the correct mechanism (boolean inversion in index rebuild) and anticipating the correct search engine (Elasticsearch)",
+    "The triage summary is developer-ready: it includes reproduction steps, a recommended fix, a proposed test case, and clearly scoped information gaps"
+  ],
+  "notable_weaknesses": [
+    "Scope of impact was not actively probed — the reporter mentioned a teammate was affected in the original issue, but the agent never asked whether it was workspace-wide, org-wide, or broader",
+    "No question asked whether a workaround was available or had been discovered — the reporter eventually revealed the inverted filter as a workaround, but this wasn't elicited deliberately"
+  ],
+  "most_insightful_question": "When you browse your task list without searching (e.g., using filters like 'Status: Active' or just scrolling the main task view), do you see the correct set of active tasks there? Or is it only when you use the search bar that archived tasks show up where they shouldn't?",
+  "missed_opportunities": [
+    "Explicitly asking whether the issue affects all workspaces or only the reporter's, to better characterize blast radius",
+    "Asking whether any workaround had been discovered — would have surfaced the inverted filter workaround as a confirming signal for the inversion hypothesis"
+  ]
+}

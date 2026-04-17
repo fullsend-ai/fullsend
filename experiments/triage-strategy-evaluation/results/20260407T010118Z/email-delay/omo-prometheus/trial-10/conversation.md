@@ -1,0 +1,61 @@
+# Conversation: email-delay x omo-prometheus
+
+## Issue
+
+**Email notifications arriving hours late**
+
+Task assignment notifications used to arrive within a minute or two. For the past week, they've been arriving 2-4 hours late. This is causing people to miss deadlines because they don't know they've been assigned a task until hours later. It seems to be worse in the morning — notifications sent around 9-10am take the longest to arrive. Afternoon notifications are usually faster but still delayed.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for the detailed report — the time-of-day pattern is a really useful clue.
+
+To help narrow this down: is this delay affecting **all users** on your team, or have you only confirmed it for specific people? And do you know if anything changed about a week ago when this started — a deployment, an infrastructure change, or a configuration update to the notification system?
+
+---
+
+### reporter
+
+Yeah, it's affecting everyone on my team as far as I can tell. I've heard complaints from at least 4-5 people about late assignment emails, so it's not just me. As for what changed — I'm not sure about any infrastructure stuff, but I did notice we started getting these new daily digest emails about a week ago? Like a marketing summary thing that shows up in the morning. Not sure if that's related but the timing lines up with when the delays started.
+
+---
+
+### triage-agent
+
+That daily digest timing is a really strong lead — it lines up perfectly. A couple of things that would help confirm whether it's the culprit:
+
+1. What time does the daily digest email arrive? Specifically, is it sent around 9-10am — right when you see the worst delays?
+
+Also, do you happen to know if TaskFlow sends all its emails through a single system (like one email queue or one third-party service), or if different email types go through different channels? I'm trying to figure out if the digest could be flooding a shared pipeline.
+
+---
+
+### reporter
+
+Yeah, the digest email usually hits my inbox right around 9am, sometimes a few minutes after. That's exactly when the delays are worst, so that does seem suspicious. As for the email system — I honestly don't know the technical setup. I'd assume it all goes through the same system since they're all coming from TaskFlow, but I'm not really sure how it works on the backend. You might want to check with whoever set up the digest feature.
+
+---
+
+### triage-agent
+
+That timing correlation is really compelling — the digest is looking like our prime suspect.
+
+One more thing that would help me pin this down: are the delays limited to **task assignment** notification emails, or are you also seeing delays with other types of TaskFlow emails — like comment notifications, due date reminders, or status change alerts? Basically, is *everything* from TaskFlow slow, or just the assignment emails?
+
+---
+
+### reporter
+
+Now that you mention it, I think it's not just assignment emails. I've noticed due date reminders coming in late too — I got one that was supposed to be a reminder for a 10am deadline but it didn't show up until after lunch. I haven't paid as close attention to comment notifications or status changes, but I wouldn't be surprised if those are delayed too. It really does feel like everything from TaskFlow slows down in the morning.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"All email notifications delayed 2-4 hours, correlating with daily digest feature launch","problem":"Since approximately one week ago, all TaskFlow email notifications (task assignments, due date reminders, and likely others) are arriving 2-4 hours late. Delays are worst in the morning (9-10am) and improve in the afternoon. This affects all team members and is causing missed deadlines.","root_cause_hypothesis":"The newly introduced daily digest email feature, which sends around 9am, is likely flooding a shared email sending queue/pipeline. The digest likely generates a large batch of emails for all users simultaneously, saturating the queue and causing transactional notifications (assignments, reminders) to back up behind it. The morning peak correlates perfectly with digest send time, and afternoon improvement is consistent with the queue gradually draining.","reproduction_steps":["Assign a task to a user around 9:00-9:15am (shortly after the daily digest sends)","Observe that the assignment notification email arrives 2-4 hours late","Repeat the same assignment in the afternoon (e.g., 3pm)","Observe that the notification still arrives late but with less delay","Compare with email delivery times from before the digest feature was enabled"],"environment":"Affects all team members (confirmed with 4-5 people). Production environment. Issue began approximately one week ago, coinciding with the launch of a new daily digest email feature.","severity":"high","impact":"All team members are missing task assignments and deadline reminders. Users are not learning about assigned tasks for hours, directly causing missed deadlines. No workaround has been identified short of manually checking TaskFlow for new assignments.","recommended_fix":"1. Investigate the email sending infrastructure — confirm whether the daily digest and transactional notifications share a single email queue/worker pool. 2. If shared, implement priority queuing: transactional emails (assignments, reminders) should have higher priority than bulk emails (digests). 3. Consider rate-limiting or throttling digest sends, or moving them to a separate queue/worker. 4. As an immediate mitigation, consider shifting the digest send time to off-peak hours (e.g., 6am or overnight) to avoid competing with morning transactional email volume.","proposed_test_case":"Send a batch of digest emails and simultaneously trigger a task assignment notification. Verify that the assignment notification is delivered within the expected SLA (under 2 minutes) regardless of digest queue depth. Measure email delivery latency before and after implementing queue separation or prioritization.","information_gaps":["Exact email infrastructure architecture (single queue vs. multiple, third-party service vs. self-hosted)","Whether the digest feature was the only change deployed that week","Precise delivery latency metrics from server-side logs (reporter can only observe inbox arrival times)","Whether any email rate limits or throttling are configured on the sending service"]}
+
+---

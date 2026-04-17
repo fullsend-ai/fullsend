@@ -1,0 +1,7 @@
+```json
+{
+  "action": "ask",
+  "reasoning": "Scoring clarity: Symptom=0.80 (crash on save, fleeting encoding error), Cause=0.70 (CSV-imported special characters likely trigger encoding bug), Reproduction=0.50 (we know the trigger but lack environment details and a minimal repro path), Impact=0.60 (200 tasks at risk, every save crashes, but no workaround explored). Weighted overall=0.68, below 0.80 threshold. Reproduction is the weakest dimension. Round 3 — I should also challenge assumptions: is it really the special characters, or could it be the CSV structure or task count? A targeted reproduction question will help narrow this down and also test the encoding hypothesis.",
+  "question": "That really helps narrow it down — the CSV import with special characters lines up with the encoding error you glimpsed. One thing that would help us confirm: if you create a brand-new task list with just one or two tasks and hit Save, does that work fine? And if so, what happens if you add a single task with a special character (like a curly quote " or an accented letter é) and try saving that? Also, which version of TaskFlow are you running, and on what OS (Windows, Mac, Linux)?"
+}
+```

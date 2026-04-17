@@ -1,0 +1,23 @@
+{
+  "title": "Search filter logic inverted since v2.3.1 — 'active' filter returns archived tasks and vice versa",
+  "problem": "After the v2.3.1 update (~3 days ago), the search results filter for task status is inverted. Searching with the default 'active tasks only' filter returns archived tasks, and switching the filter to 'archived' returns active tasks. The underlying task data is correct — task detail pages show the right archived/active status — but the search layer applies the filter backwards.",
+  "root_cause_hypothesis": "The v2.3.1 update likely introduced a logic inversion in the search filter predicate for task status. This could be a flipped boolean (e.g., `isArchived` vs `!isArchived`), a swapped enum mapping, or an inverted query condition in the search index layer. If the maintenance window included a search index rebuild, the indexer may have written the archived flag with inverted values.",
+  "reproduction_steps": [
+    "Log into TaskFlow (any user account) on v2.3.1",
+    "Navigate to the search bar with default filters (should be 'active tasks only')",
+    "Search for a term that matches both an active task and an archived task (e.g., 'Q2 planning')",
+    "Observe that archived tasks appear in results while known active tasks do not",
+    "Switch the filter to 'archived' and re-run the same search",
+    "Observe that active tasks now appear in the results"
+  ],
+  "environment": "TaskFlow v2.3.1 (post-update, post-scheduled-maintenance). Affects multiple users. No specific browser/OS dependency reported — consistent across at least two users.",
+  "severity": "high",
+  "impact": "All users performing searches are affected. Active tasks are effectively invisible under default search, and archived tasks pollute results. This disrupts core task discovery and daily workflows for the entire user base.",
+  "recommended_fix": "Investigate the v2.3.1 diff for changes to search filter logic, specifically the predicate that evaluates task archived/active status. Check: (1) the search query builder for an inverted boolean condition on the archived flag, (2) the search index schema for a field mapping change, and (3) if a reindex occurred during maintenance, whether the indexer wrote inverted status values. Fix the inversion and verify with both the 'active' and 'archived' filter selections.",
+  "proposed_test_case": "Create one active task and one archived task with the same keyword. Search with the 'active tasks only' filter and assert the active task appears and the archived task does not. Search with the 'archived' filter and assert the reverse. This test should cover both the query logic and the indexed data.",
+  "information_gaps": [
+    "Exact v2.3.1 changelog or diff not yet reviewed by the development team",
+    "Whether the issue affects other filter types (e.g., by project, by assignee) or only the archived/active status filter",
+    "Whether the search index data itself is inverted vs. the query predicate being inverted — answerable by inspecting the index directly"
+  ]
+}

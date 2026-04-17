@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "Extracted all key expected information: ~5,000 tasks, slow on description search vs fast on title search, regression after v2.2 to v2.3 upgrade, started ~2 weeks ago, 10-15 seconds for description searches, and long descriptions. The only item not explicitly captured was CPU spikes during search, but this was not volunteered by the reporter and the agent correctly identified it as likely not critical given the clear regression pattern. The triage also surfaced additional useful context like the meeting notes use case."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably accurate. It correctly identifies that v2.3 likely changed the search implementation to bypass the full-text index, specifically suggesting a LIKE query pattern replacing indexed search — which is exactly what happened (SQLite FTS5 replaced by naive LIKE). The hypothesis that title search uses a different (still-indexed) path is correct. The migration theory is also spot-on. The triage even lists the actual cause as one of its enumerated possibilities."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "The conversation took only 1 agent turn of questions before resolving. Three well-targeted questions in a single message extracted nearly all the critical information. No redundant questions, no wasted turns. The agent resolved after a single reporter response, which is optimal."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "All three questions were precisely targeted at the most important diagnostic axes: timing/version (caught the v2.2→v2.3 regression), scale (confirmed 5,000 tasks), and search type differentiation (directly led the reporter to discover the title vs. description distinction, which is the key diagnostic finding). Question 3 in particular was insightful — it prompted the reporter to test something they hadn't tried, which revealed the critical title-vs-description split."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear, specific action plan: diff search code between v2.2 and v2.3, check for missing FTS index, run EXPLAIN on the query, and restore the index with an idempotent migration. It includes reproduction steps, a proposed test case with specific parameters, and correctly identifies the fix approach. A developer could start working on this immediately."
+    }
+  },
+  "weighted_total": 5.00,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Extracted the critical title-vs-description distinction by prompting the reporter to test different search types",
+    "Root cause hypothesis almost exactly matches the actual cause (LIKE query replacing FTS index)",
+    "Resolved in a single exchange — maximally efficient",
+    "Actionable fix recommendations with specific technical steps",
+    "Proposed test case is well-designed and directly validates the fix"
+  ],
+  "notable_weaknesses": [
+    "Did not capture the CPU spike symptom (though this wasn't volunteered and is secondary to the core diagnosis)",
+    "Listed OS/hardware as an information gap but could have asked since the reporter mentioned 'work laptop' — though the agent correctly noted this is likely not relevant"
+  ],
+  "most_insightful_question": "Is it slow for every search, or only certain queries? For example, is searching for a single word just as slow as a more complex search?",
+  "missed_opportunities": [
+    "Could have asked about CPU/memory behavior during slow searches to further confirm the full-scan hypothesis",
+    "Could have asked whether the user ran any post-upgrade migration steps, which would help distinguish between 'migration failed' vs 'migration changed the schema intentionally'"
+  ]
+}

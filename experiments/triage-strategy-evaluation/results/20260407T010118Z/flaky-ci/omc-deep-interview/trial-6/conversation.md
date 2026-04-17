@@ -1,0 +1,63 @@
+# Conversation: flaky-ci x omc-deep-interview
+
+## Issue
+
+**Tests keep failing in CI but pass on my machine**
+
+Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — intermittent CI failures are frustrating, especially when they block releases.
+
+To start narrowing this down: when the failures happen, what do the error messages or test output actually look like? For example, are you seeing timeouts, assertion errors, connection failures, or something else? And are the failing tests concentrated in a particular area of the codebase (e.g., database tests, API tests), or do they seem completely random each run?
+
+---
+
+### reporter
+
+They're assertion errors, not timeouts or anything like that. The tasks come back in the wrong order. It's all in the task ordering tests — specifically the ones we just added in that PR last week. Look, I've run these tests probably 50 times locally and they pass every single time. Something is wrong with the CI environment.
+
+---
+
+### triage-agent
+
+That's really helpful — ordering assertion failures on new tests is a strong clue. A couple of things that would help narrow this down:
+
+Do those task ordering tests explicitly sort the results before asserting, or do they rely on the order the database returns them? For example, if the tests expect tasks sorted by creation time, but the query doesn't include an `ORDER BY`, some databases (or even the same database with different data/configuration) will return rows in unpredictable order.
+
+Also, is there any difference between your local setup and CI that might matter here — like database engine or version, whether tests run in parallel, or whether the test database is seeded fresh each run?
+
+---
+
+### reporter
+
+We're not using a database for this, it's all in-memory Go stuff. I don't know the internals of how the sort works, I just wrote tests that check the tasks come back in the right order after sorting. They work fine on my machine. As for differences between local and CI — I mean, I'm on a Mac and CI is Ubuntu, but it's the same Go version so that shouldn't matter, right? I don't really know what else would be different. Can someone just look at why CI is broken?
+
+---
+
+### triage-agent
+
+I think I have a lead on this — and it may actually be a real bug in the sorting code rather than a CI environment issue.
+
+Could you share the name of the test file (or the PR that added these tests)? Specifically, I want to see two things: what field the tasks are being sorted by, and whether any of the test tasks could have the **same value** for that field.
+
+The reason I ask: Go's `sort.Slice` doesn't guarantee a stable sort — if two tasks have the same priority (or whatever the sort key is), their relative order can vary between runs. Your Mac might just happen to get the 'right' order consistently due to how its memory allocator works, while CI on Ubuntu surfaces the randomness. If that's the cause, the fix would be straightforward (use `sort.SliceStable` or add a tiebreaker to the sort).
+
+---
+
+### reporter
+
+The PR is from last week, I can dig up the link if you really need it but there are like 5 new test cases in the task ordering module. I don't remember exactly what field they sort on — I think it's just insertion order? Like, you add tasks and expect them back in the order you put them in. I'm not using sort.Slice directly, the code just stores them and retrieves them. Look, I'm not the one who wrote the sorting internals, I just added tests for the expected behavior. Can someone from the team just look at the actual code? The test names show up clearly in the CI logs when they fail.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Task ordering tests fail intermittently in CI due to likely non-deterministic iteration order in Go","problem":"Recently added task ordering tests pass consistently on the developer's Mac but fail intermittently in CI (Ubuntu). Failures are assertion errors where tasks come back in the wrong order. The tests expect tasks to be returned in insertion order after being stored and retrieved in-memory.","root_cause_hypothesis":"The in-memory task storage most likely uses a Go map, which has intentionally randomized iteration order. Tasks inserted in a specific order are not guaranteed to be retrieved in that order. Go randomizes map iteration as a language design choice (since Go 1.0) specifically to prevent developers from depending on it. On the reporter's Mac, memory layout may coincidentally produce the expected order most of the time, while CI on Ubuntu surfaces the randomness more frequently. An alternative hypothesis is an unstable sort (sort.Slice) with duplicate keys, but the reporter's description of expecting 'insertion order' without explicit sorting points more strongly to map iteration.","reproduction_steps":["Identify the task ordering test file in the PR merged last week (approximately 5 new test cases in the task ordering module)","Examine the underlying data structure used to store tasks — check if it is a map[K]Task or similar","Run the failing tests with '-count=100' to reproduce locally: 'go test -run TestTaskOrder -count=100 ./...'","If using a map, iteration order will vary across runs, causing intermittent assertion failures"],"environment":"CI: Ubuntu (Linux). Local: macOS. Same Go version on both. All in-memory, no database involved.","severity":"high","impact":"Blocking releases for the team. The flaky tests erode CI trust and prevent merging other work. The underlying issue (if non-deterministic ordering) could also be a user-facing bug if the retrieval path is shared with production code.","recommended_fix":"1. Check the storage data structure: if tasks are stored in a map, switch to a slice or use an ordered data structure (slice + map for O(1) lookup if needed). 2. If a sort is involved, ensure it uses sort.SliceStable or includes a tiebreaker field (e.g., insertion timestamp or ID). 3. If insertion order is the intended contract, document and enforce it in the data structure, not just in tests.","proposed_test_case":"Run the existing ordering tests with '-count=1000' and '-race' to verify the fix eliminates flakiness. Additionally, add a test that inserts tasks with identical sort keys (if applicable) and asserts stable ordering, ensuring the determinism guarantee is explicit.","information_gaps":["Exact data structure used for task storage (map vs slice vs other) — requires reading the source code","Whether the retrieval path used in tests is the same as the production code path","Specific PR and test file names (reporter can provide the PR link if needed, but test names are visible in CI logs)"]}
+
+---

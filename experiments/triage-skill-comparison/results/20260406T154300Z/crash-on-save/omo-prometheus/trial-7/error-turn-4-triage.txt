@@ -1,0 +1,34 @@
+```json
+{
+  "action": "resolve",
+  "reasoning": "The reporter has provided detailed, specific information covering all sufficiency criteria. We have: (1) a clear reproduction path — import CSV with special characters into a large task list, then click Save; (2) a strong root cause hypothesis — the manual Save code path mishandles Unicode characters (em-dashes, curly quotes) and this manifests as a crash at scale, while auto-save uses a different serialization path that handles them correctly; (3) clear severity and workaround info. Asking further questions would not materially change the triage outcome. Moving to Phase 4: Resolution.",
+  "triage_summary": {
+    "title": "Crash on manual save of large task lists containing non-ASCII characters imported from CSV",
+    "problem": "TaskFlow crashes (window closes immediately) when the user clicks the toolbar Save button on a task list containing ~200 tasks that were imported from a CSV file. The CSV data contains typographic Unicode characters such as em-dashes and curly quotes. A brief error dialog flashes mentioning 'encoding' before the window closes. Auto-save does not trigger the crash. Removing the imported tasks or reducing the list to under 50 tasks also avoids the crash.",
+    "root_cause_hypothesis": "The manual Save code path uses a character encoding conversion (likely UTF-8 to a narrower encoding, or an unbounded encoding buffer) that fails on non-ASCII characters such as em-dashes (U+2014) and curly quotes (U+201C/U+201D). The size dependency suggests the issue may involve a fixed-size buffer or a batch-encoding operation that overflows or errors out at scale. Auto-save likely uses a different serialization pathway (possibly writing raw UTF-8 or using a streaming approach) that handles these characters correctly.",
+    "reproduction_steps": [
+      "Open TaskFlow v2.3.1 on macOS 14.2",
+      "Create or open a task list",
+      "Import tasks from a CSV file containing em-dashes (—) and curly quotes (" ") in task names, ensuring the total task count reaches approximately 200",
+      "Click the 'Save' button in the toolbar",
+      "Observe: app window closes with a brief flash of an encoding-related error dialog"
+    ],
+    "environment": "macOS 14.2, TaskFlow v2.3.1",
+    "severity": "high",
+    "impact": "Users who import data containing non-ASCII characters into large task lists lose their work on every manual save attempt. The crash-on-save loop means any unsaved changes since the last auto-save are lost. This disproportionately affects users who import data from external sources (CSV), which is likely a common workflow for users with large task counts.",
+    "recommended_fix": "1. Compare the manual Save and auto-save serialization code paths — identify where they diverge in character encoding handling. 2. Check for fixed-size buffers or encoding conversion calls in the manual Save path that don't support full UTF-8. 3. Ensure the manual Save path writes UTF-8 throughout, matching whatever auto-save does correctly. 4. Add proper error handling so encoding failures surface a readable error dialog instead of crashing the app. 5. Investigate why list size matters — look for batch operations or buffer allocations that scale with task count.",
+    "proposed_test_case": "Create a task list with 200+ tasks where at least 10 task names contain non-ASCII typographic characters (em-dashes, curly quotes, accented characters, emoji). Perform a manual save via the toolbar button. Verify: (a) save completes without crash, (b) file is written as valid UTF-8, (c) reopening the file preserves all special characters exactly.",
+    "information_gaps": [
+      "Exact error message from the crash dialog (flashes too fast to read fully)",
+      "Whether a crash log exists in macOS Console.app or ~/Library/Logs that would pinpoint the exact failing function",
+      "Whether the issue reproduces on other platforms (Windows/Linux) or is macOS-specific",
+      "The exact size threshold where the crash begins (reporter confirmed <50 works, ~200 crashes)"
+    ]
+  },
+  "confidence": {
+    "root_cause": "medium",
+    "reproduction": "high",
+    "severity_assessment": "high"
+  }
+}
+```

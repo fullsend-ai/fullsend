@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected information items are present in the summary: intermittent nature, specific to recently-added task ordering tests, ~4 days ago after PR merge, macOS local vs Ubuntu CI, non-deterministic ordering, environment difference, and CI logs showing test names (noted as declined by reporter but acknowledged as available). The summary also adds useful extras like severity, impact, and a proposed test case."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage leads with unstable sort as the primary hypothesis, which is not the actual cause (map iteration randomization + differing hash seed config). However, the summary does mention map iteration randomization as a contributing factor, and the acceptable diagnostic paths explicitly allow 'non-deterministic ordering as the root cause, even if attributed to a different mechanism.' The environment difference (macOS vs Ubuntu, local config vs CI config) is correctly identified. The hypothesis is in the right neighborhood but misranks the mechanisms."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked appropriate questions about test consistency, CI logs, and CI environment details across 3 turns. However, it never asked about configuration differences between the local dev environment and CI — which is precisely where the actual bug lives (fixed hash seed in dev config vs randomized in CI). Given the reporter's stated frustration and resistance, resolving after 3 rounds was defensible, but the config/environment-variable angle was a significant missed follow-up."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Three turns of questions before resolving, each with a clear diagnostic purpose. Asking for the CI log (turn 2) was reasonable even though the reporter declined. Turn 3 efficiently bundled CI platform, OS, runtime, and parallelism into one ask. No redundant or repetitive questions."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "Turn 1 smartly asked whether the same tests fail each time — a good discriminator between flaky infrastructure and flaky test logic. Turn 3 appropriately asked about CI environment specifics. The main gap: the agent never asked about configuration or environment variable differences between local and CI, which is the diagnostic key. Asking about parallelism was reasonable but lower yield than asking about build flags or config files."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is highly structured: clear reproduction steps with a concrete `go test -count=100` command, specific fix options (stable sort, tiebreaker key), and honest acknowledgment of information gaps. A developer could start investigating immediately. The recommended fix is slightly off-target (focuses on sort stability rather than map iteration + seed), but the investigation path would naturally uncover the real cause."
+    }
+  },
+  "weighted_total": 4.1,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Recognized non-deterministic ordering as the likely cause early (turn 3) and committed to that diagnosis confidently despite limited information",
+    "Produced a highly structured, developer-ready summary with concrete reproduction commands, specific fix options, and explicit information gaps",
+    "Handled a resistant reporter gracefully — extracted key facts without escalating tension and resolved appropriately when the reporter stopped cooperating"
+  ],
+  "notable_weaknesses": [
+    "Never asked about configuration differences between local dev environment and CI (e.g., environment variables, build flags, GOFLAGS) — this is the actual root cause vector and a natural diagnostic question for 'works on my machine' issues",
+    "The primary root cause hypothesis (unstable sort.Slice) is plausible but incorrect; map iteration randomization is the actual mechanism, which the summary only mentions as a secondary contributor",
+    "Did not ask about recent code changes or PRs in the initial question — the reporter volunteered this critical context rather than being prompted for it"
+  ],
+  "most_insightful_question": "What does the CI environment look like? Specifically: what CI platform, what OS and runtime version, and are tests run in parallel? — This question surfaced the Ubuntu vs macOS difference and Go 1.22, which are essential to the environment-divergence diagnosis.",
+  "missed_opportunities": [
+    "Ask whether there are any configuration differences between the local dev setup and CI — e.g., environment variables, build flags, .env files, or config files that might be absent in CI",
+    "Ask whether the new tests are specifically asserting on exact ordering of results (rather than just presence/membership), which would have sharpened the non-deterministic ordering hypothesis earlier",
+    "Ask for the PR link or branch name to allow direct inspection of the new tests without relying on the reporter"
+  ]
+}

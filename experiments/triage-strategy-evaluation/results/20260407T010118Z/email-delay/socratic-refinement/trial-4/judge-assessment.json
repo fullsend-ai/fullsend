@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items are present: 2-4 hour delays, started ~1 week ago, morning/afternoon pattern, marketing digest as likely cause, queue congestion hypothesis, transactional vs. bulk competition, and prior 1-2 minute baseline. The cluster-arrival observation adds additional useful diagnostic signal beyond what was expected."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the daily digest feature as the cause and queue congestion as the mechanism, matching the acceptable path 'Identifying the digest email feature as the cause and the queue congestion, even without understanding the priority system.' The recommended fix even explicitly calls out priority tiers to prevent bulk sends from starving transactional emails — closely mirroring the actual fix without having access to the implementation details."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two well-chosen questions yielded the core diagnostic picture. The agent acknowledged remaining unknowns in information_gaps (exact digest send time, queue architecture, affected user scope). One obvious follow-up was skipped: asking whether other notification types (e.g., due-date reminders) were similarly delayed, which would have further confirmed queue-wide vs. notification-type-specific congestion. Still, the agent had a reasonable basis to resolve."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were essential and non-redundant. Q1 surfaced the key causal candidate (digest feature); Q2 confirmed the queue-backlog mechanism via cluster arrival behavior. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q1 was open-ended and change-focused, which drew out the digest feature rollout that the reporter didn't initially connect to the problem. Q2 was a sharp diagnostic probe — distinguishing 'cluster arrivals' from 'trickle arrivals' is exactly the right test to differentiate queue backlog from per-email delivery failure. Both questions demonstrate genuine hypothesis-driven reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear root cause hypothesis, concrete reproduction steps correlated with digest timing, a three-option recommended fix with priority-queue separation as the primary recommendation, a proposed test case with an explicit SLA target, and clearly scoped information gaps with suggested verification methods. A developer could begin investigation and likely implement a fix with no additional context gathering."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Q2 ('do notifications arrive in clusters or trickle in?') was a sophisticated diagnostic probe that confirmed queue-backlog behavior without needing backend access — exactly the right question to ask a non-technical reporter",
+    "The triage correctly connected the morning/afternoon asymmetry to digest drain timing, matching the actual mechanism",
+    "The recommended fix independently arrived at priority-tier separation, which is precisely the canonical fix",
+    "Information gaps are specific and actionable, each tagged with how to verify ('confirmable from server config/logs')"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other notification types (due-date reminders, mentions) were also delayed, which would have confirmed queue-wide impact vs. assignment-specific issue",
+    "Did not ask approximately what time the digest emails arrive in reporters' inboxes, which would have directly confirmed the 9am send window"
+  ],
+  "most_insightful_question": "When they finally come through, do they tend to come in all at once — like a bunch land in your inbox within a few minutes of each other — or do they trickle in one at a time over those 2-4 hours?",
+  "missed_opportunities": [
+    "Are other notification types (due-date reminders, @mentions) experiencing similar delays, or is it only task assignment notifications?",
+    "Do you receive the daily digest emails yourself, and if so, approximately what time do they arrive in your inbox?"
+  ]
+}

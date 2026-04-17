@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured: filter inversion behavior, regression tied to v2.3.1, multi-user impact, and the specific 'active only' returns archived pattern. Missing: whether individual task detail pages show the correct archive status (a key discriminator), and no connection to the search index layer vs application code."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The triage correctly identifies the filter inversion symptom and the v2.3.1 trigger, aligning with acceptable path 2 (migration as trigger, archive filter as broken component). However, the summary explicitly states 'the underlying data and index are correct — tasks are properly categorized' which is factually wrong — the Elasticsearch index field mapping is the actual defect. The recommended fix directs developers to diff application query-building code, not the index configuration, which is wrong and would mislead."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Two well-chosen questions covered timing/regression and a targeted filter experiment. However, the agent never asked whether individual task detail pages display the correct archive status — a critical discriminating question that would have signaled the bug is in the index layer, not the application code. Not asking about schema migrations or index rebuilds in v2.3.1 was also a miss given the reporter mentioned a patch update."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two questions, both essential. No redundancy. The agent resolved after confirming the inversion with minimal turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The filter experiment question was genuinely diagnostic — asking the reporter to test 'show all' vs 'active only' directly elicited the key finding (inversion confirmed, active task visible in 'all' mode). The first question efficiently established regression timing and interface. Both questions showed real diagnostic reasoning rather than generic bug report boilerplate."
+    },
+    "actionability": {
+      "score": 2,
+      "rationale": "A developer following the recommended fix — diffing query-construction code between v2.3.0 and v2.3.1 — would not find the bug, because the defect is in the Elasticsearch index field mapping configuration, not application code. The fix recommendation actively misdirects investigation. The reproduction steps and impact assessment are solid, but the core fix guidance is wrong."
+    }
+  },
+  "weighted_total": 3.25,
+  "turn_count": 2,
+  "notable_strengths": [
+    "The filter experiment question was an excellent diagnostic move that efficiently confirmed the inversion with a single targeted test",
+    "Correctly identified v2.3.1 as the regression trigger and established multi-user impact",
+    "Detailed, structured reproduction steps that accurately describe the observable behavior",
+    "Proper severity/impact assessment — correctly flags this as high severity affecting all users on default search"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis points to application query-building code rather than the search index layer, which would send a developer to the wrong place",
+    "Explicitly states 'the underlying data and index are correct' — factually wrong, as the Elasticsearch field mapping is the actual defect",
+    "Never asked whether individual task detail pages display the correct archive status, which is a key diagnostic signal that separates an index bug from an application code bug",
+    "Recommended fix (diff application code) would waste developer time and not resolve the issue"
+  ],
+  "most_insightful_question": "The filter experiment: 'Search for Q2 planning with the default filters, then manually change the filter to show all tasks (active + archived) and search again — do you see both the archived task from last year and your active task from yesterday?'",
+  "missed_opportunities": [
+    "Ask whether individual task detail pages (when opening a task directly) show the correct archived/active status — a 'yes' would signal the bug is isolated to the search/index layer rather than data or application logic",
+    "Ask whether the v2.3.1 patch included any database schema changes or search index rebuilds, which would have pointed toward the index migration as the root cause",
+    "Ask whether doing a search with no archive filter at all (if available) returns a mix of both archived and active tasks — to further confirm the filter predicate is the broken component vs. the underlying index data"
+  ]
+}

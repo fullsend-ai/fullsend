@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are clearly present: archived tasks appearing in active search, active tasks missing from search, onset tied to v2.3.1 ~3 days ago, multi-user impact, correct display on individual task pages, and inverted filter behavior. The seventh — 'related to search index, not application logic' — is only partially captured; the agent leaned toward query/filter code as the culprit and left the index rebuild question explicitly open in information_gaps, so the index angle was not positively identified."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The actual cause is an inverted field mapping in the search index configuration introduced during a migration rebuild. The agent's hypothesis points to an inverted boolean predicate in the search query logic — mechanistically adjacent but landing on the application/query layer rather than the index mapping layer. However, this squarely satisfies acceptable diagnostic path 2: 'identifying the schema migration as the trigger and the archive filter as the broken component.' The recommended fix even lists 'a migration that flipped the meaning of a status flag in the search index' as a candidate, showing partial awareness of the index angle. No significant inaccuracies would mislead a developer."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "Two targeted questions established the timeline/trigger and isolated the bug to the search/filter layer. That gave a solid basis for resolution. One obvious follow-up was left unasked: what happens when the archive filter is explicitly toggled or disabled? That single question could have surfaced the inversion directly and narrowed the hypothesis further. The agent self-identified this gap in information_gaps, showing awareness, but did not pursue it before resolving."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were necessary and non-redundant. Q1 established temporal correlation with v2.3.1. Q2 isolated the display layer from the search/filter layer. Neither could have been skipped or usefully combined without losing diagnostic value. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Q2 was particularly strong: it asked simultaneously whether archived results were visually marked as archived AND whether active tasks were reachable via direct browsing, then explicitly explained the diagnostic reasoning ('figure out whether the search index got scrambled or it's a filtering issue'). This framing guided the reporter toward a precise observation they might not have volunteered and drew out the key insight that display and search are decoupled — the most important diagnostic fact in the conversation."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is unusually complete: clear problem statement, a specific root cause hypothesis with named candidates (inverted boolean, flipped enum, migration side effect), step-by-step reproduction instructions, environment details, severity rating, impact statement, a concrete recommended fix (diff v2.3.0 vs v2.3.1 filter logic), a proposed regression test case, and explicitly listed information gaps. A developer could begin a targeted code review immediately."
+    }
+  },
+  "weighted_total": 4.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q2 simultaneously probed two diagnostic dimensions (visual appearance of results AND direct task accessibility) and explained the reasoning, demonstrating genuine layered thinking about where the failure could live",
+    "The triage summary is exceptionally complete — reproduction steps, proposed test case, specific fix candidates, and acknowledged gaps all in one structured output",
+    "The agent correctly identified v2.3.1 and the archive filter inversion as the core problem within two question turns, matching the second acceptable diagnostic path"
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis landed on application query logic rather than search index configuration — correct direction but wrong layer, which could initially send a developer to the wrong codebase area",
+    "The agent did not ask whether toggling the archive filter explicitly (e.g., 'show all' or 'show archived only') produced inverted results, which would have been a fast, direct confirmation of the inversion hypothesis"
+  ],
+  "most_insightful_question": "Are the archived tasks that show up in search visually marked as archived, and if you navigate to the active tasks directly (not through search), are they still there and working normally? This question isolated the display layer from the search/filter layer in a single turn and drew out the observation that individual task pages are correct while search is wrong — the key diagnostic fact.",
+  "missed_opportunities": [
+    "Ask what happens when the archive filter is explicitly toggled to 'show archived' or 'show all' — this would have directly confirmed or ruled out the inversion hypothesis",
+    "Ask whether the search index was rebuilt or a schema migration ran as part of the v2.3.1 patch — would have surfaced the index rebuild as the likely trigger and narrowed the hypothesis to the index layer rather than application code"
+  ]
+}

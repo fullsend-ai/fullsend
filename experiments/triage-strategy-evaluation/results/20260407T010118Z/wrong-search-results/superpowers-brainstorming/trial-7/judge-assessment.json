@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured: search returns archived tasks when filtering active, active tasks missing from default results, started 3 days ago after v2.3.1, affects multiple users, and filter behavior is inverted. Missing: whether individual task pages show the correct archive status (a key diagnostic to distinguish UI vs index layer), and no exploration of whether the issue is in the search index vs application logic."
+    },
+    "accuracy": {
+      "score": 3,
+      "rationale": "The triage correctly identified the inversion symptom and correctly pinpointed v2.3.1 as the trigger — matching the acceptable path of 'identifying the schema migration as the trigger and the archive filter as the broken component.' However, the root cause hypothesis points to application code ('flipped boolean, negated condition in search filter code') and recommends diffing application logic, when the actual cause is an inverted field mapping in the search index configuration. This would send a developer looking in the wrong place initially."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked one focused question that confirmed the inversion, and the reporter then volunteered version and timing information. However, the agent resolved without asking whether individual task detail pages show the correct archive status — a critical diagnostic that would distinguish a UI/application code issue from a search index issue. Asking about associated database migrations or what the v2.3.1 patch contained would also have been valuable."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "One question was asked, it was well-targeted, and it successfully elicited confirmation of the inversion plus the reporter spontaneously supplied version and timing context. No wasted turns."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The A/B/C/D multiple-choice structure was a strong technique — option C specifically prompted the reporter to describe the inversion behavior in detail and mention v2.3.1 unprompted. The question demonstrated clear diagnostic thinking about what expected behavior actually was. Slightly docked because it did not probe the index/application layer distinction, which would have significantly sharpened the root cause."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The reproduction steps are clear and correct. However, the recommended fix ('diff the search/filter logic between v2.3.0 and v2.3.1, look for inverted boolean in filter code') directs a developer to application code rather than the search index configuration. A developer following this summary would start in the wrong place and would need to pivot once they found no application-code inversion. The symptom description is accurate enough that they'd eventually find it, but the fix guidance is misdirected."
+    }
+  },
+  "weighted_total": 3.35,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Extremely efficient — confirmed the core inversion in a single turn using a well-structured multiple-choice question",
+    "The A/B/C/D framing prompted the reporter to provide richer detail than a generic open question would have",
+    "Correctly identified the inversion behavior as the central bug and tied it precisely to v2.3.1",
+    "Reproduction steps are clear, concrete, and would reliably reproduce the symptom"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis incorrectly targets application code rather than the search index layer, which would misdirect a developer's initial investigation",
+    "Did not ask whether individual task detail pages show correct archive status — the single most useful question for distinguishing a UI/logic bug from an index consistency bug",
+    "Did not probe what the v2.3.1 patch contained (migrations, index rebuilds) despite the reporter explicitly mentioning it as the trigger"
+  ],
+  "most_insightful_question": "The A/B/C/D question about expected archive behavior, particularly option C ('There's a filter or setting I've toggled to hide archived tasks, but it's being ignored'), which prompted the reporter to articulate the inversion and spontaneously provide the version number and timing.",
+  "missed_opportunities": [
+    "Ask whether individual task detail pages (outside of search) show the correct archive status — this would distinguish a search index problem from an application logic problem",
+    "Ask what changes were included in the v2.3.1 patch, specifically whether any database migrations or search index rebuilds were part of the release",
+    "Ask whether searching without the archive filter (showing all tasks) returns correct results — this would further isolate the filter predicate as the failure point"
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: 2-4 hour delays, started ~1 week ago, morning (9-10am) worse/afternoon better, related to marketing digest batch, queue congestion, transactional and bulk emails competing for the same pipeline, and prior 1-2 minute baseline. The summary also adds reproduction steps, a proposed test case, and acknowledged information gaps, providing more than the minimum."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified the digest email feature as the cause and queue congestion as the mechanism, matching the second acceptable diagnostic path. The recommended fix explicitly includes a priority queue approach (option 3), which is exactly the canonical fix. The main inaccuracy is underestimating the digest batch scale — the agent assumed ~200 individual emails (one per user) when the actual volume is ~10,000, which meaningfully affects the severity of the backlog. The core diagnostic direction is sound."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent confirmed scope (team-wide), surfaced the timing correlation with the digest feature, and verified no emails were being dropped. It resolved with a solid evidence basis and explicitly enumerated remaining information gaps (queue architecture, batch vs. individual API, rate limits). One skipped opportunity: asking directly about recent platform changes or release notes, though the reporter volunteered the digest feature anyway."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns before resolution. Both turns were tightly scoped and non-redundant. The first turn efficiently confirmed scope and probed for recent changes; the second turn followed the lead from the reporter's answer to get timing and scale data. No questions were wasted or duplicated."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question combined scope confirmation with a change-discovery probe — a classic differential diagnosis move. The second question was notably sharp: asking specifically when the digest emails go out and how many recipients receive them directly tested the queue-saturation hypothesis with information the reporter wouldn't have volunteered unprompted. Both questions showed genuine diagnostic reasoning rather than generic bug-report collection."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a clear problem statement, a specific root cause hypothesis, four concrete reproduction steps with timing instructions, three ranked fix options (with a recommended choice), a proposed integration test case, and an explicit list of information gaps for follow-up. A developer could begin queue inspection and write a fix within hours of reading this."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The second question directly operationalized the queue-saturation hypothesis by asking for digest send timing and recipient count — this is exactly the data needed to confirm the cause",
+    "The triage summary is unusually complete: it includes reproduction steps, a proposed test case, three ranked fix options, and acknowledged information gaps all in one structured artifact",
+    "The agent correctly flagged queue separation and priority mechanisms as the recommended fixes, matching the canonical solution even without full infrastructure details"
+  ],
+  "notable_weaknesses": [
+    "The agent significantly underestimated the digest batch size (~200 emails assumed vs. ~10,000 actual), which affects the accuracy of the backlog severity estimate and the proposed test case (200 digest emails in the test vs. the 10K real load)",
+    "The agent resolved without asking about email infrastructure details (single queue? SMTP relay? third-party service?), though it appropriately flagged these as information gaps",
+    "The priority queue mechanism — the actual root cause — was not explicitly identified; the agent described it as 'shared queue' congestion rather than a priority inversion, which is an acceptable diagnostic path but slightly less precise"
+  ],
+  "most_insightful_question": "Can you tell me more about those digest emails? Specifically, around what time do they seem to go out, and roughly how many people on the platform would be receiving them? I'm curious whether the digest send window overlaps with that 9-10am period where you see the worst delays for task notifications.",
+  "missed_opportunities": [
+    "Asking about the email infrastructure directly (e.g., 'Do you know if TaskFlow uses a shared queue for all email types, or separate channels for transactional vs. marketing emails?') — this would have surfaced the priority queue mechanism earlier",
+    "Asking whether any platform update or feature announcement coincided with the digest launch, which could have confirmed the exact release date and scope"
+  ]
+}

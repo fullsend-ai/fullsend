@@ -1,0 +1,34 @@
+# Triage Summary
+
+**Title:** Salesforce import truncates phone country codes to 2 digits since v2.3.1
+
+## Problem
+The nightly Salesforce-to-TaskFlow import is truncating international phone number country codes to exactly 2 digits. Country codes with 3+ digits are corrupted (e.g., +353 → +35, +1268 → +12), while 1-digit codes like +1 are unaffected. Approximately 50-100 of ~2,000 customer records are affected, causing support team members to reach wrong numbers.
+
+## Root Cause Hypothesis
+The TaskFlow v2.3.1 update likely introduced a change to the phone number parsing or normalization logic in the Salesforce import pipeline that hard-codes or caps the country code field at 2 digits. This could be a regex pattern like `\+(\d{1,2})` instead of `\+(\d{1,3})`, a substring operation like `countryCode.slice(0, 2)`, or a database column width constraint added during migration. The fact that +1 numbers are unaffected confirms the truncation ceiling is at 2 characters.
+
+## Reproduction Steps
+  1. Set up a Salesforce contact record with an international phone number using a 3+ digit country code (e.g., +353 1 234 5678 for Ireland)
+  2. Run the built-in TaskFlow Salesforce import (or wait for the nightly sync)
+  3. Check the imported phone number in TaskFlow — expect the country code to be truncated to 2 digits (+35 1 234 5678)
+  4. Compare with a +1 (US/Canada) number imported in the same batch — expect it to be unaffected
+
+## Environment
+TaskFlow v2.3.1, built-in Salesforce integration configured via admin panel, nightly batch import schedule. Import configuration and Salesforce field mappings have not changed in months.
+
+## Severity: high
+
+## Impact
+~50-100 customer contact records have corrupted phone numbers, preventing the support team from reaching customers. Ongoing — every nightly import re-corrupts any manually corrected numbers. Affects all customers with 3+ digit country codes (most non-NANP international numbers).
+
+## Recommended Fix
+1. Review the v2.3.1 changelog and diff for changes to phone number parsing, formatting, or the Salesforce import pipeline. 2. Look for a hard-coded country code length limit (regex, substring, or DB column width) and extend it to support 1-3 digit country codes per E.164. 3. After fixing the parsing logic, run a one-time data repair: re-import affected records from Salesforce or write a migration script to restore truncated country codes. 4. Consider adding a validation check that flags phone numbers whose country code doesn't match any valid ITU-T code.
+
+## Proposed Test Case
+Unit test the phone number import/normalization function with country codes of varying lengths: +1 (1 digit, US), +44 (2 digits, UK), +353 (3 digits, Ireland), +1268 (4-digit NANP, Antigua). Assert that the full country code is preserved in all cases. Additionally, add an integration test that imports a Salesforce record with a +353 number and verifies the stored value matches exactly.
+
+## Information Gaps
+- Exact v2.3.1 release notes and code diff — confirms root cause but requires dev team access
+- Whether the truncation occurs during import processing or on database write (column width constraint vs. parsing logic)
+- Whether existing corrupted records are being re-corrupted on each nightly run, preventing manual fixes from persisting

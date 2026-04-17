@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: archived tasks returned for active filter, active tasks missing from default results, onset tied to v2.3.1 migration ~3 days ago, multi-user impact confirmed, individual task pages showing correct status verified, filter inversion confirmed experimentally, and search index (not application logic) identified as the locus. Additional useful information was captured: exact task counts (150 active / 300 archived), a workaround, a proposed regression test, and explicit information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The agent's root cause hypothesis matches the canonical cause precisely: the v2.3.1 migration inverted the active/archived flag in the search index, not in application code. The agent correctly identified that source-of-truth data is intact (individual task views correct), that search is the isolated broken layer, and that the inversion is boolean/mapping in nature. The hypothesis covers the exact mechanism (flipped boolean mapping, swapped enum values) rather than just the acceptable paths."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "The agent covered all key diagnostic dimensions: temporal onset, triggering event (migration), symptom precision (completely absent vs. ranked lower), data integrity check (individual task status), and an active confirmation test (toggling the archive filter). No obvious follow-ups were left on the table. The information gaps section honestly flags what remains unknown (migration script contents, downstream index consumers, scope across instances)."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each essential and non-overlapping. Turn 1 established timing and trigger. Turn 2 confirmed symptom precision and ruled out data corruption. Turn 3 proposed and executed a diagnostic test to confirm the inversion hypothesis. No question was redundant or could reasonably have been cut."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Each question demonstrated genuine diagnostic reasoning. The second question's pairing — 'does the task appear at all?' with 'does the individual page still show it as active?' — cleanly separated index staleness from data corruption. The third question was the standout: rather than asking generically about search behavior, the agent proposed a falsifiable experiment ('switch to archived-only filter and search again') that would confirm or refute the inversion hypothesis directly. The reporter would not have volunteered this test unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer everything needed to start immediately: a precise problem statement, a root cause hypothesis with specific candidate mechanisms (flipped boolean, swapped enum, inverted WHERE clause), step-by-step reproduction instructions, a three-step recommended fix targeting the migration script and index rebuild, a proposed regression test case, and an explicit list of remaining unknowns to investigate. A developer could open the migration script and begin reviewing it without any further conversation."
+    }
+  },
+  "weighted_total": 5.0,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The third question proposed a specific falsifiable experiment (toggle archive filter, search again) that confirmed the inversion hypothesis in a single reporter interaction — this is the kind of diagnostic reasoning that transforms a vague symptom into a confirmed mechanism.",
+    "The second question's dual structure elegantly separated two competing hypotheses (index staleness vs. data corruption) in one turn, saving a turn and ruling out a false path immediately.",
+    "The triage summary is unusually actionable: it includes reproduction steps, a recommended fix with specific implementation guidance, a proposed regression test, and honest enumeration of remaining unknowns."
+  ],
+  "notable_weaknesses": [
+    "The summary does not mention the workaround (invert the filter manually) in a dedicated field — it is referenced in the impact section but not surfaced prominently for support teams who might need to advise users immediately.",
+    "The information gaps section notes 'whether other features that depend on the search index are affected' but the agent did not ask the reporter whether dashboards, reports, or API-based integrations were also behaving oddly — a single question could have populated this gap."
+  ],
+  "most_insightful_question": "Does TaskFlow's search have any filter or toggle to include archived tasks in results? If so, try switching to 'archived only' and searching for 'Q2 planning' — if my theory is right, your active task should appear there.",
+  "missed_opportunities": [
+    "Ask whether dashboards, reports, or API consumers that rely on the search index also showed anomalous results — would have confirmed or bounded the blast radius of the index inversion.",
+    "Ask whether any other teams or instances on v2.3.1 had reported similar symptoms, which would have confirmed whether the bug is universal to the version or data-condition-dependent."
+  ]
+}

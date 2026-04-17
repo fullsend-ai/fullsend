@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "Captured 5 of 7 expected items: task count (~5,000), title-vs-description performance split, v2.3 regression, ~2 weeks ago timing, and 10-15s latency. Missed CPU spike behavior during search and the presence of long descriptions (meeting notes, 2000+ words) in tasks — both relevant to characterizing severity and confirming the full-table-scan hypothesis."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis explicitly mentions 'switching from indexed FTS to LIKE/ILIKE' as a candidate, which maps almost exactly to the actual cause (FTS5 index replaced by LIKE query). The agent also correctly identified the v2.3 upgrade as the trigger and connected the title-vs-description split to an index regression. Matches both the canonical root cause and the acceptable diagnostic paths."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "Resolved after two rounds, which captured the most diagnostic signals (search type split, version regression). However, obvious follow-ups were skipped: CPU behavior during searches, whether the v2.3 migration completed without errors, and description content length — all of which would have strengthened the hypothesis and helped scope the fix. The agent resolved with a good basis but left meaningful questions on the table."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two questions, each productive. No redundancy. The first question combined search type classification with task count in a single turn. The second efficiently narrowed the timing trigger. Nothing wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question proactively bundled search-type categorization with task count — a smart combination that surfaced both the title/description split and scale in a single reporter response. The second question used structured options to distinguish regression from scaling, which is exactly the right diagnostic fork. Both questions demonstrated genuine diagnostic reasoning rather than generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is developer-ready: it includes a specific root cause hypothesis naming the likely mechanism (FTS→LIKE/ILIKE), concrete reproduction steps with expected timings, an EXPLAIN/ANALYZE recommendation, a proposed performance regression test, and clearly labeled information gaps. A developer could open the v2.2→v2.3 diff and start investigating immediately."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question efficiently combined search-type triage with task count, yielding the two most diagnostic facts in a single reporter response",
+    "Root cause hypothesis independently arrived at the FTS-vs-LIKE distinction, matching the actual cause without needing it handed over",
+    "Triage summary is unusually complete: includes reproduction steps, recommended fix approach, proposed regression test, and labeled gaps"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU behavior during searches, which would have confirmed a compute-bound full-table-scan rather than I/O or network issues",
+    "Did not ask about task description length, missing a key factor that explains why the LIKE scan is especially expensive for this user",
+    "OS and hardware details were noted as gaps in the summary but never asked — the reporter mentioned 'work laptop' which was an easy prompt to follow up on"
+  ],
+  "most_insightful_question": "The first question: asking simultaneously about the type of search being performed and the approximate task count. This efficiently surfaced the title-vs-description performance split and the scale of the dataset in a single turn — both of which were the most diagnostic signals in the conversation.",
+  "missed_opportunities": [
+    "Ask whether CPU usage spikes during slow searches (would confirm full-table-scan hypothesis vs. other bottlenecks)",
+    "Ask about the length or content of task descriptions (meeting notes, long freeform text) — relevant to why the scan is costly",
+    "Ask whether the v2.3 migration completed without errors or warnings",
+    "Ask for the exact previous version to confirm v2.2 rather than note it as an assumption"
+  ]
+}

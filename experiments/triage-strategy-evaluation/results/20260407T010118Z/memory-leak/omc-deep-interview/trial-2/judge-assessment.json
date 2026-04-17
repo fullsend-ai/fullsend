@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: linear memory growth (~500MB to 4GB+), v2.3 upgrade timing (~1 week ago), ~200 active users, consistent daily pattern, restart as workaround, changelog mention of notification changes, and 8GB RAM VM. The summary additionally captures growth rate correlated with business hours, request rate (~25/user/hour), and WebSocket connection-to-user ratio — all discovered through questioning."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The hypothesis precisely identifies v2.3 as the trigger, the notification subsystem as the source, and a per-event (not per-connection) leak pattern — even explicitly naming 'registering event listeners... that are never removed' as a candidate. This matches the canonical root cause and both acceptable diagnostic paths. The agent correctly ruled out a connection-lifecycle leak through targeted questioning, narrowing to the per-event path that matches the actual bug."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the questions needed to build a strong hypothesis and explicitly noted the remaining gaps (no heap dump, v2.2 rollback untested, notification-disable test pending). The only obvious missed follow-up was asking whether v2.2 rollback had been attempted — a low-cost confirming step the reporter could have done immediately. The agent acknowledged this gap rather than ignoring it, which is good, but it was still left unasked."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three substantive question turns, each essential. Q1 established version and deployment context, which immediately surfaced the v2.3 upgrade correlation. Q2 proposed two efficient diagnostic paths (connection count check or feature disable). Q3 gave a specific command to distinguish between two competing hypotheses, yielding critical data that shaped the final summary. No question was redundant or low-value."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated structured diagnostic reasoning throughout. Q1 solicited version and integration context rather than generic 'describe your setup.' Q3 is particularly strong: it designed a real-time experiment to distinguish a connection-lifecycle leak from a per-event leak using a concrete command, and it explained why each outcome would point to a different root cause. This kind of hypothesis-driven questioning is exactly what separates expert triage from generic questioning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: diff the v2.3 notification subsystem, look for three specific allocation patterns (in-memory collections, unremoved listeners, retained payloads), take a mid-afternoon heap dump, and run a v2.2-vs-v2.3 regression test with a concrete pass/fail criterion. The proposed test case is precise enough to implement without further specification. A developer could begin coding within minutes of reading this."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Q3 is an exceptional diagnostic move: it designed a real-time experiment to distinguish two competing leak mechanisms, obtained an immediate answer, and directly shaped the final hypothesis — all in a single turn",
+    "The agent correctly traced the per-event leak pattern from first principles (memory growth rate × request volume) and cross-validated it against the WebSocket connection count data",
+    "The triage summary is unusually complete: it includes reproduction steps, a proposed regression test with explicit pass/fail criteria, and a prioritized investigation checklist for the developer",
+    "All seven expected information items were captured, plus significant additional diagnostic detail discovered through questioning"
+  ],
+  "notable_weaknesses": [
+    "The agent never asked whether rolling back to v2.2 had been attempted — a low-cost step that would definitively confirm the regression before any code investigation",
+    "The reporter volunteered the v2.3 upgrade timing and changelog reference without being directly asked; a more targeted version question might have surfaced this faster in Q1"
+  ],
+  "most_insightful_question": "Could you check the current WebSocket connection count right now while users are active? ... If connections are way higher than active users (say 1,500 connections for 100 active users), that suggests connections aren't being cleaned up ... If the count roughly matches active users, the leak is more likely per-notification: each task update or event is allocating something that never gets freed.",
+  "missed_opportunities": [
+    "Ask whether rolling back to v2.2 had been tried or considered, which would be the fastest way to confirm the version as the root cause",
+    "Ask for a heap dump or `top`/`pmap` output from a running server mid-afternoon to identify the specific leaking object type without waiting for Wednesday's notification-disable test"
+  ]
+}

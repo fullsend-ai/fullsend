@@ -1,0 +1,26 @@
+{
+  "title": "Tests keep failing in CI but pass on my machine",
+  "body": "Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — flaky CI is painful, especially when it blocks releases.\n\nTo start narrowing this down, I need some specifics:\n\n**What do the actual failure messages look like?** Can you paste the relevant section of a recent CI log showing the failing test(s) and their error output? Even one example failure would help — I want to see the exact error, not just that tests failed.\n\nAlso: did this start after a specific change (dependency update, CI config change, new tests added), or did it seem to appear out of nowhere?"
+    },
+    {
+      "author": "reporter",
+      "body": "I don't have a log handy right now but it's the task ordering tests that fail — the test names are pretty obvious in the output, something like TestTaskOrdering. They just assert the wrong order sometimes. Look, a coworker merged a PR about 4 days ago that added like 5 new tests for the task ordering stuff and that's when this all started. The old tests never had this problem. Can we just revert that PR or something? This is really blocking us."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks — that's a really useful lead. The PR timing lines up perfectly, so that's almost certainly related.\n\nBefore we talk about reverting, one question that'll tell us exactly what's wrong:\n\n**Are the failures in the *new* tests that were added in that PR, or are the *old* ordering tests (the ones that used to be green) now failing too?**\n\nThis matters because the fix is very different depending on the answer:\n- If only the new tests fail → they likely have a bad assumption about ordering (e.g., asserting a specific sort order that isn't guaranteed)\n- If the old tests started failing after the PR → the new tests are probably introducing shared state or side effects that pollute other tests\n\nIf you can check the CI output for even one recent failure and tell me which test names are in the red, that would nail it down."
+    },
+    {
+      "author": "reporter",
+      "body": "It's the new tests. The old ones are fine. So yeah, the new tests have some bad assumption or whatever. Can someone just fix them? I don't really care about the technical details, I just need CI to stop failing randomly."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Flaky CI: New task-ordering tests assert non-deterministic order\",\"problem\":\"Five new tests added in a PR ~4 days ago intermittently fail in CI with ordering assertion errors. The tests pass locally (likely due to different timing, parallelism, or data ordering guarantees) but fail randomly in CI, blocking releases.\",\"root_cause_hypothesis\":\"The new TestTaskOrdering tests assert a specific element order that is not deterministically guaranteed by the underlying implementation. This is likely one of: (1) relying on iteration order of an unordered data structure (map/set), (2) asserting order on items with equal sort keys where tie-breaking is undefined, or (3) missing an explicit ORDER BY / sort call. The old tests either don't assert strict ordering or use deterministic inputs that avoid the ambiguity.\",\"reproduction_steps\":[\"Identify the PR merged ~4 days ago that added 5 new task-ordering tests\",\"Run the full test suite repeatedly (e.g., 20+ iterations or with -count=N flag) to reproduce the intermittent failure\",\"Observe that only the new tests fail and only on some runs\"],\"environment\":\"CI environment (specific runner not identified); failures do not reproduce locally, suggesting sensitivity to execution order, parallelism, or platform-level ordering differences\",\"severity\":\"high\",\"impact\":\"Blocks all releases for the team. Every CI run has a chance of spurious failure, requiring manual re-runs and eroding trust in the test suite.\",\"recommended_fix\":\"Review the new tests from the identified PR. For each assertion that checks element ordering: (1) verify the production code guarantees that order — if not, either add an explicit sort/ORDER BY to the production code or change the test to use an order-independent assertion (e.g., assert set equality or sort both sides before comparing). Run the tests in a loop (50+ iterations) to confirm the fix eliminates flakiness.\",\"proposed_test_case\":\"A stress/repeat test that runs each of the new ordering tests 100 times in sequence and asserts zero failures, validating that the ordering assertions are deterministic.\",\"information_gaps\":[\"Exact PR number and author (discoverable from git history)\",\"Whether CI runs tests in parallel while local runs are sequential (could explain local-only pass)\",\"Exact assertion style used in the new tests (string comparison vs set equality vs ordered list)\"]}"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** Login redirect loop caused by SameSite=Strict session cookie breaking Entra ID SSO callback
+
+## Problem
+After migrating SSO from Okta to Microsoft Entra ID, approximately 30% of users experience an infinite redirect loop during login. The user authenticates successfully with Entra ID, but when redirected back to TaskFlow's callback URL, the session cookie is not sent with the request. TaskFlow cannot find the session, returns a 302 to the login page, and the cycle repeats.
+
+## Root Cause Hypothesis
+TaskFlow's session cookie is set with SameSite=Strict. When Entra ID redirects the user back to TaskFlow's callback URL (a cross-site navigation from login.microsoftonline.com), the browser withholds SameSite=Strict cookies per the cookie spec. TaskFlow's callback handler finds no session, treats the user as unauthenticated, and redirects back to login. This likely worked with Okta due to differences in redirect flow timing or because sessions were already established, but breaks with the Entra ID migration. The inconsistent 30% affected rate is likely explained by some users having pre-existing valid session cookies from before the migration, or browser/cookie state differences.
+
+## Reproduction Steps
+  1. Use TaskFlow v2.3.1 self-hosted with Entra ID SSO configured
+  2. Clear all TaskFlow cookies (or use a fresh incognito window — though results are inconsistent)
+  3. Click Login and complete authentication in Microsoft Entra ID
+  4. Observe the redirect back to TaskFlow's callback URL (?code=...)
+  5. In Chrome DevTools Network tab, confirm the callback request has no taskflow_session cookie in its Request Headers
+  6. Observe a 302 response redirecting back to the login page, restarting the loop
+
+## Environment
+TaskFlow v2.3.1, self-hosted. SSO provider: Microsoft Entra ID (migrated from Okta). Browsers: Chrome and Edge both affected. Session cookie config: Secure; HttpOnly; SameSite=Strict.
+
+## Severity: high
+
+## Impact
+Approximately 30% of users are completely unable to log in. No reliable workaround exists — clearing cookies and incognito mode help inconsistently. All affected users are locked out of the application.
+
+## Recommended Fix
+Change the session cookie's SameSite attribute from Strict to Lax. SameSite=Lax allows cookies to be sent on top-level navigations (like SSO redirects) while still protecting against CSRF on subresource requests. Locate the session/cookie configuration in TaskFlow (likely in the auth middleware or server config) and update SameSite=Strict to SameSite=Lax. After the fix, verify the full SSO flow works for users with and without plus-addressed emails. Do not use SameSite=None unless necessary, as Lax provides the correct balance of security and SSO compatibility.
+
+## Proposed Test Case
+Automated integration test: initiate an SSO login flow with a mock identity provider that redirects back to the callback URL as a cross-site navigation. Assert that the session cookie is present on the callback request and that the response is a 200 or redirect to the dashboard (not back to login). Additionally, test with a user whose email contains a '+' character to rule out any secondary encoding issue.
+
+## Information Gaps
+- Whether the plus-addressing correlation is a true secondary issue (e.g., email encoding mismatch in user lookup) or merely coincidental with the SameSite problem — this should be re-evaluated after the SameSite fix is applied
+- Exact server-side logs/error messages during the failed callback — not needed for the fix but may reveal additional context
+- Whether TaskFlow's cookie configuration is user-editable via config file or requires a code change

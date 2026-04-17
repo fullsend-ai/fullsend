@@ -1,0 +1,35 @@
+# Triage Summary
+
+**Title:** Intermittent task ordering test failures in CI due to non-deterministic sort (no tie-breaker)
+
+## Problem
+Task ordering tests added ~4 days ago (including `TestTaskOrderAfterSort`) fail intermittently on Ubuntu CI runners but pass consistently on the developer's macOS machine. Failures report that the actual task order doesn't match expected order.
+
+## Root Cause Hypothesis
+The task sort implementation lacks a deterministic tie-breaker for items with equal sort keys. Tests assert exact ordering. On macOS, the sort implementation happens to produce a stable order, masking the bug. On Linux (CI), the sort produces a different — and legally non-deterministic — order, causing intermittent failures depending on initial arrangement of equal-keyed items.
+
+## Reproduction Steps
+  1. Find the task ordering PR merged approximately 4 days ago
+  2. Identify the sort function used in the task ordering logic (likely sort.Slice or equivalent unstable sort)
+  3. Confirm the sort comparator does not include a tie-breaker (e.g., secondary sort by ID) for items with equal primary keys
+  4. On macOS, run the ordering tests repeatedly — they will likely always pass
+  5. On a Linux machine or container, run the same tests in a loop (e.g., 50 iterations) — failures should appear
+
+## Environment
+CI: Ubuntu on GitHub Actions. Local: macOS. Language likely Go (based on test naming conventions and sort.Slice reference in discussion).
+
+## Severity: high
+
+## Impact
+Blocking all releases for 4+ days. Affects the entire development team's ability to ship. No workaround other than re-running CI until tests happen to pass.
+
+## Recommended Fix
+1. Add a deterministic tie-breaker to the task sort comparator (e.g., sort by priority, then by task ID as secondary key). 2. Switch from unstable sort (e.g., `sort.Slice`) to stable sort (e.g., `sort.SliceStable`) if preserving insertion order for equal items is desired. 3. Alternatively, if exact order doesn't matter for equal-priority items, relax the test assertions to only check ordering of items with distinct sort keys, or group equal-keyed items and assert set membership rather than exact position.
+
+## Proposed Test Case
+Create a test with multiple tasks sharing the same priority/sort key but different IDs. Run the sort and assert that (a) the primary ordering is correct, and (b) the tie-breaker ordering (by ID) is also correct. Run this test 100 times in a loop to verify determinism across runs.
+
+## Information Gaps
+- Exact file path of the failing tests (findable from PR history or test name search)
+- Whether CI runs tests in parallel (secondary factor — sort instability alone explains the failures)
+- Exact sort function and comparator implementation (developer should inspect directly)

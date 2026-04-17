@@ -1,0 +1,36 @@
+# Triage Summary
+
+**Title:** PDF attachments corrupted on upload: file size preserved but content mangled, primarily affecting larger files (regression)
+
+## Problem
+When users upload PDF files as task attachments, some files — particularly larger reports and contracts — become corrupted. The downloaded file is approximately the same size as the original, but PDF viewers report the file as damaged. Smaller PDFs (simple forms) appear unaffected. Multiple customers are impacted. This is a regression; the feature was previously working correctly.
+
+## Root Cause Hypothesis
+The upload or storage pipeline is applying a content transformation that corrupts binary data while preserving approximate file size. The most likely cause is a recent change that introduced a character encoding conversion (e.g., treating the binary stream as UTF-8 text), a middleware that re-encodes request bodies, or a change to multipart form handling that corrupts binary payloads. The size-dependent pattern suggests the corruption may be triggered by chunked transfer encoding or a streaming threshold that only activates for larger files.
+
+## Reproduction Steps
+  1. Upload a PDF file larger than ~5 MB as a task attachment (use a multi-page report or contract)
+  2. Wait for upload to complete successfully
+  3. Download the attachment from the task
+  4. Attempt to open the downloaded PDF — it will report as damaged/corrupted
+  5. Compare file sizes: original and downloaded should be approximately equal
+  6. Repeat with a small PDF (<1 MB) — this should work correctly
+
+## Environment
+Affects multiple customers across the platform; not isolated to a specific browser or OS. Regression from a recent change.
+
+## Severity: high
+
+## Impact
+Teams that rely on PDF attachments for reports and contracts are blocked. Multiple customers affected. Workaround (using only small files) is not practical for business documents.
+
+## Recommended Fix
+1. Review recent changes to the file upload pipeline — particularly any middleware, encoding, or streaming changes. 2. Check whether large uploads follow a different code path (e.g., chunked/streamed uploads vs. buffered) and whether binary content-type handling differs between them. 3. Compare a corrupted file with its original byte-by-byte (e.g., `xxd` diff) to identify the corruption pattern — UTF-8 replacement characters (0xEFBFBD) would confirm an encoding issue. 4. Ensure the upload path preserves `application/octet-stream` or `application/pdf` content type and does not apply any text encoding transformation.
+
+## Proposed Test Case
+Upload PDFs of varying sizes (1 MB, 5 MB, 15 MB, 50 MB) and verify byte-for-byte integrity by comparing SHA-256 checksums of the original and downloaded files. Include PDFs with binary-heavy content (embedded images, fonts) to maximize sensitivity to encoding corruption.
+
+## Information Gaps
+- Exact date or release when the regression was introduced (searchable via deployment history)
+- Whether non-PDF binary attachments (e.g., ZIP, DOCX) are also affected
+- Exact file size threshold where corruption begins

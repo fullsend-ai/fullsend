@@ -1,0 +1,59 @@
+# Conversation: slow-search x superpowers-brainstorming
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this! To help narrow down what's going on, can you tell me what kind of search you're typically doing when you see the slowdown?
+
+1. **Simple keyword search** — searching for a word in task titles
+2. **Filtered search** — using filters like status, assignee, date range, etc.
+3. **Full-text search** — searching across task descriptions/comments
+4. **Something else**
+
+Also, did the slowdown start suddenly (e.g., after an update or a specific date), or has it gotten gradually worse over time?
+
+---
+
+### reporter
+
+It's mainly option 3 — searching across task descriptions. I just tried searching by title and that's actually still pretty fast, so yeah it's specifically when it searches through the description content that it gets really slow.
+
+As for when it started, I think it was maybe 2 weeks ago? I updated to v2.3 around that time so it might be related to that, but I'm not 100% sure if the timing lines up exactly.
+
+---
+
+### triage-agent
+
+That's really helpful — knowing it's specifically full-text description search narrows things down a lot.
+
+Roughly how many tasks are in your TaskFlow instance?
+
+1. **Hundreds** (under 1,000)
+2. **Low thousands** (1,000–5,000)
+3. **Many thousands** (5,000–20,000)
+4. **Massive** (20,000+)
+
+This will help us figure out whether the v2.3 update may have changed how description search works (e.g., a missing full-text index) versus a pure scaling issue.
+
+---
+
+### reporter
+
+I'd say option 2 — I have around 5,000 tasks. I've been using TaskFlow for about 2 years now so they've built up over time. Some of them have pretty long descriptions too, like I paste meeting notes into them sometimes.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Full-text search on task descriptions regressed to ~10-15s after v2.3 update","problem":"Since updating to approximately v2.3 two weeks ago, searching across task descriptions takes 10-15 seconds. Title-only search remains fast. The user has ~5,000 tasks accumulated over 2 years, some with lengthy descriptions (e.g., pasted meeting notes).","root_cause_hypothesis":"The v2.3 update likely dropped, failed to create, or altered the full-text index on the task descriptions column. Without a proper full-text index, description searches would fall back to sequential scanning, explaining why title search (likely indexed) is still fast while description search over 5,000 rows with large text payloads takes 10-15 seconds.","reproduction_steps":["Set up a TaskFlow instance running v2.3","Load or accumulate ~5,000 tasks, some with multi-paragraph descriptions","Perform a full-text search across task descriptions","Observe response time of 10-15 seconds","Compare with a title-only keyword search, which should return quickly"],"environment":"TaskFlow v2.3 (approximate), work laptop, ~5,000 tasks with some large description fields","severity":"medium","impact":"Users with moderate-to-large task databases experience unusable full-text search performance after upgrading to v2.3. Title search is unaffected, so basic search workflows still function.","recommended_fix":"1. Inspect the v2.3 database migration for changes to the descriptions table or its indexes. 2. Check whether a full-text index exists on the descriptions column in a v2.3 instance. 3. Compare the schema against v2.2 to identify what changed. 4. If the index was dropped or altered, add a migration to restore or recreate the full-text index. 5. If the search implementation changed (e.g., switched from indexed FTS to LIKE/ILIKE), revert to the indexed approach.","proposed_test_case":"Create a performance test that loads 5,000+ tasks with realistic description lengths, performs a full-text description search, and asserts the query completes within an acceptable threshold (e.g., under 2 seconds). Run this test against both v2.2 and v2.3 schemas to confirm the regression and validate the fix.","information_gaps":["Exact database engine in use (SQLite, PostgreSQL, etc.) — though the fix investigation is the same regardless","Whether the user confirmed v2.3 is the exact version or an approximation","Whether other users on v2.3 with large datasets report the same issue"]}
+
+---

@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected items were captured: delay magnitude (2-4 hours), onset (~1 week ago), morning/afternoon pattern, digest email connection, queue congestion hypothesis, shared pipeline between transactional and bulk emails, and baseline performance (1-2 minutes). The summary also added severity classification, reproduction steps, a proposed test case, and explicit information gaps — all useful additions."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — digest emails sharing the same queue/pipeline as transactional emails, causing a morning backlog that drains by afternoon — is a textbook match for the second acceptable diagnostic path ('identifying the digest email feature as the cause and the queue congestion, even without understanding the priority system'). The recommended fix even mentions a 'dedicated high-priority queue,' which is directionally aligned with the actual fix of adjusting priority levels. No inaccuracies that would mislead a developer."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after two questions, both productive. The reporter volunteered the digest email connection unprompted, which accelerated resolution appropriately. The agent acknowledged remaining unknowns in information_gaps rather than pretending they were answered. One minor gap: the agent could have asked the reporter to confirm the approximate onset date of the digest feature to correlate it more precisely with when delays began, but the reporter's own statement made this mostly unnecessary."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two questions, both essential. The first efficiently combined perspective-setting (receiving vs. sending end) with change-detection (what changed ~1 week ago). The second immediately pursued the reporter's own hypothesis about digest emails with targeted timing questions. No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question elicited the reporter's own hypothesis about the digest email feature — information the reporter might not have offered without the prompt to think about coincident changes. The second question was laser-focused on validating that hypothesis through timing correlation and breadth-of-impact (whether teammates also receive digest emails). Both questions demonstrated real diagnostic reasoning rather than generic bug-report boilerplate."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary provides a clear hypothesis, step-by-step reproduction instructions, a four-point recommended fix, a proposed regression test, and explicit information gaps for backend investigation. A developer could immediately check the email queue configuration, verify whether digest and transactional emails share a queue or priority level, and implement priority separation — all without needing to re-read the original report or ask follow-up questions."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Efficiently surfaced the reporter's own hypothesis about the digest email feature by asking an open-ended 'what changed?' question, rather than leading with a narrow technical hypothesis",
+    "Second question confirmed the hypothesis through two independent angles (timing correlation + teammate scope) in a single turn",
+    "Triage summary is unusually complete: includes reproduction steps, a proposed regression test case, severity rating, and enumerated information gaps — all in one output",
+    "Correctly resolved without over-questioning, since the reporter's own statements provided sufficient evidence for a well-grounded hypothesis"
+  ],
+  "notable_weaknesses": [
+    "Did not ask for the approximate number of users receiving digest emails, which would have helped quantify the queue volume and strengthen the congestion hypothesis",
+    "Did not ask whether any workaround was in use (e.g., checking the TaskFlow dashboard directly), which would have been useful for the immediate impact section",
+    "The onset date of the digest feature was not directly confirmed — the agent inferred it from the reporter's vague 'about a week ago' without pinning down the exact launch date"
+  ],
+  "most_insightful_question": "Can you tell me more about when those daily marketing summary emails typically arrive in your inbox? Specifically, do they tend to land around that 9-10am window when you're seeing the worst delays on task notifications? And do the team members who've also noticed late notifications — are they receiving those digest emails too?",
+  "missed_opportunities": [
+    "How many users are on the team / how many people receive the daily digest? (Would estimate queue volume and strengthen the congestion hypothesis)",
+    "Can you check the TaskFlow dashboard to see if task assignments appear there in real-time, even when the email is delayed? (Would confirm the delay is in the email layer, not the assignment system itself)",
+    "Do you recall the exact date the digest emails started, or can you check your inbox for the first one? (Would allow precise correlation with the onset of delays)"
+  ]
+}

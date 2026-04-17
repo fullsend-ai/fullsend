@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured the task count (~5,000), the v2.2→v2.3 regression, the ~2 weeks timeline, and the 10-15 second delay. However, it missed critical distinctions: description search vs. title search behaving differently, CPU spikes during search, and long descriptions in some tasks. The agent even noted 'whether slowness affects all search queries equally' as an information gap but didn't ask about it."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is in the right neighborhood — it correctly identifies a likely index or query change in v2.3 and mentions full-table scan as a possibility. It doesn't pinpoint the FTS5-to-LIKE regression specifically, but it's close enough to guide investigation in the right direction. No factual errors in what was captured."
+    },
+    "efficiency": {
+      "score": 2,
+      "rationale": "The agent asked only one question and then immediately resolved the issue. While the first question was good and multi-part, the agent should have asked at least one follow-up to probe the identified information gaps — particularly whether all searches are slow or only certain types, which would have revealed the title-vs-description distinction and dramatically narrowed the root cause."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The initial question was well-structured with clear multiple-choice options that efficiently disambiguated between gradual degradation vs. version regression vs. environment change. It also bundled in the task count question. However, there was only one question asked total, so there's limited signal."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "A developer could start investigating by diffing v2.2 and v2.3 search code, which is useful. But without knowing that title search is fast while description search is slow, the developer would need to do broader investigation. The recommended fix is reasonable but generic — it's essentially 'look at everything search-related' rather than pointing toward the specific description/FTS path."
+    }
+  },
+  "weighted_total": 3.15,
+  "turn_count": 1,
+  "notable_strengths": [
+    "Well-structured initial question with clear multiple-choice options that efficiently extracted two key facts (version regression + task count) in one turn",
+    "Root cause hypothesis correctly identifies the general class of problem (index/query change causing full-table scan)",
+    "Good severity assessment and impact analysis",
+    "Identified the right information gaps in the summary, showing diagnostic awareness even though they weren't pursued"
+  ],
+  "notable_weaknesses": [
+    "Resolved after only one question — premature closure left significant diagnostic value on the table",
+    "Failed to distinguish between title search and description search, which is the most actionable diagnostic detail",
+    "Did not ask about CPU/resource behavior during slow searches",
+    "Information gaps were identified but not investigated before closing"
+  ],
+  "most_insightful_question": "The initial multi-part question effectively disambiguated between version regression, gradual degradation, and environment change — this was well-designed and immediately narrowed the problem space.",
+  "missed_opportunities": [
+    "Should have asked whether all search types are equally slow or if some searches (e.g., by title vs. description) are faster — this would have revealed the critical title-vs-description distinction",
+    "Should have asked about system resource behavior during searches (CPU, memory) — would have revealed the CPU spike on one core",
+    "Could have asked about task content characteristics (description length, attachments) to surface the long-description factor",
+    "Should have asked about the reporter's OS and laptop specs, which were mentioned but not captured"
+  ]
+}

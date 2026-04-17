@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Captured 6 of 7 expected extracts: small PDFs fine, ~1 week regression, size-dependent behavior, binary content garbled (not truncated), multiple customers, and upload proxy/path change hypothesis. The one gap: whether other large file types are also affected is listed as a question to investigate rather than extracted as a finding, and the exact 1MB threshold wasn't pinned — though the reporter was unwilling to provide exact sizes, so this is partly a constraint of the reporter, not the agent."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage summary is remarkably accurate. It identifies size-dependent behavior with different upload paths, and specifically hypothesizes 'a middleware or proxy treating the binary upload stream as text' on 'chunked uploads (i.e., files above the chunking threshold)' — which is essentially the actual root cause (proxy strips Content-Type, storage defaults to text/plain, binary data gets encoding-mangled). This matches both acceptable diagnostic paths and closely approximates the canonical cause. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all the high-value questions given reporter constraints: regression timing, pattern identification, size-dependence, determinism, and truncation vs. garbling. The one obvious question skipped was whether other binary file types (images, DOCX) above the same size threshold are also affected — this is in the expected extracts and would have been a low-burden question to ask."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three questions, each well-targeted at distinct diagnostic dimensions: (1) regression timing + pattern, (2) size threshold + determinism, (3) truncation vs. garbling. No redundancy, no low-value questions. The second question was ambitious but entirely justified — the reporter's pushback was a reporter constraint, not a question quality problem."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The third question — asking whether the file was truncated versus entirely garbled — was genuinely insightful and demonstrated real diagnostic reasoning. The answer (same file size, garbled content) directly distinguishes encoding corruption from truncation bugs and led to the specific hypothesis about binary-to-text encoding. The first question efficiently combined regression timing and pattern identification. Questions demonstrated systematic narrowing of hypothesis space."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: it includes specific reproduction steps with concrete file sizes, a technically precise root cause hypothesis pointing directly at the proxy/chunked upload path, a prioritized investigation checklist, a proposed test matrix (500KB through 10MB), and specific binary forensics guidance (hex dump, look for 0xEFBFBD). A developer could begin investigating and writing a fix immediately."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The truncation-vs-garbling question was genuinely diagnostic and elicited the critical finding that file size is preserved but content scrambled — which directly implies encoding transformation rather than truncation",
+    "The root cause hypothesis ('middleware or proxy treating binary upload stream as text on chunked uploads above a size threshold') is essentially the actual cause, derived entirely from a 3-turn conversation with an impatient reporter",
+    "Handled an uncooperative, time-pressed reporter gracefully — acknowledged constraints, extracted maximum signal without demanding further experiments",
+    "Reproduction steps and recommended fix are highly specific and immediately actionable, including binary forensics guidance"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether other binary file types (images, DOCX, ZIP) above the same size are also affected — this was in the expected extracts and would have been a low-burden question",
+    "Didn't ask explicitly about known deployments or system changes around the onset time — the regression timing was established but the specific change was not probed"
+  ],
+  "most_insightful_question": "When you look at a corrupted PDF, does the file appear to be cut short (e.g., only the first few pages render, or the file size is noticeably smaller than the original), or does the entire file come through garbled/unreadable?",
+  "missed_opportunities": [
+    "Ask whether other large binary file types (images, spreadsheets, ZIP files) uploaded around the same size threshold also come through corrupted — this would have confirmed the issue is not PDF-specific and is size/path-gated",
+    "Ask whether the team knows of any infrastructure or deployment changes made approximately one week ago (proxy updates, CDN config, storage backend changes)"
+  ]
+}

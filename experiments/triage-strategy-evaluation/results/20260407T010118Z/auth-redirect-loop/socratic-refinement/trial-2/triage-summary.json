@@ -1,0 +1,21 @@
+{
+  "title": "SSO login redirect loop due to email mismatch between Entra ID token claims and TaskFlow user records",
+  "problem": "After migrating from Okta to Microsoft Entra ID, approximately 30% of users are stuck in an infinite redirect loop when logging in. They authenticate successfully with Entra but TaskFlow fails to match them to a local user account, causing it to restart the login flow.",
+  "root_cause_hypothesis": "TaskFlow matches SSO users by the email claim in the identity token. Entra ID returns the user's primary email address (e.g., jane@company.com), but TaskFlow's user records store plus-sign variants (jane+taskflow@company.com) or outdated email addresses from before an alias change. The lookup fails, no session is established, and the user is redirected back to login — creating the loop. Okta likely sent the full plus-sign address or used a different claim, masking this mismatch.",
+  "reproduction_steps": [
+    "Create or identify a TaskFlow user whose stored email is a plus-sign address (e.g., jane+taskflow@company.com) or an old email that differs from their current Entra primary email",
+    "Attempt to log in to TaskFlow via the Entra ID SSO flow",
+    "Observe that authentication succeeds at Entra but TaskFlow redirects back to the login page, creating an infinite loop",
+    "Compare: a user whose TaskFlow email matches their Entra primary email exactly can log in without issue"
+  ],
+  "environment": "TaskFlow with SSO integration configured to match on email claim. Recently migrated from Okta to Microsoft Entra ID. OIDC/SAML flow (exact protocol not confirmed). Affects approximately 30% of users — those with plus-sign email addresses or historical email changes.",
+  "severity": "high",
+  "impact": "~30% of the team is locked out of TaskFlow entirely. No workaround exists aside from manual account fixes. The team is actively scrambling.",
+  "recommended_fix": "1. **Immediate fix:** Update the affected users' email addresses in TaskFlow's user table to match exactly what Entra ID returns as the primary email (strip plus-sign suffixes, update aliases to current primary). 2. **Durable fix:** Change the SSO user-matching logic to be more resilient — either normalize email addresses before comparison (strip plus-sign suffixes), match on a stable identifier like the `sub` or `oid` claim from the Entra token instead of email, or implement a fallback lookup. 3. **Investigate the cookie issue:** While likely a side effect of the loop, verify that the session cookie's SameSite, Secure, and Domain attributes are correct for the redirect flow — the reporter's developer noted Set-Cookie headers that didn't stick, which could indicate a secondary issue.",
+  "proposed_test_case": "Write integration tests for the SSO callback handler that verify: (a) a user with a plus-sign email (jane+taskflow@company.com) is matched when the token contains jane@company.com, (b) a user whose stored email was changed is matched against their current Entra primary email, (c) when no user match is found, the system returns a clear error rather than redirecting back to login.",
+  "information_gaps": [
+    "Exact protocol in use (OIDC vs SAML) — does not change the fix direction",
+    "Whether the Set-Cookie issue is purely a side effect of the loop or an independent SameSite/Secure attribute problem — developer will see this in the code",
+    "Complete list of affected users and whether the plus-sign/changed-email theory accounts for all of them — can be verified by querying the user table against Entra"
+  ]
+}

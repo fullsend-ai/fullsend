@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of the seven expected extracts are clearly present: search returns archived tasks when filtering for active, active tasks missing from default results, started ~3 days ago with v2.3.1, affects multiple users, individual task pages show correct status, and filter behavior is inverted. The seventh — 'related to search index, not application logic' — is partially missed. The agent correctly ruled out data corruption but attributed the bug to the query/filter predicate layer in application code rather than the search index specifically."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The actual cause is an inverted field mapping in the search index (Elasticsearch), but the agent hypothesized a boolean inversion in the application-layer query predicate. This is the wrong layer, but the agent satisfies acceptable diagnostic path #2: it correctly identified the v2.3.1 release as the trigger and the archive status filter as the broken component, even without pinpointing the exact inversion location. The directional diagnosis is sound and would lead a developer to the right area, even if they'd need to check the index config rather than the query code."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent resolved after two well-chosen questions. The second turn produced critical disambiguating information (inversion is archive-status-specific, not broad). One useful follow-up was skipped: asking whether v2.3.1 included a database migration or search index rebuild, which would have pointed more precisely at the index layer. However, a reporter is unlikely to know search infrastructure details, so this is a minor gap."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Both questions were necessary. The first question combined timing and context efficiently but included 'what were you trying to accomplish' which had no diagnostic value and slightly diluted the question. The second question was sharply targeted. Overall lean and efficient, with one minor wasted sub-question."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The second question — asking whether other filter types (priority, assignee, due date) also misbehave — was genuinely insightful and demonstrated real diagnostic reasoning. It isolated the inversion to archive status specifically, ruling out a broader search breakdown. The first question was adequate but included the low-value 'what were you trying to accomplish' sub-question that elicited no useful diagnostic information."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The triage summary is detailed and well-structured: clear problem statement, hypothesis, reproduction steps, severity, impact, workaround, recommended fix, proposed regression test, and acknowledged information gaps. A developer could begin investigating immediately by diffing v2.3.0 and v2.3.1. The fix direction (look for a boolean inversion in archive status handling) is correct even if the specific layer (index mapping vs. query predicate) is wrong, meaning the developer would need one extra step to redirect from application code to the index configuration."
+    }
+  },
+  "weighted_total": 4.05,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Immediately picked up on the 'backwards results' description and correctly framed the inversion before asking a follow-up, showing active comprehension",
+    "The second question about other filter types was precisely targeted and produced the key disambiguating finding that only archive status is affected",
+    "Triage summary is comprehensive and professional — includes reproduction steps, severity, impact assessment, workaround, and a proposed regression test case",
+    "Correctly identified multi-user reproduction and the v2.3.1 correlation with high confidence"
+  ],
+  "notable_weaknesses": [
+    "Hypothesized the bug is in the application-layer query predicate rather than the search index mapping — a developer following this advice might spend time diffing query builder code before finding the index configuration",
+    "First question included 'what were you trying to accomplish' which added no diagnostic value and slightly diluted an otherwise efficient question",
+    "Did not probe whether v2.3.1 involved a schema migration or search index rebuild, which would have pointed more precisely at the index layer"
+  ],
+  "most_insightful_question": "Have you noticed whether any other filters or sort options are also behaving oddly? For example, if you filter by priority, assignee, or due date, do those results come back as expected, or does the same kind of mix-up happen there too?",
+  "missed_opportunities": [
+    "Ask whether the v2.3.1 update included a database schema migration or search index rebuild — this would have surfaced the index-layer cause",
+    "Ask whether the issue appears when searching without any filters at all (no active/archived constraint) — this would have revealed whether unfiltered results show both statuses mixed together, further confirming an index-level problem"
+  ]
+}

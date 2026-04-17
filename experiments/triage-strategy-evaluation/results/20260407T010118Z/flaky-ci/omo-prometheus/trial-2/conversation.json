@@ -1,0 +1,34 @@
+{
+  "title": "Tests keep failing in CI but pass on my machine",
+  "body": "Our CI pipeline has been randomly failing for the past few days. The test suite passes fine when I run it locally. The failures seem random — sometimes all tests pass, sometimes a handful fail. It's blocking our releases and we can't figure out what's going on.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — flaky CI is painful, especially when it blocks releases.\n\nTo start narrowing this down: when the tests fail in CI, what do the failure messages actually say? Are they assertion errors, timeouts, connection refused, segfaults — what exactly? And can you share a link to (or paste the relevant output from) a recent failed CI run?\n\nAlso: did anything change around the time this started a few days ago — a dependency update, a CI config change, a new test added?"
+    },
+    {
+      "author": "reporter",
+      "body": "They're assertion errors. The test names are right there in the logs — it's the new ordering tests that got added last week. Look, they pass on my machine every single time. A coworker merged a PR with some new task ordering tests like 4 days ago and that's when this started. Can someone just fix this? It's blocking us."
+    },
+    {
+      "author": "triage-agent",
+      "body": "I hear you — flaky CI blocking releases is urgent, and we'll get this sorted.\n\nThe new ordering tests are the prime suspect since the timing lines up perfectly. To zero in on the fix: can you paste the actual assertion output from one of the failures? I'm looking for something like `expected [A, B, C] but got [B, A, C]` — the specific expected-vs-actual values will tell us whether these tests are assuming a deterministic order that the CI environment doesn't guarantee (e.g., database query order, timestamp-based sorting with ties).\n\nAlso — do the tests in CI run in parallel, or does CI use a different database/configuration than your local setup?"
+    },
+    {
+      "author": "reporter",
+      "body": "I don't remember the exact output off the top of my head but yeah it's basically that — expected one order, got a different order. The items are the same just shuffled around. And yes we use a different config in CI vs local, it's supposed to be more production-like. I don't know all the details of what's different. Can you just look at the PR that added those tests? It was merged about 4 days ago. The tests are clearly the problem."
+    },
+    {
+      "author": "triage-agent",
+      "body": "I think I have a good read on this. My working theory: the new ordering tests are asserting a specific sequence of results, but the underlying query or sorting logic doesn't fully guarantee that order — for example, sorting by a timestamp where multiple tasks share the same value, or relying on database insertion order instead of an explicit `ORDER BY`. Your local environment happens to return a consistent order, but the CI database (different engine or config) doesn't.\n\nTo get a developer straight to the fix: **can you share the PR number or link for the PR your coworker merged?** That way someone can look at the test assertions directly and confirm whether they need to add a tiebreaker to the sort or relax the assertion to check set-equality instead of sequence-equality."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't have the PR number handy, I'd have to go dig it up. It was my coworker's PR, not mine. It's the most recent merge into main from about 4 days ago — it shouldn't be hard to find. It added like 5 new tests to the task ordering module. Can someone on your end just look at the recent merge history? I've already spent too much time on this."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Flaky CI: New task ordering tests assert deterministic sequence on non-deterministic query results\",\"problem\":\"Five new tests added to the task ordering module ~4 days ago are intermittently failing in CI with assertion errors. The tests expect items in a specific sequence, but receive the same items in a different order. Tests pass consistently in local development but fail randomly in CI, which uses a different, more production-like database configuration.\",\"root_cause_hypothesis\":\"The new ordering tests assert exact sequence equality on query results that lack a fully deterministic sort. The underlying query likely sorts by a field (e.g., timestamp, priority) where ties are possible, without a tiebreaker column (e.g., `id`). The local database engine or config happens to return a stable insertion-order for tied rows, while the CI database does not, exposing the non-determinism.\",\"reproduction_steps\":[\"Check out main at the commit where the ordering tests were added (~4 days ago)\",\"Run the task ordering test suite against the CI database configuration\",\"Observe intermittent assertion failures where expected and actual arrays contain the same items in different order\"],\"environment\":\"CI environment with a 'more production-like' database configuration (exact differences unknown to the reporter). Local development environment uses a different config that masks the non-determinism.\",\"severity\":\"high\",\"impact\":\"Blocks all releases. The entire team is affected — CI failures are intermittent so retrying sometimes works, but the pipeline is unreliable.\",\"recommended_fix\":\"1. Find the PR merged ~4 days ago that added ~5 tests to the task ordering module (most recent merge to main around that date). 2. Inspect the test assertions: replace exact sequence assertions (`assertEqual([A,B,C], result)`) with either (a) set/bag equality where order doesn't matter, or (b) add a deterministic tiebreaker (e.g., `ORDER BY priority, id`) to the underlying query so the order is guaranteed. 3. Audit the application query itself — if the UI or API depends on this ordering, the tiebreaker should be added to the production query, not just the tests.\",\"proposed_test_case\":\"Create a test scenario where multiple tasks share the same sort-key value (e.g., same priority or same timestamp), then assert that the query returns them in a fully deterministic order (by tiebreaker). Run this test 20+ times in a loop to confirm stability.\",\"information_gaps\":[\"Exact PR number (findable from merge history — no reporter action needed)\",\"Specific CI database engine and config differences vs local (inspectable from CI config files)\",\"Whether the non-deterministic order also affects production behavior or only tests\"]}"
+    }
+  ]
+}

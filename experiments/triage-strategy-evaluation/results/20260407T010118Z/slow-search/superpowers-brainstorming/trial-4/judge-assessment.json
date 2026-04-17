@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected information: ~5,000 tasks, description vs title search distinction, v2.3 upgrade as trigger, ~2 weeks ago onset, 10-15 second duration, long descriptions. Missing: CPU spike during search (never asked about system resource usage). The 'long descriptions' detail was volunteered by the reporter and captured. A minor miss on CPU behavior."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the v2.3 upgrade as the trigger and explicitly hypothesizes a search implementation regression (dropped/altered FTS index vs fallback to sequential scanning). This matches both the canonical root cause and the first acceptable diagnostic path. The recommended fix even explicitly mentions 'switched from indexed FTS to LIKE/ILIKE' — remarkably close to the actual cause."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the two most critical questions (search type and task count) and resolved with a solid hypothesis. The obvious missed follow-up is CPU/resource usage during search, which would have strengthened the indexing hypothesis. Version confirmation was noted as an information gap rather than pursued. Two turns of substantive questioning before resolving is lean but justified given the strong diagnostic signal."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Both questions were highly targeted and essential. The first question efficiently disambiguated search type and onset timing simultaneously. The second question established scale to differentiate indexing regression from pure scaling. No redundant or low-value questions."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question cleverly combined search type classification with onset timing — two key diagnostic axes in one turn. The multiple-choice format was effective and the framing showed genuine diagnostic reasoning. The second question about task count with the explicit hypothesis framing ('whether v2.3 may have changed how description search works (e.g., a missing full-text index)') demonstrated sophisticated understanding and set up the resolution hypothesis."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The triage summary is exceptionally actionable: specific reproduction steps, a precise root cause hypothesis pointing at the migration script and FTS index, a concrete fix checklist including schema comparison between v2.2 and v2.3, and a proposed performance regression test. A developer could start investigating the migration script immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 2,
+  "notable_strengths": [
+    "First question efficiently combined two diagnostic axes (search type + onset timing) in a single turn",
+    "Root cause hypothesis explicitly mentioned FTS vs LIKE/ILIKE — nearly pinpointing the actual regression",
+    "Recommended fix is a concrete, ordered checklist that directly guides the developer to the migration script",
+    "Proposed test case with specific thresholds and cross-version comparison demonstrates strong engineering judgment"
+  ],
+  "notable_weaknesses": [
+    "Never asked about CPU/resource usage during search, missing an expected data point",
+    "Did not confirm exact version (v2.3 marked as approximate throughout)"
+  ],
+  "most_insightful_question": "The second question explicitly framing 'whether the v2.3 update may have changed how description search works (e.g., a missing full-text index)' — this demonstrated proactive diagnostic reasoning and directly connected task scale to the likely root cause.",
+  "missed_opportunities": [
+    "Asking whether CPU spikes during slow searches (would confirm full table scan behavior)",
+    "Confirming the exact version number rather than accepting 'approximately v2.3'",
+    "Asking whether the user had tried any workarounds or noticed any pattern in which searches are slow vs fast (could have revealed the title/description split even earlier)"
+  ]
+}

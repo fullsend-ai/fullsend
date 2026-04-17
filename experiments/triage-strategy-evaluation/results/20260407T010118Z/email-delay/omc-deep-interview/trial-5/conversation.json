@@ -1,0 +1,34 @@
+{
+  "title": "Email notifications arriving hours late",
+  "body": "Task assignment notifications used to arrive within a minute or two. For the past week, they've been arriving 2-4 hours late. This is causing people to miss deadlines because they don't know they've been assigned a task until hours later. It seems to be worse in the morning — notifications sent around 9-10am take the longest to arrive. Afternoon notifications are usually faster but still delayed.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for the detailed report — the timing pattern you noticed (worse in the morning) is a really useful clue.\n\nQuick question: are the delays only affecting **email** notifications, or are you also seeing delays with in-app notifications (the bell icon in TaskFlow)? If you're not sure, you could check by assigning a test task and comparing when the in-app notification appears versus when the email arrives."
+    },
+    {
+      "author": "reporter",
+      "body": "Good question — I actually hadn't paid close attention to the in-app notifications, but now that you mention it, I think those do show up pretty much right away. It's definitely the emails that are delayed. I just tested it quickly and the bell icon notification appeared within a few seconds, but I'm still waiting on the email for the same task assignment."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful — the fact that in-app notifications are instant while emails lag tells us the issue is somewhere in the email delivery pipeline specifically, not in how TaskFlow generates notifications.\n\nDo you know if anything changed about a week ago when this started? For example: a new email provider or configuration change, a spike in the number of users or tasks, or maybe a platform update or deployment? Even if you're not sure, anything you noticed changing around that time could help us zero in on the cause."
+    },
+    {
+      "author": "reporter",
+      "body": "Yeah, actually now that you mention it — I think they rolled out some kind of daily digest or newsletter feature around that time. I started getting these marketing summary emails from TaskFlow about a week ago. Not sure if that's related, but the timing lines up. I don't know about any backend changes or provider switches though, I'm just a user. The digest emails seem to come in the morning too, if that helps."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's a really interesting lead — the timing of the digest feature rollout matching perfectly is suspicious. One more thing that would help narrow this down: are your teammates experiencing the same email delays, or is it possible this is limited to your account? If a colleague could do the same quick test you did (assign a task, compare in-app vs. email arrival), that would tell us whether this is system-wide or account-specific."
+    },
+    {
+      "author": "reporter",
+      "body": "Oh yeah, it's not just me. I've talked to a few people on my team and they're all seeing the same thing — emails showing up hours late, especially in the morning. One of my colleagues actually complained about it in our team meeting last week before I even filed this. So it's definitely a system-wide thing, not just my account."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Email notifications delayed 2-4 hours since digest feature rollout — likely shared email pipeline saturation\",\"problem\":\"Transactional email notifications (e.g., task assignments) are arriving 2-4 hours late instead of within 1-2 minutes. The delays are worst in the morning (9-10am) and somewhat better in the afternoon. In-app notifications remain instant. The issue is system-wide, affecting multiple users across teams, and has been occurring for approximately one week.\",\"root_cause_hypothesis\":\"The recently launched daily digest/newsletter feature is likely sharing the same email sending pipeline (queue, provider, or rate-limited API) as transactional notifications. Digest emails are generated and enqueued in the morning, creating a large burst that saturates send capacity or hits provider rate limits, pushing transactional emails to the back of the queue. This explains both the morning severity pattern and the one-week timeline aligning with the digest feature rollout.\",\"reproduction_steps\":[\"Assign a task to a user in TaskFlow around 9-10am (when delays are worst)\",\"Observe that the in-app bell notification appears within seconds\",\"Observe that the corresponding email notification arrives 2-4 hours later\",\"Repeat in the afternoon and note the email delay is shorter but still present\"],\"environment\":\"System-wide across all users. No specific OS/browser dependency since the issue is server-side email delivery. Timing: started approximately one week ago, coinciding with the rollout of a daily digest/newsletter email feature.\",\"severity\":\"high\",\"impact\":\"All users receiving email notifications are affected. Team members are missing task assignment deadlines because they rely on email notifications and don't see assignments for hours. Multiple teams have independently noticed and complained about the issue.\",\"recommended_fix\":\"1. Investigate whether the digest feature shares a send queue or email provider rate limit with transactional emails. 2. If so, separate transactional emails into a high-priority queue/channel distinct from bulk digest sends. 3. Check the email provider's rate limit dashboard for throttling events correlating with digest send times. 4. As an immediate mitigation, consider shifting digest sends to off-peak hours (e.g., early morning before business hours) or throttling digest throughput to leave headroom for transactional emails.\",\"proposed_test_case\":\"After the fix, send a batch of digest emails and simultaneously trigger a task assignment notification. Verify the transactional email arrives within 2 minutes regardless of digest volume. Run this test during the morning window (9-10am) to confirm the peak-hour delay is resolved.\",\"information_gaps\":[\"Exact email provider and sending architecture (shared queue vs. separate channels) — requires codebase/infra investigation\",\"Whether the provider is returning rate-limit or throttle responses in logs during morning hours\",\"Exact volume of digest emails being sent and whether it exceeds provider tier limits\"]}"
+    }
+  ]
+}

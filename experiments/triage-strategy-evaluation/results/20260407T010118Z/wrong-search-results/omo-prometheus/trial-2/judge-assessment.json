@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: inverted filter behavior, missing active tasks, v2.3.1 timing, multi-user impact, correct per-task status display, inverted filter behavior, and search layer vs. data layer distinction. The agent also captured reproduction steps, a proposed test case, severity, and a workaround — well beyond the minimum."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified the inversion in the search/filter layer tied to v2.3.1 and that the underlying task data is correct — matching acceptable path 2 (migration as trigger, archive filter as broken component). The root cause hypothesis leans toward query-time logic (flipped boolean in query builder) rather than the actual index-level field mapping inversion, but the agent explicitly flagged index-time as a possibility and didn't rule it out. Close enough to an acceptable path to avoid a significant penalty."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Two well-chosen question turns extracted everything needed to fully characterize the bug. The agent correctly identified the one remaining information gap (which interface — web/mobile/API) but reasonably deferred it to code inspection rather than burdening the reporter. No obvious follow-up was skipped given what a reporter could reasonably know."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only two question turns, neither redundant. The first established timing and regression nature; the second precisely characterized the failure mode. No questions wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The second question was genuinely diagnostic: asking specifically whether active tasks are absent vs. buried, and whether archived tasks still display their archive label in results. This framing prompted the reporter to articulate the filter-toggling workaround unprompted — the single most informative piece of information in the conversation. The agent would not have gotten that without this specific framing."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary includes a precise problem statement, root cause hypothesis, step-by-step reproduction case, a concrete recommended fix (diff v2.3.0–v2.3.1 filter predicate), a proposed regression test, and clearly scoped information gaps. A developer could begin code review immediately."
+    }
+  },
+  "weighted_total": 4.75,
+  "turn_count": 4,
+  "notable_strengths": [
+    "Second question was exceptionally well-targeted — asking simultaneously about result completeness and per-task label display prompted the reporter to independently discover and describe the filter-toggle workaround, which was the key diagnostic signal",
+    "Triage summary quality is well above average: includes reproduction steps, proposed test case, severity/impact assessment, and explicitly scoped information gaps",
+    "Agent correctly distinguished the data layer (intact) from the search/filter layer (broken) from the reporter's observation that archived tasks still display correct labels in search results",
+    "Correctly identified the v2.3.1 regression vector in the first question and used it to anchor the entire subsequent investigation"
+  ],
+  "notable_weaknesses": [
+    "Root cause hypothesis favors query-time logic (flipped boolean in query builder) over index-time field mapping, which is the actual cause — the agent hedged but didn't weight the index hypothesis highly enough given that a schema migration with index rebuild was the triggering event",
+    "The agent did not ask whether individual task detail pages show the correct archive status (a useful confirmation question), though this information emerged indirectly"
+  ],
+  "most_insightful_question": "Are your active tasks completely missing from the list, or are they present but buried below the archived ones? And in the results you do see, do the archived tasks show any indication that they're archived (like a label or visual marker), or do they appear as if they're active?",
+  "missed_opportunities": [
+    "Asking whether the issue affects only the web interface or also mobile/API clients — would have scoped the bug to a specific layer",
+    "Asking whether a schema migration or index rebuild was part of the v2.3.1 patch — would have pointed more directly at the index-level cause rather than query-time logic"
+  ]
+}

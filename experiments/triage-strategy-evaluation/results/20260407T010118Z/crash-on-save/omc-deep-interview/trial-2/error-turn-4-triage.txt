@@ -1,0 +1,7 @@
+```json
+{
+  "action": "ask",
+  "reasoning": "Clarity scores — Symptom: 0.85, Cause: 0.75, Reproduction: 0.65, Impact: 0.70. Weighted overall: ~0.76, below the 0.80 threshold. Reproduction is the weakest dimension. We strongly suspect Unicode characters from the CSV import cause a serialization crash on save, but we can't reproduce without knowing what the data looks like. This is round 4, so per the strategy I should ask for the minimal reproduction case. The reporter deleted the CSV, but the imported tasks are still in the app. If they can share what a few of those task titles/descriptions look like (the ones with 'weird characters'), a developer can reproduce directly. Alternatively, narrowing down whether it's a specific task or all 200 would help.",
+  "question": "Totally understand — no log digging needed! Since the imported tasks are still in the app (even if the CSV is gone), could you try one quick thing?\n\nOpen the task list and pick two or three of the tasks that have those weird characters (fancy quotes, dashes, etc.). Just copy-paste the task titles or descriptions here so we can see exactly what characters are involved. Something like: `My task — "with quotes"` for example.\n\nAlso, if you're feeling adventurous: try deleting just a handful of the imported tasks and then saving. If it saves successfully at some point, the last task you deleted is probably the culprit — but no pressure on that one. Even just seeing a few example task names would be a big help."
+}
+```

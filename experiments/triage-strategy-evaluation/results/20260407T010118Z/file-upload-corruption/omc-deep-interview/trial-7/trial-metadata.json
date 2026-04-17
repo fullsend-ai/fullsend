@@ -1,0 +1,7 @@
+{
+  "scenario": "file-upload-corruption",
+  "strategy": "omc-deep-interview",
+  "reporter_profile": "difficult",
+  "turns": 5,
+  "parse_failures": 0
+}

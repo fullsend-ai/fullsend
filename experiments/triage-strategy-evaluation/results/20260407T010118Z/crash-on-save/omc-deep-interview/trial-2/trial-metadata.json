@@ -1,0 +1,7 @@
+{
+  "scenario": "crash-on-save",
+  "strategy": "omc-deep-interview",
+  "reporter_profile": "difficult",
+  "turns": 6,
+  "parse_failures": 2
+}

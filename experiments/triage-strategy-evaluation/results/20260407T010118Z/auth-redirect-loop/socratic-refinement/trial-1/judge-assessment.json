@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All eight expected extracts are present: ~30% affected, plus-addressing and alias pattern, SameSite cookie issue, email claim mismatch, cookie visible in dev tools but dropped, incognito workaround, redirect URIs confirmed correct, other SSO apps working fine. The summary additionally captures reproduction steps, severity, proposed test cases, and specific OIDC claim recommendations (oid/sub as stable identifiers)."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies both canonical root causes: SameSite=Strict preventing cookie persistence on cross-origin GET redirects (primary) and email claim normalization differences between Okta and Entra ID affecting plus-addressed and aliased accounts (secondary). The causal hierarchy matches the ground truth. The hypothesis that Okta used SAML POST-back while Entra uses GET redirect is a reasonable and accurate mechanistic explanation for why the SameSite=Strict issue didn't manifest before the migration."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all three critical questions (user pattern, account matching mechanism, cookie attributes) and resolved with a solid evidentiary basis. Noted remaining information gaps explicitly (token claims, Okta flow type, Domain attribute, browser distribution). One minor follow-up was skipped: explicitly asking about the 'clear cookies' workaround — the reporter volunteered the incognito observation but the agent didn't probe the clearing-cookies angle, which is noted in the ground truth as a second workaround."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each building directly on the previous answer. No redundancy, no low-value questions. Each question unlocked a distinct layer of the diagnosis: turn 1 surfaced the user pattern, turn 2 surfaced the email-matching mechanism and invited token inspection, turn 3 surfaced the SameSite attribute. The agent resolved as soon as it had sufficient evidence rather than asking for confirmation of things already established."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "All three questions demonstrated genuine diagnostic reasoning. Turn 1 framed the pattern question with concrete hypotheses (sessions, provisioning, roles) that drew out the plus-addressing observation the reporter hadn't connected to the bug. Turn 2 correctly anticipated that Okta-to-Entra email normalization differences could cause account-matching failures, explaining the mechanism before asking — which primed the reporter to think about it. Turn 3 targeted SameSite specifically, a non-obvious browser behavior that the reporter then confirmed directly from their own dev tools observation."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: change SameSite from Strict to Lax (specific attribute, specific value), audit email claim matching with specific claim names to investigate (email, preferred_username, upn, oid, sub), investigate whether email-match failure path triggers redirect vs. error. Reproduction steps are concrete and testable. Proposed test cases cover both the cookie fix and the email normalization fix with pass/fail criteria."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The agent proactively explained the mechanistic reason for asking about email claim matching (Okta vs. Entra normalization differences) before asking the question, which primed the reporter to think analytically rather than just answering narrowly",
+    "Immediately recognized the significance of the reporter's unprompted SameSite=Strict observation and correctly connected it to the cross-site redirect flow as the primary loop mechanism",
+    "The final summary correctly identifies the causal hierarchy (SameSite primary, email mismatch secondary) and provides specific, actionable fixes with appropriate nuance (Lax not None)"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly probe the 'clearing cookies' workaround — the reporter mentioned incognito but the agent never asked whether a full cookie clear also helped, which would have further confirmed the SameSite hypothesis",
+    "Did not ask about the TaskFlow version, which could be relevant if there are known SSO-related bugs in specific versions"
+  ],
+  "most_insightful_question": "Can you tell me a bit more about what you saw? Specifically: Was the Set-Cookie header coming from TaskFlow's domain... did you notice anything about the cookie attributes — things like SameSite, Secure, or Domain?",
+  "missed_opportunities": [
+    "Asking whether affected users could log in successfully after manually clearing all cookies (not just incognito) — this would have more cleanly confirmed the cookie persistence hypothesis",
+    "Asking which browsers the affected users were on — different browsers had different SameSite enforcement rollouts, which could explain why some users in the same email-format category were affected and others weren't"
+  ]
+}

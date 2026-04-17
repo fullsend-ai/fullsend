@@ -1,0 +1,43 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted 5 of 7 expected items: ~5,000 tasks, slow on description/fast on title, regression after v2.2→v2.3 upgrade, started ~2 weeks ago, and 10-15 second search times. Missed CPU spikes during search and long descriptions in some tasks — both of which the agent never asked about."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The root cause hypothesis is close — it correctly identifies a likely switch from indexed search to unindexed LIKE scan and mentions the index being dropped or altered. It doesn't pinpoint SQLite FTS5 specifically, but the general direction (index regression in v2.3) is accurate. No factual errors in the summary."
+    },
+    "efficiency": {
+      "score": 4,
+      "rationale": "Only 2 agent turns to reach a solid triage — very efficient. The first question effectively combined reproduction steps with scale questions. The second asked for environment details. At most one more targeted question about system resource usage or description sizes could have been valuable, but the conversation was lean."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The first question was well-structured and drew out the critical title-vs-description distinction the reporter hadn't initially mentioned. The second question about environment and version was standard but yielded the crucial version upgrade correlation. However, the agent didn't probe deeper into observable symptoms (CPU usage, memory) or data characteristics (description lengths), which would have been insightful diagnostic questions."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is excellent for a developer to act on. It includes clear reproduction steps, a well-reasoned root cause hypothesis pointing to the exact area to investigate (search query path and schema diff between v2.2 and v2.3), a concrete recommended fix strategy (EXPLAIN/ANALYZE, check for dropped index), and even a proposed regression test. A developer could start investigating immediately."
+    }
+  },
+  "weighted_total": 4.15,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Excellent root cause hypothesis that closely matches the actual cause — correctly identified the likely switch from indexed to unindexed search path",
+    "Very efficient — reached a high-quality triage in only 2 turns",
+    "Highly actionable summary with concrete investigation steps, reproduction instructions, and a proposed test case",
+    "First question was well-designed to surface the title-vs-description differential the reporter hadn't initially shared"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about system resource behavior during search (CPU spikes would have strengthened the diagnosis)",
+    "Did not probe into task description characteristics (long descriptions are a contributing factor)",
+    "Asked about browser despite the user saying 'work laptop' — though the reporter clarified it's a desktop app"
+  ],
+  "most_insightful_question": "Does it happen with every search query, or only certain ones? — This prompted the reporter to discover and share the critical title-vs-description distinction.",
+  "missed_opportunities": [
+    "Asking about CPU/memory usage during slow searches would have confirmed the full table scan hypothesis",
+    "Asking about task description sizes/content would have revealed the long descriptions contributing to the problem",
+    "Asking whether the reporter had tried any workarounds or if clearing cache/reindexing was attempted"
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "All major expected extracts are present: ~50-100 affected records, truncation pattern, 2-week timeline, nightly batch import, the 3+-digit country code pattern, US/UK numbers being fine. The only gap is that 'recent change to phone number normalizer' is captured only as a hypothesis/information gap rather than a confirmed finding — but the agent correctly flagged it as something to investigate."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage satisfies both acceptable diagnostic paths: it correctly identifies the nightly import as the corruption source with the country-code-length pattern, and connects the 2-week timeline to a change in the import pipeline. Remarkably, the root cause hypothesis explicitly includes 'a format-parsing regex that captures only 2 digits after the +' — which is exactly the actual cause. No inaccuracies."
+    },
+    "thoroughness": {
+      "score": 5,
+      "rationale": "Three focused rounds of questions systematically established the corruption pattern, the data entry mechanism, the timeline, and confirmed that Salesforce data is still intact. No obvious follow-ups were left unasked before resolving. The agent correctly resolved once the import pipeline was confirmed as the sole source of corruption."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each yielding critical information. No redundancy. Q1 established the pattern, Q2 established the pipeline and timeline, Q3 confirmed the source of truth and probed for triggering changes. Every turn was well-spent."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question asking for concrete examples was especially effective — it drew out the precise truncation pattern (3+-digit country codes becoming 2-digit) that the reporter hadn't articulated. Q3's dual focus on 'what changed around that time' and 'are the numbers correct in Salesforce' showed genuine diagnostic reasoning, efficiently ruling out the CRM as a source and pointing to an import-side change."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is highly actionable: it includes reproduction steps, a 5-step recommended fix (check git history, inspect regex, remediate affected records), a proposed test case with specific country codes to test, and clearly flagged information gaps. A developer could begin investigating immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The first question asking for concrete examples immediately surfaced the exact truncation pattern, which drove the entire diagnosis",
+    "The root cause hypothesis correctly named a regex capturing only 2 digits after '+' — matching the actual cause without access to the codebase",
+    "Efficiently confirmed Salesforce data integrity in Q3, isolating the import pipeline as the sole corruption point",
+    "Final summary includes reproduction steps, a specific test case, and a remediation path (re-import from Salesforce backups)"
+  ],
+  "notable_weaknesses": [
+    "The recent change to the phone number normalizer was not definitively extracted — it remains an information gap rather than a confirmed finding, though this is unavoidable without internal access",
+    "Did not ask whether TaskFlow stores phone numbers as a single string or split fields, which is noted as an info gap but could have been asked of the reporter indirectly"
+  ],
+  "most_insightful_question": "Could you share a couple of examples of what the corrupted phone numbers look like compared to what they should be? — This question immediately led the reporter to describe the precise pattern (3+-digit country codes truncated to 2 digits, US/UK unaffected), which was the diagnostic breakthrough that drove the entire triage.",
+  "missed_opportunities": [
+    "Could have asked whether any other phone-related behavior changed at the same time (e.g., display formatting, validation errors) to further narrow the change",
+    "Could have asked whether the reporter could pull a list of affected records to confirm they all share the 3+-digit country code pattern, which would have strengthened the hypothesis before closing"
+  ]
+}

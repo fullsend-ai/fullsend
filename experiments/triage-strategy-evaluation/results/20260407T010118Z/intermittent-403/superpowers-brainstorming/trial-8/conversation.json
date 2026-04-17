@@ -1,0 +1,34 @@
+{
+  "title": "Getting random 403 Forbidden errors on the dashboard",
+  "body": "I keep getting 403 errors when I try to access the TaskFlow dashboard. It's not every time — sometimes it loads fine, sometimes I get a 403 page. It seems totally random. My permissions haven't changed and other people on my team say they're seeing it too. Started happening a couple days ago.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — intermittent 403s are frustrating. To help narrow down what's going on, can you describe what you're typically doing when the 403 appears?\n\n1. **Loading the dashboard after logging in** (fresh session)\n2. **Returning to the dashboard after being idle** for a while (e.g., switching tabs and coming back)\n3. **Navigating within TaskFlow** (e.g., clicking from a task list to the dashboard)\n4. **Something else**\n\nAlso — when it does 403, does refreshing the page fix it, or do you have to log out and back in?"
+    },
+    {
+      "author": "reporter",
+      "body": "It's honestly all of those — it doesn't seem to matter what I'm doing. I can get a 403 right after logging in, or just navigating around. There's no pattern I can see, it feels pretty random.\n\nRefreshing usually fixes it though! Sometimes I have to refresh a couple times but eventually it loads. I don't need to log out and back in or anything like that. I've been assuming it's some kind of network issue on our end but my coworker who also just got added to the team is seeing the same thing, so I figured I should report it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful context, thanks. One thing jumped out — you mentioned your coworker who's also seeing this was **just added to the team**. That could be a key clue.\n\nAre the 403s hitting:\n\n1. **Mostly people who were recently added** to the team (within the last week or so)\n2. **Everyone on the team**, including people who've had access for a long time\n3. **Not sure** — you haven't compared notes that closely\n\nThis would help us figure out whether it's a permissions sync issue vs. something broader in the infrastructure."
+    },
+    {
+      "author": "reporter",
+      "body": "Now that you mention it, I think it might be option 1. My coworker and I were both recently given the new 'analyst' role — that was maybe a couple days ago? And the people on my team who've been around longer don't seem to be having the issue, but I haven't asked everyone. I just assumed it was because my coworker and I sit near each other and maybe share the same network or something. But yeah, the more I think about it, the longer-tenured folks haven't complained about it."
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks, that's a really strong clue — the timing lines up perfectly between the 'analyst' role assignment and the 403s starting.\n\nHere's what I think is happening: **the 'analyst' role's permissions aren't being consistently recognized**, which is why you get 403s intermittently and refreshing eventually works (likely hits a server or cache instance that has the correct permissions).\n\nOne more thing that would help the team zero in on the fix — is the **'analyst' role brand new to TaskFlow** (like, your org or an admin just created it recently), or is it a role that already existed and you were simply added to it?"
+    },
+    {
+      "author": "reporter",
+      "body": "I think the analyst role is pretty new — like, I believe our admin set it up recently as part of some update. I wasn't really involved in creating it, I just got assigned to it a couple days ago. So yeah, I think it's a new role that was just added to the system, not something that's been around for a while."
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"Intermittent 403 errors for users assigned the newly created 'analyst' role\",\"problem\":\"Users who were recently assigned the new 'analyst' role receive intermittent 403 Forbidden errors across all dashboard pages. The errors appear randomly regardless of navigation pattern (fresh login, idle return, or in-app navigation). Refreshing the page one or more times resolves the error temporarily. Long-tenured users with established roles are not affected.\",\"root_cause_hypothesis\":\"The permissions for the newly created 'analyst' role are not being consistently propagated across all server instances or cache layers. When a request hits an instance/cache that hasn't loaded the new role's permission grants, it returns 403. Refreshing works because subsequent requests may hit a different instance or trigger a cache refresh that recognizes the role. This points to either: (1) a permissions cache that doesn't invalidate properly when new roles are created, or (2) an eventually-consistent permissions store where some replicas lag behind.\",\"reproduction_steps\":[\"Create a new role (e.g., 'analyst') in TaskFlow\",\"Assign the new role to a user\",\"Have the user log in and navigate the dashboard\",\"Observe intermittent 403 errors; refresh the page to see them resolve and recur\"],\"environment\":\"TaskFlow dashboard, multi-user environment. Affects multiple users assigned the new 'analyst' role. Started approximately 2 days ago, coinciding with the role's creation and assignment.\",\"severity\":\"high\",\"impact\":\"All users assigned newly created roles are intermittently locked out of the dashboard. This blocks the 'analyst' role rollout and would affect any future new roles. Multiple team members are impacted.\",\"recommended_fix\":\"Investigate the permissions/authorization caching layer. Specifically: (1) Check whether role-permission mappings are cached and how cache invalidation is triggered when new roles are created. (2) If running multiple app instances behind a load balancer, verify that all instances pick up new role definitions consistently. (3) Look for a TTL-based cache on role permissions that may serve stale 'role not found' results. The fix likely involves ensuring new roles trigger a cache invalidation/refresh across all instances, or treating an unknown role as a cache miss that falls through to the authoritative store.\",\"proposed_test_case\":\"Create a new role with dashboard access permissions, assign it to a test user, and immediately verify that the user can load the dashboard 20+ times consecutively without a single 403. Repeat across multiple server instances if applicable.\",\"information_gaps\":[\"Whether server-side logs show the 403 correlating with specific instances or cache misses\",\"The exact caching mechanism used for role-permission lookups (in-memory, Redis, DB query cache, etc.)\",\"Whether other newly created roles (not just 'analyst') exhibit the same behavior\"]}"
+    }
+  ]
+}

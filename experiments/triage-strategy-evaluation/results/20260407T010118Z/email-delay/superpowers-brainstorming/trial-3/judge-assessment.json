@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present in the triage summary: 2-4 hour delay, 1 week onset, morning-heavy pattern, connection to the digest batch feature, queue congestion/saturation hypothesis, transactional vs. bulk email competing for the same pipeline, and the prior sub-2-minute baseline. The agent also surfaced additional useful information: system-wide scope confirmed, Gmail as an affected client, and actionable information gaps."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The agent identified the digest email feature as the cause of queue congestion and explicitly recommended separating transactional emails from bulk emails with priority given to transactional — this maps cleanly onto acceptable diagnostic path #2 and directionally anticipates the actual fix (priority inversion). While the agent did not identify the specific mechanism of shared priority levels, it correctly identified the cause and prescribed essentially the right fix."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked two well-chosen questions before resolving. After the reporter volunteered the digest email observation in round 2, the agent had a solid basis for a hypothesis and resolved. Acknowledged gaps (other notification types, queue implementation details, digest volume/schedule) were correctly called out in information_gaps. One obvious question was skipped: whether other notification types beyond task assignments were also delayed, which would have directly confirmed system-wide queue impact vs. a notification-type-specific issue."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Only 2 questions were asked, both essential and well-targeted. No redundant or low-value turns. The agent resolved as soon as sufficient information was available."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions demonstrated genuine diagnostic reasoning. Q1 (system-wide vs. account-specific) efficiently scoped the problem. Q2 was particularly insightful: asking about email headers to localize the delay AND about recent email infrastructure changes — the latter opened the door for the reporter to volunteer the digest email detail, which was the pivotal clue the reporter would not have connected to the bug unprompted."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: it includes a clear hypothesis, specific reproduction steps keyed to the 9am window, a multi-step recommended fix with both immediate mitigation (off-peak digest sends) and permanent fix (queue separation with priority), a concrete post-fix test case, and a list of what still needs codebase inspection. A developer could begin investigation immediately."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Q2's dual-purpose framing — email headers for delay localization + recent infrastructure changes — was the key move that surfaced the digest email clue without leading the reporter",
+    "The final summary is production-quality: hypothesis, repro steps, prioritized fix recommendations, test case, and acknowledged gaps all present",
+    "The agent correctly identified morning-heavy delay as a system-level infrastructure signal from the very first reply, setting up the right line of inquiry"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether other notification types (due date reminders, mentions, etc.) were also delayed — this would have directly confirmed queue-level vs. notification-type-specific impact",
+    "Did not confirm the exact send time of the digest emails to verify the 9am correlation, leaving the timing link as an inference rather than a confirmed data point"
+  ],
+  "most_insightful_question": "The second question: asking about recent changes to the email setup (spam filtering, email gateway, security appliance) prompted the reporter to volunteer the digest email feature — a connection the reporter had noticed but not yet linked to the bug. This was the pivotal turn that unlocked the root cause.",
+  "missed_opportunities": [
+    "Ask whether other notification types (due date reminders, @mentions) are also delayed — would confirm the issue is at the queue level rather than specific to task assignment emails",
+    "Ask what time the daily digest emails appear to arrive, to confirm they correlate with the 9-10am delay peak",
+    "Ask approximately how many users are on the platform — knowing scale would help estimate queue load from the digest batch"
+  ]
+}

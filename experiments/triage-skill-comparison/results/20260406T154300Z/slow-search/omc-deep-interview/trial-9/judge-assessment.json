@@ -1,0 +1,42 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Extracted most expected information: ~5,000 tasks, description search slow vs title search fast, v2.2→v2.3 regression, ~2 weeks ago, 10-15 second latency, long descriptions. Missed CPU spike during search. Got 6 of 7 expected items plus additional useful context about consistency of the slowdown."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis is remarkably close to the actual cause — correctly identified a dropped/changed FTS index or switch from indexed to sequential scan in v2.3. The actual cause was exactly this: v2.3 switched from FTS5 to naive LIKE queries. The summary accurately reflects all information gathered from the reporter with no factual errors."
+    },
+    "efficiency": {
+      "score": 5,
+      "rationale": "Only 2 agent questions to reach a high-quality triage. The first question efficiently combined timing and dataset size. The second question smartly probed for differential behavior across search types, which unlocked the key diagnostic finding (title vs description). No wasted turns."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "Both questions were excellent. The first combined two high-value axes (timing and scale) in one turn. The second was genuinely insightful — asking about different search types led the reporter to discover the title-vs-description distinction, which they hadn't volunteered. The cold-cache vs consistent question also ruled out a common alternative hypothesis. These questions showed real diagnostic reasoning."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is immediately actionable: it tells a developer exactly where to look (compare search implementation between v2.2 and v2.3, check FTS indexes on descriptions), provides clear reproduction steps with specific data requirements, includes a concrete test case with success criteria, and correctly identifies the likely code path. A developer could start investigating within minutes."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Exceptional efficiency — only 2 turns to extract nearly all key information",
+    "Root cause hypothesis almost exactly matches the actual cause (FTS index regression)",
+    "Second question was genuinely diagnostic, leading the reporter to discover the title/description distinction they hadn't initially noticed",
+    "Reproduction steps and proposed test case are concrete and immediately usable",
+    "Smart decision to note that hardware specs are unlikely to matter given version-correlated onset rather than wasting a turn asking"
+  ],
+  "notable_weaknesses": [
+    "Did not ask about CPU/resource usage during search, missing the CPU spike signal",
+    "Environment details are thin — acknowledged but dismissed OS/hardware without gathering them"
+  ],
+  "most_insightful_question": "Does every search take 10-15 seconds, or is it only certain kinds of searches? For example, is a simple one-word search like 'meeting' just as slow as searching with filters?",
+  "missed_opportunities": [
+    "Could have asked about system resource usage (CPU/memory) during slow searches — would have confirmed the full table scan hypothesis",
+    "Could have asked whether the reporter tried reindexing or if there were any migration messages during the v2.3 upgrade"
+  ]
+}

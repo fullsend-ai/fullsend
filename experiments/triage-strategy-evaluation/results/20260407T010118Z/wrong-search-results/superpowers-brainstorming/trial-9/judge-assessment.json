@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are clearly present: archived tasks appearing in active search, active tasks missing, timing (~3 days / v2.3.1), all-users impact, individual task pages show correct archive status (confirmed via 'browsing directly'), and inverted filter behavior. The seventh — 'related to search index, not application logic' — is present only obliquely; the agent mentions checking the index as an afterthought in the fix section but frames the root cause primarily as a query predicate issue in application logic."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The actual cause is an inverted field mapping in the search index configuration (not query code). The agent's hypothesis targets the query filter predicate in application code, which is slightly off, but the summary correctly identifies acceptable path #2: v2.3.1 / the schema migration as the trigger, and the archive filter as the broken component. The agent also explicitly flags 'check whether the search index itself needs to be rebuilt,' which edges toward acceptable path #1. No meaningful inaccuracies that would send a developer in the wrong direction."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "In two focused turns the agent confirmed: symptom directionality (both missing actives and surfacing archives), direct-browse as a working path (confirming data integrity), and the v2.3.1 timing. One obvious follow-up was left unasked: whether toggling the archive filter manually reverses the results — this would have strongly confirmed the inversion hypothesis and potentially surfaced the index vs. query distinction. Otherwise the basis for resolution was sound."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Two question turns, both load-bearing. The first confirmed the symptom pattern and isolated search from data integrity in a single exchange. The second pinned the timing to a specific release. No redundancy, no filler."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The browsing-vs-search question in turn one was genuinely diagnostic — it distinguishes a data-layer issue from an index/query issue and is not the kind of question a reporter would volunteer. The timing question was well-framed as a multiple-choice prompt, which successfully elicited the v2.3.1 connection the reporter hadn't yet made. The numbered-list format in turn one slightly over-structured a question the reporter answered holistically anyway, but this is minor."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary gives a developer an immediate starting point: version-bounded regression, clear reproduction steps, a specific diff target (search filter logic between v2.3.0 and v2.3.1), an explicit pointer to both the query predicate and the index rebuild as investigative paths, and a proposed regression test. A developer could open a PR review or grep the diff within minutes of reading this."
+    }
+  },
+  "weighted_total": 4.2,
+  "turn_count": 2,
+  "notable_strengths": [
+    "Extracted the version number (v2.3.1) and temporal correlation in a single well-placed question, which is the single most useful piece of diagnostic information.",
+    "The direct-browsing question cleanly separated the search layer from the data layer, confirming that individual task archive status is displayed correctly — a key expected extract.",
+    "The triage summary is unusually complete: it includes severity, impact, reproduction steps, a specific fix recommendation, a proposed regression test, and explicit information gaps.",
+    "The agent surfaced 'filter is flipped' as the organizing hypothesis early, matching the reporter's own framing, and carried that insight coherently through to the fix recommendation."
+  ],
+  "notable_weaknesses": [
+    "The root cause hypothesis focuses on application query code (a predicate inversion) rather than the search index configuration, which is where the actual inversion lives. This could cause a developer to spend time diffing application code before checking the index mapping.",
+    "The agent did not ask about the specific migration that accompanied v2.3.1, which would have surfaced the index-rebuild step as the direct trigger.",
+    "The search-index angle is mentioned as a secondary concern ('also check whether the index needs to be rebuilt') rather than as a primary hypothesis, underselling its importance."
+  ],
+  "most_insightful_question": "Can you still find it by browsing your task list directly, just not via search? — This question distinguished a search-layer failure from a data-integrity failure, confirming that the archive status shown on individual task pages is correct and isolating the bug to the search subsystem.",
+  "missed_opportunities": [
+    "Ask whether toggling the archive filter manually (if the UI exposes one) reverses the results — this would have definitively confirmed the inversion hypothesis and might have pointed toward the index configuration rather than query code.",
+    "Ask what specifically changed in v2.3.1 or whether the reporter saw any mention of a schema migration or index rebuild in release notes — this would have surfaced the migration as the proximate trigger.",
+    "Ask whether searching without the active-only filter (if possible) returns all tasks correctly — this would have confirmed that unfiltered results are intact and that only the archive filter predicate is broken."
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "title": "Intermittent 403 Forbidden on dashboard for users with 'analyst' role — likely permissions inconsistency across backend instances",
+  "problem": "Users assigned the 'analyst' role receive intermittent 403 Forbidden errors when accessing the TaskFlow dashboard. The error is a full-page 403 (not partial), occurs regardless of navigation method (fresh login, refresh, internal navigation), and typically resolves after 1-3 retries. Multiple users with the analyst role are affected; users with other roles are not reporting the issue.",
+  "root_cause_hypothesis": "The 'analyst' role's permissions are not consistently applied across all backend instances behind the load balancer. The quasi-periodic failure pattern ('every third attempt') strongly suggests round-robin load balancing across ~3 instances, where one or more instances have stale or missing permission grants for the analyst role. This could be a permissions cache that wasn't invalidated on all instances after the role was created/assigned, or a configuration deployment that didn't reach all nodes.",
+  "reproduction_steps": [
+    "Assign a user the 'analyst' role in TaskFlow",
+    "Log in as that user and navigate to the dashboard",
+    "Refresh the dashboard repeatedly (5-10 times)",
+    "Observe that roughly every 2nd or 3rd request returns a 403 Forbidden page",
+    "Compare with a user on a different role (e.g., the previous role these users had) — no 403s expected"
+  ],
+  "environment": "TaskFlow dashboard, multiple users affected, load-balanced backend (inferred from failure pattern). Issue began approximately 2 days before report, coinciding with analyst role assignments.",
+  "severity": "high",
+  "impact": "All users with the 'analyst' role are intermittently locked out of the dashboard entirely. This is a team-wide access disruption for a recently provisioned role, making the dashboard unreliable for this user group.",
+  "recommended_fix": "1. Check the number of backend instances and verify the analyst role's permission grants are present and identical on all of them. 2. Inspect any permissions caching layer (Redis, in-memory cache, etc.) — look for stale entries or instances that weren't invalidated when the analyst role was created. 3. If permissions are stored in a database, check whether all instances are reading from the same source and whether there's replication lag. 4. As an immediate mitigation, restart or force-refresh the permissions cache on all instances. 5. Long-term: ensure role/permission changes trigger cache invalidation across all nodes.",
+  "proposed_test_case": "After fix: assign a fresh user the analyst role, then make 20 sequential dashboard requests and verify all return 200. Automate this by hitting the dashboard endpoint in a loop across all backend instances directly (bypassing the load balancer) to confirm each instance individually grants access for the analyst role.",
+  "information_gaps": [
+    "Exact number of backend instances and load-balancing strategy (round-robin vs. other)",
+    "Whether server-side access logs show the 403s correlating to a specific instance",
+    "Whether the analyst role was added via a migration, admin UI, or config change — and whether that change required propagation",
+    "Whether any other recently-created roles exhibit the same behavior"
+  ]
+}

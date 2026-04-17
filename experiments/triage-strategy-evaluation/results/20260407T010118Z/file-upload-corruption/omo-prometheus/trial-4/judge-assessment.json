@@ -1,0 +1,47 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 3,
+      "rationale": "The triage captured: small PDFs upload fine, started ~1 week ago, multiple customers affected, size-dependent behavior, and upload/encoding path as likely culprit. Missing: the agent never asked whether other large file types (images, spreadsheets) are also affected — a key diagnostic data point. Binary content mangling (as distinct from truncation) was mentioned as a hypothesis but not confirmed. The 1MB threshold was not pinned down, though the reporter was unable to provide it."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The triage correctly identified size-dependent behavior as central to the issue and correctly suspected upload path changes as the cause. Hypothesis #3 ('incorrect Content-Transfer-Encoding or premature stream termination') and #4 ('storage layer encoding change') directly encompass the actual cause (Content-Type header stripping leading to binary-to-text encoding). This aligns well with both acceptable diagnostic paths — particularly path 1 (size-dependent behavior → different upload paths). The agent did not identify the proxy specifically or the 1MB threshold, but the directional accuracy is solid."
+    },
+    "thoroughness": {
+      "score": 3,
+      "rationale": "The agent asked well about timing, size-dependence, and file size comparison on download. However, the most diagnostic question — 'are other large file types (images, spreadsheets) also affected?' — was never asked. This would have immediately confirmed or denied that the issue is PDF-specific vs. a general large-file path issue, strongly narrowing the hypothesis space. The agent also never asked which TaskFlow version or recent platform updates may have occurred, though the reporter did suggest something changed on the server side. The decision to resolve after the reporter pushed back was reasonable, but the other-file-types question should have been asked before the first resolution."
+    },
+    "economy": {
+      "score": 4,
+      "rationale": "Questions were front-loaded in pairs but none were redundant. The first turn efficiently covered regression timing, scope, and whether the issue is upload vs. display. The second turn zeroed in on size threshold and truncation vs. encoding. The error message question was lower value but harmless. No information was re-requested."
+    },
+    "question_quality": {
+      "score": 4,
+      "rationale": "The file size cutoff question in turn 2 was particularly well-targeted — it showed genuine diagnostic reasoning by trying to isolate whether a size threshold exists, which directly implies different code paths. The 'download vs. in-app preview' question in turn 1 was also insightful, narrowing whether the corruption is in storage or just the viewer. Questions were professional and appropriately specific rather than generic checklists. The main miss was never asking about other file types."
+    },
+    "actionability": {
+      "score": 4,
+      "rationale": "The summary is detailed and well-structured: reproduction steps are clear, the investigation roadmap is logical (check deployment history → compare file bytes at each stage → check for truncation vs. encoding mismatch), and the proposed test case with checksum verification is concrete. Information gaps are honestly identified. A developer could immediately start checking deployment history and comparing byte-level content. The main limitation is having four competing hypotheses rather than a narrowed direction, but given the information available this is appropriate."
+    }
+  },
+  "weighted_total": 3.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The file size cutoff question demonstrated real diagnostic reasoning — directly probing for evidence of different upload code paths",
+    "The 'download vs. in-app preview' question efficiently isolated the corruption locus to storage/upload rather than the viewer",
+    "The triage summary is exceptionally detailed and structured, with honest information_gaps and a concrete regression test proposal",
+    "The agent correctly identified size-dependent behavior as the key diagnostic signal and correctly hypothesized upload path / encoding changes as the likely cause"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether other large file types (images, spreadsheets) are also affected — this single question would have been the most diagnostic follow-up available",
+    "The 1MB threshold remained unknown; while the reporter couldn't provide it exactly, the agent could have suggested internal testing with that specific boundary",
+    "No workaround was offered to the reporter despite the high severity and the reporter's expressed urgency"
+  ],
+  "most_insightful_question": "Do you have a rough sense of the file size cutoff? For example, have you seen a PDF around 5 MB work fine while a 10 MB one comes through corrupted?",
+  "missed_opportunities": [
+    "Are other large file types — like images or spreadsheets — also affected when they're large, or is this strictly a PDF issue?",
+    "Has anything changed on your end recently — browser version, network configuration, or the version of TaskFlow you're running?",
+    "When a corrupted file is downloaded, is the file size roughly the same as the original, or is it noticeably different? (This was asked but as part of a multi-question bundle the reporter may have missed; worth isolating)"
+  ]
+}

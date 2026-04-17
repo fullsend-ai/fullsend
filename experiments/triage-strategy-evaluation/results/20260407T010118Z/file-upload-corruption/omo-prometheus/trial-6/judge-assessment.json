@@ -1,0 +1,45 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "Six of seven expected extracts are present: small PDFs fine, ~1 week regression, binary mangling (not truncation), multiple customers, other file types possibly affected, and upload path/proxy as suspect. The exact 1MB threshold was not extracted, but the reporter genuinely could not supply it — the agent surfaced the size-dependency and flagged the gap correctly."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The hypothesis explicitly names 'chunked upload change that mishandles binary boundaries' and 'middleware/proxy in the request path' — this directly matches the actual cause (proxy stripping Content-Type on chunked uploads). It also satisfies the first acceptable path (size-dependent behavior → different upload routes) and partially satisfies the second (proxy as suspect, recent change as trigger). The binary-encoding-as-text framing is exactly right."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent covered timing, size-dependency, corruption pattern (size preserved vs. truncated), and cross-file-type scope — all high-value angles. The one omission: it could have explicitly asked whether any recent deployments or config changes were visible to the reporter, though the reporter's resistance made this low-yield. No glaring unasked questions given the reporter's knowledge level."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns, each combining two complementary sub-questions. No redundancy. The first established regression timing and file specificity; the second probed size threshold and corruption type; the third scoped to other file types. Nothing wasted."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The standout question — 'is the downloaded file the right file size, or noticeably smaller?' — is genuinely diagnostic: it distinguishes truncation from binary mangling without the reporter needing technical knowledge, and directly drove the binary-encoding hypothesis. The other-file-types question was equally well-targeted, surfacing the anecdotal image report that strengthened the pipeline-wide suspicion."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "The summary is exceptionally actionable: specific reproduction steps with control case, a prioritized investigation checklist (chunked transfer encoding, Content-Type, proxy/middleware changes), a concrete binary-diff approach, and a proposed SHA-256 round-trip integration test. A developer could begin coding a fix immediately after checking the proxy commit history."
+    }
+  },
+  "weighted_total": 4.6,
+  "turn_count": 3,
+  "notable_strengths": [
+    "The file-size-after-download question was a high-signal diagnostic move that distinguished truncation from binary mangling and drove the accurate encoding hypothesis",
+    "The root cause hypothesis ('chunked upload change that mishandles binary boundaries', 'middleware/proxy in the request path') is remarkably close to the actual bug without any codebase access",
+    "The other-file-types question surfaced the anecdotal image report, which correctly broadened suspicion from PDF-specific to pipeline-wide",
+    "The recommended fix and proposed test case are specific and immediately executable by an engineer"
+  ],
+  "notable_weaknesses": [
+    "The exact 1MB size threshold was left as a gap — while the reporter couldn't supply it, the agent could have offered more concrete size brackets to test against ('does a 900KB PDF work? a 1.5MB one?')",
+    "The agent did not ask whether the reporter had access to any recent changelog, deployment notes, or change tickets — even a 'did anything else change around that time?' might have surfaced the proxy update directly"
+  ],
+  "most_insightful_question": "When you download the corrupted file and try to open it, is it the right file size, or is it noticeably smaller than the original?",
+  "missed_opportunities": [
+    "Ask for a concrete size bracket ('does a PDF under 1MB upload fine?') to help pin the threshold more precisely",
+    "Ask whether the reporter or their team had noticed any system notifications, changelogs, or maintenance windows around the time the issue started — could have surfaced the proxy deployment"
+  ]
+}

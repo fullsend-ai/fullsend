@@ -1,0 +1,46 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All 7 expected extracts are present: record count (~50-100 of 2,000), truncation pattern, ~2-week timeline, nightly batch import, 3+ digit country code pattern, US/UK numbers unaffected, and the recent normalizer change (correctly flagged as a hypothesis and information gap rather than confirmed fact). The summary adds value with reproduction steps, test case proposals, and impact analysis."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The root cause hypothesis — a phone number parser in the nightly import pipeline that assumes 1-2 digit country codes, truncating 3+ digit codes — matches the actual regex bug closely and satisfies both acceptable diagnostic paths. The examples (+353→+35, +1268→+12) are correctly analyzed. The agent correctly noted India's +91 (2-digit code) as unaffected, which is consistent with the actual bug. The 2-week timeline is correctly linked to a probable regression."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked all high-value questions a non-technical reporter could answer: specific examples, timing, deploy history, Salesforce source correctness, and storage vs. display. The remaining gaps (import logs, exact deploy, specific normalizer code) were correctly deferred to engineering and documented. One missed opportunity: the agent could have asked whether the reporter knew of any recent changes specifically to how phone numbers are handled in the import — the reporter might have known this without being technical."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three question turns, each well-targeted. The multi-part second question grouped related timing questions efficiently. No question was redundant or low-value. The agent resolved after confirming the key diagnostic fact (Salesforce data is correct, so corruption happens during import) rather than continuing to ask questions the reporter couldn't answer."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The first question (specific examples with expected vs. actual) immediately surfaced the country code pattern the reporter wouldn't have articulated on their own. The third question (is Salesforce correct?) was a precise diagnostic move that definitively isolated the corruption to the import layer rather than the source. The storage-vs-display question was technically sharp. Questions demonstrated genuine diagnostic reasoning rather than generic bug report templates."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could begin immediately: the summary names the import pipeline, specifies country code length as the fault axis, provides concrete examples, lists specific recommended investigation steps (check deploy history, inspect normalization code, look for 1-2 digit assumptions), proposes exact test cases, and identifies a remediation path (re-sync from Salesforce). Information gaps are clearly scoped to what only engineering can answer."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately asked for specific examples with expected vs. actual values, which surfaced the country code truncation pattern without the reporter framing it that way",
+    "Asking whether Salesforce still had correct data was a precise diagnostic move that definitively isolated the corruption to the import pipeline in one question",
+    "The final summary is production-ready: it includes reproduction steps, a proposed test case, severity, impact, and a concrete remediation path",
+    "Correctly identified that +91 (India, 2-digit code) being unaffected is consistent with the 3+ digit hypothesis, showing the agent was actively pattern-matching rather than just collecting facts",
+    "Information gaps are scoped to what only engineering can verify, rather than leaving them as open questions the reporter could have answered"
+  ],
+  "notable_weaknesses": [
+    "Did not explicitly ask whether the reporter or their team was aware of any recent changes specifically to phone number handling in the import — a non-technical reporter might still know this without being able to check code",
+    "The reproduction steps include India (+91) as an example of a 3+ digit code, but +91 is actually a 2-digit code; this is a minor error in the summary that doesn't affect the root cause hypothesis but could confuse a developer"
+  ],
+  "most_insightful_question": "Are the numbers correct in Salesforce right now? — This single question definitively ruled out source data corruption and isolated the problem to the import pipeline, which was the key diagnostic pivot in the conversation.",
+  "missed_opportunities": [
+    "Asking whether the reporter or anyone on their team recalled any change being made to how phone numbers are processed during import (even non-technical staff sometimes know this)",
+    "Asking whether the corruption appears in records that have not been touched by a recent sync cycle, which would confirm the nightly overwrite mechanism (the agent noted this as a gap but didn't ask the reporter to check)"
+  ]
+}

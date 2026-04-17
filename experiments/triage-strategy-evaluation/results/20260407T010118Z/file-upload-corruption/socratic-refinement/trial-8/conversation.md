@@ -1,0 +1,73 @@
+# Conversation: file-upload-corruption x socratic-refinement
+
+## Issue
+
+**PDF attachments are corrupted after upload**
+
+When customers upload PDF files to their tasks, the files come through broken. You can't open them — the PDF viewer says the file is damaged. This is happening for multiple customers. We use the file attachment feature heavily so this is really impacting our workflow.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — corrupted attachments definitely need to get sorted out quickly.
+
+To help me understand the full picture: can you walk me through what you were doing when you noticed the PDFs were corrupted? For example, were you uploading them while creating a new task, adding them to an existing one, or something else? And did this start happening recently, or is it something you've been seeing for a while?
+
+---
+
+### reporter
+
+Look, I don't remember the exact details of when I was doing what. All I know is our team uploads PDFs to tasks every day — both new tasks and existing ones — and they're coming out broken. It started maybe a week ago? We need this fixed, our customers are waiting on these documents and we can't send them corrupted files.
+
+---
+
+### triage-agent
+
+Totally understand the urgency — let's figure this out together.
+
+You mentioned this started about a week ago, which is really helpful. That suggests something changed around that time. Can you think of anything that was different around then — maybe a software update, a change in how your team creates or exports the PDFs, or even a new team member using the system? And when you say the PDFs come out broken, are you seeing that when you download them back from TaskFlow, or is it somewhere else in the process (like email notifications with attachments, API access, etc.)?
+
+---
+
+### reporter
+
+I don't know about any software updates, that's not my department. We haven't changed anything on our end — same PDFs we always upload. And yes, when we download them back from TaskFlow they're broken. We upload a perfectly good PDF, then when someone goes to download it later it's garbage. Can you just look into what changed on your side about a week ago?
+
+---
+
+### triage-agent
+
+Completely fair — we'll dig into what changed on our side. One thing that would really help the team narrow it down quickly: when you open one of these corrupted PDFs, what exactly do you see? For instance, is the file basically empty (tiny file size), does it look like it's the right size but the content is garbled, or does the PDF viewer give a specific error message? And is it happening to *every* PDF your team uploads, or are some getting through okay (maybe smaller ones, or ones from a particular source)?
+
+---
+
+### reporter
+
+The files look like they're about the right size, it's not like they're empty or anything. The content is just... garbage. The PDF viewer says the file is damaged or corrupted. And now that you mention it, I think some of the smaller PDFs might be okay actually? I'm not 100% sure but I feel like the little ones get through fine. It's the bigger reports and contracts that are definitely broken every time.
+
+---
+
+### triage-agent
+
+That detail about size is really useful — it could be the key to finding this quickly.
+
+To help narrow it down: do you have a rough sense of the cutoff? For example, are we talking about PDFs under a megabyte or two working fine, and ones over that breaking? Or is the line somewhere else — like under 5 MB vs. over 5 MB?
+
+Also, if you happen to have the same PDF uploaded both before this started (when it worked) and after (when it broke), that would be incredibly helpful for the team — they could compare the two stored files directly. No worries if not, but figured I'd ask.
+
+---
+
+### reporter
+
+I don't know the exact cutoff, I'm not sitting here measuring file sizes. The small simple PDFs seem to go through, the bigger ones with multiple pages — the contracts, the reports — those are the ones that are always broken. Maybe a megabyte or two? I really don't know. And no, I don't have some before-and-after comparison ready to go. Can someone on your engineering team just look at what changed a week ago? That seems like the obvious thing to do here.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Large PDF attachments corrupted after upload/download — size-dependent, started ~1 week ago","problem":"PDF files attached to tasks are returned corrupted when downloaded. The PDF viewer reports files as damaged. The file sizes appear roughly correct, but content is garbled. The issue is size-dependent: small, simple PDFs appear unaffected, while larger multi-page documents (contracts, reports, estimated >1-2 MB) are consistently corrupted. Multiple customers are affected. The issue began approximately one week ago with no changes on the customer side.","root_cause_hypothesis":"A deployment approximately one week ago likely introduced a defect in the file upload, storage, or download pipeline that corrupts large files. The fact that file sizes are preserved but content is garbled — and that small files are unaffected — strongly suggests a chunked transfer or streaming issue: for example, incorrect reassembly of multipart upload chunks, a base64 or binary encoding error applied during storage/retrieval that only manifests when data spans multiple chunks, or a buffer/size-limit change (e.g., a new request body size limit or proxy buffer) that silently corrupts payloads beyond a threshold.","reproduction_steps":["Upload a small PDF (<500 KB, single page) to a task and download it — verify it opens correctly","Upload a large PDF (>2 MB, multi-page) to a task","Download the large PDF","Attempt to open it — expect 'file is damaged/corrupted' error","Compare the binary content of the original and downloaded files (e.g., diff or checksum) to characterize the corruption pattern"],"environment":"TaskFlow file attachment feature, all users/customers affected, no specific browser or OS dependency reported. Issue is server-side (upload-store-download pipeline).","severity":"high","impact":"Multiple customers unable to use file attachments for large documents. This blocks workflows where teams share contracts, reports, and other multi-page PDFs through TaskFlow. Customers cannot send these documents to their own clients.","recommended_fix":"1. Review all deployments and configuration changes from approximately one week ago that touch the file upload, storage, or download codepath. 2. Binary-diff a corrupted downloaded file against its original to identify the corruption pattern (shifted bytes, encoding artifacts, truncated chunks, etc.). 3. Check for changes to: multipart upload handling, streaming/chunking logic, proxy or gateway body-size limits, binary vs. text mode in file I/O, and any encoding transformations applied during storage or retrieval. 4. Verify chunk reassembly order and completeness for files that span multiple chunks.","proposed_test_case":"Upload PDFs of varying sizes (500 KB, 1 MB, 2 MB, 5 MB, 10 MB) and verify that each downloaded file is byte-identical to the original (SHA-256 checksum match). Include both single-page and multi-page documents. This test should be added as an integration test against the upload/download pipeline.","information_gaps":["Exact size threshold at which corruption begins (reporter estimates ~1-2 MB but is unsure)","Specific deployment or configuration change that occurred ~1 week ago (requires internal investigation)","Whether the corruption pattern is consistent (same garbling each time) or variable","Whether non-PDF large files (images, Word docs, etc.) are also affected"]}
+
+---

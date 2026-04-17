@@ -1,0 +1,44 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 4,
+      "rationale": "The triage captured most expected extracts: archived tasks appearing in active filter results, active tasks missing from default search, the v2.3.1 update as the trigger (~3 days ago), multi-user impact (reporter + teammate), and the inverted filter behavior. Two items were missed: whether individual task pages show the correct archive status (a diagnostic that would distinguish index vs. UI issues), and any framing around search index vs. application logic."
+    },
+    "accuracy": {
+      "score": 4,
+      "rationale": "The agent correctly identified the v2.3.1 update as the trigger and the archive filter as the broken component, which matches acceptable diagnostic path 2. The root cause hypothesis (boolean inversion in the search query builder / application code) is directionally correct in spirit but points to the wrong layer — the actual inversion is in the search index field mapping, not application code. Under the acceptable paths, this still scores well since the migration trigger and broken filter component were both correctly identified."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked the right three questions: establishing expected filter behavior, narrowing the timeline to the v2.3.1 release, and running a confirmatory diagnostic test. The one obvious omission was not asking whether individual task pages (viewed directly, not via search) correctly reflect archive status — this simple question would have distinguished an index-layer bug from an application-layer bug and materially improved the root cause hypothesis."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three turns, each purposeful and non-redundant. The first clarified the expected behavior model, the second established the temporal trigger, and the third ran a targeted confirmatory test. No question could reasonably be dropped or combined."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The questions demonstrated genuine diagnostic reasoning. Q1 established the correct mental model before assuming anything. Q2 linked the symptom to a release event efficiently. Q3 was exemplary: the agent formed an explicit inversion hypothesis and designed a test the reporter could execute immediately to confirm or refute it — producing exactly the information needed to close the triage."
+    },
+    "actionability": {
+      "score": 3,
+      "rationale": "The summary includes reproduction steps, impact scoping, severity, a workaround, and proposed tests — all highly actionable. However, the recommended fix ('diff the search filter logic in the query builder') points a developer toward application code when the actual issue is in the search index field mapping configuration. A developer following this guidance would likely need to do a full diff before realizing the bug is in the index layer, adding investigative overhead. Still a reasonable starting point given what was knowable from the conversation."
+    }
+  },
+  "weighted_total": 4.15,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Formed an explicit inversion hypothesis and designed a confirmatory test for the reporter to run — this is the standout move of the conversation",
+    "Linked the timeline to a specific version release (v2.3.1) efficiently, giving developers a precise diff target",
+    "Triage summary is comprehensive: includes reproduction steps, workaround, severity, impact quantification, and proposed test cases"
+  ],
+  "notable_weaknesses": [
+    "Never asked whether individual task pages show the correct archive status — a one-question diagnostic that would have revealed the bug lives in the search index layer, not application code",
+    "Root cause hypothesis incorrectly locates the inversion in the query builder rather than the index field mapping, which could send a developer investigating the wrong layer first"
+  ],
+  "most_insightful_question": "Could you try toggling the archive filter to 'include archived' and searching again? — This directly tested the inversion hypothesis with a concrete, reporter-executable experiment, producing the clearest possible confirmation.",
+  "missed_opportunities": [
+    "Do task detail pages (opened directly from task lists, not search results) show the correct 'active' or 'archived' status for the affected tasks? — This would have distinguished an index-layer inversion from an application-layer bug, significantly improving the root cause hypothesis.",
+    "Did the v2.3.1 release include any database migrations or search index rebuilds? — Asking this would have surfaced the migration event and guided the fix toward the index configuration rather than application code."
+  ]
+}

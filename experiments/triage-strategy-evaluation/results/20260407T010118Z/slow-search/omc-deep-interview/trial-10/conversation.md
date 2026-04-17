@@ -1,0 +1,59 @@
+# Conversation: slow-search x omc-deep-interview
+
+## Issue
+
+**Search is really slow**
+
+The search feature used to be fast but now it takes forever. Sometimes it takes 10-15 seconds to get results. I have a lot of tasks but this seems excessive. Running TaskFlow on my work laptop.
+
+---
+
+## Comments
+
+### triage-agent
+
+Thanks for reporting this — slow search is definitely frustrating, especially when it used to be fast.
+
+Can you tell me a bit more about how you're searching when it gets slow? For example: are you using the main search bar, filtering within a project, or something else? And do you recall roughly when it started slowing down — was it after an update, after your task count grew past a certain point, or did it seem to happen suddenly?
+
+---
+
+### reporter
+
+I mostly use the main search bar at the top. I think it started maybe 2 weeks ago? I upgraded to v2.3 around that time so it might be related, but I'm not 100% sure. I have about 5,000 tasks built up over a couple years so it could also just be the volume I guess. What I've noticed is that searching for stuff in task descriptions is where it's really slow — if I just search by title it's still pretty quick.
+
+---
+
+### triage-agent
+
+That's really helpful — the fact that title search is still fast but description search is slow is a strong clue.
+
+Could you walk me through a specific example? For instance, pick a word or phrase you've searched for recently that was slow, and let me know roughly how many results came back and how long it took. And just to confirm — when you search by title and it's fast, is that using the same search bar with some kind of filter, or is there a separate title-only search option?
+
+---
+
+### reporter
+
+Hmm, let me think... I searched for "quarterly review" the other day because I knew I had some meeting notes pasted into a task description. It took probably 12-15 seconds and returned maybe 8 or 9 results. It's the same search bar for both — I think there's a dropdown or toggle next to it where you can pick whether to search titles only or include descriptions. When I leave it on the default (which searches descriptions too) that's when it crawls. If I switch it to title-only, same search bar, results come back in like a second.
+
+---
+
+### triage-agent
+
+That title-vs-description difference is a really useful data point, thanks.
+
+One more thing that would help us narrow this down: is the slowness consistent every time you search descriptions, or does it vary? For instance, is the first search of the day slower than subsequent ones, or is it always in that 10-15 second range regardless? And is this affecting just you, or have teammates on your account noticed the same thing? I'm asking because if it's consistent, that points toward a different root cause than if it fluctuates.
+
+---
+
+### reporter
+
+It's pretty consistent honestly. Every time I search descriptions it's slow, doesn't matter if it's the first search of the day or the tenth. Always in that 10-15 second range. I'm the only one using this installation — it's a local app on my work laptop, not a shared thing. I also noticed my laptop fan kicks on when I do the search, like it's really working hard on something.
+
+---
+
+### triage-agent
+
+[RESOLVED] {"title":"Description search performs full table scan, taking 10-15s with large task count (regression in v2.3)","problem":"Searching task descriptions via the main search bar takes 10-15 seconds consistently, while title-only search returns results in ~1 second. The user has ~5,000 tasks accumulated over two years. The slowdown appeared roughly 2 weeks ago, coinciding with an upgrade to v2.3. The laptop fan spins up during description searches, indicating high CPU usage.","root_cause_hypothesis":"v2.3 likely introduced a regression in the description search path — either a full-text index on the description column was dropped/not migrated, or the search implementation was changed from an indexed query to a brute-force scan (e.g., LIKE '%term%' or application-level string matching). The CPU fan behavior confirms the search is CPU-bound rather than I/O-bound, consistent with scanning 5,000 description blobs in-process or via unindexed SQL.","reproduction_steps":["Set up a local TaskFlow v2.3 installation","Import or create ~5,000 tasks with non-trivial description text","Open the main search bar and ensure the search mode is set to include descriptions (not title-only)","Search for a term like 'quarterly review' that appears in some task descriptions","Observe search time (~10-15 seconds) and CPU usage","Switch the toggle to title-only search and repeat the same query — should return in ~1 second"],"environment":"TaskFlow v2.3, local single-user installation on a work laptop (OS and specs not specified), ~5,000 tasks","severity":"medium","impact":"Any user with a large task count (~5,000+) running v2.3 will experience 10-15 second description searches. Title-only search still works as a workaround. Single-user local installations are affected; shared/server deployments may also be affected but were not tested.","recommended_fix":"1. Compare the v2.2 and v2.3 database schema and migration scripts for changes to the description column index or full-text search configuration. 2. Check if a full-text index on task descriptions was dropped or if the search query was changed to a non-indexed pattern (e.g., LIKE scan). 3. Profile the description search query with EXPLAIN/EXPLAIN ANALYZE on a 5,000-task dataset. 4. Restore or add a full-text index on the description column, or revert the search implementation to the v2.2 approach.","proposed_test_case":"Performance test: seed the database with 5,000 tasks with realistic descriptions, run a description search query, and assert it completes in under 2 seconds. Run this test against both v2.2 (baseline) and v2.3 to confirm regression and verify fix.","information_gaps":["Exact database backend (SQLite, PostgreSQL, etc.) — developer can determine from codebase","Whether v2.3 changelog mentions search-related changes","Laptop OS and hardware specs — unlikely to change fix direction given the indexed-vs-unindexed diagnosis"]}
+
+---

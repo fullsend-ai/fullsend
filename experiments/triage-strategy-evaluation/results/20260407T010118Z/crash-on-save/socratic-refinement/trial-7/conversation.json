@@ -1,0 +1,34 @@
+{
+  "title": "app crashes when I save",
+  "body": "The app keeps crashing whenever I try to save. This is really frustrating because I keep losing my work. Please fix this ASAP.",
+  "comments": [
+    {
+      "author": "triage-agent",
+      "body": "Thanks for reporting this — I can understand how frustrating it must be to lose your work. I'd like to help us get to the bottom of this.\n\nCould you walk me through what you were doing right before the crash? For example, what kind of task or document were you working on, and what did you click or do to trigger the save? Any detail about the moment it happened — even things that seem unrelated — would be really helpful."
+    },
+    {
+      "author": "reporter",
+      "body": "I was working on my task list, it has a bunch of tasks in it. I click Save in the toolbar and the whole app just closes. Sometimes I see some kind of error flash up but it's too fast to read. I've been using this app for months and it never did this before. Can you just fix it?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "That's really helpful context, thank you. You mentioned it never did this before — can you think of anything that changed around the time it started? For instance, did the app update recently, or has your task list grown a lot lately? And when you say you have \"a bunch of tasks,\" roughly how many are we talking about — dozens, hundreds, more? I'm trying to understand whether this might be related to the size of what you're saving or something else that shifted."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know, maybe like 200 tasks? I did import some stuff from a CSV a while back, that might have been around when it started but I'm not sure. Look, the app should just work — it's a save button. Can you just fix whatever's broken?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "Thanks for bearing with me — I know you just want it fixed, and we're getting closer to what a developer needs to track this down.\n\nThe CSV import is an interesting thread. Could you tell me a bit more about that import? For instance, did the tasks you imported have anything unusual in them — like very long descriptions, special characters, or fields left blank? And have you tried creating a brand-new task list with just a few tasks and saving that — does it work fine, or does it crash there too?\n\nAlso, that error message that flashes by could be the key to the whole thing. If you're up for it, could you try to save one more time and grab a screenshot or screen recording of it? Even a blurry snapshot might give us the exact error a developer needs."
+    },
+    {
+      "author": "reporter",
+      "body": "I don't know, the CSV had a bunch of task names in it, probably had some weird characters since it came from another app. I'm not going to try to reproduce the crash again on purpose — I already lost work twice doing that. I can tell you that when I make a small list with just a few tasks it saves fine. And yeah I tried removing the imported tasks and that seemed to fix it but I need those tasks. That error says something about 'encoding' I think but like I said it disappears in like half a second. Can someone just look at the save code?"
+    },
+    {
+      "author": "triage-agent",
+      "body": "[RESOLVED] {\"title\":\"App crashes on save when task list contains CSV-imported tasks with non-standard characters (encoding error)\",\"problem\":\"The application crashes (closes entirely) when the user clicks Save on a task list containing ~200 tasks imported from a CSV file originating from another application. A brief error referencing 'encoding' flashes before the crash. Manually created task lists and small lists save without issue. Removing the imported tasks resolves the crash, but the user needs those tasks.\",\"root_cause_hypothesis\":\"The save/serialization codepath does not handle non-UTF-8 or special characters present in CSV-imported task data. When the app attempts to serialize these tasks (likely to JSON, XML, or another text format), it hits an unhandled encoding error that crashes the application instead of being caught gracefully.\",\"reproduction_steps\":[\"Create a CSV file with task names containing special characters, mixed encodings, or non-ASCII characters (e.g., from a non-UTF-8 source application)\",\"Import the CSV into TaskFlow to create a task list with a substantial number of tasks (~200)\",\"Click Save in the toolbar\",\"Observe the application crash with a brief encoding-related error\"],\"environment\":\"Not specified — reporter has used the app for months; issue began around the time of CSV import. Platform and app version not provided but not critical given the clear reproduction path.\",\"severity\":\"high\",\"impact\":\"Users who import tasks from external sources via CSV cannot save their work and lose data on each crash. The reporter has lost work at least twice. This blocks a core workflow (import + save) and there is no workaround that preserves the imported data.\",\"recommended_fix\":\"1. Examine the save/serialization codepath for how it encodes task data — look for implicit encoding assumptions (e.g., assuming ASCII or failing to specify UTF-8). 2. Add encoding normalization or sanitization during CSV import so that all imported text is converted to a consistent encoding (UTF-8) at ingest time. 3. Add error handling around the save operation so that encoding failures surface a user-visible error message instead of crashing the app. 4. Consider adding a fallback that preserves the user's work even when save fails (e.g., auto-save to a recovery file before attempting the full save).\",\"proposed_test_case\":\"Import a CSV file containing task names with non-ASCII characters (e.g., em dashes, curly quotes, accented characters, null bytes, and mixed Latin-1/UTF-8 encodings). Verify that: (a) the import completes without error, (b) saving the resulting task list succeeds, and (c) if any character cannot be saved, the app shows a clear error without crashing or losing data.\",\"information_gaps\":[\"Exact error message text (reporter cannot capture it safely)\",\"Specific characters or encodings present in the original CSV\",\"Application version and operating system\",\"Whether the original CSV file is still available for developer reproduction\"]}"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "scores": {
+    "completeness": {
+      "score": 5,
+      "rationale": "All seven expected extracts are present: 2-4 hour delay, ~1 week onset, morning-worse/afternoon-better pattern, digest batch link, queue congestion, transactional vs. bulk competition, and the original <2-minute baseline. The summary adds reproduction steps, a proposed test case, severity classification, workaround, and ranked fix options — all useful additions beyond the minimum."
+    },
+    "accuracy": {
+      "score": 5,
+      "rationale": "The triage correctly identifies the digest feature launch timing (~1 week ago), the 9am batch as the congestion source, and queue competition between bulk and transactional emails. While it doesn't name the specific priority=1 inversion, it lands squarely on acceptable path #2 (digest as cause, queue congestion identified). The first recommended fix — 'Implement priority lanes in the email queue so transactional emails are sent ahead of bulk emails' — is essentially the canonical fix, demonstrating the agent's reasoning arrived at the right conclusion."
+    },
+    "thoroughness": {
+      "score": 4,
+      "rationale": "The agent asked about scope (all users?), trigger (what changed?), digest timing, and email header timestamps. It validated its theory before closing and noted remaining unknowns as information gaps. The main gap is not probing server-side queue metrics or logs — though this is acknowledged in the summary. One obvious follow-up left on the table: whether there are admin-visible queue depth metrics that could confirm the hypothesis without code changes."
+    },
+    "economy": {
+      "score": 5,
+      "rationale": "Three rounds of Q&A, each well-targeted. Turn 1 established scope and onset; Turn 2 nailed the timing correlation and ruled out delivery-side issues; Turn 3 validated the theory and estimated scale. No redundant questions, no information asked twice, no low-value fishing."
+    },
+    "question_quality": {
+      "score": 5,
+      "rationale": "The email-header timestamp question in Turn 2 — distinguishing whether the system sent the email late versus the email provider delivered it late — is genuinely insightful diagnostic reasoning that a non-expert reporter would never have volunteered. This single question ruled out a major alternative hypothesis (email provider delay) and pointed squarely at the queue. The question about digest send timing in the same turn was equally targeted. The scale question in Turn 3 (how many recipients?) was the right follow-up to validate the congestion magnitude."
+    },
+    "actionability": {
+      "score": 5,
+      "rationale": "A developer could start investigating immediately: the summary names the digest feature, identifies the queue as the contention point, provides reproduction steps with timing, proposes three ranked fixes (priority lanes, rate-limiting, separate queue), includes a concrete test case with success criteria, and lists exactly what server-side information is still needed. The triage converts a vague user complaint into a developer work item with no ambiguity about where to look first."
+    }
+  },
+  "weighted_total": 4.85,
+  "turn_count": 3,
+  "notable_strengths": [
+    "Immediately recognized the 9-10am timing pattern as a diagnostic signal and built the entire investigation around it",
+    "Latched onto the reporter's offhand mention of 'digest or newsletter thing' and correctly identified it as the likely cause without leading the reporter",
+    "The email-header timestamp question cleanly bifurcated 'queue backed up' from 'email provider slow' — a hypothesis-elimination technique rarely volunteered by reporters",
+    "Formulated and presented the queue-congestion theory explicitly before closing, giving the reporter a chance to confirm or contradict",
+    "Triage summary includes ranked fix options and a concrete test case, making it immediately developer-actionable"
+  ],
+  "notable_weaknesses": [
+    "Did not ask whether any admin dashboard or monitoring shows email queue depth — a low-cost confirmation that wouldn't require code access",
+    "Did not ask whether the digest feature has any configuration options (batch size, send window, rate limit) that could serve as a quick workaround without disabling it entirely",
+    "Exact digest recipient count was left as an information gap; a more targeted question (e.g., 'does the digest go to every user in the org or is it opt-in?') might have elicited a more precise number"
+  ],
+  "most_insightful_question": "Does the email header or timestamp show it was sent on time but delivered late, or does it look like the system didn't even send it until hours after the task was assigned?",
+  "missed_opportunities": [
+    "Ask whether the TaskFlow admin panel or email service dashboard shows queue depth or delivery metrics — would confirm the congestion theory without requiring engineering access",
+    "Ask whether the digest feature is opt-in or org-wide default — relevant to scoping the blast radius and estimating recipient count more precisely",
+    "Ask whether disabling the digest temporarily (as a workaround test) is an option — would both provide relief and serve as a live experiment confirming the hypothesis"
+  ]
+}
