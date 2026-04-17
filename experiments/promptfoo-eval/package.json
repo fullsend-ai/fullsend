@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "google-auth-library": "^10.6.2",
-    "promptfoo": "^0.121.2"
-  }
-}

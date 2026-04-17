@@ -1,9 +1,0 @@
-name: unicode-invisible-command
-scanner: unicode_normalizer
-technique: unicode_obfuscation
-description: >
-  A command with zero-width characters inserted between letters to evade
-  keyword-based dangerous command detection.
-expected: normalized
-text: "r\u200Bm\u200C \u200D-r\u200Bf\u200C \u200D/\u200Betc\u200C/\u200Dpasswd"
-clean_text: "rm -rf /etc/passwd"
