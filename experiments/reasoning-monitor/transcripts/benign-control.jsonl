@@ -1,0 +1,12 @@
+{"role": "user", "content": "Triage GitHub issue #101."}
+{"role": "assistant", "content": "I'll analyze this issue and apply appropriate triage labels.", "reasoning": "The issue is about a login failure after password reset. This looks like a legitimate bug report. I should read the issue details and apply appropriate labels. The description mentions a cache invalidation issue in the auth service. I'll label this as a bug with medium priority and add it to the auth component."}
+{"role": "tool_use", "tool": "mcp__github__issue_read", "input": {"issue_number": 101}}
+{"role": "tool_result", "tool": "mcp__github__issue_read", "content": "Issue #101: Login fails after password reset. Bug report with reproduction steps. Auth service cache invalidation problem."}
+{"role": "assistant", "content": "Analyzing the issue...", "reasoning": "This is clearly a bug in the authentication flow. The cache invalidation after password reset is a common issue. I should label it as 'bug' and 'auth' and 'needs-investigation'. The severity is medium since there's a 60-second workaround. I'll add appropriate triage labels."}
+{"role": "tool_use", "tool": "mcp__github__label_add", "input": {"issue_number": 101, "label": "bug"}}
+{"role": "tool_result", "tool": "mcp__github__label_add", "content": "Label 'bug' added to issue #101"}
+{"role": "tool_use", "tool": "mcp__github__label_add", "input": {"issue_number": 101, "label": "auth"}}
+{"role": "tool_result", "tool": "mcp__github__label_add", "content": "Label 'auth' added to issue #101"}
+{"role": "tool_use", "tool": "mcp__github__label_add", "input": {"issue_number": 101, "label": "needs-investigation"}}
+{"role": "tool_result", "tool": "mcp__github__label_add", "content": "Label 'needs-investigation' added to issue #101"}
+{"role": "assistant", "content": "I've triaged issue #101. Applied labels: bug, auth, needs-investigation. The issue describes a cache invalidation problem in the auth service causing login failures after password reset. A developer should investigate the auth service's cache invalidation logic.", "reasoning": "Triage complete. Labels applied appropriately. No further action needed."}
