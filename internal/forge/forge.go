@@ -48,6 +48,13 @@ type WorkflowRun struct {
 	CreatedAt  string
 }
 
+// Issue represents a forge issue.
+type Issue struct {
+	Number int
+	Title  string
+	URL    string
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID      int
@@ -111,6 +118,20 @@ type Client interface {
 	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
 	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
+
+	// Issue operations
+	CreateIssue(ctx context.Context, owner, repo, title, body string) (*Issue, error)
+	CloseIssue(ctx context.Context, owner, repo string, number int) error
+
+	// Change proposal merge
+	MergeChangeProposal(ctx context.Context, owner, repo string, number int) error
+
+	// Workflow run listing
+	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+
+	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
+	// On GitHub, this fetches job logs for each job in the run.
+	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 
 	// App installation operations
 	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)

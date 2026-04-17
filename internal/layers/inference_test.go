@@ -19,12 +19,14 @@ type fakeProvider struct {
 	name        string
 	secretNames []string
 	secrets     map[string]string
+	variables   map[string]string
 	err         error
 }
 
 func (f *fakeProvider) Name() string                                          { return f.name }
 func (f *fakeProvider) SecretNames() []string                                 { return f.secretNames }
 func (f *fakeProvider) Provision(_ context.Context) (map[string]string, error) { return f.secrets, f.err }
+func (f *fakeProvider) Variables() map[string]string                          { return f.variables }
 
 func newInferenceLayer(t *testing.T, client *forge.FakeClient, provider inference.Provider) (*InferenceLayer, *bytes.Buffer) {
 	t.Helper()
@@ -39,8 +41,11 @@ func vertexProvider() *fakeProvider {
 		name:        "vertex",
 		secretNames: []string{"FULLSEND_GCP_SA_KEY_JSON", "FULLSEND_GCP_PROJECT_ID"},
 		secrets: map[string]string{
-			"FULLSEND_GCP_SA_KEY_JSON":  `{"type":"service_account"}`,
-			"FULLSEND_GCP_PROJECT_ID":   "my-project",
+			"FULLSEND_GCP_SA_KEY_JSON": `{"type":"service_account"}`,
+			"FULLSEND_GCP_PROJECT_ID":  "my-project",
+		},
+		variables: map[string]string{
+			"FULLSEND_GCP_REGION": "us-east5",
 		},
 	}
 }
@@ -69,6 +74,11 @@ func TestInferenceLayer_Install_StoresSecrets(t *testing.T) {
 
 	assert.Equal(t, `{"type":"service_account"}`, secretMap["FULLSEND_GCP_SA_KEY_JSON"])
 	assert.Equal(t, "my-project", secretMap["FULLSEND_GCP_PROJECT_ID"])
+
+	// Variables should also have been set.
+	require.Len(t, client.Variables, 1)
+	assert.Equal(t, "FULLSEND_GCP_REGION", client.Variables[0].Name)
+	assert.Equal(t, "us-east5", client.Variables[0].Value)
 }
 
 func TestInferenceLayer_Install_NilProvider(t *testing.T) {
@@ -118,6 +128,10 @@ func TestInferenceLayer_Install_SkipsWhenSecretsExist(t *testing.T) {
 	assert.Empty(t, client.CreatedSecrets)
 	// Should indicate skipping in output.
 	assert.Contains(t, buf.String(), "already provisioned")
+
+	// Variables should still have been written (always runs).
+	require.Len(t, client.Variables, 1)
+	assert.Equal(t, "FULLSEND_GCP_REGION", client.Variables[0].Name)
 }
 
 func TestInferenceLayer_Uninstall_Noop(t *testing.T) {
@@ -134,6 +148,7 @@ func TestInferenceLayer_Analyze_AllPresent(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_SA_KEY_JSON"] = true
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
+	client.VariablesExist["test-org/.fullsend/FULLSEND_GCP_REGION"] = true
 	provider := vertexProvider()
 	layer, _ := newInferenceLayer(t, client, provider)
 
@@ -142,7 +157,7 @@ func TestInferenceLayer_Analyze_AllPresent(t *testing.T) {
 
 	assert.Equal(t, "inference", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Len(t, report.Details, 2)
+	assert.Len(t, report.Details, 3) // 2 secrets + 1 variable
 	assert.Empty(t, report.WouldInstall)
 }
 
@@ -155,7 +170,7 @@ func TestInferenceLayer_Analyze_NonePresent(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, StatusNotInstalled, report.Status)
-	assert.Len(t, report.WouldInstall, 2)
+	assert.Len(t, report.WouldInstall, 3) // 2 secrets + 1 variable
 }
 
 func TestInferenceLayer_Analyze_Partial(t *testing.T) {

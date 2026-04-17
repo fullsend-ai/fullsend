@@ -524,7 +524,9 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 		return nil, fmt.Errorf("decode file content: %w", err)
 	}
 
-	data, err := base64.StdEncoding.DecodeString(file.Content)
+	// GitHub's Contents API returns base64 with MIME-style line wrapping.
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(file.Content, "\n", ""), "\r", "")
+	data, err := base64.StdEncoding.DecodeString(cleaned)
 	if err != nil {
 		return nil, fmt.Errorf("decode base64 content: %w", err)
 	}
@@ -669,6 +671,10 @@ func (c *LiveClient) GetTokenScopes(ctx context.Context) ([]string, error) {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, &APIError{StatusCode: resp.StatusCode, Message: "token validation failed"}
+	}
+
 	header := resp.Header.Get("X-OAuth-Scopes")
 	if header == "" {
 		// Fine-grained tokens and GitHub App tokens don't populate this header.
@@ -755,8 +761,9 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 	}
 
 	// Try PATCH first (update existing).
-	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), payload)
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), payload)
 	if err == nil {
+		resp.Body.Close()
 		return nil
 	}
 
@@ -769,11 +776,11 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 		"name":  name,
 		"value": value,
 	}
-	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables", owner, repo), createPayload)
+	resp2, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables", owner, repo), createPayload)
 	if err != nil {
 		return fmt.Errorf("create variable %s: %w", name, err)
 	}
-	resp.Body.Close()
+	resp2.Body.Close()
 	return nil
 }
 
@@ -862,9 +869,13 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 // DispatchWorkflow triggers a workflow_dispatch event on a workflow file.
 // GitHub returns 204 No Content on success (not 200 or 201).
 func (c *LiveClient) DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error {
+	dispatchInputs := make(map[string]string)
+	for k, v := range inputs {
+		dispatchInputs[k] = v
+	}
 	payload := map[string]any{
 		"ref":    ref,
-		"inputs": inputs,
+		"inputs": dispatchInputs,
 	}
 	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/dispatches", owner, repo, workflowFile), payload)
 	if err != nil {
@@ -875,6 +886,119 @@ func (c *LiveClient) DispatchWorkflow(ctx context.Context, owner, repo, workflow
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// CreateIssue creates a new issue on a repository.
+func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body string) (*forge.Issue, error) {
+	payload := map[string]string{"title": title, "body": body}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues", owner, repo), payload)
+	if err != nil {
+		return nil, fmt.Errorf("create issue: %w", err)
+	}
+	var result struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue: %w", err)
+	}
+	return &forge.Issue{Number: result.Number, Title: result.Title, URL: result.HTMLURL}, nil
+}
+
+// CloseIssue closes an issue by number.
+func (c *LiveClient) CloseIssue(ctx context.Context, owner, repo string, number int) error {
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), map[string]string{"state": "closed"})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// MergeChangeProposal squash-merges a pull request by number.
+func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
+	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})
+	if err != nil {
+		return fmt.Errorf("merge pull request #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ListWorkflowRuns returns recent workflow runs for a workflow file.
+func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]forge.WorkflowRun, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow runs: %w", err)
+	}
+	var result struct {
+		WorkflowRuns []struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			HTMLURL    string `json:"html_url"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"workflow_runs"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode workflow runs: %w", err)
+	}
+	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
+	for i, r := range result.WorkflowRuns {
+		runs[i] = forge.WorkflowRun{
+			ID:         r.ID,
+			Name:       r.Name,
+			Status:     r.Status,
+			Conclusion: r.Conclusion,
+			HTMLURL:    r.HTMLURL,
+			CreatedAt:  r.CreatedAt,
+		}
+	}
+	return runs, nil
+}
+
+// GetWorkflowRunLogs downloads the logs for a workflow run.
+// It fetches the job list for the run and concatenates each job's log output.
+func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error) {
+	// List jobs for this run.
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs", owner, repo, runID))
+	if err != nil {
+		return "", fmt.Errorf("list jobs for run %d: %w", runID, err)
+	}
+	var jobsResult struct {
+		Jobs []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"jobs"`
+	}
+	if err := decodeJSON(resp, &jobsResult); err != nil {
+		return "", fmt.Errorf("decode jobs: %w", err)
+	}
+
+	var buf strings.Builder
+	for _, job := range jobsResult.Jobs {
+		// Download logs for each job (returns plain text, 302 redirect to download URL).
+		jobResp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", owner, repo, job.ID), nil)
+		if err != nil {
+			fmt.Fprintf(&buf, "=== %s (job %d) ===\n[failed to fetch logs: %v]\n\n", job.Name, job.ID, err)
+			continue
+		}
+		if jobResp.StatusCode < 200 || jobResp.StatusCode >= 300 {
+			jobResp.Body.Close()
+			fmt.Fprintf(&buf, "=== %s (job %d) ===\n[logs unavailable: HTTP %d]\n\n", job.Name, job.ID, jobResp.StatusCode)
+			continue
+		}
+		logData, readErr := io.ReadAll(jobResp.Body)
+		jobResp.Body.Close()
+		if readErr != nil {
+			fmt.Fprintf(&buf, "=== %s (job %d) ===\n[failed to read logs: %v]\n\n", job.Name, job.ID, readErr)
+			continue
+		}
+		fmt.Fprintf(&buf, "=== %s (job %d) ===\n%s\n", job.Name, job.ID, string(logData))
+	}
+	return buf.String(), nil
 }
 
 // ListOrgInstallations lists app installations for an organization.

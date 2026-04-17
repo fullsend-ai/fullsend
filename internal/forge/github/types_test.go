@@ -22,6 +22,7 @@ func TestAgentAppConfig_Fullsend(t *testing.T) {
 	assert.NotEmpty(t, cfg.URL)
 
 	assert.Equal(t, "write", cfg.Permissions.Contents)
+	assert.Equal(t, "write", cfg.Permissions.Workflows)
 	assert.Equal(t, "read", cfg.Permissions.Issues)
 	assert.Equal(t, "write", cfg.Permissions.PullRequests)
 	assert.Equal(t, "read", cfg.Permissions.Checks)

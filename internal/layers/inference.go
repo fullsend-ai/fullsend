@@ -69,27 +69,38 @@ func (l *InferenceLayer) Install(ctx context.Context) error {
 	}
 	if allExist {
 		l.ui.StepDone(fmt.Sprintf("%s credentials already provisioned, skipping", l.provider.Name()))
-		return nil
-	}
+	} else {
+		l.ui.StepStart(fmt.Sprintf("provisioning %s credentials", l.provider.Name()))
 
-	l.ui.StepStart(fmt.Sprintf("provisioning %s credentials", l.provider.Name()))
-
-	secrets, err := l.provider.Provision(ctx)
-	if err != nil {
-		l.ui.StepFail(fmt.Sprintf("failed to provision %s credentials", l.provider.Name()))
-		return fmt.Errorf("provisioning %s: %w", l.provider.Name(), err)
-	}
-
-	for name, value := range secrets {
-		l.ui.StepStart(fmt.Sprintf("storing %s", name))
-		if err := l.client.CreateRepoSecret(ctx, l.org, forge.ConfigRepoName, name, value); err != nil {
-			l.ui.StepFail(fmt.Sprintf("failed to store %s", name))
-			return fmt.Errorf("creating secret %s: %w", name, err)
+		secrets, err := l.provider.Provision(ctx)
+		if err != nil {
+			l.ui.StepFail(fmt.Sprintf("failed to provision %s credentials", l.provider.Name()))
+			return fmt.Errorf("provisioning %s: %w", l.provider.Name(), err)
 		}
-		l.ui.StepDone(fmt.Sprintf("stored %s", name))
+
+		for name, value := range secrets {
+			l.ui.StepStart(fmt.Sprintf("storing %s", name))
+			if err := l.client.CreateRepoSecret(ctx, l.org, forge.ConfigRepoName, name, value); err != nil {
+				l.ui.StepFail(fmt.Sprintf("failed to store %s", name))
+				return fmt.Errorf("creating secret %s: %w", name, err)
+			}
+			l.ui.StepDone(fmt.Sprintf("stored %s", name))
+		}
+
+		l.ui.StepDone(fmt.Sprintf("%s credentials provisioned", l.provider.Name()))
 	}
 
-	l.ui.StepDone(fmt.Sprintf("%s credentials provisioned", l.provider.Name()))
+	// Store non-secret variables (e.g. region). Always run — variables are
+	// cheap to set and idempotent, and may be added after initial install.
+	for name, value := range l.provider.Variables() {
+		l.ui.StepStart(fmt.Sprintf("setting variable %s", name))
+		if err := l.client.CreateOrUpdateRepoVariable(ctx, l.org, forge.ConfigRepoName, name, value); err != nil {
+			l.ui.StepFail(fmt.Sprintf("failed to set variable %s", name))
+			return fmt.Errorf("setting variable %s: %w", name, err)
+		}
+		l.ui.StepDone(fmt.Sprintf("set variable %s", name))
+	}
+
 	return nil
 }
 
@@ -115,6 +126,19 @@ func (l *InferenceLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		exists, err := l.client.RepoSecretExists(ctx, l.org, forge.ConfigRepoName, name)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", name, err)
+		}
+		if exists {
+			present = append(present, name)
+		} else {
+			missing = append(missing, name)
+		}
+	}
+
+	// Check variables (e.g. region).
+	for name := range l.provider.Variables() {
+		exists, err := l.client.RepoVariableExists(ctx, l.org, forge.ConfigRepoName, name)
+		if err != nil {
+			return nil, fmt.Errorf("checking variable %s: %w", name, err)
 		}
 		if exists {
 			present = append(present, name)
