@@ -75,6 +75,86 @@ func LoadProviderDefs(dir string) ([]ProviderDef, error) {
 	return defs, nil
 }
 
+// SecurityConfig configures security scanning for the agent run.
+// Secure by default: omitting this block enables all scanners with fail_mode: closed.
+type SecurityConfig struct {
+	Enabled      *bool            `yaml:"enabled,omitempty"`       // nil = true (secure by default)
+	FailMode     string           `yaml:"fail_mode,omitempty"`     // "closed" or "open". Default: "closed"
+	HostScanners *HostScanners    `yaml:"host_scanners,omitempty"`
+	SandboxHooks *SandboxHooks    `yaml:"sandbox_hooks,omitempty"`
+	Escalation   *EscalationConfig `yaml:"escalation,omitempty"`
+	Trace        *TraceConfig     `yaml:"trace,omitempty"`
+}
+
+// HostScanners configures which scanners run on the host before sandbox creation
+// (Path A: GHA workflow pre-step) or inside the sandbox before the agent starts
+// (Path B: fullsend scan context).
+type HostScanners struct {
+	UnicodeNormalizer *bool           `yaml:"unicode_normalizer,omitempty"` // default: true
+	ContextInjection  *bool           `yaml:"context_injection,omitempty"`  // default: true
+	SSRFValidator     *bool           `yaml:"ssrf_validator,omitempty"`     // default: true
+	SecretRedactor    *bool           `yaml:"secret_redactor,omitempty"`    // default: true
+	LLMGuard          *LLMGuardConfig `yaml:"llm_guard,omitempty"`
+}
+
+// LLMGuardConfig configures the LLM Guard ML-based prompt injection scanner.
+// Runs in Path A (GHA workflow pre-step) and Path B (sandbox) when the base
+// sandbox image includes the pre-installed LLM Guard and DeBERTa-v3 model.
+type LLMGuardConfig struct {
+	Enabled   *bool   `yaml:"enabled,omitempty"`    // default: true
+	Threshold float64 `yaml:"threshold,omitempty"`  // default: 0.92
+	MatchType string  `yaml:"match_type,omitempty"` // "sentence" or "full". Default: "sentence"
+}
+
+// SandboxHooks configures Claude Code PreToolUse/PostToolUse hooks
+// that run inside the sandbox during agent execution.
+type SandboxHooks struct {
+	Tirith               *TirithConfig `yaml:"tirith,omitempty"`
+	SSRFPreTool          *bool         `yaml:"ssrf_pretool,omitempty"`          // default: true
+	SecretRedactPostTool *bool         `yaml:"secret_redact_posttool,omitempty"` // default: true
+}
+
+// TirithConfig configures the Tirith Rust CLI scanner for terminal security.
+type TirithConfig struct {
+	Enabled *bool  `yaml:"enabled,omitempty"` // default: true
+	FailOn  string `yaml:"fail_on,omitempty"` // "critical", "high", "medium". Default: "high"
+}
+
+// EscalationConfig controls what happens when critical findings are detected.
+type EscalationConfig struct {
+	OnCritical  string `yaml:"on_critical,omitempty"`  // "halt" or "review". Default: "halt"
+	ReviewLabel string `yaml:"review_label,omitempty"` // Default: "requires-manual-review"
+}
+
+// TraceConfig controls trace ID generation for security finding correlation.
+type TraceConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty"` // default: true
+}
+
+// BoolDefault returns the value of a *bool, or the default if nil.
+func BoolDefault(b *bool, def bool) bool {
+	if b == nil {
+		return def
+	}
+	return *b
+}
+
+// SecurityEnabled returns true if security scanning is enabled (default: true).
+func (h *Harness) SecurityEnabled() bool {
+	if h.Security == nil {
+		return true
+	}
+	return BoolDefault(h.Security.Enabled, true)
+}
+
+// FailModeClosed returns true if the security fail mode is "closed" (default).
+func (h *Harness) FailModeClosed() bool {
+	if h.Security == nil || h.Security.FailMode == "" || h.Security.FailMode == "closed" {
+		return true
+	}
+	return false
+}
+
 // APIServer describes a host-side REST proxy server.
 type APIServer struct {
 	Name   string            `yaml:"name"`
@@ -108,6 +188,7 @@ type Harness struct {
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 	TimeoutMinutes int               `yaml:"timeout_minutes,omitempty"`
+	Security       *SecurityConfig   `yaml:"security,omitempty"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -156,6 +237,53 @@ func (h *Harness) Validate() error {
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
 	}
+	if err := h.validateSecurity(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSecurity checks that security config fields use valid values.
+func (h *Harness) validateSecurity() error {
+	if h.Security == nil {
+		return nil
+	}
+	s := h.Security
+
+	switch s.FailMode {
+	case "", "closed", "open":
+	default:
+		return fmt.Errorf("security.fail_mode must be \"closed\" or \"open\", got %q", s.FailMode)
+	}
+
+	if s.HostScanners != nil && s.HostScanners.LLMGuard != nil {
+		lg := s.HostScanners.LLMGuard
+		if lg.Threshold != 0 && (lg.Threshold < 0 || lg.Threshold > 1) {
+			return fmt.Errorf("security.host_scanners.llm_guard.threshold must be between 0 and 1, got %v", lg.Threshold)
+		}
+		switch lg.MatchType {
+		case "", "sentence", "full":
+		default:
+			return fmt.Errorf("security.host_scanners.llm_guard.match_type must be \"sentence\" or \"full\", got %q", lg.MatchType)
+		}
+	}
+
+	if s.SandboxHooks != nil && s.SandboxHooks.Tirith != nil {
+		switch s.SandboxHooks.Tirith.FailOn {
+		case "", "critical", "high", "medium":
+		default:
+			return fmt.Errorf("security.sandbox_hooks.tirith.fail_on must be \"critical\", \"high\", or \"medium\", got %q", s.SandboxHooks.Tirith.FailOn)
+		}
+	}
+
+	if s.Escalation != nil {
+		switch s.Escalation.OnCritical {
+		case "", "halt", "review":
+		default:
+			return fmt.Errorf("security.escalation.on_critical must be \"halt\" or \"review\", got %q", s.Escalation.OnCritical)
+		}
+	}
+
 	return nil
 }
 

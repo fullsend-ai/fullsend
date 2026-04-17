@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -261,7 +262,42 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 		printer.StepDone("Agent-input files copied")
 	}
 
-	// 9. Run agent with validation loop.
+	// 9a. Generate trace ID for security finding correlation.
+	traceID := security.GenerateTraceID()
+	printer.KeyValue("Trace ID", traceID)
+	if err := injectTraceID(sshConfigPath, sandboxName, traceID); err != nil {
+		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
+	}
+
+	// 9b. Pre-agent security scan (sandbox-internal, Path B).
+	// Scans context files (CLAUDE.md, AGENTS.md, .cursorrules, agent defs)
+	// that were just copied into the sandbox.
+	if h.SecurityEnabled() {
+		printer.StepStart("Running pre-agent security scan")
+		scanCmd := buildScanContextCommand(repoDir, traceID)
+		stdout, stderr, exitCode, sshErr := sandbox.SSH(sshConfigPath, sandboxName, scanCmd, 60*time.Second)
+		if sshErr != nil {
+			printer.StepFail("Security scan SSH failed: " + sshErr.Error())
+			if h.FailModeClosed() {
+				return fmt.Errorf("pre-agent security scan failed: %w", sshErr)
+			}
+			printer.StepWarn("Continuing despite scan failure (fail_mode: open)")
+		} else if exitCode != 0 {
+			printer.StepWarn("Security scan findings:\n" + stdout)
+			if stderr != "" {
+				printer.StepWarn("Scan stderr: " + stderr)
+			}
+			if h.FailModeClosed() {
+				printer.StepFail("BLOCKED: pre-agent scan detected critical findings")
+				return fmt.Errorf("pre-agent security scan blocked: critical findings detected")
+			}
+			printer.StepWarn("Continuing despite findings (fail_mode: open)")
+		} else {
+			printer.StepDone("Pre-agent scan passed")
+		}
+	}
+
+	// 9c. Run agent with validation loop.
 	agentBaseName := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
 	claudeCmd := buildClaudeCommand(agentBaseName, h.Model, repoDir)
 
@@ -388,12 +424,32 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 		}
 	}
 
+	// 9e. Post-agent output scan — redact secrets from extracted output.
+	if h.SecurityEnabled() {
+		printer.StepStart("Running post-agent output scan")
+		if err := scanOutputFiles(runDir, traceID, printer); err != nil {
+			printer.StepWarn("Output scan error: " + err.Error())
+		}
+
+		// Extract sandbox-side security findings for audit trail.
+		findingsDir := filepath.Join(runDir, "security")
+		if err := os.MkdirAll(findingsDir, 0o755); err == nil {
+			remoteFindingsDir := sandbox.SandboxWorkspace + "/.security/"
+			if scpErr := sandbox.SCPFrom(sshConfigPath, sandboxName, remoteFindingsDir, findingsDir); scpErr != nil {
+				printer.StepInfo("No sandbox security findings to extract")
+			} else {
+				printer.StepDone("Security findings extracted")
+			}
+		}
+	}
+
 	// 10. Print results.
 	printer.Blank()
 	printer.Header("Results")
 	printer.KeyValue("Run directory", runDir)
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
+	printer.KeyValue("Trace ID", traceID)
 	if h.ValidationLoop != nil {
 		if validationPassed {
 			printer.KeyValue("Validation", "passed")
@@ -415,8 +471,8 @@ func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Har
 	// Agent and skill definitions go in CLAUDE_CONFIG_DIR so `claude --agent`
 	// finds them regardless of the repo's own .claude/ directory. When
 	// CLAUDE_CONFIG_DIR is set, Claude uses it instead of ~/.claude/.
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/bin %s/.env.d %s",
-		sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/hooks %s/bin %s/.env.d %s/.security %s",
+		sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig)
 	if _, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, mkdirCmd, 10*time.Second); err != nil {
 		return fmt.Errorf("creating workspace dirs: %w", err)
 	}
@@ -440,6 +496,13 @@ func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Har
 	// Write .env file (infrastructure vars) and copy host files.
 	if err := bootstrapEnv(sshConfigPath, sandboxName, repoDir, h); err != nil {
 		return fmt.Errorf("bootstrapping environment: %w", err)
+	}
+
+	// Install security hooks if enabled.
+	if h.SecurityEnabled() {
+		if err := bootstrapSecurityHooks(sshConfigPath, sandboxName, h); err != nil {
+			return fmt.Errorf("bootstrapping security hooks: %w", err)
+		}
 	}
 
 	return nil
@@ -559,4 +622,202 @@ func buildClaudeCommand(agentName, model, repoDir string) string {
 		"cd %s && source %s && claude --print %s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
 		repoDir, envFile, modelFlag, safe,
 	)
+}
+
+// buildScanContextCommand builds the SSH command to run `fullsend scan context`
+// inside the sandbox. It finds known context files in the repo directory and
+// passes them as arguments.
+func buildScanContextCommand(repoDir, traceID string) string {
+	// Defense-in-depth: validate traceID before shell interpolation even though
+	// GenerateTraceID() only produces safe hex characters.
+	if !security.IsValidTraceID(traceID) {
+		// Should never happen with internal generation, but fail safely.
+		traceID = "invalid-trace-id"
+	}
+	// Use find to locate context files, then pass them to fullsend scan context.
+	// This runs inside the sandbox where fullsend is available.
+	// Quote repoDir to prevent shell injection via directory names.
+	escapedDir := strings.ReplaceAll(repoDir, "'", "'\\''")
+
+	// Build -iname arguments from ScannableFiles to keep the lists in sync.
+	var inames []string
+	seen := map[string]bool{}
+	for name := range security.ScannableFiles {
+		lower := strings.ToLower(name)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		inames = append(inames, fmt.Sprintf("-iname '%s'", lower))
+	}
+	// Add files only relevant for find (not in ScannableFiles).
+	for _, extra := range []string{".cursorignore"} {
+		if !seen[extra] {
+			inames = append(inames, fmt.Sprintf("-iname '%s'", extra))
+		}
+	}
+	sort.Strings(inames) // deterministic ordering
+	inameExpr := strings.Join(inames, " -o ")
+
+	return fmt.Sprintf(
+		"FULLSEND_TRACE_ID='%s' find '%s' -maxdepth 3 -type f \\( %s \\) -exec fullsend scan context {} +",
+		traceID, escapedDir, inameExpr,
+	)
+}
+
+// scanOutputFiles runs the secret redactor on extracted output files,
+// recursively walking all subdirectories (iteration-N/output/, etc.).
+func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
+	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+		printer.StepInfo("No output files to scan")
+		return nil
+	}
+
+	redactor := security.NewSecretRedactor()
+	redacted := 0
+	findingsPath := filepath.Join(outputDir, "security", "findings.jsonl")
+
+	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		if d.IsDir() {
+			// Skip the security findings directory itself.
+			if d.Name() == "security" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			relPath, _ := filepath.Rel(outputDir, path)
+			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
+			return nil
+		}
+
+		result := redactor.Scan(string(content))
+		if len(result.Findings) > 0 {
+			redacted += len(result.Findings)
+			relPath, _ := filepath.Rel(outputDir, path)
+			for _, f := range result.Findings {
+				printer.StepWarn(fmt.Sprintf("Redacted [%s] in %s: %s", f.Name, relPath, f.Detail))
+				security.AppendFinding(findingsPath,
+					security.TracedFinding{
+						TraceID:   traceID,
+						Timestamp: time.Now().UTC().Format(time.RFC3339),
+						Phase:     "host_output",
+						Finding:   f,
+					})
+			}
+			if writeErr := os.WriteFile(path, []byte(result.Sanitized), 0o644); writeErr != nil {
+				printer.StepWarn(fmt.Sprintf("Could not write redacted %s: %v", relPath, writeErr))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if redacted > 0 {
+		printer.StepWarn(fmt.Sprintf("Redacted %d secret(s) from output files", redacted))
+	} else {
+		printer.StepDone("Output files clean — no secrets found")
+	}
+	return nil
+}
+
+// bootstrapSecurityHooks installs Claude Code hook scripts and settings.json
+// inside the sandbox. Hook scripts are embedded in the binary via go:embed.
+func bootstrapSecurityHooks(sshConfigPath, sandboxName string, h *harness.Harness) error {
+	// Write hook scripts.
+	hookFiles := security.HookFiles(h)
+	for name, content := range hookFiles {
+		tmpFile, err := os.CreateTemp("", "fullsend-hook-*")
+		if err != nil {
+			return fmt.Errorf("creating temp file for hook %s: %w", name, err)
+		}
+		if _, err := tmpFile.Write(content); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			return fmt.Errorf("writing hook %s: %w", name, err)
+		}
+		tmpFile.Close()
+
+		remotePath := fmt.Sprintf("%s/.claude/hooks/%s", sandbox.SandboxWorkspace, name)
+		if err := sandbox.SCP(sshConfigPath, sandboxName, tmpFile.Name(), remotePath); err != nil {
+			os.Remove(tmpFile.Name())
+			return fmt.Errorf("copying hook %s to sandbox: %w", name, err)
+		}
+		os.Remove(tmpFile.Name())
+
+		// Make executable.
+		chmodCmd := fmt.Sprintf("chmod +x %s", remotePath)
+		if _, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, chmodCmd, 10*time.Second); err != nil {
+			return fmt.Errorf("chmod hook %s: %w", name, err)
+		}
+	}
+
+	// Generate and install .claude/settings.json.
+	settingsJSON, err := security.GenerateClaudeSettings(h)
+	if err != nil {
+		return fmt.Errorf("generating claude settings: %w", err)
+	}
+
+	tmpSettings, err := os.CreateTemp("", "fullsend-settings-*.json")
+	if err != nil {
+		return fmt.Errorf("creating temp settings file: %w", err)
+	}
+	if _, err := tmpSettings.Write(settingsJSON); err != nil {
+		tmpSettings.Close()
+		os.Remove(tmpSettings.Name())
+		return fmt.Errorf("writing settings: %w", err)
+	}
+	tmpSettings.Close()
+
+	remoteSettings := fmt.Sprintf("%s/.claude/settings.json", sandbox.SandboxWorkspace)
+	if err := sandbox.SCP(sshConfigPath, sandboxName, tmpSettings.Name(), remoteSettings); err != nil {
+		os.Remove(tmpSettings.Name())
+		return fmt.Errorf("copying settings.json to sandbox: %w", err)
+	}
+	os.Remove(tmpSettings.Name())
+
+	// Set Tirith env vars if configured.
+	if h.Security != nil && h.Security.SandboxHooks != nil &&
+		h.Security.SandboxHooks.Tirith != nil {
+		tirithCfg := h.Security.SandboxHooks.Tirith
+
+		if tirithCfg.FailOn != "" {
+			// FailOn is validated by harness.validateSecurity() to be one of: critical, high, medium.
+			// Quote the value defensively in case validation is ever relaxed.
+			escapedFailOn := strings.ReplaceAll(tirithCfg.FailOn, "'", "'\\''")
+			envCmd := fmt.Sprintf("echo 'export TIRITH_FAIL_ON=%s' >> %s/.env",
+				escapedFailOn, sandbox.SandboxWorkspace)
+			if _, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, envCmd, 10*time.Second); err != nil {
+				return fmt.Errorf("setting TIRITH_FAIL_ON: %w", err)
+			}
+		}
+
+		// When tirith is enabled (default), mark it as required so the hook
+		// fails closed if the binary is missing from the sandbox image.
+		if harness.BoolDefault(tirithCfg.Enabled, true) {
+			envCmd := fmt.Sprintf("echo 'export TIRITH_REQUIRED=1' >> %s/.env", sandbox.SandboxWorkspace)
+			if _, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, envCmd, 10*time.Second); err != nil {
+				return fmt.Errorf("setting TIRITH_REQUIRED: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
+func injectTraceID(sshConfigPath, sandboxName, traceID string) error {
+	if !security.IsValidTraceID(traceID) {
+		return fmt.Errorf("invalid trace ID format: %q", traceID)
+	}
+	// Safe: IsValidTraceID() above ensures traceID matches UUID v4 format only.
+	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
+	_, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, cmd, 10*time.Second)
+	return err
 }

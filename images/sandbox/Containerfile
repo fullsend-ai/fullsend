@@ -1,0 +1,62 @@
+# Containerfile — base sandbox image for fullsend agent execution.
+#
+# Pre-installs all runtime dependencies needed by any fullsend agent:
+#   - Claude Code (official installer)
+#   - rsync (for safe repo write-back)
+#   - tirith (Rust CLI for terminal security scanning hooks)
+#   - LLM Guard with ONNX runtime + pre-downloaded DeBERTa-v3 model
+#     for prompt injection detection without cold-start latency
+#
+# Must extend the OpenShell base image — the sandbox supervisor is
+# side-loaded at runtime.
+#
+# Build:
+#   podman build -t <registry>/fullsend-sandbox:v1 \
+#     -f images/sandbox/Containerfile images/sandbox/
+#
+# Experiments that need extra tools should extend this base:
+#   FROM <registry>/fullsend-sandbox:v1
+#   COPY tools/my-tool /usr/local/bin/my-tool
+
+FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:f0d1ec92bf219759c1e863c0fa6b1f432ec827331e79ab9e31dab91a3b86b413
+
+# The base image runs as the sandbox user (998). Switch to root for
+# package installation and switch back at the end.
+USER root
+
+# Install rsync (for safe repo write-back).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code (official installer handles Node.js dependency).
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Install Python and LLM Guard with ONNX runtime for ML-based prompt
+# injection scanning. Pre-download the DeBERTa-v3 model so first scan
+# has no cold-start delay.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir "llm-guard[onnxruntime]==0.3.14" \
+    && python3 -c "\
+from llm_guard.input_scanners import PromptInjection; \
+from llm_guard.input_scanners.prompt_injection import MatchType; \
+PromptInjection(threshold=0.92, match_type=MatchType.SENTENCE, use_onnx=True)" \
+    && echo "LLM Guard model pre-downloaded successfully"
+
+# Install tirith — terminal security scanner for PreToolUse hooks.
+# Pinned version + sha256 checksum for supply chain safety.
+# To update: bump TIRITH_VERSION and TIRITH_SHA256 from the checksums.txt
+# in the GitHub release: https://github.com/sheeki03/tirith/releases
+ARG TIRITH_VERSION=0.2.12
+ARG TIRITH_SHA256=0ecc5430d9d9a78f4df95e14c920897b7ceda1c7102ac132bf6063440e92ef96
+RUN curl -fsSL "https://github.com/sheeki03/tirith/releases/download/v${TIRITH_VERSION}/tirith-x86_64-unknown-linux-gnu.tar.gz" \
+      -o /tmp/tirith.tar.gz \
+    && echo "${TIRITH_SHA256}  /tmp/tirith.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/tirith.tar.gz -C /usr/local/bin tirith \
+    && chmod +x /usr/local/bin/tirith \
+    && rm /tmp/tirith.tar.gz
+
+# Switch back to the sandbox user.
+USER sandbox

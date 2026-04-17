@@ -24,6 +24,7 @@ WORKFLOW_FILE="hello-world.yml"
 TARGET_REPO="test-fullsend/test-repo"
 IMAGE_REPO="quay.io/manonru/fullsend-exp"
 IMAGE_TAG="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
+BASE_IMAGE="fullsend-sandbox:${IMAGE_TAG}"
 
 echo "==> Building fullsend (linux/amd64)..."
 GOOS=linux GOARCH=amd64 go build -o /tmp/fullsend_build/fullsend "${REPO_ROOT}/cmd/fullsend/"
@@ -33,8 +34,14 @@ echo "==> Creating tarball..."
 tar czf /tmp/fullsend_build/fullsend_dev_linux_amd64.tar.gz -C /tmp/fullsend_build fullsend
 echo "    Created: /tmp/fullsend_build/fullsend_dev_linux_amd64.tar.gz"
 
-echo "==> Building container image..."
+echo "==> Building base sandbox image..."
+podman build -t "${BASE_IMAGE}" \
+  -f "${REPO_ROOT}/images/sandbox/Containerfile" "${REPO_ROOT}/images/sandbox/"
+echo "    Built: ${BASE_IMAGE}"
+
+echo "==> Building experiment container image..."
 podman build -t "${IMAGE_REPO}:${IMAGE_TAG}" \
+  --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
   -f "${EXPERIMENT_DIR}/Containerfile" "${EXPERIMENT_DIR}/"
 echo "    Built: ${IMAGE_REPO}:${IMAGE_TAG}"
 
