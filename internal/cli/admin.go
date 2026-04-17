@@ -279,7 +279,6 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 
 	// Build config with empty agents for analysis.
@@ -299,7 +298,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs, inferenceProvider)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, "", enrolledRepoIDs, inferenceProvider)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -359,7 +358,6 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 
 	printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
@@ -383,7 +381,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 	// Build stack with empty dispatch token for preflight — we check scopes
 	// before prompting the user so we fail early on missing admin:org.
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs, inferenceProvider)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, "", enrolledRepoIDs, inferenceProvider)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -393,7 +391,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	// Create the .fullsend config repo and write workflow files BEFORE
 	// prompting for the dispatch token. The user needs the repo to exist
 	// so they can select it when creating the fine-grained PAT, and the
-	// agent.yaml workflow must exist so we can verify the PAT by attempting
+	// triage.yml workflow must exist so we can verify the PAT by attempting
 	// a real dispatch. Both layers are idempotent, so running them again
 	// in the full stack is harmless.
 	printer.Header("Preparing config repo")
@@ -416,7 +414,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	// Rebuild stack with the actual dispatch token.
-	stack = buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, dispatchToken, enrolledRepoIDs, inferenceProvider)
+	stack = buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, dispatchToken, enrolledRepoIDs, inferenceProvider)
 
 	printer.Header("Installing layers")
 	printer.Blank()
@@ -468,7 +466,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewInferenceLayer(org, client, nil, printer),
 		layers.NewDispatchTokenLayer(org, client, "", nil, printer),
-		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
+		layers.NewEnrollmentLayer(org, client, nil, printer),
 	)
 
 	if err := runPreflight(ctx, stack, layers.OpUninstall, client, printer); err != nil {
@@ -559,7 +557,6 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 
 	printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
@@ -587,7 +584,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		inferenceProvider = vertex.NewAnalyzeOnly()
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, defaultBranches, agentCreds, "", nil, inferenceProvider)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, agentCreds, "", nil, inferenceProvider)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -606,7 +603,6 @@ func buildLayerStack(
 	user string,
 	hasPrivate bool,
 	enabledRepos []string,
-	defaultBranches map[string]string,
 	agentCreds []layers.AgentCredentials,
 	dispatchToken string,
 	enrolledRepoIDs []int64,
@@ -618,7 +614,7 @@ func buildLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
-		layers.NewEnrollmentLayer(org, client, enabledRepos, defaultBranches, printer),
+		layers.NewEnrollmentLayer(org, client, enabledRepos, printer),
 	)
 }
 
@@ -879,14 +875,6 @@ func repoNameList(repos []forge.Repository) []string {
 		names[i] = r.Name
 	}
 	return names
-}
-
-func repoDefaultBranches(repos []forge.Repository) map[string]string {
-	branches := make(map[string]string, len(repos))
-	for _, r := range repos {
-		branches[r.Name] = r.DefaultBranch
-	}
-	return branches
 }
 
 func hasPrivateRepos(repos []forge.Repository) bool {

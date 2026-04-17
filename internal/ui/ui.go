@@ -114,6 +114,11 @@ func (p *Printer) Blank() {
 	fmt.Fprintln(p.w)
 }
 
+// Raw writes text directly to the output without any styling or indentation.
+func (p *Printer) Raw(text string) {
+	fmt.Fprint(p.w, text)
+}
+
 // PRLink prints a pull request link with the repository name.
 func (p *Printer) PRLink(repo, url string) {
 	repoStyled := lipgloss.NewStyle().Bold(true).Render(repo)
