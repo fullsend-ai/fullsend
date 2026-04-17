@@ -72,8 +72,16 @@ def check_command(command: str) -> tuple[bool, str]:
             return True, reason
         return False, ""
     except subprocess.TimeoutExpired:
+        if TIRITH_REQUIRED:
+            reason = "tirith timed out — blocking (TIRITH_REQUIRED=1)"
+            log_finding("tirith_timeout", "critical", reason, "block")
+            return True, reason
         return False, ""
-    except Exception:
+    except Exception as e:
+        if TIRITH_REQUIRED:
+            reason = f"tirith error: {e} — blocking (TIRITH_REQUIRED=1)"
+            log_finding("tirith_error", "critical", reason, "block")
+            return True, reason
         return False, ""
 
     if result.returncode == 0:

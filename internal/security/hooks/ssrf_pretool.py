@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 from datetime import UTC, datetime
 
@@ -109,6 +110,19 @@ def validate_url(url: str) -> str | None:
     ip_reason = check_ip(hostname)
     if ip_reason:
         return ip_reason
+
+    # DNS rebinding defense: resolve hostname and check resolved IPs
+    try:
+        addrinfos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        for _family, _, _, _, sockaddr in addrinfos:
+            resolved_ip = str(sockaddr[0])
+            ip_reason = check_ip(resolved_ip)
+            if ip_reason:
+                return f"DNS rebinding: {hostname} resolved to blocked {resolved_ip} ({ip_reason})"
+    except socket.gaierror:
+        # DNS resolution failed — fail closed
+        return f"DNS resolution failed for {hostname} (fail-closed)"
+
     return None
 
 

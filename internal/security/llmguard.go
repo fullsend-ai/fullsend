@@ -20,10 +20,15 @@ type LLMGuardResult struct {
 // (sandbox pre-agent scan) when the base sandbox image includes Python,
 // llm-guard, and the pre-downloaded DeBERTa-v3 model.
 //
-// Fail-open: if Python or llm-guard is not installed, returns a clean result.
+// When Required is true (e.g. inside the sandbox where Python + llm-guard
+// are baked into the image), a missing Python binary is treated as tampering
+// and the scanner fails closed. When Required is false (e.g. Path A GHA
+// pre-step), a missing runtime is logged as a warning and the scanner fails
+// open.
 type LLMGuardScanner struct {
 	Threshold float64
 	MatchType string // "sentence" or "full"
+	Required  bool   // fail closed when Python/llm-guard unavailable
 }
 
 // NewLLMGuardScanner creates a scanner with the given threshold and match type.
@@ -68,7 +73,20 @@ except Exception as e:
 		// Script errors (non-zero exit) may still have JSON output — continue parsing.
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
-			// Python not available — fail open (documented behavior).
+			if s.Required {
+				return ScanResult{
+					Safe: false,
+					Findings: []Finding{{
+						Scanner:  "llm_guard",
+						Name:     "python_unavailable",
+						Severity: "critical",
+						Detail:   "Python not available but LLM Guard is required (possible tampering)",
+						Position: -1,
+					}},
+				}
+			}
+			// Python not available — fail open with logged warning.
+			fmt.Println("WARN: LLM Guard skipped — python3 not available")
 			return ScanResult{Safe: true}
 		}
 	}

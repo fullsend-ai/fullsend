@@ -160,7 +160,7 @@ func (s *SSRFValidator) ValidateURL(rawURL string, resolveDNS bool) ScanResult {
 // ValidateRedirectChain checks each URL in a redirect chain.
 func (s *SSRFValidator) ValidateRedirectChain(urls []string) ScanResult {
 	for i, u := range urls {
-		result := s.ValidateURL(u, false)
+		result := s.ValidateURL(u, true)
 		if !result.Safe {
 			for j := range result.Findings {
 				result.Findings[j].Detail = fmt.Sprintf("Redirect hop %d: %s", i, result.Findings[j].Detail)
@@ -180,7 +180,7 @@ func (s *SSRFValidator) Scan(text string) ScanResult {
 	for _, match := range reURLPattern.FindAllString(text, -1) {
 		// Strip trailing punctuation that may be part of surrounding text.
 		match = strings.TrimRight(match, ".,;:!?")
-		r := s.ValidateURL(match, false)
+		r := s.ValidateURL(match, true)
 		if !r.Safe {
 			result.Safe = false
 			result.Findings = append(result.Findings, r.Findings...)
