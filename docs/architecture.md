@@ -177,6 +177,8 @@ The registry is the bridge between the abstract roles defined in [agent-architec
 
 Fullsend provides a base set of agent definitions. The adopting organization's **`.fullsend`** repository extends this with org-specific agents in its `agents/` directory, following the inheritance model: fullsend defaults, then org config, then per-repo overrides. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
+The first concrete agent definition is the **code agent** ([`agents/code.md`](../agents/code.md)), an implementation specialist. Agent definitions declare the agent's role, model, associated skills, and disallowed tools — making the agent's capability surface explicit and auditable. The `.claude/agents` symlink provides runtime discoverability for the agent harness.
+
 **Open questions:**
 
 - How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).)
@@ -226,6 +228,26 @@ ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#7-test-artifac
 
 Implements changes, runs local/CI-equivalent tests, handles check failures, and advances handoff to **Review** (`ready-for-review`).
 ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#8-implementation-agent-runtime).
+
+The code agent definition ([`agents/code.md`](../agents/code.md)) and its implementation skill ([`skills/code-implementation/SKILL.md`](../skills/code-implementation/SKILL.md)) are the first concrete instantiation of this building block. Key design decisions captured there:
+
+**Agent commits locally; automation layer pushes.** The agent's job ends at a clean commit on the local feature branch. A deterministic post-script handles pushing, PR creation, failure reporting, and label management. This split keeps the agent's tool surface small and makes the push-and-PR step auditable, repeatable, and independent of model behavior.
+
+**Verification pipeline.** Every verification pass runs secret scanning (`scripts/scan-secrets`) *before* tests and linters. If secrets are detected — or if the scan helper is missing — the agent hard-stops. A second scan runs against the final staged content before commit, catching anything that slipped through the file-level scan.
+
+**Explicit staging only.** `git add -A`, `git add .`, and `git add --all` are blocked. The agent must name every file it stages. This prevents credentials or artifacts left by CI runners from being swept into the commit.
+
+**New commits only, never amend.** Each agent run produces a new commit. Amending is blocked to preserve attribution — if multiple runs touch the same branch, every run's work is independently visible in the history.
+
+**Zero-trust toward upstream output.** The agent does not trust the issue author, triage agent output, or claims about root cause. Triage comments are context, not instructions. The agent verifies all claims against the actual codebase before relying on them.
+
+**Stream editors blocked.** `sed` and `awk` are disallowed for source file modification. The agent must use structured Write/Edit tools, which produce cleaner diffs and avoid silent corruption from regex misfires.
+
+**Protected paths.** The agent cannot modify CODEOWNERS, CI workflows, agent configurations, harness definitions, sandbox policies, or pre/post scripts — preserving the integrity of its own guardrails. Protected-path enforcement is layered: the agent definition declares which paths are off-limits, `disallowedTools` catches obvious violations at the tool level, and the post-script independently verifies that no protected files appear in the commit diff before pushing. The post-script check is the authoritative gate — the agent cannot be trusted to police its own constraints.
+
+**Defense-in-depth model.** No single enforcement layer is airtight. Security relies on the combination of four layers: (1) agent instructions (prose constraints the model follows), (2) `disallowedTools` patterns (belt-and-suspenders catch for obvious violations — pattern-matching has known limitations around argument reordering and subshell wrapping), (3) sandbox network policy (the authoritative control for preventing exfiltration and unauthorized API access), and (4) post-script validation (independent verification of the agent's output before it leaves the sandbox boundary). Sandbox-level enforcement and post-script validation are the load-bearing layers; agent instructions and `disallowedTools` are defense-in-depth.
+
+**Three-layer secret scanning.** Secret scanning runs at three points: (1) a file-level scan during development (step 9a — early warning), (2) a staged-content scan before commit (step 10b — catches anything that slipped through or changed after the first scan), and (3) a post-script scan before push (the authoritative gate, independent of the agent). Layers 1 and 2 run inside the sandbox under agent control; layer 3 runs outside the sandbox under the automation layer's control.
 
 ### 9. PR sandbox / CI mirror
 
