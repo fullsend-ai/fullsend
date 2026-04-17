@@ -9,7 +9,8 @@ Requires: tirith binary in PATH (baked into sandbox container image).
 Protocol: reads JSON from stdin, writes JSON to stdout.
 Exit codes: 0 = allow, 1 = block (with reason on stdout).
 
-Fail-open: if tirith is not installed or fails, the tool call proceeds.
+Fail-open by default. Set TIRITH_REQUIRED=1 to fail closed when tirith is
+missing, times out, or errors (intended for sandbox where tirith is baked in).
 """
 
 from __future__ import annotations
@@ -79,7 +80,8 @@ def check_command(command: str) -> tuple[bool, str]:
         return False, ""
     except Exception as e:
         if TIRITH_REQUIRED:
-            reason = f"tirith error: {e} — blocking (TIRITH_REQUIRED=1)"
+            sanitized_err = type(e).__name__
+            reason = f"tirith error: {sanitized_err} — blocking (TIRITH_REQUIRED=1)"
             log_finding("tirith_error", "critical", reason, "block")
             return True, reason
         return False, ""

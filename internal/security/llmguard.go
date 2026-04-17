@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -31,9 +32,11 @@ type LLMGuardScanner struct {
 	Required  bool   // fail closed when Python/llm-guard unavailable
 }
 
-// NewLLMGuardScanner creates a scanner with the given threshold and match type.
-// Default threshold is 0.92, default match type is "sentence".
-func NewLLMGuardScanner(threshold float64, matchType string) *LLMGuardScanner {
+// NewLLMGuardScanner creates a scanner with the given threshold, match type,
+// and required flag. When required is true the scanner fails closed if Python
+// or llm-guard is unavailable (intended for the sandbox where both are baked
+// into the image).
+func NewLLMGuardScanner(threshold float64, matchType string, required bool) *LLMGuardScanner {
 	if threshold == 0 {
 		threshold = 0.92
 	}
@@ -43,11 +46,13 @@ func NewLLMGuardScanner(threshold float64, matchType string) *LLMGuardScanner {
 	return &LLMGuardScanner{
 		Threshold: threshold,
 		MatchType: matchType,
+		Required:  required,
 	}
 }
 
 // Scan runs the LLM Guard prompt injection scanner on the given text.
-// Returns a ScanResult. Fails open if the Python subprocess fails.
+// When Required is false, fails open if Python is unavailable. When
+// Required is true, fails closed (missing Python treated as tampering).
 func (s *LLMGuardScanner) Scan(text string) ScanResult {
 	script := fmt.Sprintf(`
 import json, sys
@@ -59,6 +64,10 @@ try:
     sanitized, is_valid, risk_score = scanner.scan("", text=sys.stdin.read())
     json.dump({"is_injection": not is_valid, "risk_score": risk_score, "detail": "LLM Guard ML scan"}, sys.stdout)
 except ImportError:
+    import os
+    if os.environ.get("LLM_GUARD_REQUIRED", "") == "1":
+        json.dump({"is_injection": True, "risk_score": 1.0, "detail": "llm-guard not installed but LLM_GUARD_REQUIRED=1"}, sys.stdout)
+        sys.exit(1)
     json.dump({"is_injection": False, "risk_score": 0, "detail": "llm-guard not installed"}, sys.stdout)
 except Exception as e:
     json.dump({"is_injection": True, "risk_score": 1.0, "detail": "scanner error (fail-closed): " + str(e)}, sys.stdout)
@@ -66,6 +75,9 @@ except Exception as e:
 
 	cmd := exec.Command("python3", "-c", script)
 	cmd.Stdin = strings.NewReader(text)
+	if s.Required {
+		cmd.Env = append(os.Environ(), "LLM_GUARD_REQUIRED=1")
+	}
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -86,7 +98,7 @@ except Exception as e:
 				}
 			}
 			// Python not available — fail open with logged warning.
-			fmt.Println("WARN: LLM Guard skipped — python3 not available")
+			fmt.Fprintln(os.Stderr, "WARN: LLM Guard skipped — python3 not available")
 			return ScanResult{Safe: true}
 		}
 	}

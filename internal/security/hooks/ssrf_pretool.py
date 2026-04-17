@@ -112,16 +112,21 @@ def validate_url(url: str) -> str | None:
         return ip_reason
 
     # DNS rebinding defense: resolve hostname and check resolved IPs
+    prev_timeout = socket.getdefaulttimeout()
     try:
+        socket.setdefaulttimeout(2.0)
         addrinfos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
         for _family, _, _, _, sockaddr in addrinfos:
             resolved_ip = str(sockaddr[0])
             ip_reason = check_ip(resolved_ip)
             if ip_reason:
                 return f"DNS rebinding: {hostname} resolved to blocked {resolved_ip} ({ip_reason})"
+    except TimeoutError:
+        return f"DNS resolution timed out for {hostname} (fail-closed)"
     except socket.gaierror:
-        # DNS resolution failed — fail closed
         return f"DNS resolution failed for {hostname} (fail-closed)"
+    finally:
+        socket.setdefaulttimeout(prev_timeout)
 
     return None
 

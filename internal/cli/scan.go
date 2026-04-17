@@ -106,7 +106,7 @@ Critical findings exit non-zero. Non-critical findings are sanitized.`,
 			// LLM Guard ML scan (fail-open — skips if Python/llm-guard unavailable).
 			{
 				printer.StepStart("Running LLM Guard ML scan")
-				lgScanner := security.NewLLMGuardScanner(0, "") // use defaults
+				lgScanner := security.NewLLMGuardScanner(0, "", false) // Path A: fail-open
 				for name, text := range fields {
 					lgResult := lgScanner.Scan(text)
 					if !lgResult.Safe {
@@ -311,7 +311,7 @@ any URL is blocked.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&resolveDNS, "resolve-dns", false, "resolve hostnames and check resolved IPs")
+	cmd.Flags().BoolVar(&resolveDNS, "resolve-dns", true, "resolve hostnames and check resolved IPs")
 	return cmd
 }
 
