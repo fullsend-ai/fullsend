@@ -19,12 +19,24 @@ install of these layers:
 | Path | Layer responsible |
 |------|-------------------|
 | `config.yaml` | `ConfigRepoLayer` |
-| `.github/workflows/agent.yaml` | `WorkflowsLayer` |
-| `.github/workflows/repo-onboard.yaml` | `WorkflowsLayer` |
+| `.github/workflows/triage.yml` | `WorkflowsLayer` |
+| `.github/workflows/code.yml` | `WorkflowsLayer` |
+| `.github/workflows/review.yml` | `WorkflowsLayer` |
+| `.github/workflows/repo-maintenance.yml` | `WorkflowsLayer` |
+| `.github/actions/fullsend/action.yml` | `WorkflowsLayer` |
+| `.github/scripts/setup-agent-env.sh` | `WorkflowsLayer` |
+| `agents/triage.md` | `WorkflowsLayer` |
+| `env/gcp-vertex.env` | `WorkflowsLayer` |
+| `env/triage.env` | `WorkflowsLayer` |
+| `harness/triage.yaml` | `WorkflowsLayer` |
+| `policies/triage.yaml` | `WorkflowsLayer` |
+| `scripts/validate-triage.sh` | `WorkflowsLayer` |
+| `scripts/enroll-repos.sh` | `WorkflowsLayer` |
+| `templates/shim-workflow.yaml` | `WorkflowsLayer` |
 | `CODEOWNERS` | `WorkflowsLayer` |
 
-Write order for workflow-related paths: `agent.yaml`, then `repo-onboard.yaml`,
-then `CODEOWNERS` (CODEOWNERS failure is non-fatal in the implementation).
+Write order: all scaffold files from `internal/scaffold/fullsend-repo/` in
+filesystem walk order, then `CODEOWNERS` last (CODEOWNERS failure is non-fatal).
 
 ## 3. Per-path requirements
 
@@ -35,19 +47,68 @@ then `CODEOWNERS` (CODEOWNERS failure is non-fatal in the implementation).
   (this SPEC only requires that the file exists as the tracked carrier for
   org configuration).
 
-### 3.2 `.github/workflows/agent.yaml`
+### 3.2 `.github/workflows/triage.yml`
 
-- **Contents:** exactly the document in
-  [`files/agent-dispatch-v1.yaml`](files/agent-dispatch-v1.yaml) (byte-for-byte
-  normative snapshot for v1).
+- Triage workflow triggered via `workflow_dispatch` with `event_type`,
+  `source_repo`, `event_payload` inputs.
 
-### 3.3 `.github/workflows/repo-onboard.yaml`
+### 3.3 `.github/workflows/code.yml`
 
-- **Contents:** exactly the document in
-  [`files/repo-onboard-v1.yaml`](files/repo-onboard-v1.yaml) (byte-for-byte
-  normative snapshot for v1).
+- Code workflow, same dispatch pattern as triage.
 
-### 3.4 `CODEOWNERS`
+### 3.4 `.github/workflows/review.yml`
+
+- Review workflow, same dispatch pattern as triage.
+
+### 3.5 `.github/workflows/repo-maintenance.yml`
+
+- Reconciles enrollment shims in target repos when `config.yaml` changes.
+
+### 3.6 `.github/actions/fullsend/action.yml`
+
+- Composite action: installs the fullsend CLI and runs the agent.
+
+### 3.7 `.github/scripts/setup-agent-env.sh`
+
+- Env prefix stripping helper sourced by per-role workflows.
+
+### 3.8 `agents/triage.md`
+
+- Agent instructions for the triage role.
+
+### 3.9 `env/gcp-vertex.env`
+
+- Environment variables for GCP Vertex AI inference.
+
+### 3.10 `env/triage.env`
+
+- Environment variables specific to the triage role.
+
+### 3.11 `harness/triage.yaml`
+
+- Harness configuration for the triage role.
+
+### 3.12 `policies/triage.yaml`
+
+- Policy definitions for the triage role.
+
+### 3.13 `scripts/validate-triage.sh`
+
+- Validation script for triage role output.
+
+### 3.14 `scripts/enroll-repos.sh`
+
+- Shell script that reconciles enrollment shims in target repos. Called by
+  `repo-maintenance.yml`. Uses `gh` CLI and `yq` to read `config.yaml` and
+  create branches, files, and PRs in target repos.
+
+### 3.15 `templates/shim-workflow.yaml`
+
+- Copy of the target-repo shim workflow (`internal/scaffold/target-repo/.github/workflows/fullsend.yaml`).
+  Used by `scripts/enroll-repos.sh` as the template for writing shim workflows
+  to target repos during enrollment.
+
+### 3.16 `CODEOWNERS`
 
 - **Purpose:** grant the installing human ownership of all paths in the
   configuration repo.
@@ -66,9 +127,10 @@ includes `@` before the login as shown).
 ## 4. Relationship to implementation
 
 The reference implementation lives in `internal/layers/configrepo.go` and
-`internal/layers/workflows.go`. If implementation and this SPEC diverge, this
-SPEC is normative for **v1** tracked layout and file bodies (except
-`config.yaml` body per ADR 0011).
+`internal/layers/workflows.go`. The `WorkflowsLayer` deploys content from the
+embedded scaffold at `internal/scaffold/fullsend-repo/`. If implementation and
+this SPEC diverge, this SPEC is normative for **v1** tracked layout and file
+bodies (except `config.yaml` body per ADR 0011).
 
 ## 5. Out of scope (not Git-tracked in `.fullsend`)
 

@@ -53,6 +53,7 @@ All of the following are **repository-level** Actions secrets and variables on *
 | Variable | `FULLSEND_<ROLE>_APP_ID`               | Decimal string of the GitHub App numeric ID | secrets |
 | Secret   | `FULLSEND_GCP_SA_KEY_JSON`       | GCP service account key JSON (when inference provider is `vertex`) | inference |
 | Secret   | `FULLSEND_GCP_PROJECT_ID`              | GCP project identifier (when inference provider is `vertex`) | inference |
+| Variable | `FULLSEND_GCP_REGION`                  | GCP region for Vertex AI (e.g. `us-central1`) | inference |
 
 - `<ROLE>` is the agent role in **ASCII uppercase** (e.g. `FULLSEND_TRIAGE_APP_PRIVATE_KEY`).
 - For each role processed in install, if PEM is non-empty, the implementation **must** create/update the secret and variable as above; if PEM is empty (reuse path), the implementation **must** skip writing that role’s secret/variable.
