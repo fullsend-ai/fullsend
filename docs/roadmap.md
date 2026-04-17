@@ -28,7 +28,7 @@ For the remaining problems, develop multiple possible solution models. Not one a
 
 Where possible, devise experiments to build confidence in a solution. Experiments should test both the positive case (does this approach work when things go right?) and the negative case (does it fail safely when things go wrong? does it catch the thing it's supposed to catch?). Confidence comes from seeing a solution hold up under both conditions.
 
-Experiments are documented in `experiments/`. The existing experiment format may evolve, but the core discipline is: state what you expect to learn, describe what you did, and record what actually happened.
+Experiments are documented in the [experiments repository](https://github.com/fullsend-ai/experiments). The existing experiment format may evolve, but the core discipline is: state what you expect to learn, describe what you did, and record what actually happened.
 
 Not every solution can be experimentally validated — some are organizational or procedural. For those, the trade-off analysis in the problem document is the primary tool.
 

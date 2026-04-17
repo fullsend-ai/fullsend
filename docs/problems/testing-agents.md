@@ -170,7 +170,7 @@ Analogous to mutation testing for code: systematically introduce small changes t
 
 The approaches above aren't purely theoretical — an emerging class of LLM evaluation tools already implements parts of them. None covers the full problem space, but they provide a starting point and avoid building everything from scratch.
 
-An important distinction surfaced by [Experiment 004](../../experiments/promptfoo-eval/README.md): **most eval frameworks test prompts, not agents.** They send a single prompt to a model API, get a single response, and score it. They do not run an agent loop with tool calls, multi-turn reasoning, or environment interaction. Testing prompts in isolation is necessary but not sufficient — an agent can pass every prompt-level test and still fail in practice when its prompt interacts with real tool outputs, long context, or multi-agent composition. The framework landscape splits accordingly into prompt testers, agent runners, and input generators.
+An important distinction surfaced by [Experiment 004](https://github.com/fullsend-ai/experiments/blob/main/promptfoo-eval/README.md): **most eval frameworks test prompts, not agents.** They send a single prompt to a model API, get a single response, and score it. They do not run an agent loop with tool calls, multi-turn reasoning, or environment interaction. Testing prompts in isolation is necessary but not sufficient — an agent can pass every prompt-level test and still fail in practice when its prompt interacts with real tool outputs, long context, or multi-agent composition. The framework landscape splits accordingly into prompt testers, agent runners, and input generators.
 
 ### Prompt evaluation (unit-test layer)
 
@@ -185,7 +185,7 @@ These tools test single prompt/response pairs. They are useful for regression te
 - Has a red-teaming mode that generates adversarial inputs, relevant to the adversarial evaluation step in the CI pipeline
 - Designed for CI integration, producing machine-readable output
 
-Under the hood, promptfoo makes direct HTTP calls to model provider APIs. Each test case is a single prompt-in, response-out API call. There is no agent loop, no tool use, no multi-turn conversation. See [Experiment 004](../../experiments/promptfoo-eval/README.md) for detailed findings from running promptfoo against a PR scope classifier.
+Under the hood, promptfoo makes direct HTTP calls to model provider APIs. Each test case is a single prompt-in, response-out API call. There is no agent loop, no tool use, no multi-turn conversation. See [Experiment 004](https://github.com/fullsend-ai/experiments/blob/main/promptfoo-eval/README.md) for detailed findings from running promptfoo against a PR scope classifier.
 
 **Note:** promptfoo has been acquired by OpenAI. Implications for the open-source project's future are unclear.
 

@@ -22,7 +22,7 @@ Accepted
 
 When sandboxed agents need to perform operations requiring credentials (e.g. reading or writing GitHub issues), the credential must be kept away from the agent process. A compromised agent with access to a credential can exfiltrate it — once the credential leaves the sandbox, the attacker can use it without any sandbox constraints.
 
-This decision was informed by PoC work on the [agent-scoped-tools triage experiment](../../experiments/agent-scoped-tools-triage/), where sandboxed subagents need read access to GitHub issues and a top-level agent needs write access. The threat model prioritizes external injection and compromised credentials (see [security-threat-model.md](../problems/security-threat-model.md)).
+This decision was informed by PoC work on the [agent-scoped-tools triage experiment](https://github.com/fullsend-ai/experiments/tree/main/agent-scoped-tools-triage), where sandboxed subagents need read access to GitHub issues and a top-level agent needs write access. The threat model prioritizes external injection and compromised credentials (see [security-threat-model.md](../problems/security-threat-model.md)).
 
 ## Options
 
@@ -42,7 +42,7 @@ One server on the host holds the credential and exposes all operations as REST e
 
 Generate a short-lived token per agent scoped to only the permissions that agent needs. Pass the token into the sandbox.
 
-**Trade-offs:** Uses GitHub's native permission model. But GitHub token granularity is coarse — you can scope to "read issues" but not to "read only issue #3 in repo X." Minimum TTL is 1 hour, far exceeding typical agent lifetime (~6 min). A compromised agent can exfiltrate the token and use it for the full TTL across any repo the installation covers. The [Model Armor experiment](../../experiments/model-armor-vs-agent-triage/) demonstrated that pre-scan injection defenses catch only 25% of payloads — meaning tokens inside a sandbox *will* eventually be exfiltrated if the agent processes attacker-controlled input.
+**Trade-offs:** Uses GitHub's native permission model. But GitHub token granularity is coarse — you can scope to "read issues" but not to "read only issue #3 in repo X." Minimum TTL is 1 hour, far exceeding typical agent lifetime (~6 min). A compromised agent can exfiltrate the token and use it for the full TTL across any repo the installation covers. The [Model Armor experiment](https://github.com/fullsend-ai/experiments/tree/main/model-armor-vs-agent-triage) demonstrated that pre-scan injection defenses catch only 25% of payloads — meaning tokens inside a sandbox *will* eventually be exfiltrated if the agent processes attacker-controlled input.
 
 ### Option 4: MCP server with per-agent tool filtering
 
@@ -76,7 +76,7 @@ A deterministic pre-script runs before the agent, fetching all data the agent wi
 
 Both models share the same principle: **credentials never enter the sandbox.**
 
-Options 3–6 were rejected. Scoped tokens (option 3) were rejected because prompt injection cannot be reliably prevented in principle — no detection rate is sufficient, so any credential present in the sandbox must be assumed exfiltrable. The [Model Armor experiment](../../experiments/model-armor-vs-agent-triage/) illustrates this empirically (25% detection rate), but the argument does not depend on any specific percentage: the attack is fundamentally asymmetric, and a single successful injection exfiltrates the token for the remainder of its TTL across any repo the installation covers. MCP with tool filtering (option 4) was rejected because MCP tool scoping is only enforced at the runtime level, not the server level — a compromised agent can bypass it, and MCP clients have internal timeouts that make them unsuitable for long-running operations. Per-port servers (option 1) were rejected because L7 enforcement provides equivalent security with less operational overhead.
+Options 3–6 were rejected. Scoped tokens (option 3) were rejected because prompt injection cannot be reliably prevented in principle — no detection rate is sufficient, so any credential present in the sandbox must be assumed exfiltrable. The [Model Armor experiment](https://github.com/fullsend-ai/experiments/tree/main/model-armor-vs-agent-triage) illustrates this empirically (25% detection rate), but the argument does not depend on any specific percentage: the attack is fundamentally asymmetric, and a single successful injection exfiltrates the token for the remainder of its TTL across any repo the installation covers. MCP with tool filtering (option 4) was rejected because MCP tool scoping is only enforced at the runtime level, not the server level — a compromised agent can bypass it, and MCP clients have internal timeouts that make them unsuitable for long-running operations. Per-port servers (option 1) were rejected because L7 enforcement provides equivalent security with less operational overhead.
 
 **Why a REST server instead of passing tokens directly.** A host-side REST server in the same GitHub Actions workflow receives the token via the same mechanism (environment/secrets) as any other step. The security boundary is not *where the token lives in the workflow* but *what the agent can do with it*. A raw token in the sandbox has the full scope of whatever GitHub App installation or PAT it was minted from. The REST server restricts the agent to specific operations (HTTP method + path) enforced by L7 policy — the agent can call `GET /repos/{owner}/{repo}/issues/{number}` but cannot call `DELETE /repos/{owner}/{repo}` even though the underlying token would permit it. The REST server is a *capability reducer*, not merely a *credential holder*.
 
@@ -84,14 +84,14 @@ Options 3–6 were rejected. Scoped tokens (option 3) were rejected because prom
 
 This decision has been validated by two subsequent experiments:
 
-- The [triage subagents PoC](../../experiments/agent-scoped-tools-triage/) demonstrated the full pattern end-to-end: a host-side GitHub REST server on `:8081`, per-agent OpenShell network policies (read-only for subagents, write for the orchestrator), and zero credentials in any sandbox.
-- The [OpenShell sandbox evaluation](../../experiments/openshell-sandbox-evaluation.md) confirmed that L7 path-level enforcement is production-ready, with hot-reloadable policies and full audit trails.
+- The [triage subagents PoC](https://github.com/fullsend-ai/experiments/tree/main/agent-scoped-tools-triage) demonstrated the full pattern end-to-end: a host-side GitHub REST server on `:8081`, per-agent OpenShell network policies (read-only for subagents, write for the orchestrator), and zero credentials in any sandbox.
+- The [OpenShell sandbox evaluation](https://github.com/fullsend-ai/experiments/blob/main/openshell-sandbox-evaluation.md) confirmed that L7 path-level enforcement is production-ready, with hot-reloadable policies and full audit trails.
 
 ## Consequences
 
 - Agents have zero credentials in their environment — nothing to exfiltrate.
 - Agent skills must document how to call the REST API (curl commands, endpoints, expected responses).
-- Sandbox policy authoring is security-critical — incorrect path patterns can over-permit access. Note that L7 path-level enforcement cannot restrict operations encoded in the request body (e.g. git push branch names) — use server-side controls (GitHub branch rulesets) for those cases. See the [OpenShell evaluation](../../experiments/openshell-sandbox-evaluation.md) for details.
+- Sandbox policy authoring is security-critical — incorrect path patterns can over-permit access. Note that L7 path-level enforcement cannot restrict operations encoded in the request body (e.g. git push branch names) — use server-side controls (GitHub branch rulesets) for those cases. See the [OpenShell evaluation](https://github.com/fullsend-ai/experiments/blob/main/openshell-sandbox-evaluation.md) for details.
 - The host-side server is a single point of failure; if it goes down, all agents lose access.
 - This pattern generalizes beyond GitHub to any credential-bearing external service.
 - A centralized gateway (e.g. [Agent Gateway](../landscape.md#agent-gateway)) could sit in front of host-side servers to add cross-agent rate limiting, audit logging, and CEL-based RBAC — a complementary control, not a replacement for per-sandbox L7 policy.
