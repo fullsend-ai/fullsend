@@ -1,6 +1,6 @@
 # Contributing to Fullsend
 
-Thank you for your interest in contributing! This document covers the social norms and processes we follow. For where to place your contribution (problem docs, ADRs, experiments, etc.), see the [README](README.md#how-to-contribute).
+Thank you for your interest in contributing! This document covers the social norms and processes we follow. For where to place your contribution (problem docs, ADRs, etc.), see the [README](README.md#how-to-contribute).
 
 ## Pull request workflow
 

@@ -38,8 +38,8 @@ decision in the 2026-04-01 team sync. Constraints that shaped the discussion:
    or assisted by LLMs (primarily Claude). The team must be able to critically
    review generated code to catch hallucinations, security issues, and subtle
    bugs. This rules out languages the team cannot confidently vet.
-3. **Experiments are exempt.** Experiments in `experiments/` are one-shot
-   throwaways; contributors may use any language there.
+3. **Experiments are exempt.** Experiments in the [experiments repository](https://github.com/fullsend-ai/experiments)
+   are one-shot throwaways; contributors may use any language there.
 
 ## Options
 
@@ -90,9 +90,9 @@ satisfies distribution and reviewability constraints today, not because it is
 the ideal long-term choice. If the team's Rust proficiency grows, or if a
 hybrid workflow proves viable, this ADR may be superseded.
 
-Experiments in `experiments/` remain language-unconstrained. Contributors may
-prototype in Python or any other language; only code that ships as part of the
-core tooling must be in Go.
+Experiments in the [experiments repository](https://github.com/fullsend-ai/experiments)
+remain language-unconstrained. Contributors may prototype in Python or any other language;
+only code that ships as part of the core tooling must be in Go.
 
 ## Consequences
 

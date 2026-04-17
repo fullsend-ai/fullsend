@@ -39,13 +39,13 @@ This is not a product spec. It's an evolving exploration of a hard problem space
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).
 - **[docs/landscape.md](docs/landscape.md)** — Survey of AI code review tools, orchestration patterns, and connectivity gateways; how they relate to our goals (time-sensitive — check the date)
-- **[experiments/](experiments/)** — Logs and results from trying things in practice
+- **[experiments](https://github.com/fullsend-ai/experiments)** — Logs and results from trying things in practice (separate repository)
 
 ## How to contribute
 
 Pick a problem area that interests you. Read the existing document. Add your perspective, propose solutions, poke holes in existing proposals. Open a PR.
 
-If you want to run an experiment — try an agent workflow in a repo, test a security guardrail, prototype an intent system — document what you did and what you learned in `experiments/`.
+If you want to run an experiment — try an agent workflow in a repo, test a security guardrail, prototype an intent system — document what you did and what you learned in https://github.com/fullsend-ai/experiments.
 
 If you're applying fullsend to your own organization, consider adding your specific considerations to `docs/problems/applied/` — your experience and feedback will strengthen the general problem documents.
 
@@ -57,7 +57,6 @@ If you're applying fullsend to your own organization, consider adding your speci
 | A new problem area no existing doc covers | **Create a problem doc** in `docs/problems/` and link it here. |
 | More to say about an existing problem area | **Expand the existing problem doc.** |
 | A specific decision that needs a yes-or-no answer | **Propose an ADR** in `docs/ADRs/` — even with only one option, file it as `Undecided` ([see ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md)). |
-| Something you want to try in practice | **Log an experiment** in `experiments/`. |
 
 When in doubt, start with an issue.
 

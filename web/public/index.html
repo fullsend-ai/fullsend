@@ -164,7 +164,6 @@
   <div class="legend-item" data-group="applied"><span class="legend-dot" style="background:#5cb87a;"></span> problems-applied</div>
   <div class="legend-item" data-group="adr"><span class="legend-dot" style="background:#d4a054; border-radius:2px;"></span> ADRs</div>
   <div class="legend-item" data-group="plan"><span class="legend-dot" style="background:#a06ad8;"></span> plans</div>
-  <div class="legend-item" data-group="experiment"><span class="legend-dot" style="background:#5cb8a8; clip-path:polygon(50% 0%,100% 100%,0% 100%); border-radius:0;"></span> experiments</div>
   <div class="legend-item" data-group="docs,root"><span class="legend-dot" style="background:#c0c0c0;"></span> other</div>
   <div id="legend-pr" style="display:none;">
     <hr style="border-color:rgba(255,255,255,0.08); margin:8px 0;">
@@ -284,7 +283,6 @@ function nodeGroup(path) {
   if (path.startsWith('docs/problems/'))         return 'problem';
   if (path.startsWith('docs/ADRs/'))             return 'adr';
   if (path.startsWith('docs/plans/'))            return 'plan';
-  if (path.startsWith('experiments/'))            return 'experiment';
   if (path.startsWith('docs/'))                  return 'docs';
   return 'root';
 }
@@ -296,7 +294,6 @@ const GROUP_COLORS = {
   adr:        '#a5988a',
   plan:       '#958aa5',
   docs:       '#959595',
-  experiment: '#8a9e9a',
   root:       '#959595',
 };
 // Bright versions for hover
@@ -306,13 +303,11 @@ const GROUP_COLORS_BRIGHT = {
   adr:        '#d4a054',
   plan:       '#a06ad8',
   docs:       '#c0c0c0',
-  experiment: '#5cb8a8',
   root:       '#c0c0c0',
 };
 
 // Shape by node type
 function nodeShape(path) {
-  if (path.startsWith('experiments/')) return 'triangle';
   if (path.startsWith('docs/ADRs/')) return 'round-rectangle';
   return 'ellipse';
 }
@@ -445,7 +440,7 @@ async function main() {
     const tree = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`);
     const mdFiles = tree.tree
       .filter(f => f.type === 'blob' && f.path.endsWith('.md'))
-      .filter(f => f.path === 'README.md' || f.path.startsWith('docs/') || f.path.startsWith('experiments/'))
+      .filter(f => f.path === 'README.md' || f.path.startsWith('docs/'))
       .map(f => f.path);
 
     // 2. Fetch all file contents in parallel

@@ -1,5 +1,7 @@
 # ADR-0046 Drift Scanner Implementation Plan
 
+> **Note:** This experiment has been moved to the [experiments repository](https://github.com/fullsend-ai/experiments/tree/main/adr46-scanner). File paths below reference the original `experiments/` directory in this repo.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build a drift scanner that detects Tekton tasks using images that should be replaced by the task runner image per ADR-0046, and files GitHub issues reporting the drift.

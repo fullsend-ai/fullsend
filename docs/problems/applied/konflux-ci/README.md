@@ -214,7 +214,7 @@ The relationship between governance of the agentic system and governance of Konf
 
 The experiments in this repo were originally conducted against the konflux-ci codebase:
 
-- **[adr46-scanner](../../../../experiments/adr46-scanner/)** — Python CLI tool that detects Tekton task images drifting from ADR-0046 (the common task runner image ADR)
-- **[adr46-claude-scanner](../../../../experiments/adr46-claude-scanner/)** — LLM-based drift scanner that analyzes Tekton tasks against any ADR
-- **[prompt-injection-defense](../../../../experiments/prompt-injection-defense/)** — Defense-in-depth experiment testing layered prompt injection defenses
-- **[agent-outage-fire-drill](../../../../experiments/003-agent-outage-fire-drill.md)** — Proposed experiment: disable agents for 2 weeks to test human capability atrophy
+- **[adr46-scanner](https://github.com/fullsend-ai/experiments/tree/main/adr46-scanner)** — Python CLI tool that detects Tekton task images drifting from ADR-0046 (the common task runner image ADR)
+- **[adr46-claude-scanner](https://github.com/fullsend-ai/experiments/tree/main/adr46-claude-scanner)** — LLM-based drift scanner that analyzes Tekton tasks against any ADR
+- **[prompt-injection-defense](https://github.com/fullsend-ai/experiments/tree/main/prompt-injection-defense)** — Defense-in-depth experiment testing layered prompt injection defenses
+- **[agent-outage-fire-drill](https://github.com/fullsend-ai/experiments/blob/main/003-agent-outage-fire-drill.md)** — Proposed experiment: disable agents for 2 weeks to test human capability atrophy
