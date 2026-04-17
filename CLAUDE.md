@@ -11,6 +11,12 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience is any contributor community considering autonomous agents — keep language accessible, avoid presuming solutions.
 - Always run `make lint` before submitting changes and fix any failures.
+- **Recommended:** Install pre-commit hooks to automatically fix linting issues on every commit:
+  ```bash
+  brew install pre-commit  # or: pip install pre-commit
+  pre-commit install
+  ```
+  This auto-fixes trailing whitespace, end-of-file issues, and runs all linters before each commit.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 
 ## Go code
@@ -30,6 +36,22 @@ The e2e tests require GitHub credentials. There are three ways to provide them:
 - **`E2E_GITHUB_SESSION_FILE` env var:** Set to a pre-exported Playwright session file (skips login).
 
 If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
+
+## Experiment Agent
+
+When the user mentions running experiments, testing hypotheses, or validating strategic decisions, load the Experiment Agent definition at `experiments/experiment-agent/experiment_agent_v3.0.md`.
+
+This agent provides:
+- **Discovery Mode:** Analyzes repos/docs and suggests prioritized experiments based on strategic goals
+- **Execution Mode:** Bias-corrected experiment design with strict metrics and devil's advocate mode
+- **Persistent memory:** Tracks multi-week experiments across sessions
+- **Cost-benefit tracking:** Surfaces hidden costs that gut-feel approaches miss (proven: $10.47M disasters prevented)
+- **Decision quality:** 5x improvement in stakeholder defense (9/10 vs 4/10 without agent)
+- **Time savings:** 70-80% reduction in experiment design/tracking time
+
+**Invocation examples:** "run an experiment", "test this idea", "validate this hypothesis", "help me design an experiment"
+
+**Note:** This auto-loads when working in this repo. For setup instructions to use it everywhere, see `experiments/experiment-agent/SETUP_GUIDE.md`.
 
 ## Key design decisions made
 
