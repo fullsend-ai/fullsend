@@ -128,24 +128,7 @@ Common label categories to look for:
 Present your label choices to the user alongside the draft. If the repo has no
 labels or none fit, skip labeling.
 
-### 7. Set the issue type
-
-Every issue must have a type. Choose exactly one:
-
-- **Feature** — stories, new functionality, new capabilities, or enhancements
-  that add something that does not exist yet.
-- **Bug** — something is broken, behaving unexpectedly, or there is a gap that
-  should have been covered.
-- **Task** — research, experiments, evaluations, chores, documentation work,
-  decisions to make, or any work that is neither a feature nor a bug.
-
-When in doubt between Feature and Task, ask: "Does this add user-visible
-functionality?" If yes, Feature. If it is preparatory or exploratory work,
-Task.
-
-Present your type choice to the user alongside the draft and labels.
-
-### 8. File the issue
+### 7. File the issue
 
 After the user approves the draft:
 
@@ -156,13 +139,11 @@ gh issue create --repo <owner/name> \
 <body>
 EOF
 )" \
-  --label "<label1>,<label2>" \
-  --type "<Feature|Bug|Task>"
+  --label "<label1>,<label2>"
 ```
 
 Omit `--label` if no labels apply or if you lack permission to set them (the
 `gh` CLI will error; do not retry — file without labels and tell the user).
-Always include `--type`.
 
 Return the issue URL to the user.
 
