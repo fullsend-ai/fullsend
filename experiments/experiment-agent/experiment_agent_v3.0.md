@@ -795,11 +795,11 @@ After experiment completes (success, failure, or disaster prevented), agent asks
 Agent: "Experiment complete! Before we archive, let's capture what we learned.
 
        This helps future experiments avoid mistakes and apply proven patterns.
-       
+
        Would you like to capture a learning document? (yes/no)"
 ```
 
-**If yes → Agent guides user through learning capture**  
+**If yes → Agent guides user through learning capture**
 **If no → Agent archives experiment without learning capture**
 
 ---
@@ -815,7 +815,7 @@ Agent: "How would you categorize this experiment?
        B) 🟡 PARTIAL - Some value, but less than expected
        C) ❌ FAILURE - Hypothesis disproven, no value delivered
        D) 🔴 DISASTER PREVENTED - Hidden costs exceeded benefits
-       
+
        Choose A/B/C/D:"
 ```
 
@@ -825,22 +825,22 @@ Agent: "How would you categorize this experiment?
 Agent: "What were the key learnings from this experiment?
 
        I'll help you think through this:
-       
+
        1. What unexpected findings emerged?
           - Hidden costs we didn't predict?
           - Benefits we didn't expect?
           - Contradictions between expectation and reality?
-       
+
        2. What failure modes or biases were present?
           - Confirmation bias (focused only on successes)?
           - Cherry-picked metrics (ignored costs)?
           - Team sentiment diverged from quantitative data?
-       
+
        3. What methodology worked well?
           - What technique caught the unexpected finding?
           - What metric revealed the truth?
           - What question surfaced the contradiction?
-       
+
        Share your thoughts (can be bullet points):"
 ```
 
@@ -853,7 +853,7 @@ Agent: "Based on these learnings, what patterns should future experiments watch 
        - 'When evaluating time-saving tools, always measure BOTH time saved AND time lost'
        - 'Async tools that increase notifications might have hidden context-switching costs'
        - 'Team sentiment can be wrong when costs are invisible'
-       
+
        What pattern would you warn your future self about?"
 ```
 
@@ -867,7 +867,7 @@ Agent: "What types of future experiments should reference this learning?
        - Developer productivity tools
        - Collaboration/communication tools
        - AI automation with human review
-       
+
        Where does this pattern apply?"
 ```
 
@@ -876,11 +876,11 @@ Agent: "What types of future experiments should reference this learning?
 ```
 Agent: "Thanks! I'll generate a learning document using the template at
        /experiments/learnings/LEARNING_TEMPLATE.md
-       
+
        Here's a preview:
-       
+
        [Shows generated learning document based on user input + experiment data]
-       
+
        Does this look correct? (A) Approve B) Edit)"
 ```
 
@@ -888,12 +888,12 @@ Agent: "Thanks! I'll generate a learning document using the template at
 
 ```
 Agent: "Learning captured! I've saved:
-       
+
        - Learning document: /experiments/learnings/[experiment_name]_learning.md
        - Updated INDEX: /experiments/learnings/INDEX.md
-       
+
        Future experiments will read this and apply these patterns.
-       
+
        Now archiving experiment to /experiments/archive/[experiment_name]_[date]/"
 ```
 
@@ -911,23 +911,23 @@ Agent: "Learning captured! I've saved:
 **Example:**
 ```
 Agent: "I found a potential experiment: 'Test AI code review assistant'
-       
+
        ⚠️ WARNING: This looks similar to V6 Async Tool (disaster prevented)
-       
+
        V6 Pattern:
        - Team loved async standup tool
        - Hidden notification overhead (100/person over 2 weeks)
        - Context switching cost exceeded time saved by 27x
        - Resulted in -$1.47M/year cost (not projected $220K value)
-       
+
        For this experiment, I recommend:
        ✅ Measure time saved (dev time NOT spent writing comments)
        ❌ Measure time lost (reviewing AI comments, dismissing noise, fixing errors)
        ✅ Track notification burden (how many AI comment notifications?)
        ✅ Measure adoption vs trust (do devs use it AND trust it?)
-       
+
        Success metric: (Time saved - Time lost - Review overhead) > 0
-       
+
        This prevents the V6 scenario where hidden costs exceeded benefits."
 ```
 
@@ -1130,11 +1130,11 @@ All learning documents follow the template at `/experiments/learnings/LEARNING_T
 
 ## Version History
 
-**v1.0:** Initial version (confirmation bias issues)  
-**v2.0:** Bias corrections (strict metrics, devil's advocate)  
-**v2.1:** UX improvements (progressive disclosure, context-first)  
-**v2.2:** Images, collaboration, templates, previews  
-**v2.5-Lite:** Persistent memory, auto-load, mid-experiment docs, archive  
+**v1.0:** Initial version (confirmation bias issues)
+**v2.0:** Bias corrections (strict metrics, devil's advocate)
+**v2.1:** UX improvements (progressive disclosure, context-first)
+**v2.2:** Images, collaboration, templates, previews
+**v2.5-Lite:** Persistent memory, auto-load, mid-experiment docs, archive
 **v3.0 (April 17, 2026):** Discovery Mode + Cross-Experiment Learning
 - AI-powered experiment identification and prioritization
 - Post-experiment learning capture workflow
