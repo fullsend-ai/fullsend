@@ -36,11 +36,15 @@ func (f *fakePrompter) Confirm(_ string) (bool, error) {
 }
 
 type fakeBrowser struct {
-	openedURLs []string
+	urlCh chan string
+}
+
+func newFakeBrowser() *fakeBrowser {
+	return &fakeBrowser{urlCh: make(chan string, 1)}
 }
 
 func (f *fakeBrowser) Open(_ context.Context, url string) error {
-	f.openedURLs = append(f.openedURLs, url)
+	f.urlCh <- url
 	return nil
 }
 
@@ -94,7 +98,7 @@ func TestSetup_ExistingApp_SecretExists_AutoReuse(t *testing.T) {
 		},
 	}
 	prompter := &fakePrompter{}
-	browser := &fakeBrowser{}
+	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
@@ -120,7 +124,7 @@ func TestSetup_ExistingApp_NoSecret(t *testing.T) {
 		},
 	}
 	prompter := &fakePrompter{}
-	browser := &fakeBrowser{}
+	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
@@ -140,7 +144,7 @@ func TestSetup_KnownSlug_Match(t *testing.T) {
 		},
 	}
 	prompter := &fakePrompter{}
-	browser := &fakeBrowser{}
+	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
@@ -163,7 +167,7 @@ func TestSetup_NoExistingApp(t *testing.T) {
 		Installations: []forge.Installation{},
 	}
 	prompter := &fakePrompter{}
-	browser := &fakeBrowser{}
+	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer)
@@ -179,14 +183,19 @@ func TestSetup_NoExistingApp(t *testing.T) {
 	// not from the "existing app" checks.
 	assert.NotContains(t, err.Error(), "private key")
 	// Browser should have been asked to open a URL.
-	assert.NotEmpty(t, browser.openedURLs, "should have tried to open browser")
+	select {
+	case url := <-browser.urlCh:
+		assert.NotEmpty(t, url, "should have tried to open browser")
+	default:
+		t.Error("browser.Open was never called")
+	}
 }
 
 func TestManifestFlow_HTMLForm(t *testing.T) {
 	client := &forge.FakeClient{
 		Installations: []forge.Installation{},
 	}
-	browser := &fakeBrowser{}
+	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, &fakePrompter{}, browser, printer)
@@ -206,18 +215,10 @@ func TestManifestFlow_HTMLForm(t *testing.T) {
 
 	// Wait for the browser to receive the URL.
 	var formURL string
-	deadline := time.After(2 * time.Second)
-	for {
-		if len(browser.openedURLs) > 0 {
-			formURL = browser.openedURLs[0]
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for browser.Open to be called")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
+	select {
+	case formURL = <-browser.urlCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for browser.Open to be called")
 	}
 
 	// Fetch the HTML page from the local server.

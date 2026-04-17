@@ -76,9 +76,9 @@ func (StdinPrompter) WaitForEnter(prompt string) error {
 	fmt.Print(prompt)
 	var input string
 	_, err := fmt.Scanln(&input)
-	// Ignore EOF / empty input — just means they pressed Enter.
+	// Ignore "unexpected newline" — just means they pressed Enter.
 	if err != nil && err.Error() != "unexpected newline" {
-		return nil
+		return err
 	}
 	return nil
 }
@@ -330,8 +330,9 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 
 		creds, err := s.exchangeManifestCode(ctx, code)
 		if err != nil {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Error: %v", err)
+			fmt.Fprintf(w, "Error creating app. Please return to the terminal.")
 			resultCh <- result{err: err}
 			return
 		}
@@ -344,7 +345,7 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 <h2>App %s created successfully!</h2>
 <p>You can close this tab and return to the terminal.</p>
 </body>
-</html>`, creds.Name)
+</html>`, html.EscapeString(creds.Name))
 		resultCh <- result{creds: creds}
 	})
 
