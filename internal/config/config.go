@@ -156,6 +156,18 @@ func (c *OrgConfig) EnabledRepos() []string {
 	return enabled
 }
 
+// DisabledRepos returns a sorted list of repo names where Enabled is false.
+func (c *OrgConfig) DisabledRepos() []string {
+	var disabled []string
+	for name, rc := range c.Repos {
+		if !rc.Enabled {
+			disabled = append(disabled, name)
+		}
+	}
+	sort.Strings(disabled)
+	return disabled
+}
+
 // AgentSlugs returns a map of role to slug from the configured agents.
 func (c *OrgConfig) AgentSlugs() map[string]string {
 	slugs := make(map[string]string, len(c.Agents))

@@ -33,4 +33,4 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           WORKSPACE: ${{ github.workspace }}
-        run: bash scripts/enroll-repos.sh "$WORKSPACE"
+        run: bash scripts/reconcile-repos.sh "$WORKSPACE"

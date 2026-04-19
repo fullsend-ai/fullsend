@@ -157,6 +157,12 @@ func TestAdminInstallUninstall(t *testing.T) {
 	runTriageDispatchSmokeTest(t, env)
 
 	// =========================================
+	// Phase 2.75: Unenrollment reconciliation
+	// =========================================
+	t.Log("=== Phase 2.75: Unenrollment ===")
+	runUnenrollmentTest(t, env, orgCfg, agentCreds, enrolledRepoIDs)
+
+	// =========================================
 	// Phase 3: First uninstall (deletes resources)
 	// =========================================
 	t.Log("=== Phase 3: First Uninstall ===")
@@ -303,7 +309,7 @@ func runUninstall(t *testing.T, env *e2eEnv) {
 		layers.NewSecretsLayer(testOrg, env.client, nil, env.printer),
 		layers.NewInferenceLayer(testOrg, env.client, nil, env.printer),
 		layers.NewDispatchTokenLayer(testOrg, env.client, "", nil, env.printer),
-		layers.NewEnrollmentLayer(testOrg, env.client, nil, env.printer),
+		layers.NewEnrollmentLayer(testOrg, env.client, nil, nil, env.printer),
 	)
 	errs := stack.UninstallAll(context.Background())
 	assert.Empty(t, errs, "uninstall should complete without errors")
@@ -320,7 +326,7 @@ func runUninstallAllowNotFound(t *testing.T, env *e2eEnv) {
 		layers.NewSecretsLayer(testOrg, env.client, nil, env.printer),
 		layers.NewInferenceLayer(testOrg, env.client, nil, env.printer),
 		layers.NewDispatchTokenLayer(testOrg, env.client, "", nil, env.printer),
-		layers.NewEnrollmentLayer(testOrg, env.client, nil, env.printer),
+		layers.NewEnrollmentLayer(testOrg, env.client, nil, nil, env.printer),
 	)
 	errs := stack.UninstallAll(context.Background())
 	for _, e := range errs {
@@ -456,7 +462,7 @@ func verifyNotInstalled(t *testing.T, env *e2eEnv) {
 		layers.NewSecretsLayer(testOrg, env.client, nil, env.printer),
 		layers.NewInferenceLayer(testOrg, env.client, nil, env.printer),
 		layers.NewDispatchTokenLayer(testOrg, env.client, "", nil, env.printer),
-		layers.NewEnrollmentLayer(testOrg, env.client, nil, env.printer),
+		layers.NewEnrollmentLayer(testOrg, env.client, nil, nil, env.printer),
 	)
 	reports, err := stack.AnalyzeAll(ctx)
 	require.NoError(t, err, "analyzing layers after uninstall")
@@ -548,6 +554,68 @@ func runTriageDispatchSmokeTest(t *testing.T, env *e2eEnv) {
 	assert.True(t, triageRunFound, "triage workflow should have been dispatched in .fullsend repo")
 }
 
+// runUnenrollmentTest disables test-repo in config.yaml, runs install to
+// dispatch reconciliation, verifies the removal PR, merges it, and confirms
+// the shim is gone from the default branch.
+func runUnenrollmentTest(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, agentCreds []layers.AgentCredentials, enrolledRepoIDs []int64) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Update config.yaml to disable test-repo.
+	orgCfg.Repos[testRepo] = config.RepoConfig{Enabled: false}
+	cfgData, err := orgCfg.Marshal()
+	require.NoError(t, err, "marshaling updated config")
+
+	err = env.client.CreateOrUpdateFile(ctx, testOrg, forge.ConfigRepoName, "config.yaml", "chore: disable test-repo for unenrollment test", cfgData)
+	require.NoError(t, err, "updating config.yaml with disabled repo")
+	t.Logf("Set %s to enabled: false in config.yaml", testRepo)
+
+	// Wait for GitHub to process the push.
+	time.Sleep(5 * time.Second)
+
+	// Run install with no enabled repos and test-repo as disabled.
+	user, err := env.client.GetAuthenticatedUser(ctx)
+	require.NoError(t, err)
+	allRepos, err := env.client.ListOrgRepos(ctx, testOrg)
+	require.NoError(t, err)
+	hasPrivate := hasPrivateRepos(allRepos)
+
+	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, nil, agentCreds, "", enrolledRepoIDs, nil)
+	err = stack.InstallAll(ctx)
+	require.NoError(t, err, "install with disabled repo should succeed")
+
+	// Verify removal PR exists.
+	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
+	require.NoError(t, err, "listing PRs for %s", testRepo)
+
+	var removalPR *forge.ChangeProposal
+	for _, pr := range prs {
+		if pr.Title == "Disconnect from fullsend agent pipeline" {
+			cp := pr
+			removalPR = &cp
+			break
+		}
+	}
+	require.NotNil(t, removalPR, "removal PR should exist for %s", testRepo)
+	t.Logf("Found removal PR #%d: %s", removalPR.Number, removalPR.URL)
+
+	// Merge the removal PR.
+	err = env.client.MergeChangeProposal(ctx, testOrg, testRepo, removalPR.Number)
+	require.NoError(t, err, "merging removal PR")
+	t.Logf("Merged removal PR #%d", removalPR.Number)
+
+	// Wait for merge to propagate.
+	time.Sleep(5 * time.Second)
+
+	// Verify shim no longer exists on the default branch.
+	_, err = env.client.GetFileContent(ctx, testOrg, testRepo, ".github/workflows/fullsend.yaml")
+	assert.True(t, forge.IsNotFound(err), "shim workflow should be removed from %s after merging removal PR", testRepo)
+	t.Logf("Verified shim is gone from %s", testRepo)
+
+	// Re-enable the repo in config for subsequent test phases.
+	orgCfg.Repos[testRepo] = config.RepoConfig{Enabled: true}
+}
+
 // --- Utility functions ---
 
 func buildTestLayerStack(
@@ -569,7 +637,7 @@ func buildTestLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
-		layers.NewEnrollmentLayer(org, client, enabledRepos, printer),
+		layers.NewEnrollmentLayer(org, client, enabledRepos, cfg.DisabledRepos(), printer),
 	)
 }
 

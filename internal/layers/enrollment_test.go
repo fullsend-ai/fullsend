@@ -15,16 +15,16 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func newEnrollmentLayer(t *testing.T, client forge.Client, repos []string) (*EnrollmentLayer, *bytes.Buffer) {
+func newEnrollmentLayer(t *testing.T, client forge.Client, enabledRepos, disabledRepos []string) (*EnrollmentLayer, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewEnrollmentLayer("test-org", client, repos, printer)
+	layer := NewEnrollmentLayer("test-org", client, enabledRepos, disabledRepos, printer)
 	return layer, &buf
 }
 
 func TestEnrollmentLayer_Name(t *testing.T) {
-	layer, _ := newEnrollmentLayer(t, &forge.FakeClient{}, nil)
+	layer, _ := newEnrollmentLayer(t, &forge.FakeClient{}, nil, nil)
 	assert.Equal(t, "enrollment", layer.Name())
 }
 
@@ -42,7 +42,7 @@ func TestEnrollmentLayer_Install_DispatchesWorkflow(t *testing.T) {
 		},
 	}
 	repos := []string{"repo-a", "repo-b"}
-	layer, buf := newEnrollmentLayer(t, client, repos)
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestEnrollmentLayer_Install_ReportsEnrollmentPRs(t *testing.T) {
 		},
 	}
 	repos := []string{"repo-a", "repo-b"}
-	layer, buf := newEnrollmentLayer(t, client, repos)
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -80,15 +80,42 @@ func TestEnrollmentLayer_Install_ReportsEnrollmentPRs(t *testing.T) {
 	assert.Contains(t, output, "repo-a/pull/1")
 }
 
-func TestEnrollmentLayer_Install_NoRepos(t *testing.T) {
-	client := &forge.FakeClient{}
-	layer, buf := newEnrollmentLayer(t, client, nil)
+func TestEnrollmentLayer_Install_ReportsRemovalPRs(t *testing.T) {
+	now := time.Now().UTC()
+	client := &forge.FakeClient{
+		WorkflowRuns: map[string]*forge.WorkflowRun{
+			"test-org/.fullsend/repo-maintenance.yml": {
+				ID:         1,
+				Status:     "completed",
+				Conclusion: "success",
+				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
+			},
+		},
+		PullRequests: map[string][]forge.ChangeProposal{
+			"test-org/repo-x": {
+				{Title: "Disconnect from fullsend agent pipeline", URL: "https://github.com/test-org/repo-x/pull/5"},
+			},
+		},
+	}
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-x"})
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "no repositories to enroll")
+	assert.Contains(t, output, "repo-x/pull/5")
+}
+
+func TestEnrollmentLayer_Install_NoRepos(t *testing.T) {
+	client := &forge.FakeClient{}
+	layer, buf := newEnrollmentLayer(t, client, nil, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "no repositories to reconcile")
 }
 
 func TestEnrollmentLayer_Install_DispatchError(t *testing.T) {
@@ -98,7 +125,7 @@ func TestEnrollmentLayer_Install_DispatchError(t *testing.T) {
 		},
 	}
 	repos := []string{"repo-a"}
-	layer, _ := newEnrollmentLayer(t, client, repos)
+	layer, _ := newEnrollmentLayer(t, client, repos, nil)
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
@@ -119,7 +146,7 @@ func TestEnrollmentLayer_Install_WorkflowWarning(t *testing.T) {
 		},
 	}
 	repos := []string{"repo-a"}
-	layer, buf := newEnrollmentLayer(t, client, repos)
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -130,7 +157,7 @@ func TestEnrollmentLayer_Install_WorkflowWarning(t *testing.T) {
 
 func TestEnrollmentLayer_Uninstall_Noop(t *testing.T) {
 	client := &forge.FakeClient{}
-	layer, _ := newEnrollmentLayer(t, client, []string{"repo-a"})
+	layer, _ := newEnrollmentLayer(t, client, []string{"repo-a"}, nil)
 
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
@@ -149,7 +176,7 @@ func TestEnrollmentLayer_Analyze_AllEnrolled(t *testing.T) {
 		},
 	}
 	repos := []string{"repo-a", "repo-b"}
-	layer, _ := newEnrollmentLayer(t, client, repos)
+	layer, _ := newEnrollmentLayer(t, client, repos, nil)
 
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
@@ -169,7 +196,7 @@ func TestEnrollmentLayer_Analyze_NoneEnrolled(t *testing.T) {
 		FileContents: map[string][]byte{},
 	}
 	repos := []string{"repo-a", "repo-b"}
-	layer, _ := newEnrollmentLayer(t, client, repos)
+	layer, _ := newEnrollmentLayer(t, client, repos, nil)
 
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
@@ -190,7 +217,7 @@ func TestEnrollmentLayer_Analyze_Partial(t *testing.T) {
 		},
 	}
 	repos := []string{"repo-a", "repo-b"}
-	layer, _ := newEnrollmentLayer(t, client, repos)
+	layer, _ := newEnrollmentLayer(t, client, repos, nil)
 
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
@@ -201,13 +228,13 @@ func TestEnrollmentLayer_Analyze_Partial(t *testing.T) {
 	require.Len(t, report.Details, 1)
 	assert.Contains(t, report.Details[0], "repo-a")
 
-	require.Len(t, report.WouldFix, 1)
-	assert.Contains(t, report.WouldFix[0], "repo-b")
+	require.Len(t, report.WouldInstall, 1)
+	assert.Contains(t, report.WouldInstall[0], "repo-b")
 }
 
-func TestEnrollmentLayer_Analyze_NoReposEnabled(t *testing.T) {
+func TestEnrollmentLayer_Analyze_NoReposConfigured(t *testing.T) {
 	client := &forge.FakeClient{}
-	layer, _ := newEnrollmentLayer(t, client, nil)
+	layer, _ := newEnrollmentLayer(t, client, nil, nil)
 
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
@@ -215,9 +242,56 @@ func TestEnrollmentLayer_Analyze_NoReposEnabled(t *testing.T) {
 	assert.Equal(t, "enrollment", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
 	require.Len(t, report.Details, 1)
-	assert.Equal(t, "no repositories enrolled", report.Details[0])
+	assert.Equal(t, "no repositories configured", report.Details[0])
 	assert.Empty(t, report.WouldInstall)
 	assert.Empty(t, report.WouldFix)
+}
+
+func TestEnrollmentLayer_Analyze_DisabledWithStaleShim(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/repo-x/.github/workflows/fullsend.yaml": []byte("shim"),
+		},
+	}
+	layer, _ := newEnrollmentLayer(t, client, nil, []string{"repo-x"})
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, StatusDegraded, report.Status)
+	require.Len(t, report.WouldFix, 1)
+	assert.Contains(t, report.WouldFix[0], "removal PR for repo-x")
+}
+
+func TestEnrollmentLayer_Analyze_DisabledAlreadyClean(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{},
+	}
+	layer, _ := newEnrollmentLayer(t, client, nil, []string{"repo-x"})
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, StatusInstalled, report.Status)
+	assert.Empty(t, report.WouldFix)
+}
+
+func TestEnrollmentLayer_Analyze_MixedEnabledAndDisabled(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/repo-a/.github/workflows/fullsend.yaml": []byte("shim"),
+			"test-org/repo-x/.github/workflows/fullsend.yaml": []byte("shim"),
+		},
+	}
+	layer, _ := newEnrollmentLayer(t, client, []string{"repo-a"}, []string{"repo-x"})
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, StatusDegraded, report.Status)
+	assert.Contains(t, report.Details[0], "repo-a")
+	require.Len(t, report.WouldFix, 1)
+	assert.Contains(t, report.WouldFix[0], "removal PR for repo-x")
 }
 
 func TestShimTemplateMatchesTargetRepoScaffold(t *testing.T) {

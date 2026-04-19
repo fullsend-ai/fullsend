@@ -31,7 +31,7 @@ install of these layers:
 | `harness/triage.yaml` | `WorkflowsLayer` |
 | `policies/triage.yaml` | `WorkflowsLayer` |
 | `scripts/validate-triage.sh` | `WorkflowsLayer` |
-| `scripts/enroll-repos.sh` | `WorkflowsLayer` |
+| `scripts/reconcile-repos.sh` | `WorkflowsLayer` |
 | `templates/shim-workflow.yaml` | `WorkflowsLayer` |
 | `CODEOWNERS` | `WorkflowsLayer` |
 
@@ -96,16 +96,19 @@ filesystem walk order, then `CODEOWNERS` last (CODEOWNERS failure is non-fatal).
 
 - Validation script for triage role output.
 
-### 3.14 `scripts/enroll-repos.sh`
+### 3.14 `scripts/reconcile-repos.sh`
 
 - Shell script that reconciles enrollment shims in target repos. Called by
-  `repo-maintenance.yml`. Uses `gh` CLI and `yq` to read `config.yaml` and
-  create branches, files, and PRs in target repos.
+  `repo-maintenance.yml`. Uses `gh` CLI and `yq` to read `config.yaml`.
+  For enabled repos: creates branches, writes shim workflows, and opens
+  enrollment PRs. For disabled repos: creates branches, deletes shim
+  workflows (via GitHub Contents API DELETE with blob SHA), and opens
+  removal PRs. Closes stale cross-direction PRs in both cases.
 
 ### 3.15 `templates/shim-workflow.yaml`
 
 - Copy of the target-repo shim workflow (`internal/scaffold/target-repo/.github/workflows/fullsend.yaml`).
-  Used by `scripts/enroll-repos.sh` as the template for writing shim workflows
+  Used by `scripts/reconcile-repos.sh` as the template for writing shim workflows
   to target repos during enrollment.
 
 ### 3.16 `CODEOWNERS`

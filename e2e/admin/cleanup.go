@@ -84,21 +84,23 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 6. Delete stale enrollment branch from test-repo.
-	deleteEnrollmentBranch(ctx, token, testOrg, testRepo, t)
+	// 6. Delete stale enrollment and unenrollment branches from test-repo.
+	deleteBranch(ctx, token, testOrg, testRepo, "fullsend/onboard", t)
+	deleteBranch(ctx, token, testOrg, testRepo, "fullsend/offboard", t)
 
 	// 7. Delete shim workflow from test-repo's default branch (left behind
 	// when a previous run merged the enrollment PR in Phase 2.5).
 	deleteShimWorkflow(ctx, token, testOrg, testRepo, t)
 
-	// 8. Close any open enrollment PRs in test-repo (informational only).
+	// 8. Close any open fullsend-related PRs in test-repo.
 	prs, err := client.ListRepoPullRequests(ctx, testOrg, testRepo)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list PRs: %v", err)
 	} else {
 		for _, pr := range prs {
 			if strings.Contains(pr.Title, "fullsend") {
-				t.Logf("[cleanup] Found stale enrollment PR #%d: %s", pr.Number, pr.Title)
+				t.Logf("[cleanup] Closing stale PR #%d: %s", pr.Number, pr.Title)
+				closePR(ctx, token, testOrg, testRepo, pr.Number, t)
 			}
 		}
 	}
@@ -117,11 +119,11 @@ func registerAppCleanup(t *testing.T, page playwright.Page, slug, screenshotDir 
 	})
 }
 
-// deleteEnrollmentBranch deletes the fullsend/onboard branch from a repo
-// using the GitHub API directly (forge.Client doesn't have DeleteBranch).
-func deleteEnrollmentBranch(ctx context.Context, token, org, repo string, t *testing.T) {
+// deleteBranch deletes a branch from a repo using the GitHub API directly
+// (forge.Client doesn't have DeleteBranch).
+func deleteBranch(ctx context.Context, token, org, repo, branch string, t *testing.T) {
 	t.Helper()
-	branchRef := "heads/fullsend/onboard"
+	branchRef := "heads/" + branch
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/%s", org, repo, branchRef)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
@@ -133,17 +135,17 @@ func deleteEnrollmentBranch(ctx context.Context, token, org, repo string, t *tes
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not delete enrollment branch: %v", err)
+		t.Logf("[cleanup] Warning: could not delete branch %s: %v", branch, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		t.Log("[cleanup] Deleted stale enrollment branch fullsend/onboard")
+		t.Logf("[cleanup] Deleted stale branch %s", branch)
 	} else if resp.StatusCode == http.StatusNotFound {
 		// Branch doesn't exist, nothing to do.
 	} else {
-		t.Logf("[cleanup] Warning: unexpected status deleting enrollment branch: %d", resp.StatusCode)
+		t.Logf("[cleanup] Warning: unexpected status deleting branch %s: %d", branch, resp.StatusCode)
 	}
 }
 
@@ -219,6 +221,34 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing
 		t.Logf("[cleanup] Deleted stale shim workflow from %s", repo)
 	} else {
 		t.Logf("[cleanup] Warning: unexpected status deleting shim file: %d", delResp.StatusCode)
+	}
+}
+
+// closePR closes a pull request using the GitHub API directly.
+func closePR(ctx context.Context, token, org, repo string, number int, t *testing.T) {
+	t.Helper()
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", org, repo, number)
+	body := strings.NewReader(`{"state":"closed"}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, body)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not create PR close request: %v", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not close PR #%d: %v", number, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		t.Logf("[cleanup] Closed stale PR #%d", number)
+	} else {
+		t.Logf("[cleanup] Warning: unexpected status closing PR #%d: %d", number, resp.StatusCode)
 	}
 }
 

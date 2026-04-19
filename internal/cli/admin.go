@@ -471,7 +471,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewInferenceLayer(org, client, nil, printer),
 		layers.NewDispatchTokenLayer(org, client, "", nil, printer),
-		layers.NewEnrollmentLayer(org, client, nil, printer),
+		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
 	)
 
 	if err := runPreflight(ctx, stack, layers.OpUninstall, client, printer); err != nil {
@@ -619,7 +619,7 @@ func buildLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
-		layers.NewEnrollmentLayer(org, client, enabledRepos, printer),
+		layers.NewEnrollmentLayer(org, client, enabledRepos, cfg.DisabledRepos(), printer),
 	)
 }
 

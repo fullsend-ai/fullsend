@@ -21,22 +21,24 @@ const (
 // which creates PRs with shim workflows in response to config.yaml changes.
 // This layer dispatches that workflow and reports the results.
 type EnrollmentLayer struct {
-	org          string
-	client       forge.Client
-	enabledRepos []string
-	ui           *ui.Printer
+	org           string
+	client        forge.Client
+	enabledRepos  []string
+	disabledRepos []string
+	ui            *ui.Printer
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
 var _ Layer = (*EnrollmentLayer)(nil)
 
 // NewEnrollmentLayer creates a new EnrollmentLayer.
-func NewEnrollmentLayer(org string, client forge.Client, enabledRepos []string, printer *ui.Printer) *EnrollmentLayer {
+func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledRepos []string, printer *ui.Printer) *EnrollmentLayer {
 	return &EnrollmentLayer{
-		org:          org,
-		client:       client,
-		enabledRepos: enabledRepos,
-		ui:           printer,
+		org:           org,
+		client:        client,
+		enabledRepos:  enabledRepos,
+		disabledRepos: disabledRepos,
+		ui:            printer,
 	}
 }
 
@@ -62,8 +64,8 @@ func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 // Install dispatches the repo-maintenance workflow to handle enrollment,
 // waits for it to complete, and reports any enrollment PRs created.
 func (l *EnrollmentLayer) Install(ctx context.Context) error {
-	if len(l.enabledRepos) == 0 {
-		l.ui.StepInfo("no repositories to enroll")
+	if len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0 {
+		l.ui.StepInfo("no repositories to reconcile")
 		return nil
 	}
 
@@ -92,8 +94,8 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 	}
 	l.ui.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
 
-	// Discover and report enrollment PRs.
-	l.reportEnrollmentPRs(ctx)
+	// Discover and report reconciliation PRs.
+	l.reportReconciliationPRs(ctx)
 
 	return nil
 }
@@ -148,19 +150,28 @@ func (l *EnrollmentLayer) showWorkflowLogs(ctx context.Context, runID int) {
 	}
 }
 
-// reportEnrollmentPRs lists PRs on each enabled repo and reports enrollment PR URLs.
-func (l *EnrollmentLayer) reportEnrollmentPRs(ctx context.Context) {
+// reportReconciliationPRs lists PRs on enabled and disabled repos and reports
+// enrollment or removal PR URLs.
+func (l *EnrollmentLayer) reportReconciliationPRs(ctx context.Context) {
+	// Titles must match ENROLL_PR_TITLE and UNENROLL_PR_TITLE in
+	// scripts/reconcile-repos.sh.
 	for _, repo := range l.enabledRepos {
-		prs, err := l.client.ListRepoPullRequests(ctx, l.org, repo)
-		if err != nil {
-			continue
-		}
-		for _, pr := range prs {
-			// Must match PR_TITLE in scripts/enroll-repos.sh.
-			if pr.Title == "Connect to fullsend agent pipeline" {
-				l.ui.PRLink(repo, pr.URL)
-				break
-			}
+		l.reportPRByTitle(ctx, repo, "Connect to fullsend agent pipeline")
+	}
+	for _, repo := range l.disabledRepos {
+		l.reportPRByTitle(ctx, repo, "Disconnect from fullsend agent pipeline")
+	}
+}
+
+func (l *EnrollmentLayer) reportPRByTitle(ctx context.Context, repo, title string) {
+	prs, err := l.client.ListRepoPullRequests(ctx, l.org, repo)
+	if err != nil {
+		return
+	}
+	for _, pr := range prs {
+		if pr.Title == title {
+			l.ui.PRLink(repo, pr.URL)
+			break
 		}
 	}
 }
@@ -171,7 +182,8 @@ func (l *EnrollmentLayer) Uninstall(_ context.Context) error {
 	return nil
 }
 
-// Analyze checks which enabled repos have the shim workflow installed.
+// Analyze checks which enabled repos have the shim workflow installed and
+// which disabled repos still have it.
 func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
@@ -187,27 +199,44 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		}
 	}
 
+	// Check disabled repos for stale shims.
+	var staleShim []string
+	for _, repo := range l.disabledRepos {
+		_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
+		if err == nil {
+			staleShim = append(staleShim, repo)
+		} else if forge.IsNotFound(err) {
+			// Good — shim already removed.
+		} else {
+			return nil, fmt.Errorf("checking enrollment for %s: %w", repo, err)
+		}
+	}
+
+	hasDrift := len(notEnrolled) > 0 || len(staleShim) > 0
+
 	switch {
-	case len(l.enabledRepos) == 0:
+	case len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0:
 		report.Status = StatusInstalled
-		report.Details = append(report.Details, "no repositories enrolled")
-	case len(notEnrolled) == 0:
-		report.Status = StatusInstalled
+		report.Details = append(report.Details, "no repositories configured")
+	case hasDrift:
+		if len(enrolled) == 0 && len(staleShim) == 0 {
+			report.Status = StatusNotInstalled
+		} else {
+			report.Status = StatusDegraded
+		}
 		for _, r := range enrolled {
 			report.Details = append(report.Details, r+" enrolled")
 		}
-	case len(enrolled) == 0:
-		report.Status = StatusNotInstalled
 		for _, r := range notEnrolled {
 			report.WouldInstall = append(report.WouldInstall, "create enrollment PR for "+r)
 		}
+		for _, r := range staleShim {
+			report.WouldFix = append(report.WouldFix, "create removal PR for "+r)
+		}
 	default:
-		report.Status = StatusDegraded
+		report.Status = StatusInstalled
 		for _, r := range enrolled {
 			report.Details = append(report.Details, r+" enrolled")
-		}
-		for _, r := range notEnrolled {
-			report.WouldFix = append(report.WouldFix, "create enrollment PR for "+r)
 		}
 	}
 
