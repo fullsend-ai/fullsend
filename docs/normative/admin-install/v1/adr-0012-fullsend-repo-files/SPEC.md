@@ -107,9 +107,8 @@ filesystem walk order, then `CODEOWNERS` last (CODEOWNERS failure is non-fatal).
 
 ### 3.15 `templates/shim-workflow.yaml`
 
-- Copy of the target-repo shim workflow (`internal/scaffold/target-repo/.github/workflows/fullsend.yaml`).
-  Used by `scripts/reconcile-repos.sh` as the template for writing shim workflows
-  to target repos during enrollment.
+- The shim workflow template used by `scripts/reconcile-repos.sh` to write shim
+  workflows to target repos during enrollment and verify content during updates.
 
 ### 3.16 `CODEOWNERS`
 

@@ -51,7 +51,7 @@ A target repository is **enrolled** for v1 if and only if the file at **shim pat
 
 The file at **shim path** MUST be valid GitHub Actions workflow YAML and MUST match the following structure and keys. Comments are non-normative except where they restate these rules.
 
-The shim file MUST match the content embedded in `internal/scaffold/target-repo/.github/workflows/fullsend.yaml`. The key design properties are:
+The shim file MUST match the content embedded in `internal/scaffold/fullsend-repo/templates/shim-workflow.yaml`. The key design properties are:
 
 1. **Event payload via environment variables** — All GitHub Actions context values (`toJSON(github.event)`, `github.event_name`, `github.repository`, `github.repository_owner`) are assigned to environment variables (`EVENT_PAYLOAD`, `EVENT_TYPE`, `SOURCE_REPO`, `DISPATCH_REPO`) and referenced as `"$VAR"` in the `run:` script. This prevents script injection from attacker-controlled fields (issue titles, comment bodies, PR descriptions).
 
@@ -62,7 +62,7 @@ The shim file MUST match the content embedded in `internal/scaffold/target-repo/
 4. **`pull_request_target`** — Used instead of `pull_request` so the workflow runs the base-branch version, preventing PR authors from modifying the shim to exfiltrate the dispatch token.
 
 ```yaml
-# See internal/scaffold/target-repo/.github/workflows/fullsend.yaml for the
+# See internal/scaffold/fullsend-repo/templates/shim-workflow.yaml for the
 # canonical content. The embedded file is the source of truth; this snippet
 # shows the structure for reference only.
 name: fullsend
@@ -122,7 +122,7 @@ The `repo-maintenance.yml` workflow (deployed as scaffold content by the `Workfl
 - For repos with an existing enrollment PR: updates the shim content on the branch
 - For already-enrolled repos: skips
 
-The shim template used by the workflow lives at `templates/shim-workflow.yaml` in the `.fullsend` repo and MUST match the content in `internal/scaffold/target-repo/.github/workflows/fullsend.yaml`.
+The shim template used by the workflow lives at `templates/shim-workflow.yaml` in the `.fullsend` repo (source: `internal/scaffold/fullsend-repo/templates/shim-workflow.yaml`).
 
 ## 7. Failure behavior
 

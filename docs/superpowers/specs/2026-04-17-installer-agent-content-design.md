@@ -58,12 +58,10 @@ internal/scaffold/
 │   │   └── triage.yaml               # Triage harness config
 │   ├── policies/
 │   │   └── triage.yaml               # Triage sandbox policy (Landlock + network)
-│   └── scripts/
-│       └── validate-triage.sh        # Triage output validation
-└── target-repo/
-    └── .github/
-        └── workflows/
-            └── fullsend.yaml.tmpl    # Shim template (Go text/template)
+│   ├── scripts/
+│   │   └── validate-triage.sh        # Triage output validation
+│   └── templates/
+│       └── shim-workflow.yaml        # Shim workflow deployed to target repos
 ```
 
 ### 1.3 Source of content
@@ -82,7 +80,7 @@ internal/scaffold/
 | `harness/triage.yaml` | `nonflux/.fullsend/harness/code.yaml` | Adapt for triage role |
 | `policies/triage.yaml` | `nonflux/.fullsend/policies/hello-world.yaml` | Add `*.github.com` to network allowlist |
 | `validate-triage.sh` | Plan doc content | Triage report validation + issue comment posting |
-| `fullsend.yaml.tmpl` | Current `enrollment.go` shim | Add per-role dispatch jobs with event filtering |
+| `templates/shim-workflow.yaml` | Current `enrollment.go` shim | Add per-role dispatch jobs with event filtering |
 
 ### 1.4 Embedding in Go
 
@@ -92,11 +90,11 @@ package scaffold
 
 import "embed"
 
-//go:embed fullsend-repo target-repo
-var Content embed.FS
+//go:embed all:fullsend-repo
+var content embed.FS
 ```
 
-The `WorkflowsLayer` walks `scaffold.Content` to discover files under `fullsend-repo/` and writes each one to `.fullsend`. The `EnrollmentLayer` (or repo-maintenance workflow) reads `target-repo/` for shim templates. Template files (`.tmpl` suffix) are processed with `text/template`; plain files are deployed as-is.
+The `WorkflowsLayer` walks `fullsend-repo/` to discover files and writes each one to `.fullsend`. The shim template lives at `fullsend-repo/templates/shim-workflow.yaml` and is deployed alongside the other scaffold files; `reconcile-repos.sh` reads it at runtime to write shim workflows to target repos.
 
 ### 1.5 Culling `dispatch/`
 
@@ -293,7 +291,7 @@ The `managedFiles` list is built dynamically from the embedded filesystem rather
 
 **After:**
 - `Install()`: Verifies enabled repos exist and are accessible. Logs which repos will be enrolled by the repo-maintenance workflow. Optionally polls for the workflow run and harvests PR URLs.
-- `shimWorkflowContent()`: Removed (shim content lives in `internal/scaffold/target-repo/`).
+- `shimWorkflowContent()`: Removed (shim content lives in `internal/scaffold/fullsend-repo/templates/shim-workflow.yaml`).
 - `enrollRepo()`: Removed (repo-maintenance workflow handles this).
 
 ### 4.3 New: scaffold package

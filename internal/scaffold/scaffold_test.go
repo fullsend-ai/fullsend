@@ -21,6 +21,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"harness/triage.yaml",
 		"policies/triage.yaml",
 		"scripts/validate-triage.sh",
+		"templates/shim-workflow.yaml",
 	}
 
 	for _, path := range expected {
@@ -30,12 +31,13 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 	}
 }
 
-func TestTargetRepoShimExists(t *testing.T) {
-	content, err := TargetRepoFile(".github/workflows/fullsend.yaml")
+func TestShimTemplateContent(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-workflow.yaml")
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "dispatch-triage")
-	assert.Contains(t, string(content), "dispatch-code")
-	assert.Contains(t, string(content), "dispatch-review")
+	s := string(content)
+	assert.Contains(t, s, "dispatch-triage")
+	assert.Contains(t, s, "dispatch-code")
+	assert.Contains(t, s, "dispatch-review")
 }
 
 func TestWalkFullsendRepo(t *testing.T) {
