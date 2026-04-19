@@ -21,4 +21,9 @@ describe("tokenStore", () => {
     clearSession();
     expect(loadToken()).toBeNull();
   });
+
+  it("loadToken returns null for invalid JSON", () => {
+    localStorage.setItem("fullsend_admin_github_token", "not-json{");
+    expect(loadToken()).toBeNull();
+  });
 });

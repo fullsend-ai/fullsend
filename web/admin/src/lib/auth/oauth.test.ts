@@ -1,5 +1,35 @@
-import { describe, expect, it } from "vitest";
-import { tryParseWorkerExpandedOauthState } from "./oauth";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./turnstile", () => ({
+  obtainTurnstileToken: vi.fn(),
+}));
+
+vi.mock("./session", () => ({
+  refreshSession: vi.fn(),
+}));
+
+import { obtainTurnstileToken } from "./turnstile";
+import { refreshSession } from "./session";
+import {
+  completeGithubOAuthFromHandoff,
+  tryParseWorkerExpandedOauthState,
+} from "./oauth";
+import { loadToken } from "./tokenStore";
+
+const OAUTH_DOC_HANDOFF_KEY = "fullsend_admin_oauth_doc_handoff";
+const OAUTH_STATE_KEY = "fullsend_admin_oauth_state";
+const PKCE_VERIFIER_KEY = "fullsend_admin_pkce_verifier";
+
+function workerExpandedStateB64(n: string, k = "0x4AAA_sitekey"): string {
+  const payload = { v: 1, n, k };
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
 
 describe("tryParseWorkerExpandedOauthState", () => {
   it("returns null for raw UUID state", () => {
@@ -9,18 +39,138 @@ describe("tryParseWorkerExpandedOauthState", () => {
   });
 
   it("parses worker-expanded base64url JSON state", () => {
-    const payload = { v: 1, n: "nonce-value", k: "0x4AAA_sitekey" };
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
-    let bin = "";
-    for (const b of bytes) bin += String.fromCharCode(b);
-    const b64 = btoa(bin)
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
+    const b64 = workerExpandedStateB64("nonce-value");
     expect(tryParseWorkerExpandedOauthState(b64)).toEqual({
       v: 1,
       n: "nonce-value",
       k: "0x4AAA_sitekey",
     });
+  });
+});
+
+describe("completeGithubOAuthFromHandoff", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+    vi.mocked(obtainTurnstileToken).mockReset().mockResolvedValue("ts-token");
+    vi.mocked(refreshSession).mockReset().mockResolvedValue(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            access_token: "access-xyz",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+  });
+
+  it("returns error when document handoff is missing", async () => {
+    const r = await completeGithubOAuthFromHandoff();
+    expect(r).toEqual({
+      ok: false,
+      error: "Missing OAuth handoff — try signing in again.",
+    });
+    expect(obtainTurnstileToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-Worker-expanded state and clears OAuth state", async () => {
+    const nonce = "550e8400-e29b-41d4-a716-446655440000";
+    sessionStorage.setItem(
+      OAUTH_DOC_HANDOFF_KEY,
+      JSON.stringify({ code: "gh-code", state: nonce }),
+    );
+    sessionStorage.setItem(OAUTH_STATE_KEY, nonce);
+    sessionStorage.setItem(PKCE_VERIFIER_KEY, "verifier");
+
+    const r = await completeGithubOAuthFromHandoff();
+
+    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: false });
+    if (!r.ok) {
+      expect(r.error).toContain("Worker-expanded");
+    }
+    expect(sessionStorage.getItem(OAUTH_STATE_KEY)).toBeNull();
+    expect(obtainTurnstileToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects Worker-expanded nonce mismatch", async () => {
+    const expanded = workerExpandedStateB64("expected-nonce");
+    sessionStorage.setItem(
+      OAUTH_DOC_HANDOFF_KEY,
+      JSON.stringify({ code: "gh-code", state: expanded }),
+    );
+    sessionStorage.setItem(OAUTH_STATE_KEY, "other-nonce");
+    sessionStorage.setItem(PKCE_VERIFIER_KEY, "verifier");
+
+    const r = await completeGithubOAuthFromHandoff();
+
+    expect(r).toEqual({
+      ok: false,
+      error: "OAuth state mismatch — try signing in again.",
+    });
+    expect(sessionStorage.getItem(OAUTH_STATE_KEY)).toBeNull();
+    expect(obtainTurnstileToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing PKCE verifier after valid handoff", async () => {
+    const nonce = "11111111-1111-1111-1111-111111111111";
+    const expanded = workerExpandedStateB64(nonce);
+    sessionStorage.setItem(
+      OAUTH_DOC_HANDOFF_KEY,
+      JSON.stringify({ code: "gh-code", state: expanded }),
+    );
+    sessionStorage.setItem(OAUTH_STATE_KEY, nonce);
+
+    const r = await completeGithubOAuthFromHandoff();
+
+    expect(r).toEqual({
+      ok: false,
+      error:
+        "Missing PKCE verifier (session expired or this tab did not start sign-in). Open the app from /admin/ and try again.",
+    });
+    expect(sessionStorage.getItem(OAUTH_STATE_KEY)).toBeNull();
+    expect(obtainTurnstileToken).not.toHaveBeenCalled();
+  });
+
+  it("persists token and clears OAuth session storage on success", async () => {
+    const nonce = "22222222-2222-2222-2222-222222222222";
+    const expanded = workerExpandedStateB64(nonce, "site-key-1");
+    sessionStorage.setItem(
+      OAUTH_DOC_HANDOFF_KEY,
+      JSON.stringify({ code: "exchange-code", state: expanded }),
+    );
+    sessionStorage.setItem(OAUTH_STATE_KEY, nonce);
+    sessionStorage.setItem(PKCE_VERIFIER_KEY, "pkce-verifier-value");
+
+    const r = await completeGithubOAuthFromHandoff();
+
+    expect(r).toEqual({ ok: true });
+    expect(obtainTurnstileToken).toHaveBeenCalledWith("site-key-1");
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(loadToken()).toEqual({
+      accessToken: "access-xyz",
+      tokenType: "Bearer",
+      expiresAt: expect.any(Number),
+    });
+    expect(sessionStorage.getItem(OAUTH_STATE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PKCE_VERIFIER_KEY)).toBeNull();
+    expect(sessionStorage.getItem(OAUTH_DOC_HANDOFF_KEY)).toBeNull();
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init?.method).toBe("POST");
+    const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      code: "exchange-code",
+      code_verifier: "pkce-verifier-value",
+      turnstile_token: "ts-token",
+    });
+    expect(typeof body.redirect_uri).toBe("string");
   });
 });
