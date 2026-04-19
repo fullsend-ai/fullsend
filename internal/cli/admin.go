@@ -83,6 +83,7 @@ func newInstallCmd() *cobra.Command {
 	var dryRun bool
 	var skipAppSetup bool
 	var gcpProject string
+	var gcpRegion string
 	var gcpServiceAccount string
 	var gcpCredentialsFile string
 
@@ -118,15 +119,18 @@ func newInstallCmd() *cobra.Command {
 			}
 
 			// Validate GCP flag dependencies.
-			if gcpProject == "" && (gcpServiceAccount != "" || gcpCredentialsFile != "") {
-				return fmt.Errorf("--gcp-service-account and --gcp-credentials-file require --gcp-project to be set")
+			if gcpProject == "" && (gcpServiceAccount != "" || gcpCredentialsFile != "" || gcpRegion != "") {
+				return fmt.Errorf("--gcp-service-account, --gcp-credentials-file, and --gcp-region require --gcp-project to be set")
+			}
+			if gcpProject != "" && gcpRegion == "" {
+				return fmt.Errorf("--gcp-region is required when --gcp-project is set")
 			}
 
 			// Build inference provider from GCP flags.
 			var inferenceProvider inference.Provider
 			var inferenceProviderName string
 			if gcpProject != "" {
-				vcfg := vertex.Config{ProjectID: gcpProject, ServiceAccountName: gcpServiceAccount}
+				vcfg := vertex.Config{ProjectID: gcpProject, Region: gcpRegion, ServiceAccountName: gcpServiceAccount}
 				if gcpCredentialsFile != "" {
 					info, statErr := os.Lstat(gcpCredentialsFile)
 					if statErr != nil {
@@ -180,6 +184,7 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
 	cmd.Flags().StringVar(&gcpProject, "gcp-project", "", "GCP project ID for Vertex AI inference")
+	cmd.Flags().StringVar(&gcpRegion, "gcp-region", "", "GCP region for Vertex AI (e.g. us-east5, required with --gcp-project)")
 	cmd.Flags().StringVar(&gcpServiceAccount, "gcp-service-account", "", "existing GCP service account name (optional, used with --gcp-project)")
 	cmd.Flags().StringVar(&gcpCredentialsFile, "gcp-credentials-file", "", "path to pre-made GCP service account key JSON (optional, used with --gcp-project)")
 
@@ -279,7 +284,6 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 
 	// Build config with empty agents for analysis.
@@ -299,7 +303,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs, inferenceProvider)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, "", enrolledRepoIDs, inferenceProvider)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -359,7 +363,6 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 
 	printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
@@ -383,7 +386,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 	// Build stack with empty dispatch token for preflight — we check scopes
 	// before prompting the user so we fail early on missing admin:org.
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs, inferenceProvider)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, "", enrolledRepoIDs, inferenceProvider)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -393,7 +396,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	// Create the .fullsend config repo and write workflow files BEFORE
 	// prompting for the dispatch token. The user needs the repo to exist
 	// so they can select it when creating the fine-grained PAT, and the
-	// agent.yaml workflow must exist so we can verify the PAT by attempting
+	// triage.yml workflow must exist so we can verify the PAT by attempting
 	// a real dispatch. Both layers are idempotent, so running them again
 	// in the full stack is harmless.
 	printer.Header("Preparing config repo")
@@ -416,7 +419,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	// Rebuild stack with the actual dispatch token.
-	stack = buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, dispatchToken, enrolledRepoIDs, inferenceProvider)
+	stack = buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, dispatchToken, enrolledRepoIDs, inferenceProvider)
 
 	printer.Header("Installing layers")
 	printer.Blank()
@@ -559,7 +562,6 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 
 	printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
@@ -587,7 +589,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		inferenceProvider = vertex.NewAnalyzeOnly()
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, defaultBranches, agentCreds, "", nil, inferenceProvider)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, agentCreds, "", nil, inferenceProvider)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -606,7 +608,6 @@ func buildLayerStack(
 	user string,
 	hasPrivate bool,
 	enabledRepos []string,
-	defaultBranches map[string]string,
 	agentCreds []layers.AgentCredentials,
 	dispatchToken string,
 	enrolledRepoIDs []int64,
@@ -618,7 +619,7 @@ func buildLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
-		layers.NewEnrollmentLayer(org, client, enabledRepos, defaultBranches, printer),
+		layers.NewEnrollmentLayer(org, client, enabledRepos, cfg.DisabledRepos(), printer),
 	)
 }
 
@@ -841,12 +842,12 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 	// Verify the token can actually dispatch workflows on .fullsend by
 	// triggering a real workflow_dispatch event. This is the exact operation
 	// the shim will perform, so if this works, the shim will work.
-	// The dispatch triggers agent.yaml with a "verify" event type — the
+	// The dispatch triggers triage.yml with a "verify" event type — the
 	// workflow will run but the entrypoint script will see it's a verify
 	// event and exit cleanly.
 	printer.StepStart("Verifying token can dispatch workflows on " + forge.ConfigRepoName)
 	verifyClient := gh.New(token)
-	err = verifyClient.DispatchWorkflow(ctx, org, forge.ConfigRepoName, "agent.yaml", "main", map[string]string{
+	err = verifyClient.DispatchWorkflow(ctx, org, forge.ConfigRepoName, "triage.yml", "main", map[string]string{
 		"event_type":    "verify",
 		"source_repo":   org + "/" + forge.ConfigRepoName,
 		"event_payload": "{}",
@@ -879,14 +880,6 @@ func repoNameList(repos []forge.Repository) []string {
 		names[i] = r.Name
 	}
 	return names
-}
-
-func repoDefaultBranches(repos []forge.Repository) map[string]string {
-	branches := make(map[string]string, len(repos))
-	for _, r := range repos {
-		branches[r.Name] = r.DefaultBranch
-	}
-	return branches
 }
 
 func hasPrivateRepos(repos []forge.Repository) bool {

@@ -8,6 +8,7 @@ type AppPermissions struct {
 	PullRequests   string `json:"pull_requests,omitempty"`
 	Checks         string `json:"checks,omitempty"`
 	Contents       string `json:"contents,omitempty"`
+	Workflows      string `json:"workflows,omitempty"`
 	Administration string `json:"administration,omitempty"`
 	Members        string `json:"members,omitempty"`
 }
@@ -63,6 +64,7 @@ func AgentAppConfig(org, role string) AppConfig {
 		base.Description = fmt.Sprintf("Fullsend orchestrator for %s", org)
 		base.Permissions = AppPermissions{
 			Contents:       "write",
+			Workflows:      "write",
 			Issues:         "read",
 			PullRequests:   "write",
 			Checks:         "read",

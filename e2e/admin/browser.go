@@ -178,8 +178,10 @@ func (b *PlaywrightBrowserOpener) handleCreateAppPage() error {
 	}
 
 	// Wait for redirect back to our callback URL.
+	// GitHub's manifest flow can be slow (app creation, key generation),
+	// so use a generous timeout.
 	if err := b.page.WaitForURL("**/callback**", playwright.PageWaitForURLOptions{
-		Timeout: playwright.Float(10000),
+		Timeout: playwright.Float(30000),
 	}); err != nil {
 		pageURL := b.page.URL()
 		if strings.Contains(pageURL, "/callback") || strings.Contains(pageURL, "127.0.0.1") {

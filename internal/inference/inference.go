@@ -17,4 +17,8 @@ type Provider interface {
 	// SecretNames returns the names of secrets this provider manages,
 	// used by Analyze to check whether credentials are present.
 	SecretNames() []string
+
+	// Variables returns non-secret name/value pairs to store as repo
+	// variables (e.g. region). May return nil.
+	Variables() map[string]string
 }

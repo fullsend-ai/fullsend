@@ -39,8 +39,10 @@ Infrastructure platform choice and configuration are specified in the adopting o
 
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → secrets → inference → dispatch-token → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
-- Cross-repo dispatch: `workflow_dispatch` with an org-level dispatch token replaces `workflow_call`, keeping App PEM secrets in the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
+- Cross-repo dispatch: per-role `workflow_dispatch` workflows (`triage.yml`, `code.yml`, `review.yml`) with an org-level dispatch token, keeping App PEM secrets in the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim to exfiltrate the dispatch token ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
+- Repo maintenance: a workflow in `.fullsend` (`.github/workflows/repo-maintenance.yml`) reconciles enrollment shims in target repos when `config.yaml` changes or on manual dispatch. The CLI's `EnrollmentLayer.Install()` dispatches this workflow via `workflow_dispatch` and monitors it for completion, then reports any enrollment PRs created in target repos.
+- Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
 
 **Open questions:**
 

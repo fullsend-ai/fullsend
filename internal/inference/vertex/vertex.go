@@ -21,6 +21,9 @@ const (
 	// Uses the FULLSEND_ prefix for consistency with other secrets.
 	SecretProjectID = "FULLSEND_GCP_PROJECT_ID"
 
+	// VariableRegion is the repo variable name for the GCP region.
+	VariableRegion = "FULLSEND_GCP_REGION"
+
 	// defaultSAName is the service account name created in mode 1.
 	defaultSAName = "fullsend-agent"
 )
@@ -40,6 +43,7 @@ type GCPClient interface {
 // Config holds the inputs for Vertex credential provisioning.
 type Config struct {
 	ProjectID          string // required
+	Region             string // required: GCP region (e.g. us-east5)
 	ServiceAccountName string // optional: existing SA name (mode 2)
 	CredentialJSON     []byte // optional: pre-made key JSON (mode 3)
 }
@@ -69,6 +73,14 @@ func (p *Provider) Name() string {
 // SecretNames returns the secret names this provider manages.
 func (p *Provider) SecretNames() []string {
 	return []string{SecretCredentials, SecretProjectID}
+}
+
+// Variables returns non-secret name/value pairs to store as repo variables.
+func (p *Provider) Variables() map[string]string {
+	if p.cfg.Region == "" {
+		return nil
+	}
+	return map[string]string{VariableRegion: p.cfg.Region}
 }
 
 // Provision acquires GCP credentials and returns them as secrets.

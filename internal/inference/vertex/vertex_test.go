@@ -62,7 +62,7 @@ func (f *fakeGCPClient) CreateServiceAccountKey(_ context.Context, projectID, sa
 
 func TestProvision_Mode1_CreateSAAndKey(t *testing.T) {
 	gcp := newFakeGCPClient()
-	p := New(Config{ProjectID: "my-project"}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5"}, gcp)
 
 	secrets, err := p.Provision(context.Background())
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestProvision_Mode1_CreateSAAndKey(t *testing.T) {
 func TestProvision_Mode2_ExistingSA(t *testing.T) {
 	gcp := newFakeGCPClient()
 	gcp.existingSAs["my-project/my-sa"] = true
-	p := New(Config{ProjectID: "my-project", ServiceAccountName: "my-sa"}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5", ServiceAccountName: "my-sa"}, gcp)
 
 	secrets, err := p.Provision(context.Background())
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func TestProvision_Mode2_ExistingSA(t *testing.T) {
 func TestProvision_Mode2_SANotFound(t *testing.T) {
 	gcp := newFakeGCPClient()
 	// SA does not exist.
-	p := New(Config{ProjectID: "my-project", ServiceAccountName: "missing-sa"}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5", ServiceAccountName: "missing-sa"}, gcp)
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
@@ -113,7 +113,7 @@ func TestProvision_Mode2_SANotFound(t *testing.T) {
 func TestProvision_Mode3_PreMadeKey(t *testing.T) {
 	gcp := newFakeGCPClient()
 	credJSON := []byte(`{"type":"service_account","project_id":"my-project","private_key":"..."}`)
-	p := New(Config{ProjectID: "my-project", CredentialJSON: credJSON}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5", CredentialJSON: credJSON}, gcp)
 
 	secrets, err := p.Provision(context.Background())
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestProvision_Mode1_SA409Conflict(t *testing.T) {
 	gcp := newFakeGCPClient()
 	// Simulate the SA already existing (409 Conflict → treated as success).
 	gcp.alreadyExists = true
-	p := New(Config{ProjectID: "my-project"}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5"}, gcp)
 
 	secrets, err := p.Provision(context.Background())
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestProvision_MissingProjectID(t *testing.T) {
 func TestProvision_CreateSAError(t *testing.T) {
 	gcp := newFakeGCPClient()
 	gcp.createErr = fmt.Errorf("permission denied")
-	p := New(Config{ProjectID: "my-project"}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5"}, gcp)
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
@@ -164,7 +164,7 @@ func TestProvision_CreateSAError(t *testing.T) {
 func TestProvision_CreateKeyError(t *testing.T) {
 	gcp := newFakeGCPClient()
 	gcp.createKeyErr = fmt.Errorf("quota exceeded")
-	p := New(Config{ProjectID: "my-project"}, gcp)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5"}, gcp)
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
@@ -172,7 +172,7 @@ func TestProvision_CreateKeyError(t *testing.T) {
 }
 
 func TestProvision_NilGCPClient_Mode1(t *testing.T) {
-	p := New(Config{ProjectID: "my-project"}, nil)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5"}, nil)
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
@@ -180,7 +180,7 @@ func TestProvision_NilGCPClient_Mode1(t *testing.T) {
 }
 
 func TestProvision_NilGCPClient_Mode2(t *testing.T) {
-	p := New(Config{ProjectID: "my-project", ServiceAccountName: "my-sa"}, nil)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5", ServiceAccountName: "my-sa"}, nil)
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
@@ -190,7 +190,7 @@ func TestProvision_NilGCPClient_Mode2(t *testing.T) {
 func TestProvision_NilGCPClient_Mode3_OK(t *testing.T) {
 	// Mode 3 should work fine without a GCP client.
 	credJSON := []byte(`{"type":"service_account"}`)
-	p := New(Config{ProjectID: "my-project", CredentialJSON: credJSON}, nil)
+	p := New(Config{ProjectID: "my-project", Region: "us-east5", CredentialJSON: credJSON}, nil)
 
 	secrets, err := p.Provision(context.Background())
 	require.NoError(t, err)
@@ -217,4 +217,16 @@ func TestSecretNames(t *testing.T) {
 	p := New(Config{}, nil)
 	names := p.SecretNames()
 	assert.Equal(t, []string{SecretCredentials, SecretProjectID}, names)
+}
+
+func TestVariables_WithRegion(t *testing.T) {
+	p := New(Config{Region: "us-east5"}, nil)
+	vars := p.Variables()
+	assert.Equal(t, map[string]string{VariableRegion: "us-east5"}, vars)
+}
+
+func TestVariables_WithoutRegion(t *testing.T) {
+	p := New(Config{}, nil)
+	vars := p.Variables()
+	assert.Nil(t, vars)
 }

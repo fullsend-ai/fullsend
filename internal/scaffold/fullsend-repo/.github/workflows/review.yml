@@ -1,0 +1,70 @@
+name: Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+
+concurrency:
+  group: fullsend-review-${{ fromJSON(inputs.event_payload).pull_request.number || fromJSON(inputs.event_payload).issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout .fullsend repository
+        uses: actions/checkout@v4
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FULLSEND_REVIEW_APP_ID }}
+          private-key: ${{ secrets.FULLSEND_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: REVIEW_
+          REVIEW_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REVIEW_TARGET_REPO_DIR: target-repo
+          REVIEW_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          REVIEW_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run review agent
+        uses: ./.github/actions/fullsend
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          GITHUB_PR_URL: ${{ fromJSON(inputs.event_payload).pull_request.html_url }}
+        with:
+          agent: review

@@ -479,6 +479,49 @@ func (f *FakeClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ ma
 	return nil
 }
 
+func (f *FakeClient) CreateIssue(_ context.Context, _, _, _, _ string) (*Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("CreateIssue"); e != nil {
+		return nil, e
+	}
+	return &Issue{Number: 1, Title: "fake", URL: "https://fake"}, nil
+}
+
+func (f *FakeClient) CloseIssue(_ context.Context, _, _ string, _ int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err("CloseIssue")
+}
+
+func (f *FakeClient) MergeChangeProposal(_ context.Context, _, _ string, _ int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err("MergeChangeProposal")
+}
+
+func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRuns"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo + "/" + workflowFile
+	if run, ok := f.WorkflowRuns[key]; ok {
+		return []WorkflowRun{*run}, nil
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) GetWorkflowRunLogs(_ context.Context, _, _ string, _ int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetWorkflowRunLogs"); e != nil {
+		return "", e
+	}
+	return "[fake workflow logs]", nil
+}
+
 func (f *FakeClient) ListOrgInstallations(_ context.Context, _ string) ([]Installation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

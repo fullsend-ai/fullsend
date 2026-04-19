@@ -115,7 +115,7 @@ func createPAT(page playwright.Page, note, password, screenshotDir string, logf 
 		return "", fmt.Errorf("extracted token is empty")
 	}
 
-	logf("[pat] Created PAT: %s...%s (note: %s)", token[:4], token[len(token)-4:], note)
+	logf("[pat] Created PAT: %s**** (note: %s)", token[:4], note)
 	return token, nil
 }
 
@@ -133,6 +133,19 @@ func createDispatchPAT(page playwright.Page, org, password, screenshotDir string
 	// the downstream widgets (repo picker, permissions) when pre-filled.
 	// Instead, we'll select the owner manually.
 	patURL := "https://github.com/settings/personal-access-tokens/new"
+
+	// First, navigate to the GitHub profile settings to refresh the session.
+	// After the app creation/installation flow, the CSRF token may be stale,
+	// which causes the token generation to silently fail with a "signed in
+	// with another tab" flash message.
+	logf("[dispatch-pat] Refreshing session before PAT creation")
+	if _, err := page.Goto("https://github.com/settings/profile", playwright.PageGotoOptions{
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		Timeout:   playwright.Float(10000),
+	}); err != nil {
+		logf("[dispatch-pat] Warning: could not refresh session: %v", err)
+	}
+	time.Sleep(1 * time.Second)
 
 	logf("[dispatch-pat] Navigating to fine-grained PAT creation page")
 	if _, err := page.Goto(patURL, playwright.PageGotoOptions{
@@ -384,30 +397,40 @@ func createDispatchPAT(page playwright.Page, org, password, screenshotDir string
 	time.Sleep(500 * time.Millisecond)
 
 	// The Actions permission is now added but defaults to "Read-only".
-	// Find the Actions row's level dropdown and change it to "Read and write".
-	// The dropdown appears as a <select> or button near "Actions" text.
-	_, err = page.Evaluate(`() => {
-		// Find all select elements on the page — the Actions permission
-		// level dropdown should be among them.
-		const selects = document.querySelectorAll('select');
-		for (const sel of selects) {
-			// Check if this select is near an "Actions" label
-			const row = sel.closest('li, tr, div');
-			if (row && row.textContent.includes('Actions')) {
-				// Set to "Read and write"
-				for (const opt of sel.options) {
-					if (opt.text.includes('Read and write') || opt.value === 'write') {
-						sel.value = opt.value;
-						sel.dispatchEvent(new Event('change', { bubbles: true }));
-						return true;
-					}
-				}
+	// GitHub's fine-grained PAT UI uses custom React dropdowns (not native
+	// <select> elements). Find the "Read-only" button/link near "Actions"
+	// and click it to change the permission level.
+	//
+	// The permission row shows: "Actions" ... "Access: Read-only ▼"
+	// Clicking "Read-only" opens a popover with "Read-only" and "Read and write" options.
+	readOnlyBtn := page.Locator("button:has-text('Read-only')").First()
+	if clickErr := readOnlyBtn.Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(5000),
+	}); clickErr != nil {
+		logf("[dispatch-pat] Warning: could not click 'Read-only' button: %v", clickErr)
+	} else {
+		logf("[dispatch-pat] Clicked 'Read-only' dropdown")
+		time.Sleep(500 * time.Millisecond)
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-rw-dropdown", logf)
+
+		// Select "Read and write" from the opened dropdown/popover.
+		rwOption := page.Locator("[role='option']:has-text('Read and write'), [role='menuitemradio']:has-text('Read and write'), li:has-text('Read and write'), label:has-text('Read and write')")
+		if rwErr := rwOption.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(3000),
+		}); rwErr != nil {
+			logf("[dispatch-pat] Warning: could not click 'Read and write' option: %v", rwErr)
+			// Fallback: try clicking any text that says "Read and write"
+			rwText := page.Locator("text=Read and write")
+			if textErr := rwText.First().Click(playwright.LocatorClickOptions{
+				Timeout: playwright.Float(3000),
+			}); textErr != nil {
+				logf("[dispatch-pat] Warning: fallback text click also failed: %v", textErr)
+			} else {
+				logf("[dispatch-pat] Set Actions to Read and write via text click fallback")
 			}
+		} else {
+			logf("[dispatch-pat] Set Actions to Read and write")
 		}
-		return false;
-	}`)
-	if err != nil {
-		logf("[dispatch-pat] Warning: could not set Actions to Read and write via JS: %v", err)
 	}
 	time.Sleep(500 * time.Millisecond)
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-before-generate", logf)
@@ -436,32 +459,75 @@ func createDispatchPAT(page playwright.Page, org, password, screenshotDir string
 	}
 	logf("[dispatch-pat] Clicked confirmation 'Generate token'")
 
-	// Wait for page to show the generated token.
+	// Wait for navigation to complete after token generation.
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State: playwright.LoadStateDomcontentloaded,
+		State: playwright.LoadStateNetworkidle,
 	}); err != nil {
-		return "", fmt.Errorf("waiting for token result page: %w", err)
+		logf("[dispatch-pat] Warning: WaitForLoadState networkidle: %v", err)
 	}
 	time.Sleep(2 * time.Second)
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-page", logf)
+	logf("[dispatch-pat] Token page URL: %s", page.URL())
 
-	// The token is displayed in an input element on the tokens list page.
-	// Use JavaScript to extract it since the element may be complex.
-	time.Sleep(3 * time.Second)
-	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-visible", logf)
+	// Dump the full page HTML to help debug token extraction.
+	if htmlContent, evalErr := page.Evaluate(`() => document.body.innerHTML`); evalErr == nil {
+		htmlStr, _ := htmlContent.(string)
+		// Look for github_pat_ in the raw HTML (it may be in an attribute
+		// not found by our targeted queries).
+		if idx := strings.Index(htmlStr, "github_pat_"); idx >= 0 {
+			end := idx + 100
+			if end > len(htmlStr) {
+				end = len(htmlStr)
+			}
+			logf("[dispatch-pat] Found github_pat_ in HTML at offset %d: %s...", idx, htmlStr[idx:end])
+		} else {
+			// Log a snippet of the page for debugging.
+			snippet := htmlStr
+			if len(snippet) > 500 {
+				snippet = snippet[:500]
+			}
+			logf("[dispatch-pat] No github_pat_ found in HTML. First 500 chars: %s", snippet)
+		}
+	}
 
+	// Try multiple strategies to extract the token value.
 	tokenResult, err := page.Evaluate(`() => {
-		// Look for any input whose value starts with github_pat_
+		// Strategy 1: Look for any input whose value starts with github_pat_
 		const inputs = document.querySelectorAll('input');
 		for (const input of inputs) {
 			if (input.value && input.value.startsWith('github_pat_')) {
 				return input.value;
 			}
 		}
-		// Also check for visible text content containing the token
+		// Strategy 2: Check code/pre/span elements
+		const codeEls = document.querySelectorAll('code, pre, span, div, [data-testid]');
+		for (const el of codeEls) {
+			const text = el.textContent || '';
+			if (text.startsWith('github_pat_') && text.length > 30) {
+				return text.trim();
+			}
+		}
+		// Strategy 3: Check clipboard button data attributes
+		const clipboardBtns = document.querySelectorAll('[data-clipboard-text], clipboard-copy, [value]');
+		for (const btn of clipboardBtns) {
+			const val = btn.getAttribute('data-clipboard-text') || btn.getAttribute('value') || '';
+			if (val.startsWith('github_pat_')) {
+				return val;
+			}
+		}
+		// Strategy 4: Regex on full page text
 		const allText = document.body.innerText;
 		const match = allText.match(/github_pat_[A-Za-z0-9_]+/);
 		if (match) return match[0];
+		// Strategy 5: Search ALL attributes of ALL elements
+		const allEls = document.querySelectorAll('*');
+		for (const el of allEls) {
+			for (const attr of el.attributes) {
+				if (attr.value && attr.value.startsWith('github_pat_')) {
+					return attr.value;
+				}
+			}
+		}
 		return null;
 	}`)
 	if err != nil {
@@ -472,6 +538,13 @@ func createDispatchPAT(page playwright.Page, org, password, screenshotDir string
 	token, ok := tokenResult.(string)
 	if !ok || token == "" {
 		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-token-empty", logf)
+		logf("[dispatch-pat] Current URL: %s", page.URL())
+		if errMsg, evalErr := page.Evaluate(`() => {
+			const flash = document.querySelector('.flash-error, .flash-warn, [role="alert"]');
+			return flash ? flash.textContent.trim() : '(no flash message)';
+		}`); evalErr == nil {
+			logf("[dispatch-pat] Flash message: %v", errMsg)
+		}
 		return "", fmt.Errorf("dispatch PAT value is empty or not a string: %v", tokenResult)
 	}
 	token = strings.TrimSpace(token)
@@ -481,7 +554,7 @@ func createDispatchPAT(page playwright.Page, org, password, screenshotDir string
 		return "", fmt.Errorf("extracted dispatch PAT is empty")
 	}
 
-	logf("[dispatch-pat] Created fine-grained PAT: %s...%s", token[:10], token[len(token)-4:])
+	logf("[dispatch-pat] Created fine-grained PAT: %s****", token[:11])
 	return token, nil
 }
 
@@ -538,6 +611,77 @@ func deleteDispatchPAT(page playwright.Page, org, screenshotDir string, logf fun
 
 	logf("[dispatch-pat] Deleted fine-grained PAT with prefix: %s", tokenPrefix)
 	return nil
+}
+
+// deleteAllDispatchPATs deletes all fine-grained PATs from the account's
+// token list page. This handles accumulated stale PATs that hit GitHub's
+// 50-token limit. It deletes tokens indiscriminately because the e2e test
+// account is dedicated and should not have non-test tokens.
+func deleteAllDispatchPATs(page playwright.Page, _, screenshotDir string, logf func(string, ...any)) {
+	for i := 0; i < 60; i++ { // safety limit
+		// Re-navigate each iteration since deleting reloads the page.
+		if _, err := page.Goto("https://github.com/settings/personal-access-tokens", playwright.PageGotoOptions{
+			WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+			Timeout:   playwright.Float(10000),
+		}); err != nil {
+			logf("[dispatch-pat-cleanup] Could not navigate to tokens page: %v", err)
+			return
+		}
+		time.Sleep(1 * time.Second)
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-cleanup-list", logf)
+
+		// Log visible token names for debugging.
+		if names, evalErr := page.Evaluate(`() => {
+			const links = document.querySelectorAll('a[href*="/settings/personal-access-tokens/"]');
+			return Array.from(links).map(a => a.textContent.trim()).filter(t => t.length > 0).slice(0, 10);
+		}`); evalErr == nil {
+			logf("[dispatch-pat-cleanup] Visible tokens: %v", names)
+		}
+
+		// Click the first visible "Delete" on the page using Playwright's
+		// native click (not JS) so that Turbo/Hotwire navigation works.
+		deleteEl := page.GetByText("Delete", playwright.PageGetByTextOptions{Exact: playwright.Bool(true)}).First()
+		if err := deleteEl.WaitFor(playwright.LocatorWaitForOptions{
+			Timeout: playwright.Float(3000),
+			State:   playwright.WaitForSelectorStateVisible,
+		}); err != nil {
+			logf("[dispatch-pat-cleanup] No more deletable tokens found (cleaned %d)", i)
+			return
+		}
+
+		if err := deleteEl.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(5000),
+		}); err != nil {
+			logf("[dispatch-pat-cleanup] Could not click delete: %v", err)
+			saveDebugScreenshot(page, screenshotDir, fmt.Sprintf("dispatch-pat-cleanup-delete-%d", i), logf)
+			return
+		}
+
+		// Wait for confirmation page/dialog to load.
+		time.Sleep(1 * time.Second)
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-cleanup-confirm", logf)
+
+		// Click any confirmation button that appears.
+		confirmBtn := page.GetByText("I understand, delete this token", playwright.PageGetByTextOptions{Exact: playwright.Bool(false)})
+		if err := confirmBtn.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(5000),
+		}); err != nil {
+			// Try broader confirm selectors.
+			altConfirm := page.Locator("button.btn-danger, input.btn-danger[type='submit']").First()
+			if altErr := altConfirm.Click(playwright.LocatorClickOptions{
+				Timeout: playwright.Float(3000),
+			}); altErr != nil {
+				logf("[dispatch-pat-cleanup] Could not confirm delete: %v / %v", err, altErr)
+				saveDebugScreenshot(page, screenshotDir, fmt.Sprintf("dispatch-pat-cleanup-noconfirm-%d", i), logf)
+				return
+			}
+		}
+
+		_ = page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State: playwright.LoadStateDomcontentloaded,
+		})
+		logf("[dispatch-pat-cleanup] Deleted token %d", i+1)
+	}
 }
 
 // deletePAT deletes a classic GitHub PAT by navigating to the tokens page

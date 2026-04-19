@@ -130,8 +130,8 @@ func TestAdminInstallUninstall(t *testing.T) {
 	// Phase 1: First install (creates resources)
 	// =========================================
 	t.Log("=== Phase 1: First Install ===")
-	agentCreds, orgCfg, enabledRepos, defaultBranches, enrolledRepoIDs := runFullInstall(t, env)
-	verifyInstalled(t, env, orgCfg, enabledRepos, defaultBranches, agentCreds)
+	agentCreds, orgCfg, enabledRepos, enrolledRepoIDs := runFullInstall(t, env)
+	verifyInstalled(t, env, orgCfg, enabledRepos, agentCreds)
 
 	// =========================================
 	// Phase 2: Second install (idempotent no-op)
@@ -145,10 +145,22 @@ func TestAdminInstallUninstall(t *testing.T) {
 
 	// Second install should reuse existing dispatch token (empty string).
 	// Inference provider is nil for idempotent re-install (already provisioned).
-	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", enrolledRepoIDs, nil)
+	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, agentCreds, "", enrolledRepoIDs, nil)
 	err = stack.InstallAll(ctx)
 	require.NoError(t, err, "second InstallAll should succeed")
-	verifyInstalled(t, env, orgCfg, enabledRepos, defaultBranches, agentCreds)
+	verifyInstalled(t, env, orgCfg, enabledRepos, agentCreds)
+
+	// =========================================
+	// Phase 2.5: Triage dispatch smoke test
+	// =========================================
+	t.Log("=== Phase 2.5: Triage Dispatch Smoke Test ===")
+	runTriageDispatchSmokeTest(t, env)
+
+	// =========================================
+	// Phase 2.75: Unenrollment reconciliation
+	// =========================================
+	t.Log("=== Phase 2.75: Unenrollment ===")
+	runUnenrollmentTest(t, env, orgCfg, agentCreds, enrolledRepoIDs)
 
 	// =========================================
 	// Phase 3: First uninstall (deletes resources)
@@ -174,7 +186,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 
 // runFullInstall executes the full install flow (app setup + layer stack install)
 // and returns the agent credentials and org config for verification.
-func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *config.OrgConfig, []string, map[string]string, []int64) {
+func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *config.OrgConfig, []string, []int64) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -186,7 +198,11 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 	var agentCreds []layers.AgentCredentials
 	for _, role := range defaultRoles {
 		t.Logf("Setting up app for role: %s", role)
-		appCreds, err := setup.Run(ctx, testOrg, role)
+		// Use a per-role timeout so a failed manifest flow doesn't hang
+		// until the Go test timeout (which produces an unhelpful panic).
+		roleCtx, roleCancel := context.WithTimeout(ctx, 2*time.Minute)
+		appCreds, err := setup.Run(roleCtx, testOrg, role)
+		roleCancel()
 		require.NoError(t, err, "setting up app for role %s", role)
 
 		agentCreds = append(agentCreds, layers.AgentCredentials{
@@ -207,7 +223,6 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 	require.NoError(t, err, "listing org repos")
 
 	repoNames := repoNameList(allRepos)
-	defaultBranches := repoDefaultBranches(allRepos)
 	hasPrivate := hasPrivateRepos(allRepos)
 	enabledRepos := []string{testRepo}
 
@@ -225,10 +240,16 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 			// Try to extract project_id from the key JSON.
 			gcpProjectID = extractProjectID(t, vertexKey)
 		}
+		gcpRegion := os.Getenv("E2E_GCP_REGION")
+		if gcpRegion == "" {
+			gcpRegion = "us-east5"
+		}
 		inferenceProvider = vertex.New(vertex.Config{
 			ProjectID:      gcpProjectID,
+			Region:         gcpRegion,
 			CredentialJSON: []byte(vertexKey),
 		}, nil)
+		// Region is stored as a variable, not a secret.
 		inferenceProviderName = "vertex"
 		t.Logf("Inference provider: vertex (project: %s)", gcpProjectID)
 	} else {
@@ -275,12 +296,12 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 
 	// Build full layer stack with the dispatch token and install all layers.
 	// Config-repo and workflows are idempotent, so re-running them is harmless.
-	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, dispatchToken, enrolledRepoIDs, inferenceProvider)
+	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, agentCreds, dispatchToken, enrolledRepoIDs, inferenceProvider)
 
 	err = stack.InstallAll(ctx)
 	require.NoError(t, err, "installing layers")
 
-	return agentCreds, orgCfg, enabledRepos, defaultBranches, enrolledRepoIDs
+	return agentCreds, orgCfg, enabledRepos, enrolledRepoIDs
 }
 
 func runUninstall(t *testing.T, env *e2eEnv) {
@@ -322,7 +343,7 @@ func runUninstallAllowNotFound(t *testing.T, env *e2eEnv) {
 // --- Verification helpers ---
 
 // verifyInstalled checks that all resources exist and analyze reports installed.
-func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enabledRepos []string, defaultBranches map[string]string, agentCreds []layers.AgentCredentials) {
+func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enabledRepos []string, agentCreds []layers.AgentCredentials) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -339,10 +360,20 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 	assert.Equal(t, "1", parsedCfg.Version)
 	assert.Len(t, parsedCfg.Agents, len(defaultRoles))
 
-	// Workflow files exist.
+	// Agent runtime files exist (from scaffold).
 	for _, path := range []string{
-		".github/workflows/agent.yaml",
-		".github/workflows/repo-onboard.yaml",
+		".github/workflows/triage.yml",
+		".github/workflows/code.yml",
+		".github/workflows/review.yml",
+		".github/workflows/repo-maintenance.yml",
+		".github/actions/fullsend/action.yml",
+		".github/scripts/setup-agent-env.sh",
+		"agents/triage.md",
+		"harness/triage.yaml",
+		"policies/triage.yaml",
+		"env/triage.env",
+		"env/gcp-vertex.env",
+		"scripts/validate-triage.sh",
 		"CODEOWNERS",
 	} {
 		_, err := env.client.GetFileContent(ctx, testOrg, forge.ConfigRepoName, path)
@@ -396,7 +427,7 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 	require.NoError(t, err)
 	hasPrivate := hasPrivateRepos(allRepos)
 
-	analyzeStack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, defaultBranches, agentCreds, "", nil, nil)
+	analyzeStack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, enabledRepos, agentCreds, "", nil, nil)
 	reports, err := analyzeStack.AnalyzeAll(ctx)
 	require.NoError(t, err, "analyzing layers")
 	for _, report := range reports {
@@ -452,6 +483,143 @@ func verifyNotInstalled(t *testing.T, env *e2eEnv) {
 	}
 }
 
+func runTriageDispatchSmokeTest(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Find and merge the enrollment PR so the shim workflow becomes active.
+	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
+	require.NoError(t, err, "listing PRs for %s", testRepo)
+
+	var enrollmentPR *forge.ChangeProposal
+	for _, pr := range prs {
+		if strings.Contains(pr.Title, "fullsend") {
+			cp := pr // avoid loop variable capture
+			enrollmentPR = &cp
+			break
+		}
+	}
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+
+	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
+	err = env.client.MergeChangeProposal(ctx, testOrg, testRepo, enrollmentPR.Number)
+	require.NoError(t, err, "merging enrollment PR")
+
+	// Wait for GitHub to process the merge.
+	time.Sleep(5 * time.Second)
+
+	// File a test issue to trigger the shim workflow.
+	issueTitle := fmt.Sprintf("e2e-triage-test-%s", env.runID)
+	issueBody := "Automated e2e test issue to verify the triage dispatch pipeline."
+	issue, err := env.client.CreateIssue(ctx, testOrg, testRepo, issueTitle, issueBody)
+	require.NoError(t, err, "creating test issue")
+	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
+	t.Cleanup(func() {
+		t.Log("Closing test issue...")
+		if closeErr := env.client.CloseIssue(ctx, testOrg, testRepo, issue.Number); closeErr != nil {
+			t.Logf("warning: could not close test issue: %v", closeErr)
+		}
+	})
+
+	// Wait for the triage workflow to be dispatched in .fullsend.
+	// The shim fires on issues:opened and dispatches to triage.yml.
+	// The shim typically fires within ~5s of the issue being created,
+	// so 12 attempts at 5s intervals (60s total) is generous.
+	// Filter by CreatedAt to avoid false positives from previous runs.
+	issueCreatedAt := time.Now()
+	t.Log("Waiting for triage workflow to be dispatched...")
+	var triageRunFound bool
+	for attempt := 0; attempt < 12; attempt++ {
+		time.Sleep(5 * time.Second)
+		runs, listErr := env.client.ListWorkflowRuns(ctx, testOrg, forge.ConfigRepoName, "triage.yml")
+		if listErr != nil {
+			t.Logf("Attempt %d: error listing workflow runs: %v", attempt+1, listErr)
+			continue
+		}
+		for _, run := range runs {
+			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				t.Logf("Attempt %d: run %d has unparseable CreatedAt %q: %v", attempt+1, run.ID, run.CreatedAt, parseErr)
+				continue
+			}
+			if runTime.Before(issueCreatedAt) {
+				t.Logf("Attempt %d: run %d created at %s is from before our issue, skipping", attempt+1, run.ID, run.CreatedAt)
+				continue
+			}
+			t.Logf("Attempt %d: found run %d (status: %s, conclusion: %s, created: %s)", attempt+1, run.ID, run.Status, run.Conclusion, run.CreatedAt)
+			triageRunFound = true
+			break
+		}
+		if triageRunFound {
+			break
+		}
+		t.Logf("Attempt %d: no triage workflow runs found yet", attempt+1)
+	}
+	assert.True(t, triageRunFound, "triage workflow should have been dispatched in .fullsend repo")
+}
+
+// runUnenrollmentTest disables test-repo in config.yaml, runs install to
+// dispatch reconciliation, verifies the removal PR, merges it, and confirms
+// the shim is gone from the default branch.
+func runUnenrollmentTest(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, agentCreds []layers.AgentCredentials, enrolledRepoIDs []int64) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Update config.yaml to disable test-repo.
+	orgCfg.Repos[testRepo] = config.RepoConfig{Enabled: false}
+	cfgData, err := orgCfg.Marshal()
+	require.NoError(t, err, "marshaling updated config")
+
+	err = env.client.CreateOrUpdateFile(ctx, testOrg, forge.ConfigRepoName, "config.yaml", "chore: disable test-repo for unenrollment test", cfgData)
+	require.NoError(t, err, "updating config.yaml with disabled repo")
+	t.Logf("Set %s to enabled: false in config.yaml", testRepo)
+
+	// Wait for GitHub to process the push.
+	time.Sleep(5 * time.Second)
+
+	// Run install with no enabled repos and test-repo as disabled.
+	user, err := env.client.GetAuthenticatedUser(ctx)
+	require.NoError(t, err)
+	allRepos, err := env.client.ListOrgRepos(ctx, testOrg)
+	require.NoError(t, err)
+	hasPrivate := hasPrivateRepos(allRepos)
+
+	stack := buildTestLayerStack(testOrg, env.client, orgCfg, env.printer, user, hasPrivate, nil, agentCreds, "", enrolledRepoIDs, nil)
+	err = stack.InstallAll(ctx)
+	require.NoError(t, err, "install with disabled repo should succeed")
+
+	// Verify removal PR exists.
+	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
+	require.NoError(t, err, "listing PRs for %s", testRepo)
+
+	var removalPR *forge.ChangeProposal
+	for _, pr := range prs {
+		if pr.Title == "Disconnect from fullsend agent pipeline" {
+			cp := pr
+			removalPR = &cp
+			break
+		}
+	}
+	require.NotNil(t, removalPR, "removal PR should exist for %s", testRepo)
+	t.Logf("Found removal PR #%d: %s", removalPR.Number, removalPR.URL)
+
+	// Merge the removal PR.
+	err = env.client.MergeChangeProposal(ctx, testOrg, testRepo, removalPR.Number)
+	require.NoError(t, err, "merging removal PR")
+	t.Logf("Merged removal PR #%d", removalPR.Number)
+
+	// Wait for merge to propagate.
+	time.Sleep(5 * time.Second)
+
+	// Verify shim no longer exists on the default branch.
+	_, err = env.client.GetFileContent(ctx, testOrg, testRepo, ".github/workflows/fullsend.yaml")
+	assert.True(t, forge.IsNotFound(err), "shim workflow should be removed from %s after merging removal PR", testRepo)
+	t.Logf("Verified shim is gone from %s", testRepo)
+
+	// Re-enable the repo in config for subsequent test phases.
+	orgCfg.Repos[testRepo] = config.RepoConfig{Enabled: true}
+}
+
 // --- Utility functions ---
 
 func buildTestLayerStack(
@@ -462,7 +630,6 @@ func buildTestLayerStack(
 	user string,
 	hasPrivate bool,
 	enabledRepos []string,
-	defaultBranches map[string]string,
 	agentCreds []layers.AgentCredentials,
 	dispatchToken string,
 	enrolledRepoIDs []int64,
@@ -474,7 +641,7 @@ func buildTestLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		layers.NewDispatchTokenLayer(org, client, dispatchToken, enrolledRepoIDs, printer),
-		layers.NewEnrollmentLayer(org, client, enabledRepos, defaultBranches, printer),
+		layers.NewEnrollmentLayer(org, client, enabledRepos, cfg.DisabledRepos(), printer),
 	)
 }
 
@@ -484,14 +651,6 @@ func repoNameList(repos []forge.Repository) []string {
 		names[i] = r.Name
 	}
 	return names
-}
-
-func repoDefaultBranches(repos []forge.Repository) map[string]string {
-	branches := make(map[string]string, len(repos))
-	for _, r := range repos {
-		branches[r.Name] = r.DefaultBranch
-	}
-	return branches
 }
 
 func hasPrivateRepos(repos []forge.Repository) bool {

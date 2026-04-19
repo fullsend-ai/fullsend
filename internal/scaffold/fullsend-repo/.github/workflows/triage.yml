@@ -1,0 +1,68 @@
+name: Triage
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+
+concurrency:
+  group: fullsend-triage-${{ fromJSON(inputs.event_payload).issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    name: Triage
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout .fullsend repository
+        uses: actions/checkout@v4
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FULLSEND_TRIAGE_APP_ID }}
+          private-key: ${{ secrets.FULLSEND_TRIAGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: TRIAGE_
+          TRIAGE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TRIAGE_TARGET_REPO_DIR: target-repo
+          TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          TRIAGE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run triage agent
+        uses: ./.github/actions/fullsend
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+        with:
+          agent: triage

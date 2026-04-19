@@ -3,6 +3,7 @@ package layers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -10,31 +11,34 @@ import (
 
 const (
 	shimWorkflowPath = ".github/workflows/fullsend.yaml"
-	enrollBranch     = "fullsend/onboard"
+
+	// repoMaintenanceWorkflow is the workflow file that handles enrollment.
+	repoMaintenanceWorkflow = "repo-maintenance.yml"
 )
 
-// EnrollmentLayer manages repo enrollment in the fullsend pipeline.
-// It creates PRs with shim workflow files that route events to the
-// reusable agent dispatch workflow in the .fullsend config repo.
+// EnrollmentLayer monitors workflow-driven enrollment of target repos.
+// Enrollment is performed by the repo-maintenance workflow in .fullsend,
+// which creates PRs with shim workflows in response to config.yaml changes.
+// This layer dispatches that workflow and reports the results.
 type EnrollmentLayer struct {
-	org             string
-	client          forge.Client
-	enabledRepos    []string
-	defaultBranches map[string]string
-	ui              *ui.Printer
+	org           string
+	client        forge.Client
+	enabledRepos  []string
+	disabledRepos []string
+	ui            *ui.Printer
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
 var _ Layer = (*EnrollmentLayer)(nil)
 
 // NewEnrollmentLayer creates a new EnrollmentLayer.
-func NewEnrollmentLayer(org string, client forge.Client, enabledRepos []string, defaultBranches map[string]string, printer *ui.Printer) *EnrollmentLayer {
+func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledRepos []string, printer *ui.Printer) *EnrollmentLayer {
 	return &EnrollmentLayer{
-		org:             org,
-		client:          client,
-		enabledRepos:    enabledRepos,
-		defaultBranches: defaultBranches,
-		ui:              printer,
+		org:           org,
+		client:        client,
+		enabledRepos:  enabledRepos,
+		disabledRepos: disabledRepos,
+		ui:            printer,
 	}
 }
 
@@ -46,9 +50,8 @@ func (l *EnrollmentLayer) Name() string {
 func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 	switch op {
 	case OpInstall:
-		// Enrollment writes .github/workflows/fullsend.yaml to target repos
-		// and creates PRs. The workflow scope is needed for the workflow file.
-		return []string{"repo", "workflow"}
+		// Enrollment dispatches repo-maintenance.yml on .fullsend.
+		return []string{"repo"}
 	case OpUninstall:
 		return nil // no-op
 	case OpAnalyze:
@@ -58,101 +61,119 @@ func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 	}
 }
 
-// Install creates enrollment PRs for enabled repos that are not yet enrolled.
-// Failures on individual repos are warned and skipped — install does not stop.
+// Install dispatches the repo-maintenance workflow to handle enrollment,
+// waits for it to complete, and reports any enrollment PRs created.
 func (l *EnrollmentLayer) Install(ctx context.Context) error {
-	for _, repo := range l.enabledRepos {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("cancelled during enrollment: %w", err)
-		}
-
-		if err := l.enrollRepo(ctx, repo); err != nil {
-			l.ui.StepWarn(fmt.Sprintf("Failed to enroll %s: %s", repo, err))
-		}
-	}
-	return nil
-}
-
-// enrollRepo creates an enrollment PR for a single repo, or updates the
-// shim workflow on an existing enrollment branch if a PR already exists.
-// Idempotent: skips repos that already have the shim workflow merged on
-// the default branch.
-func (l *EnrollmentLayer) enrollRepo(ctx context.Context, repo string) error {
-	// Check if already enrolled (shim workflow on default branch).
-	_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
-	if err == nil {
-		l.ui.StepInfo(fmt.Sprintf("%s already enrolled", repo))
+	if len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0 {
+		l.ui.StepInfo("no repositories to reconcile")
 		return nil
 	}
 
-	// Check if there's already an open enrollment PR from a previous run.
-	// If so, update the shim workflow on the branch to reflect the latest
-	// content (e.g., security model changes) rather than skipping.
-	prs, err := l.client.ListRepoPullRequests(ctx, l.org, repo)
-	if err == nil {
-		for _, pr := range prs {
-			if pr.Title == "Connect to fullsend agent pipeline" {
-				return l.updateExistingEnrollment(ctx, repo, pr)
-			}
-		}
-	}
+	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
 
-	l.ui.StepStart(fmt.Sprintf("Enrolling %s", repo))
-
-	// Create branch for the enrollment PR.
-	// Idempotent: if the branch exists from a previous partial run, proceed.
-	if err := l.client.CreateBranch(ctx, l.org, repo, enrollBranch); err != nil {
-		if !forge.IsNotFound(err) {
-			l.ui.StepInfo(fmt.Sprintf("Branch %s may already exist, continuing", enrollBranch))
-		}
-	}
-
-	// Write shim workflow to the branch using upsert to handle re-runs
-	// where the branch exists with an old version of the file.
-	content := l.shimWorkflowContent()
-	if err := l.client.CreateOrUpdateFileOnBranch(ctx, l.org, repo, enrollBranch, shimWorkflowPath,
-		"chore: add fullsend shim workflow", []byte(content)); err != nil {
-		return fmt.Errorf("writing shim workflow: %w", err)
-	}
-
-	// Create enrollment PR.
-	baseBranch := l.defaultBranches[repo]
-	if baseBranch == "" {
-		baseBranch = "main"
-	}
-
-	pr, err := l.client.CreateChangeProposal(ctx, l.org, repo,
-		"Connect to fullsend agent pipeline",
-		"This PR adds a shim workflow that routes repository events to the "+
-			"fullsend agent dispatch workflow in the `.fullsend` config repo.\n\n"+
-			"Once merged, issues, PRs, and comments in this repo will be handled "+
-			"by the fullsend agent pipeline.",
-		enrollBranch,
-		baseBranch,
-	)
+	l.ui.StepStart("dispatching repo-maintenance workflow for enrollment")
+	err := l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
 	if err != nil {
-		return fmt.Errorf("creating PR: %w", err)
+		return fmt.Errorf("dispatching repo-maintenance: %w", err)
+	}
+	l.ui.StepDone("dispatched repo-maintenance workflow")
+
+	// Wait for the workflow run to complete.
+	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not confirm enrollment: %v", err))
+		l.ui.StepInfo("check the repo-maintenance workflow in .fullsend for results")
+		return nil // non-fatal — enrollment may still succeed
 	}
 
-	l.ui.StepDone(fmt.Sprintf("Created enrollment PR for %s", repo))
-	l.ui.PRLink(repo, pr.URL)
+	if run.Conclusion == "success" {
+		l.ui.StepDone("enrollment completed successfully")
+	} else {
+		l.ui.StepWarn(fmt.Sprintf("enrollment workflow completed with conclusion: %s", run.Conclusion))
+		l.showWorkflowLogs(ctx, run.ID)
+	}
+	l.ui.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
+
+	// Discover and report reconciliation PRs.
+	l.reportReconciliationPRs(ctx)
+
 	return nil
 }
 
-// updateExistingEnrollment updates the shim workflow on an existing
-// enrollment branch so the PR always reflects the latest content.
-func (l *EnrollmentLayer) updateExistingEnrollment(ctx context.Context, repo string, pr forge.ChangeProposal) error {
-	l.ui.StepStart(fmt.Sprintf("Updating shim workflow on %s", repo))
+// awaitWorkflowRun polls for a repo-maintenance workflow run created after
+// dispatchTime and waits for it to complete.
+func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime time.Time) (*forge.WorkflowRun, error) {
+	for attempt := range 36 { // 3 minutes max
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
 
-	content := l.shimWorkflowContent()
-	if err := l.client.CreateOrUpdateFileOnBranch(ctx, l.org, repo, enrollBranch, shimWorkflowPath,
-		"chore: update fullsend shim workflow", []byte(content)); err != nil {
-		return fmt.Errorf("updating shim workflow: %w", err)
+		runs, err := l.client.ListWorkflowRuns(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow)
+		if err != nil {
+			l.ui.StepInfo(fmt.Sprintf("waiting for workflow run (attempt %d)...", attempt+1))
+			continue
+		}
+
+		for i := range runs {
+			run := &runs[i]
+			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if runTime.Before(dispatchTime) {
+				continue
+			}
+
+			if run.Status == "completed" {
+				return run, nil
+			}
+			l.ui.StepInfo(fmt.Sprintf("workflow run %d: %s", run.ID, run.Status))
+			break // found our run, keep waiting
+		}
 	}
+	return nil, fmt.Errorf("timed out waiting for repo-maintenance workflow")
+}
 
-	l.ui.StepDone(fmt.Sprintf("Updated enrollment PR for %s", repo))
-	l.ui.PRLink(repo, pr.URL)
-	return nil
+// showWorkflowLogs fetches and displays workflow run logs locally so the user
+// can diagnose enrollment failures without visiting the GitHub Actions UI.
+func (l *EnrollmentLayer) showWorkflowLogs(ctx context.Context, runID int) {
+	logs, err := l.client.GetWorkflowRunLogs(ctx, l.org, forge.ConfigRepoName, runID)
+	if err != nil {
+		l.ui.StepInfo(fmt.Sprintf("could not fetch workflow logs: %v", err))
+		return
+	}
+	if logs != "" {
+		l.ui.StepInfo("workflow logs:")
+		l.ui.Raw(logs)
+	}
+}
+
+// reportReconciliationPRs lists PRs on enabled and disabled repos and reports
+// enrollment or removal PR URLs.
+func (l *EnrollmentLayer) reportReconciliationPRs(ctx context.Context) {
+	// Titles must match ENROLL_PR_TITLE and UNENROLL_PR_TITLE in
+	// scripts/reconcile-repos.sh.
+	for _, repo := range l.enabledRepos {
+		l.reportPRByTitle(ctx, repo, "Connect to fullsend agent pipeline")
+	}
+	for _, repo := range l.disabledRepos {
+		l.reportPRByTitle(ctx, repo, "Disconnect from fullsend agent pipeline")
+	}
+}
+
+func (l *EnrollmentLayer) reportPRByTitle(ctx context.Context, repo, title string) {
+	prs, err := l.client.ListRepoPullRequests(ctx, l.org, repo)
+	if err != nil {
+		return
+	}
+	for _, pr := range prs {
+		if pr.Title == title {
+			l.ui.PRLink(repo, pr.URL)
+			break
+		}
+	}
 }
 
 // Uninstall is a no-op. Individual repo cleanup is not automated —
@@ -161,7 +182,8 @@ func (l *EnrollmentLayer) Uninstall(_ context.Context) error {
 	return nil
 }
 
-// Analyze checks which enabled repos have the shim workflow installed.
+// Analyze checks which enabled repos have the shim workflow installed and
+// which disabled repos still have it.
 func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
@@ -170,72 +192,53 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
 		if err == nil {
 			enrolled = append(enrolled, repo)
-		} else {
+		} else if forge.IsNotFound(err) {
 			notEnrolled = append(notEnrolled, repo)
+		} else {
+			return nil, fmt.Errorf("checking enrollment for %s: %w", repo, err)
 		}
 	}
 
+	// Check disabled repos for stale shims.
+	var staleShim []string
+	for _, repo := range l.disabledRepos {
+		_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
+		if err == nil {
+			staleShim = append(staleShim, repo)
+		} else if forge.IsNotFound(err) {
+			// Good — shim already removed.
+		} else {
+			return nil, fmt.Errorf("checking enrollment for %s: %w", repo, err)
+		}
+	}
+
+	hasDrift := len(notEnrolled) > 0 || len(staleShim) > 0
+
 	switch {
-	case len(l.enabledRepos) == 0:
+	case len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0:
 		report.Status = StatusInstalled
-		report.Details = append(report.Details, "no repositories enrolled")
-	case len(notEnrolled) == 0:
-		report.Status = StatusInstalled
+		report.Details = append(report.Details, "no repositories configured")
+	case hasDrift:
+		if len(enrolled) == 0 && len(staleShim) == 0 {
+			report.Status = StatusNotInstalled
+		} else {
+			report.Status = StatusDegraded
+		}
 		for _, r := range enrolled {
 			report.Details = append(report.Details, r+" enrolled")
 		}
-	case len(enrolled) == 0:
-		report.Status = StatusNotInstalled
 		for _, r := range notEnrolled {
 			report.WouldInstall = append(report.WouldInstall, "create enrollment PR for "+r)
 		}
+		for _, r := range staleShim {
+			report.WouldFix = append(report.WouldFix, "create removal PR for "+r)
+		}
 	default:
-		report.Status = StatusDegraded
+		report.Status = StatusInstalled
 		for _, r := range enrolled {
 			report.Details = append(report.Details, r+" enrolled")
-		}
-		for _, r := range notEnrolled {
-			report.WouldFix = append(report.WouldFix, "create enrollment PR for "+r)
 		}
 	}
 
 	return report, nil
-}
-
-// shimWorkflowContent returns the shim workflow YAML.
-// Uses github.repository_owner so the content is org-agnostic.
-func (l *EnrollmentLayer) shimWorkflowContent() string {
-	return `# fullsend shim workflow
-# Routes events to the agent dispatch workflow in .fullsend.
-#
-# Security: pull_request_target runs the BASE branch version of this workflow,
-# preventing PRs from modifying it to exfiltrate the dispatch token.
-# This shim never checks out PR code, so it is not vulnerable to "pwn request"
-# attacks (see: Trivy CVE-2026-33634, hackerbot-claw campaign).
-name: fullsend
-
-on:
-  issues:
-    types: [opened, edited, labeled]
-  issue_comment:
-    types: [created]
-  pull_request_target:
-    types: [opened, synchronize, ready_for_review]
-  pull_request_review:
-    types: [submitted]
-
-jobs:
-  dispatch:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch to fullsend
-        env:
-          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
-        run: |
-          gh workflow run agent.yaml \
-            --repo "${{ github.repository_owner }}/.fullsend" \
-            --field event_type="${{ github.event_name }}" \
-            --field source_repo="${{ github.repository }}" \
-            --field event_payload='${{ toJSON(github.event) }}'
-`
 }

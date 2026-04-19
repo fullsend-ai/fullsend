@@ -5,18 +5,25 @@ import (
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const (
-	agentWorkflowPath   = ".github/workflows/agent.yaml"
-	onboardWorkflowPath = ".github/workflows/repo-onboard.yaml"
-	codeownersPath      = "CODEOWNERS"
-)
+const codeownersPath = "CODEOWNERS"
 
-// managedFiles lists every file this layer manages, in write order.
-// CODEOWNERS must be last — its failure is non-fatal.
-var managedFiles = []string{agentWorkflowPath, onboardWorkflowPath, codeownersPath}
+// managedFiles lists every file this layer manages.
+// Populated at init from the scaffold plus the CODEOWNERS sentinel.
+var managedFiles []string
+
+func init() {
+	if err := scaffold.WalkFullsendRepo(func(path string, _ []byte) error {
+		managedFiles = append(managedFiles, path)
+		return nil
+	}); err != nil {
+		panic(fmt.Sprintf("walking scaffold: %v", err))
+	}
+	managedFiles = append(managedFiles, codeownersPath)
+}
 
 // WorkflowsLayer manages workflow files and CODEOWNERS in the .fullsend
 // config repo. It writes the reusable agent dispatch workflow, the repo
@@ -72,26 +79,26 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 // this. CODEOWNERS is written last and its failure is non-fatal because
 // some orgs restrict CODEOWNERS writes to specific teams.
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
-	files := map[string][]byte{
-		agentWorkflowPath:   []byte(agentWorkflowContent),
-		onboardWorkflowPath: []byte(onboardWorkflowContent),
-		codeownersPath:      []byte(l.codeownersContent()),
-	}
-
-	for _, path := range managedFiles {
-		content := files[path]
+	err := scaffold.WalkFullsendRepo(func(path string, content []byte) error {
 		l.ui.StepStart("Writing " + path)
-
-		err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, path, "chore: update "+path, content)
-		if err != nil {
-			if path == codeownersPath {
-				l.ui.StepWarn("Could not write " + path + ": " + err.Error())
-				continue
-			}
+		writeErr := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, path, "chore: update "+path, content)
+		if writeErr != nil {
 			l.ui.StepFail("Failed to write " + path)
-			return fmt.Errorf("writing %s: %w", path, err)
+			return fmt.Errorf("writing %s: %w", path, writeErr)
 		}
 		l.ui.StepDone("Wrote " + path)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	l.ui.StepStart("Writing " + codeownersPath)
+	if err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, codeownersPath,
+		"chore: update "+codeownersPath, []byte(l.codeownersContent())); err != nil {
+		l.ui.StepWarn("Could not write " + codeownersPath + ": " + err.Error())
+	} else {
+		l.ui.StepDone("Wrote " + codeownersPath)
 	}
 
 	return nil
@@ -147,63 +154,3 @@ func (l *WorkflowsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 func (l *WorkflowsLayer) codeownersContent() string {
 	return fmt.Sprintf("# fullsend configuration is governed by org admins.\n* @%s\n", l.authenticatedUser)
 }
-
-const agentWorkflowContent = `# Agent dispatch workflow
-# Triggered by shim workflows in enrolled repos via workflow_dispatch.
-# Reads its own repo secrets (App PEMs) — secrets never leave this repo.
-name: Agent Dispatch
-
-on:
-  workflow_dispatch:
-    inputs:
-      event_type:
-        required: true
-        type: string
-      source_repo:
-        required: true
-        type: string
-      event_payload:
-        required: true
-        type: string
-
-jobs:
-  dispatch:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run fullsend entrypoint
-        run: echo "fullsend entrypoint - event=${{ inputs.event_type }} repo=${{ inputs.source_repo }}"
-        env:
-          EVENT_TYPE: ${{ inputs.event_type }}
-          SOURCE_REPO: ${{ inputs.source_repo }}
-          EVENT_PAYLOAD: ${{ inputs.event_payload }}
-`
-
-const onboardWorkflowContent = `# Repo onboarding workflow
-# Creates enrollment PRs for repos listed in config.yaml.
-name: Repo Onboard
-
-on:
-  push:
-    branches: [main]
-    paths: [config.yaml]
-
-permissions:
-  contents: write
-  pull-requests: write
-
-jobs:
-  onboard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Read enabled repos
-        id: repos
-        run: |
-          repos=$(yq '.repos | to_entries | map(select(.value.enabled == true)) | .[].key' config.yaml)
-          echo "repos<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$repos" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-      - name: Create enrollment PRs
-        run: echo "Would create enrollment PRs for enabled repos"
-`

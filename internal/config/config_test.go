@@ -172,6 +172,20 @@ func TestOrgConfigEnabledRepos(t *testing.T) {
 	assert.Equal(t, []string{"beta", "zoo"}, enabled)
 }
 
+func TestOrgConfigDisabledRepos(t *testing.T) {
+	cfg := &OrgConfig{
+		Repos: map[string]RepoConfig{
+			"zoo":   {Enabled: true},
+			"alpha": {Enabled: false},
+			"beta":  {Enabled: true},
+			"gamma": {Enabled: false},
+		},
+	}
+
+	disabled := cfg.DisabledRepos()
+	assert.Equal(t, []string{"alpha", "gamma"}, disabled)
+}
+
 func TestOrgConfigAgentSlugs(t *testing.T) {
 	cfg := &OrgConfig{
 		Agents: []AgentEntry{
