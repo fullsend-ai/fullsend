@@ -398,16 +398,16 @@ git commit -m "feat(admin): scaffold Vite+Svelte SPA under /admin/"
 
 **Files:**
 
-- Create: `admin/wrangler.toml` — Worker name, `main` entry, `compatibility_date`, `[vars]` for **non-secret** `GITHUB_APP_CLIENT_ID` (or read only from request after tightening); **`client_secret` only** via `wrangler secret put` / `.dev.vars` locally
-- Create: `admin/worker/` — Worker handler: e.g. `POST /oauth/token` or `POST /api/oauth/token` accepting JSON `{ code, redirect_uri, code_verifier }`, validating allowed `redirect_uri` / `Origin`, forwarding `application/x-www-form-urlencoded` to `https://github.com/login/oauth/access_token` with `client_id`, `client_secret`, `code`, `redirect_uri`, `code_verifier`
-- Modify: `admin/vite.config.ts` — `server.proxy` from e.g. `/api/oauth` → `http://127.0.0.1:8787` (match Wrangler dev port in `wrangler.toml` / CLI flags)
+- Implemented under repo root: [`cloudflare_site/wrangler.toml`](../../../cloudflare_site/wrangler.toml) — Worker `main`, `[assets]`, **`[[ratelimits]]`** for OAuth token + GitHub user proxy; **`GITHUB_APP_CLIENT_ID`** and **`GITHUB_APP_CLIENT_SECRET`** via process env / Wrangler vars + secrets (local: `CLOUDFLARE_INCLUDE_PROCESS_ENV`); **required** **`TURNSTILE_SITE_KEY`** + **`TURNSTILE_SECRET_KEY`** (503 `missing_turnstile_keys` if absent); **`client_secret`** never in the SPA bundle
+- Implemented: [`cloudflare_site/worker/src/index.ts`](../../../cloudflare_site/worker/src/index.ts) — `GET /api/oauth/authorize` (302 to GitHub with `client_id` from env); Worker-expanded `state` embedding Turnstile **site** key; `POST /api/oauth/token` with JSON `{ code, redirect_uri, code_verifier, turnstile_token }`; `GET /api/github/user` proxy. Validates `redirect_uri` allowlist (HTTPS or loopback `/admin/` entry). **No `Referer` fallback** — **`Origin` only** for CORS and for token tab-binding; **`GET /api/oauth/authorize`** without `Origin` uses the navigation rule (admin README / PR #240 High 1). GitHub token exchange uses `application/x-www-form-urlencoded`. **Hardening:** Cloudflare Turnstile siteverify on every token exchange; Wrangler **native rate limits** (5 / 60s) on `POST /api/oauth/token` and `GET /api/github/user` keyed by path + `CF-Connecting-IP`.
+- Modify: root [`vite.config.ts`](../../../vite.config.ts) — `server.proxy` `/api` → `http://127.0.0.1:8787` (Wrangler dev port)
 - Modify: `admin/package.json` — devDependencies: `wrangler`, `concurrently` (or `npm-run-all`); scripts e.g. `"dev": "concurrently -k -n worker,vite -c blue,green \\\"wrangler dev --port 8787\\\" \\\"vite\\\""` (adjust ports consistently); keep a `dev:vite`-only escape hatch if needed
 - Create: `admin/src/lib/auth/pkce.ts` — `randomVerifier()`, `challengeS256(verifier)` using **Web Crypto** (`crypto.subtle.digest`) so the SPA matches GitHub’s S256 rules
 - Create: `admin/src/lib/auth/pkce.test.ts` — Vitest: length / shape / stable challenge for fixture verifier (use known test vector or mock subtle)
-- Create: `admin/sample.env.local` — **Committed** documentation file (not loaded by Vite unless renamed): sections for **(1)** GitHub App setup (callback URL pattern for local + prod), **(2)** `VITE_` variables for public client id / app metadata, **(3)** Worker: copy values into **`.dev.vars`** for Wrangler (same keys as Worker expects), **(4)** production: `wrangler secret put GITHUB_APP_CLIENT_SECRET` etc. State explicitly: **do not commit** `.env.local` or `.dev.vars`
+- Repo-root [`sample.env.local`](../../../sample.env.local) — documents **`GITHUB_APP_CLIENT_ID`** / **`GITHUB_APP_CLIENT_SECRET`** and **required** Turnstile keys (includes **official Cloudflare dummy** site + secret for local dev); SPA does **not** embed client id; Worker adds it at authorize. **Turnstile:** `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` are **Worker-only**; the SPA bundle must **not** bake them in — the site key reaches the browser only via **Worker-expanded OAuth `state`** after authorize (see design Appendix A / High 1 plan). **Do not commit** `.env.local` or `.dev.vars`
 - Modify: `admin/.gitignore` — ensure `.env.local`, `.dev.vars`, `.wrangler` present (may already be from Task 2 Step 11)
 
-- [ ] **Step 1: Add Worker + Wrangler config** — minimal `fetch` handler + CORS **only** for `http://localhost:<vite-port>` origins in dev (tighten before prod). No logging of secrets or tokens.
+- [ ] **Step 1: Add Worker + Wrangler config** — minimal `fetch` handler + CORS for **loopback** dev origins **or** browser origin equal to the Worker’s public origin (previews/production same host). **No `Referer`-based origin inference.** No logging of secrets or tokens.
 
 - [ ] **Step 2: Wire `npm run dev`** — one command starts **Wrangler dev** and **Vite**; confirm browser `fetch('http://localhost:5173/api/oauth/...')` (path per `vite.config.ts` proxy) hits the Worker and returns JSON.
 
@@ -424,7 +424,7 @@ git add admin
 git commit -m "feat(admin): OAuth exchange Worker, Vite dev proxy, PKCE helpers"
 ```
 
-**Production follow-up (do not block Task 2b merge):** `site/wrangler.toml` is **static-assets-only** today. Shipping the exchange Worker to the same hostname as `/admin/` requires a follow-on change (extend Task 4 or add **Task 4b**: routes / build that deploy Worker + assets together per Cloudflare docs). Until then, production token exchange may still use a **separate** Worker hostname with CORS allowlist or path-based routing decided at implementation time.
+**Production follow-up:** Task **4b** is implemented via [`cloudflare_site/`](../../../cloudflare_site/) (Worker + static assets, same hostname as `/admin/`). OAuth hardening from PR #240 High 1 (Origin-only tab binding, Turnstile, native rate limits) is implemented in the Worker + Wrangler config above.
 
 ---
 
@@ -659,7 +659,7 @@ Push your branch to **origin** and open a PR **into `origin/main`** (triggers th
 
 **Goal:** One Cloudflare **Worker + static assets** deployment serves `_site` (mindmap + `/admin/*`) **and** the **same-origin** OAuth token exchange route the SPA calls in preview/production—so the browser never cross-origin `fetch`s `github.com/login/oauth/access_token`, and `client_secret` stays in Wrangler secrets / CI-injected vars only.
 
-**Context:** Today [`site/wrangler.toml`](../../../site/wrangler.toml) is **static-assets-only** (no `main` script). [`site-deploy.yml`](../../../.github/workflows/site-deploy.yml) runs `wrangler deploy` / `versions upload` from `site/` with `--assets public`. Task **2b** adds a **programmatic** Worker under `admin/` for **local** dev. Task **4b** merges that behavior into **`site/`** for **deployed** Workers.
+**Context:** The repo ships **one** [`cloudflare_site/wrangler.toml`](../../../cloudflare_site/wrangler.toml) Worker with **`[assets]`** and programmatic routes for admin OAuth. [`site-deploy.yml`](../../../.github/workflows/site-deploy.yml) deploys from `cloudflare_site/` using artifacts from **Build Site** (see ADR 0019). Task **2b** / **4b** descriptions below refer to this layout (`cloudflare_site/worker/`, not a separate `admin/worker/` or legacy `site/` tree).
 
 **Architecture options** (pick one during implementation; document the choice in the PR):
 
@@ -670,9 +670,8 @@ Push your branch to **origin** and open a PR **into `origin/main`** (triggers th
 
 **Files (Option A sketch):**
 
-- Modify: [`site/wrangler.toml`](../../../site/wrangler.toml) — add `main` entry (e.g. `src/index.ts`), **`[assets]`** stays pointed at `public/` (or the path the build uses); add **`[vars]`** for non-secret `GITHUB_APP_CLIENT_ID` if desired; document **`wrangler secret`** for `GITHUB_APP_CLIENT_SECRET`
-- Create: `site/src/index.ts` (or `site/worker/index.ts` per Wrangler layout) — router: OAuth `POST` → shared exchange logic; else delegate to static assets
-- Create or reuse: exchange implementation — **prefer** importing/shared package from `admin/worker/` (workspace / build step that copies/bundles into `site` build) **or** a tiny duplicated handler with a comment linking to `admin/worker` until a shared package exists
+- [`cloudflare_site/wrangler.toml`](../../../cloudflare_site/wrangler.toml) — `main = "worker/src/index.ts"`, **`[assets]`** → `public/`; vars/secrets for `GITHUB_APP_*`; optional **`[[ratelimits]]`** for OAuth paths (Wrangler ≥ 4.36)
+- [`cloudflare_site/worker/src/index.ts`](../../../cloudflare_site/worker/src/index.ts) — router: OAuth routes + delegate to `env.ASSETS` for static SPA
 - Modify: [`.github/workflows/site-build.yml`](../../../.github/workflows/site-build.yml) — ensure `site/public` layout before deploy still includes `admin/dist` output (unchanged from Task 4 unless worker build needs admin artifacts earlier)
 - Modify: [`.github/workflows/site-deploy.yml`](../../../.github/workflows/site-deploy.yml) — pass secrets to Wrangler for production + preview (`secrets` / `vars` inputs supported by `cloudflare/wrangler-action`); **never** echo secret values in logs
 - Modify: `admin/sample.env.local` (and/or `docs/admin-spa-local-dev.md`) — production + preview Worker URLs, GitHub App callback URL list (`*.workers.dev` preview aliases, production hostname), which GitHub secrets / Cloudflare vars map to which Wrangler names
@@ -683,7 +682,7 @@ Push your branch to **origin** and open a PR **into `origin/main`** (triggers th
 
 - [ ] **Step 2: Implement `site` Worker shell** — `fetch` forwards non-OAuth traffic to assets; OAuth path returns JSON errors with safe status codes (no secret leakage).
 
-- [ ] **Step 3: Wire exchange handler** — Port logic from **Task 2b** `admin/worker` (PKCE `code_verifier`, `client_secret` from `env` binding only). Validate `Origin` / `redirect_uri` allowlist for production + preview hostnames.
+- [ ] **Step 3: Wire exchange handler** — PKCE `code_verifier`, `client_secret` from `env` only. Validate **`Origin`** (only) and `redirect_uri` allowlist for production + preview hostnames; add Turnstile + Wrangler rate limits per High 1 remediation.
 
 - [ ] **Step 4: Local smoke** — `wrangler dev` from `site/` with built `public/` tree: static `/admin/` loads, `POST /api/oauth/...` returns expected GitHub error shape without real code (then with real code in trusted env).
 
