@@ -198,7 +198,11 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 	var agentCreds []layers.AgentCredentials
 	for _, role := range defaultRoles {
 		t.Logf("Setting up app for role: %s", role)
-		appCreds, err := setup.Run(ctx, testOrg, role)
+		// Use a per-role timeout so a failed manifest flow doesn't hang
+		// until the Go test timeout (which produces an unhelpful panic).
+		roleCtx, roleCancel := context.WithTimeout(ctx, 2*time.Minute)
+		appCreds, err := setup.Run(roleCtx, testOrg, role)
+		roleCancel()
 		require.NoError(t, err, "setting up app for role %s", role)
 
 		agentCreds = append(agentCreds, layers.AgentCredentials{
