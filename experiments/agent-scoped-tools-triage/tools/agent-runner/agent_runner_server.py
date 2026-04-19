@@ -116,6 +116,11 @@ def main() -> None:
             print(f"Error: {name} not set", file=sys.stderr)
             sys.exit(1)
 
+    assert working_dir is not None
+    assert owner is not None
+    assert repo_name is not None
+    assert issue_number is not None
+
     runner = AgentRunner(
         working_dir=Path(working_dir),
         owner=owner,
