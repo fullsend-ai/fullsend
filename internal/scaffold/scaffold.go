@@ -6,19 +6,13 @@ import (
 	"io/fs"
 )
 
-//go:embed all:fullsend-repo all:target-repo
+//go:embed all:fullsend-repo
 var content embed.FS
 
 // FullsendRepoFile returns the content of a file from the fullsend-repo scaffold.
 // The path is relative to the fullsend-repo root (e.g., ".github/workflows/triage.yml").
 func FullsendRepoFile(path string) ([]byte, error) {
 	return content.ReadFile("fullsend-repo/" + path)
-}
-
-// TargetRepoFile returns the content of a file from the target-repo scaffold.
-// The path is relative to the target-repo root (e.g., ".github/workflows/fullsend.yaml").
-func TargetRepoFile(path string) ([]byte, error) {
-	return content.ReadFile("target-repo/" + path)
 }
 
 // WalkFullsendRepo calls fn for each file in the fullsend-repo scaffold.

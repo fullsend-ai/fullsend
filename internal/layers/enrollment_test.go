@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -292,15 +291,4 @@ func TestEnrollmentLayer_Analyze_MixedEnabledAndDisabled(t *testing.T) {
 	assert.Contains(t, report.Details[0], "repo-a")
 	require.Len(t, report.WouldFix, 1)
 	assert.Contains(t, report.WouldFix[0], "removal PR for repo-x")
-}
-
-func TestShimTemplateMatchesTargetRepoScaffold(t *testing.T) {
-	templateContent, err := scaffold.FullsendRepoFile("templates/shim-workflow.yaml")
-	require.NoError(t, err)
-
-	targetContent, err := scaffold.TargetRepoFile(".github/workflows/fullsend.yaml")
-	require.NoError(t, err)
-
-	assert.Equal(t, string(targetContent), string(templateContent),
-		"templates/shim-workflow.yaml must match target-repo scaffold shim")
 }
