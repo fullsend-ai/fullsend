@@ -799,23 +799,16 @@ func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.
 	printer.StepDone("Cross-compiled fullsend for linux/amd64")
 
 	printer.StepStart("Uploading vendored binary to config repo")
-	binaryData, err := os.ReadFile(tmpBinary.Name())
-	if err != nil {
-		return fmt.Errorf("reading compiled binary: %w", err)
-	}
-
-	const maxContentsSizeMB = 100
-	sizeMB := float64(len(binaryData)) / (1024 * 1024)
-	if len(binaryData) > maxContentsSizeMB*1024*1024 {
-		return fmt.Errorf("compiled binary is %.1f MB, exceeds GitHub Contents API %d MB limit", sizeMB, maxContentsSizeMB)
-	}
-
-	if err := client.CreateOrUpdateFile(ctx, org, forge.ConfigRepoName,
-		"bin/fullsend", "chore: vendor fullsend binary for development", binaryData); err != nil {
+	if err := layers.VendorBinary(ctx, client, org, tmpBinary.Name()); err != nil {
 		printer.StepFail("Failed to upload vendored binary")
-		return fmt.Errorf("uploading binary: %w", err)
+		return err
 	}
-	printer.StepDone(fmt.Sprintf("Uploaded vendored binary (%.1f MB)", sizeMB))
+	info, _ := os.Stat(tmpBinary.Name())
+	if info != nil {
+		printer.StepDone(fmt.Sprintf("Uploaded vendored binary (%.1f MB)", float64(info.Size())/(1024*1024)))
+	} else {
+		printer.StepDone("Uploaded vendored binary")
+	}
 
 	printer.StepStart("Setting FULLSEND_USE_VENDORED_BINARY repo variable")
 	if err := client.CreateOrUpdateRepoVariable(ctx, org, forge.ConfigRepoName,
