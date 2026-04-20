@@ -263,6 +263,19 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 	return data, nil
 }
 
+func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteFile"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + path
+	delete(f.FileContents, key)
+	return nil
+}
+
 func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

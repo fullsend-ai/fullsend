@@ -533,6 +533,46 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 	return data, nil
 }
 
+// DeleteFile deletes a file from a repository. Idempotent: returns nil if
+// the file does not exist.
+func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message string) error {
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
+
+	// Get current SHA (required by the Contents API for deletes).
+	existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
+	if err != nil {
+		return fmt.Errorf("check existing file for delete: %w", err)
+	}
+	if existingResp.StatusCode == http.StatusNotFound {
+		existingResp.Body.Close()
+		return nil // already gone
+	}
+	if err := checkStatus(existingResp, http.StatusOK); err != nil {
+		return fmt.Errorf("get file for delete: %w", err)
+	}
+
+	var existing struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(existingResp, &existing); err != nil {
+		return fmt.Errorf("decode existing file for delete: %w", err)
+	}
+
+	payload := map[string]any{
+		"message": message,
+		"sha":     existing.SHA,
+	}
+	resp, err := c.do(ctx, http.MethodDelete, apiPath, payload)
+	if err != nil {
+		return fmt.Errorf("delete file %s: %w", path, err)
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return fmt.Errorf("delete file %s: %w", path, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // CreateBranch creates a new branch from the repository's default branch.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// Step 1: Get the default branch name.

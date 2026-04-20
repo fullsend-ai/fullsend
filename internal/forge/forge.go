@@ -83,6 +83,11 @@ type Client interface {
 
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 
+	// DeleteFile deletes a file from a repository. Idempotent: returns nil
+	// if the file does not exist. On GitHub, deleting requires the file's
+	// current SHA, which the implementation fetches automatically.
+	DeleteFile(ctx context.Context, owner, repo, path, message string) error
+
 	// Branch operations
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
 	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
