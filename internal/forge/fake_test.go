@@ -319,6 +319,7 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"CreateFile", func(fc *FakeClient) error { return fc.CreateFile(ctx, "o", "r", "p", "m", nil) }},
 		{"CreateOrUpdateFile", func(fc *FakeClient) error { return fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", nil) }},
 		{"GetFileContent", func(fc *FakeClient) error { _, err := fc.GetFileContent(ctx, "o", "r", "p"); return err }},
+		{"DeleteFile", func(fc *FakeClient) error { return fc.DeleteFile(ctx, "o", "r", "p", "m") }},
 		{"CreateBranch", func(fc *FakeClient) error { return fc.CreateBranch(ctx, "o", "r", "b") }},
 		{"CreateFileOnBranch", func(fc *FakeClient) error { return fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", nil) }},
 		{"CreateChangeProposal", func(fc *FakeClient) error {
@@ -397,6 +398,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.CreateFile(ctx, "o", "r", "p", "m", []byte("data"))
 			_ = fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", []byte("data"))
 			_, _ = fc.GetFileContent(ctx, "o", "r", "file.txt")
+			_ = fc.DeleteFile(ctx, "o", "r", "p", "m")
 			_ = fc.CreateBranch(ctx, "o", "r", "b")
 			_ = fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data"))
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")

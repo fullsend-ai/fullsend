@@ -819,3 +819,45 @@ func TestListOrgRepos_Pagination(t *testing.T) {
 	assert.Len(t, repos, 101)
 	assert.Equal(t, 2, page) // Should have made exactly 2 requests
 }
+
+func TestDeleteFile(t *testing.T) {
+	step := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		step++
+		switch step {
+		case 1:
+			// GET to fetch SHA
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/owner/repo/contents/bin/fullsend", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{"sha": "abc123"})
+		case 2:
+			// DELETE with SHA
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/owner/repo/contents/bin/fullsend", r.URL.Path)
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			assert.Equal(t, "abc123", body["sha"])
+			assert.Equal(t, "remove file", body["message"])
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{"sha": "def456"}})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteFile(context.Background(), "owner", "repo", "bin/fullsend", "remove file")
+	require.NoError(t, err)
+	assert.Equal(t, 2, step)
+}
+
+func TestDeleteFile_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintln(w, `{"message": "Not Found"}`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteFile(context.Background(), "owner", "repo", "bin/fullsend", "remove file")
+	require.NoError(t, err) // idempotent: returns nil when file doesn't exist
+}

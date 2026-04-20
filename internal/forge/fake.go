@@ -72,6 +72,7 @@ type FakeClient struct {
 	CreatedBranches   []string // "owner/repo/branch"
 	CreatedProposals  []ChangeProposal
 	DeletedRepos      []string // "owner/repo"
+	DeletedFiles      []FileRecord
 	CreatedSecrets    []SecretRecord
 	Variables         []VariableRecord
 	DeletedOrgSecrets []string // "org/name"
@@ -263,7 +264,7 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 	return data, nil
 }
 
-func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, _ string) error {
+func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -271,6 +272,12 @@ func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, _ string) 
 		return e
 	}
 
+	f.DeletedFiles = append(f.DeletedFiles, FileRecord{
+		Owner:   owner,
+		Repo:    repo,
+		Path:    path,
+		Message: message,
+	})
 	key := owner + "/" + repo + "/" + path
 	delete(f.FileContents, key)
 	return nil

@@ -566,10 +566,10 @@ func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message 
 	if err != nil {
 		return fmt.Errorf("delete file %s: %w", path, err)
 	}
+	defer resp.Body.Close()
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return fmt.Errorf("delete file %s: %w", path, err)
 	}
-	resp.Body.Close()
 	return nil
 }
 
