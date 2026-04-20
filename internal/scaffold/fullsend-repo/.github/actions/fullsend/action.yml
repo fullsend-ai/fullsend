@@ -27,16 +27,22 @@ runs:
         VERSION: ${{ inputs.version }}
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
+        FULLSEND_USE_VENDORED_BINARY: ${{ vars.FULLSEND_USE_VENDORED_BINARY }}
       run: |
         set -euo pipefail
 
-        # Use vendored binary if present (placed by fullsend admin install --vendor-fullsend-binary).
-        # GitHub Contents API does not preserve the executable bit, so check -f not -x.
-        if [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+        # Use vendored binary if present and explicitly opted in.
+        # The FULLSEND_USE_VENDORED_BINARY repo variable must be set to "true"
+        # to prevent untrusted binaries from being executed.
+        if [[ "${FULLSEND_USE_VENDORED_BINARY}" == "true" ]] && [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
           echo "Using vendored fullsend binary from bin/fullsend"
           mkdir -p "${RUNNER_TEMP}/fullsend"
           cp "${GITHUB_WORKSPACE}/bin/fullsend" "${RUNNER_TEMP}/fullsend/fullsend"
           chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+          if ! "${RUNNER_TEMP}/fullsend/fullsend" version; then
+            echo "::error::Vendored fullsend binary failed validation"
+            exit 1
+          fi
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
           exit 0
         fi

@@ -116,3 +116,16 @@ func TestResolveToken_GitHubTokenFallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "github-token-456", token)
 }
+
+func TestInstallCmd_VendorBinaryDryRunConflict(t *testing.T) {
+	// Ensure --vendor-fullsend-binary and --dry-run cannot be used together.
+	// We set GH_TOKEN to pass token resolution, but the command should fail
+	// before making any API calls.
+	t.Setenv("GH_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "--vendor-fullsend-binary", "--dry-run", "test-org"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be used with --dry-run")
+}

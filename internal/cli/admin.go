@@ -162,6 +162,10 @@ func newInstallCmd() *cobra.Command {
 				inferenceProviderName = loadExistingInferenceProvider(ctx, client, org)
 			}
 
+			if vendorBinary && dryRun {
+				return fmt.Errorf("--vendor-fullsend-binary cannot be used with --dry-run")
+			}
+
 			if dryRun {
 				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName)
 			}
@@ -184,57 +188,13 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&agents, "agents", "fullsend,triage,coder,review", "comma-separated agent roles")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
-	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload the fullsend binary into .fullsend/bin/ for development iteration")
+	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload fullsend binary to the config repo for development iteration")
 	cmd.Flags().StringVar(&gcpProject, "gcp-project", "", "GCP project ID for Vertex AI inference")
 	cmd.Flags().StringVar(&gcpRegion, "gcp-region", "", "GCP region for Vertex AI (e.g. us-east5, required with --gcp-project)")
 	cmd.Flags().StringVar(&gcpServiceAccount, "gcp-service-account", "", "existing GCP service account name (optional, used with --gcp-project)")
 	cmd.Flags().StringVar(&gcpCredentialsFile, "gcp-credentials-file", "", "path to pre-made GCP service account key JSON (optional, used with --gcp-project)")
 
 	return cmd
-}
-
-// vendorFullsendBinary cross-compiles the fullsend binary for linux/amd64
-// and uploads it to .fullsend/bin/fullsend. This allows CI workflows to use
-// the vendored binary instead of downloading from GitHub releases, enabling
-// rapid iteration during development without cutting a release.
-func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
-	printer.StepStart("Cross-compiling fullsend for linux/amd64")
-
-	tmpBinary, err := os.CreateTemp("", "fullsend-linux-amd64-*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpBinary.Close()
-	defer os.Remove(tmpBinary.Name())
-
-	// Cross-compile. The source is the module containing this package.
-	buildCmd := exec.Command("go", "build",
-		"-ldflags", fmt.Sprintf("-X github.com/fullsend-ai/fullsend/internal/cli.version=%s-vendored", version),
-		"-o", tmpBinary.Name(),
-		"./cmd/fullsend/",
-	)
-	buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
-		printer.StepFail("Cross-compilation failed")
-		return fmt.Errorf("cross-compiling: %w", err)
-	}
-	printer.StepDone("Cross-compiled fullsend for linux/amd64")
-
-	printer.StepStart("Uploading vendored binary to .fullsend/bin/fullsend")
-	binaryData, err := os.ReadFile(tmpBinary.Name())
-	if err != nil {
-		return fmt.Errorf("reading compiled binary: %w", err)
-	}
-
-	if err := client.CreateOrUpdateFile(ctx, org, forge.ConfigRepoName,
-		"bin/fullsend", "chore: vendor fullsend binary for development", binaryData); err != nil {
-		printer.StepFail("Failed to upload vendored binary")
-		return fmt.Errorf("uploading binary: %w", err)
-	}
-	printer.StepDone(fmt.Sprintf("Uploaded vendored binary (%d MB)", len(binaryData)/(1024*1024)))
-
-	return nil
 }
 
 func newUninstallCmd() *cobra.Command {
@@ -455,13 +415,17 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	if err := workflowsLayer.Install(ctx); err != nil {
 		return fmt.Errorf("writing workflows: %w", err)
 	}
+	printer.Blank()
 
 	if vendorBinary {
 		if err := vendorFullsendBinary(ctx, client, printer, org); err != nil {
 			return fmt.Errorf("vendoring binary: %w", err)
 		}
+	} else {
+		if err := clearVendoredBinary(ctx, client, printer, org); err != nil {
+			return fmt.Errorf("clearing vendored binary: %w", err)
+		}
 	}
-	printer.Blank()
 
 	// Dispatch token setup — the .fullsend repo now exists so the user
 	// can select it when creating the fine-grained PAT.
@@ -793,6 +757,94 @@ func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[st
 		return nil
 	}
 	return cfg.AgentSlugs()
+}
+
+// vendorFullsendBinary cross-compiles the fullsend binary for linux/amd64
+// and uploads it to bin/fullsend in the config repo. It also sets the
+// FULLSEND_USE_VENDORED_BINARY repo variable to "true" so the action
+// will use the vendored binary. This enables rapid iteration during
+// development without cutting a release.
+func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+	printer.StepStart("Cross-compiling fullsend for linux/amd64")
+
+	tmpBinary, err := os.CreateTemp("", "fullsend-linux-amd64-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpBinary.Close()
+	defer os.Remove(tmpBinary.Name())
+
+	// Cross-compile with a minimal environment to avoid leaking tokens
+	// or other sensitive variables into the build subprocess.
+	buildCmd := exec.Command("go", "build",
+		"-ldflags", fmt.Sprintf("-X github.com/fullsend-ai/fullsend/internal/cli.version=%s-vendored", version),
+		"-o", tmpBinary.Name(),
+		"github.com/fullsend-ai/fullsend/cmd/fullsend",
+	)
+	buildCmd.Env = []string{
+		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + os.Getenv("PATH"),
+		"GOPATH=" + os.Getenv("GOPATH"),
+		"GOROOT=" + os.Getenv("GOROOT"),
+		"GOMODCACHE=" + os.Getenv("GOMODCACHE"),
+		"GOOS=linux",
+		"GOARCH=amd64",
+		"CGO_ENABLED=0",
+	}
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		printer.StepFail("Cross-compilation failed")
+		return fmt.Errorf("cross-compiling (ensure 'go' is on PATH and you are in the fullsend module): %w", err)
+	}
+	printer.StepDone("Cross-compiled fullsend for linux/amd64")
+
+	printer.StepStart("Uploading vendored binary to config repo")
+	binaryData, err := os.ReadFile(tmpBinary.Name())
+	if err != nil {
+		return fmt.Errorf("reading compiled binary: %w", err)
+	}
+
+	const maxContentsSizeMB = 100
+	sizeMB := float64(len(binaryData)) / (1024 * 1024)
+	if len(binaryData) > maxContentsSizeMB*1024*1024 {
+		return fmt.Errorf("compiled binary is %.1f MB, exceeds GitHub Contents API %d MB limit", sizeMB, maxContentsSizeMB)
+	}
+
+	if err := client.CreateOrUpdateFile(ctx, org, forge.ConfigRepoName,
+		"bin/fullsend", "chore: vendor fullsend binary for development", binaryData); err != nil {
+		printer.StepFail("Failed to upload vendored binary")
+		return fmt.Errorf("uploading binary: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Uploaded vendored binary (%.1f MB)", sizeMB))
+
+	printer.StepStart("Setting FULLSEND_USE_VENDORED_BINARY repo variable")
+	if err := client.CreateOrUpdateRepoVariable(ctx, org, forge.ConfigRepoName,
+		"FULLSEND_USE_VENDORED_BINARY", "true"); err != nil {
+		printer.StepFail("Failed to set repo variable")
+		return fmt.Errorf("setting FULLSEND_USE_VENDORED_BINARY variable: %w", err)
+	}
+	printer.StepDone("Set FULLSEND_USE_VENDORED_BINARY=true on " + forge.ConfigRepoName)
+
+	return nil
+}
+
+// clearVendoredBinary disables the vendored binary by setting
+// FULLSEND_USE_VENDORED_BINARY to "false". This ensures that a previous
+// --vendor-fullsend-binary install doesn't leave the opt-in flag active
+// when the admin re-runs install without the flag.
+func clearVendoredBinary(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+	exists, err := client.RepoVariableExists(ctx, org, forge.ConfigRepoName, "FULLSEND_USE_VENDORED_BINARY")
+	if err != nil || !exists {
+		return nil
+	}
+	printer.StepStart("Disabling vendored binary")
+	if err := client.CreateOrUpdateRepoVariable(ctx, org, forge.ConfigRepoName,
+		"FULLSEND_USE_VENDORED_BINARY", "false"); err != nil {
+		printer.StepFail("Failed to disable vendored binary")
+		return fmt.Errorf("clearing FULLSEND_USE_VENDORED_BINARY variable: %w", err)
+	}
+	printer.StepDone("Set FULLSEND_USE_VENDORED_BINARY=false (vendored binary disabled)")
+	return nil
 }
 
 // collectEnrolledRepoIDs returns the IDs of repos whose names appear in
