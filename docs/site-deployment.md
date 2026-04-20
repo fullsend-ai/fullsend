@@ -89,3 +89,7 @@ Requires a Cloudflare login or API token in the environment per [Wrangler docs](
 **Artifact download 404.** **Build Site** must upload artifact **`site`**; **Deploy Site** needs `actions: read`.
 
 **No PR comment.** Same as before: ambiguous `head` when resolving the PR number; see the design spec.
+
+**Secrets missing on the deployed Worker / `missing_turnstile_keys` after deploy.** `cloudflare/wrangler-action` runs `wrangler secret bulk` using the **`name` in `wrangler.toml`**, not the `--name` flag on `wrangler deploy`. The deploy workflow patches `name` to match **`CLOUDFLARE_PROJECT_NAME`** before Wrangler runs so secrets and deploy target the same Worker. If you deploy manually with only `--name=…`, run `wrangler secret bulk` (or `wrangler secret put`) with the same **`--name`**.
+
+**Dashboard:** Worker **Variables and Secrets** lists plain **vars** and encrypted **secrets**. Secret values are never shown after save; only names appear.

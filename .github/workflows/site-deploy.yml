@@ -73,7 +73,7 @@ jobs:
           cp -a _bundle/public/. cloudflare_site/public/
           cp -a _bundle/worker/. cloudflare_site/worker/
 
-      - name: Patch rate limit namespace_id for this Worker name
+      - name: Patch wrangler.toml for CI (worker name + rate limit namespaces)
         env:
           CLOUDFLARE_PROJECT_NAME: ${{ vars.CLOUDFLARE_PROJECT_NAME }}
         run: node cloudflare_site/scripts/patch-wrangler-rate-limit-namespace-ids.mjs

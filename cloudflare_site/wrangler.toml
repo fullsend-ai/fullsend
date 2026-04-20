@@ -23,6 +23,7 @@ run_worker_first = ["/api/*"]
 
 # Native rate limits (Wrangler ≥ 4.36). namespace_id must be a string of a positive integer (Cloudflare docs).
 # Local dev: bases below. CI (site-deploy.yml): patch-wrangler-rate-limit-namespace-ids.mjs sets
+# top-level name = CLOUDFLARE_PROJECT_NAME (so wrangler secret bulk matches deploy --name) and
 # namespace_id = base + offset(sha256(CLOUDFLARE_PROJECT_NAME)) so different Worker names get different namespaces.
 # Limits are per key per Cloudflare location. Keys are path + IP.
 [[ratelimits]]
