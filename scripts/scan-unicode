@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Scan files for non-rendering Unicode that can encode hidden instructions.
+#
+# Usage:
+#   scan-unicode file1 [file2 ...]   Scan specified files
+#
+# Detects non-rendering Unicode codepoints used in:
+#   - Steganographic payloads (tag characters U+E0000–U+E007F)
+#   - Invisible text (zero-width U+200B–U+200D, U+FEFF outside BOM position)
+#   - Trojan Source attacks (bidi overrides U+202A–U+202E, isolates U+2066–U+2069)
+#   - Hidden operators (word joiner U+2060, invisible operators U+2061–U+2064)
+#
+# Requires perl (>= 5.8, universally available on CI runners and dev machines).
+# If perl is not available, the script hard-stops — it does not silently skip
+# scanning.
+#
+# Exit codes:
+#   0 — clean, no hidden Unicode found
+#   1 — hidden Unicode detected
+#   2 — scanner could not run (missing tools, bad arguments)
+#
+# Output (one line per finding, to stdout):
+#   FINDING:<file>:<line>:<category>:<codepoints>
+# Summary (to stderr):
+#   ok: unicode scan passed for N file(s)
+#   error: N finding(s) in M file(s) — do NOT proceed
+set -euo pipefail
+
+# --- dependency check -------------------------------------------------------
+
+if ! command -v perl &>/dev/null; then
+  echo "error: scan-unicode requires perl — not found on PATH" >&2
+  echo "error: do NOT skip unicode scanning" >&2
+  exit 2
+fi
+
+# --- parse arguments --------------------------------------------------------
+
+files=()
+for arg in "$@"; do
+  case "${arg}" in
+    --help|-h)
+      sed -n '/^#/!q; s/^# \?//p' "$0" | tail -n +2
+      exit 0
+      ;;
+    -*) echo "error: unknown option: ${arg}" >&2; exit 2 ;;
+    *) files+=("${arg}") ;;
+  esac
+done
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "usage: scan-unicode file1 [file2 ...]" >&2
+  exit 2
+fi
+
+# --- filter to scannable files ----------------------------------------------
+
+scannable=()
+for f in "${files[@]}"; do
+  [[ -f "${f}" ]] || continue
+  if command -v file &>/dev/null; then
+    file --brief --mime-encoding "${f}" 2>/dev/null | grep -qi 'binary' && continue
+  fi
+  scannable+=("${f}")
+done
+
+if [[ ${#scannable[@]} -eq 0 ]]; then
+  printf 'ok: no text files to scan (from %d input(s))\n' "${#files[@]}" >&2
+  exit 0
+fi
+
+# --- scan -------------------------------------------------------------------
+#
+# The perl scanner reads each file as raw bytes, decodes as UTF-8 (skipping
+# files that aren't valid UTF-8), and checks each line for target codepoints.
+# U+FEFF at byte offset 0 (BOM) is excluded — it's legitimate there.
+
+scan_output=$(perl -e '
+use strict;
+use warnings;
+use Encode qw(decode FB_CROAK);
+
+my @checks = (
+  ["tag-character",      qr/[\x{E0000}-\x{E007F}]/],
+  ["zero-width",         qr/[\x{200B}-\x{200D}\x{FEFF}]/],
+  ["bidi-override",      qr/[\x{202A}-\x{202E}]/],
+  ["bidi-isolate",       qr/[\x{2066}-\x{2069}]/],
+  ["invisible-operator", qr/[\x{2060}-\x{2064}]/],
+);
+
+for my $file (@ARGV) {
+  open(my $fh, "<:raw", $file) or next;
+  my $raw = do { local $/; <$fh> };
+  close($fh);
+
+  my $text = eval { decode("UTF-8", $raw, FB_CROAK) };
+  next if $@;
+
+  my $lineno = 0;
+  for my $line (split /\r?\n/, $text) {
+    $lineno++;
+    for my $entry (@checks) {
+      my ($cat, $re) = @$entry;
+      my @hits;
+      while ($line =~ /($re)/g) {
+        my $cp = ord($1);
+        next if $cp == 0xFEFF && $lineno == 1 && $-[0] == 0;
+        push @hits, sprintf("U+%04X", $cp);
+      }
+      if (@hits) {
+        printf "FINDING:%s:%d:%s:%s\n", $file, $lineno, $cat, join(",", @hits);
+      }
+    }
+  }
+}
+' -- "${scannable[@]}") || {
+  echo "error: perl scanner failed — do NOT skip unicode scanning" >&2
+  exit 2
+}
+
+# --- tally results ----------------------------------------------------------
+
+finding_count=0
+files_with_findings=0
+declare -A seen_files
+
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  echo "${line}"
+  ((finding_count++)) || true
+  local_file="${line#FINDING:}"
+  local_file="${local_file%%:*}"
+  if [[ -z "${seen_files[${local_file}]:-}" ]]; then
+    seen_files["${local_file}"]=1
+    ((files_with_findings++)) || true
+  fi
+done <<< "${scan_output}"
+
+if [[ ${finding_count} -gt 0 ]]; then
+  printf 'error: %d finding(s) in %d file(s) — do NOT proceed\n' \
+    "${finding_count}" "${files_with_findings}" >&2
+  exit 1
+fi
+
+printf 'ok: unicode scan passed for %d file(s)\n' "${#scannable[@]}" >&2
