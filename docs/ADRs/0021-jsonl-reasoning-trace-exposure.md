@@ -159,3 +159,7 @@ it suppresses JSONL for nearly all useful runs on private repos.
   obligation through CODEOWNERS.
 - JSONL files from private repos contain private data by nature — access
   control, not content sanitization, is the security boundary.
+- Raw JSONL serves per-run consumers (retro agent, session resumption,
+  human debugging). Complementary structured extraction via OpenTelemetry
+  could power aggregate analysis at scale (pattern detection across many
+  runs) — a future decision, not in scope here.
