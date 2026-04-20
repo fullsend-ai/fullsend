@@ -29,6 +29,16 @@ runs:
         RUNNER_ARCH: ${{ runner.arch }}
       run: |
         set -euo pipefail
+
+        # Use vendored binary if present (placed by fullsend admin install --vendor-fullsend-binary).
+        if [[ -x "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+          echo "Using vendored fullsend binary from bin/fullsend"
+          mkdir -p "${RUNNER_TEMP}/fullsend"
+          cp "${GITHUB_WORKSPACE}/bin/fullsend" "${RUNNER_TEMP}/fullsend/fullsend"
+          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+          exit 0
+        fi
+
         VERSION="$(printf '%s' "${VERSION:-latest}" | tr -d '[:space:]')"
         VERSION="${VERSION:-latest}"
 

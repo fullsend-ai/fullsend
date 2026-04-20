@@ -82,6 +82,7 @@ func newInstallCmd() *cobra.Command {
 	var agents string
 	var dryRun bool
 	var skipAppSetup bool
+	var vendorBinary bool
 	var gcpProject string
 	var gcpRegion string
 	var gcpServiceAccount string
@@ -175,7 +176,7 @@ func newInstallCmd() *cobra.Command {
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary)
 		},
 	}
 
@@ -183,12 +184,57 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&agents, "agents", "fullsend,triage,coder,review", "comma-separated agent roles")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
+	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload the fullsend binary into .fullsend/bin/ for development iteration")
 	cmd.Flags().StringVar(&gcpProject, "gcp-project", "", "GCP project ID for Vertex AI inference")
 	cmd.Flags().StringVar(&gcpRegion, "gcp-region", "", "GCP region for Vertex AI (e.g. us-east5, required with --gcp-project)")
 	cmd.Flags().StringVar(&gcpServiceAccount, "gcp-service-account", "", "existing GCP service account name (optional, used with --gcp-project)")
 	cmd.Flags().StringVar(&gcpCredentialsFile, "gcp-credentials-file", "", "path to pre-made GCP service account key JSON (optional, used with --gcp-project)")
 
 	return cmd
+}
+
+// vendorFullsendBinary cross-compiles the fullsend binary for linux/amd64
+// and uploads it to .fullsend/bin/fullsend. This allows CI workflows to use
+// the vendored binary instead of downloading from GitHub releases, enabling
+// rapid iteration during development without cutting a release.
+func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+	printer.StepStart("Cross-compiling fullsend for linux/amd64")
+
+	tmpBinary, err := os.CreateTemp("", "fullsend-linux-amd64-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpBinary.Close()
+	defer os.Remove(tmpBinary.Name())
+
+	// Cross-compile. The source is the module containing this package.
+	buildCmd := exec.Command("go", "build",
+		"-ldflags", fmt.Sprintf("-X github.com/fullsend-ai/fullsend/internal/cli.version=%s-vendored", version),
+		"-o", tmpBinary.Name(),
+		"./cmd/fullsend/",
+	)
+	buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		printer.StepFail("Cross-compilation failed")
+		return fmt.Errorf("cross-compiling: %w", err)
+	}
+	printer.StepDone("Cross-compiled fullsend for linux/amd64")
+
+	printer.StepStart("Uploading vendored binary to .fullsend/bin/fullsend")
+	binaryData, err := os.ReadFile(tmpBinary.Name())
+	if err != nil {
+		return fmt.Errorf("reading compiled binary: %w", err)
+	}
+
+	if err := client.CreateOrUpdateFile(ctx, org, forge.ConfigRepoName,
+		"bin/fullsend", "chore: vendor fullsend binary for development", binaryData); err != nil {
+		printer.StepFail("Failed to upload vendored binary")
+		return fmt.Errorf("uploading binary: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Uploaded vendored binary (%d MB)", len(binaryData)/(1024*1024)))
+
+	return nil
 }
 
 func newUninstallCmd() *cobra.Command {
@@ -354,7 +400,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 }
 
 // runInstall performs the full installation.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool) error {
 	printer.Header("Discovering repositories")
 
 	allRepos, err := client.ListOrgRepos(ctx, org)
@@ -408,6 +454,12 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	workflowsLayer := layers.NewWorkflowsLayer(org, client, printer, user)
 	if err := workflowsLayer.Install(ctx); err != nil {
 		return fmt.Errorf("writing workflows: %w", err)
+	}
+
+	if vendorBinary {
+		if err := vendorFullsendBinary(ctx, client, printer, org); err != nil {
+			return fmt.Errorf("vendoring binary: %w", err)
+		}
 	}
 	printer.Blank()
 

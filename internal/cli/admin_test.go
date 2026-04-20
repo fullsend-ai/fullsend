@@ -41,6 +41,10 @@ func TestInstallCmd_Flags(t *testing.T) {
 
 	skipAppSetupFlag := cmd.Flags().Lookup("skip-app-setup")
 	require.NotNil(t, skipAppSetupFlag, "expected --skip-app-setup flag")
+
+	vendorBinaryFlag := cmd.Flags().Lookup("vendor-fullsend-binary")
+	require.NotNil(t, vendorBinaryFlag, "expected --vendor-fullsend-binary flag")
+	assert.Equal(t, "false", vendorBinaryFlag.DefValue)
 }
 
 func TestUninstallCmd_RequiresOrg(t *testing.T) {
