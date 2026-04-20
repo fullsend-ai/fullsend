@@ -1,27 +1,22 @@
 # Containerfile — sandbox image for the runner-hello-world experiment.
 #
-# Contains Claude Code and the hello-world-bin tool pre-installed.
-# Must be based on the OpenShell base image (the sandbox supervisor is
-# side-loaded at runtime).
+# Extends the base fullsend sandbox image with experiment-specific tools.
+# See images/sandbox/Containerfile for the base image definition.
 #
-# Build:
-#   podman build -t quay.io/manonru/fullsend-exp:v1 \
-#     -f experiments/runner-hello-world/Containerfile \
-#     experiments/runner-hello-world/
+# Build (two-step):
+#   1. Build the base image first:
+#      podman build -t fullsend-sandbox:latest \
+#        -f images/sandbox/Containerfile images/sandbox/
+#   2. Build this experiment image:
+#      podman build -t quay.io/manonru/fullsend-exp:v1 \
+#        --build-arg BASE_IMAGE=fullsend-sandbox:latest \
+#        -f experiments/runner-hello-world/experiment/Containerfile \
+#        experiments/runner-hello-world/experiment/
 
-FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:f0d1ec92bf219759c1e863c0fa6b1f432ec827331e79ab9e31dab91a3b86b413
+ARG BASE_IMAGE=fullsend-sandbox:latest
+FROM ${BASE_IMAGE}
 
-# The base image runs as the sandbox user (998). Switch to root for
-# package installation and switch back at the end.
 USER root
-
-# Install Node.js (required for Claude Code) and rsync (for safe repo write-back).
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs rsync \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code.
-RUN npm install -g @anthropic-ai/claude-code
 
 # Copy experiment tool binaries.
 COPY tools/hello-world-bin /usr/local/bin/hello-world-bin

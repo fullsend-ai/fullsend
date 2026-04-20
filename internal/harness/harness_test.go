@@ -238,6 +238,171 @@ func TestValidateRunnerEnv_LiteralValue(t *testing.T) {
 	require.NoError(t, h.ValidateRunnerEnv())
 }
 
+// --- Security config tests ---
+
+func TestSecurityEnabled_Default(t *testing.T) {
+	h := &Harness{Agent: "test.md"}
+	assert.True(t, h.SecurityEnabled(), "nil Security should default to enabled")
+}
+
+func TestSecurityEnabled_ExplicitTrue(t *testing.T) {
+	enabled := true
+	h := &Harness{Agent: "test.md", Security: &SecurityConfig{Enabled: &enabled}}
+	assert.True(t, h.SecurityEnabled())
+}
+
+func TestSecurityEnabled_ExplicitFalse(t *testing.T) {
+	disabled := false
+	h := &Harness{Agent: "test.md", Security: &SecurityConfig{Enabled: &disabled}}
+	assert.False(t, h.SecurityEnabled())
+}
+
+func TestFailModeClosed_Default(t *testing.T) {
+	h := &Harness{Agent: "test.md"}
+	assert.True(t, h.FailModeClosed(), "nil Security should default to closed")
+}
+
+func TestFailModeClosed_ExplicitClosed(t *testing.T) {
+	h := &Harness{Agent: "test.md", Security: &SecurityConfig{FailMode: "closed"}}
+	assert.True(t, h.FailModeClosed())
+}
+
+func TestFailModeClosed_Open(t *testing.T) {
+	h := &Harness{Agent: "test.md", Security: &SecurityConfig{FailMode: "open"}}
+	assert.False(t, h.FailModeClosed())
+}
+
+func TestLoad_SecurityConfig(t *testing.T) {
+	content := `
+agent: agents/test.md
+security:
+  fail_mode: open
+  host_scanners:
+    unicode_normalizer: true
+    context_injection: false
+    llm_guard:
+      threshold: 0.85
+      match_type: sentence
+  sandbox_hooks:
+    tirith:
+      fail_on: medium
+    ssrf_pretool: true
+  escalation:
+    on_critical: review
+    review_label: needs-review
+  trace:
+    enabled: true
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sec.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.Security)
+
+	assert.Equal(t, "open", h.Security.FailMode)
+	assert.False(t, h.FailModeClosed())
+
+	require.NotNil(t, h.Security.HostScanners)
+	assert.True(t, BoolDefault(h.Security.HostScanners.UnicodeNormalizer, true))
+	assert.False(t, BoolDefault(h.Security.HostScanners.ContextInjection, true))
+
+	require.NotNil(t, h.Security.HostScanners.LLMGuard)
+	assert.Equal(t, 0.85, h.Security.HostScanners.LLMGuard.Threshold)
+	assert.Equal(t, "sentence", h.Security.HostScanners.LLMGuard.MatchType)
+
+	require.NotNil(t, h.Security.SandboxHooks)
+	require.NotNil(t, h.Security.SandboxHooks.Tirith)
+	assert.Equal(t, "medium", h.Security.SandboxHooks.Tirith.FailOn)
+	assert.True(t, BoolDefault(h.Security.SandboxHooks.SSRFPreTool, true))
+
+	require.NotNil(t, h.Security.Escalation)
+	assert.Equal(t, "review", h.Security.Escalation.OnCritical)
+	assert.Equal(t, "needs-review", h.Security.Escalation.ReviewLabel)
+
+	require.NotNil(t, h.Security.Trace)
+	assert.True(t, BoolDefault(h.Security.Trace.Enabled, true))
+}
+
+func TestValidate_SecurityInvalidFailMode(t *testing.T) {
+	h := &Harness{Agent: "test.md", Security: &SecurityConfig{FailMode: "invalid"}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fail_mode")
+}
+
+func TestValidate_SecurityInvalidLLMGuardThreshold(t *testing.T) {
+	h := &Harness{
+		Agent: "test.md",
+		Security: &SecurityConfig{
+			HostScanners: &HostScanners{
+				LLMGuard: &LLMGuardConfig{Threshold: 1.5},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "threshold")
+}
+
+func TestValidate_SecurityInvalidLLMGuardMatchType(t *testing.T) {
+	h := &Harness{
+		Agent: "test.md",
+		Security: &SecurityConfig{
+			HostScanners: &HostScanners{
+				LLMGuard: &LLMGuardConfig{MatchType: "word"},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "match_type")
+}
+
+func TestValidate_SecurityInvalidTirithFailOn(t *testing.T) {
+	h := &Harness{
+		Agent: "test.md",
+		Security: &SecurityConfig{
+			SandboxHooks: &SandboxHooks{
+				Tirith: &TirithConfig{FailOn: "low"},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fail_on")
+}
+
+func TestValidate_SecurityInvalidEscalation(t *testing.T) {
+	h := &Harness{
+		Agent: "test.md",
+		Security: &SecurityConfig{
+			Escalation: &EscalationConfig{OnCritical: "ignore"},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "on_critical")
+}
+
+func TestValidate_SecurityValidConfig(t *testing.T) {
+	h := &Harness{
+		Agent: "test.md",
+		Security: &SecurityConfig{
+			FailMode: "open",
+			HostScanners: &HostScanners{
+				LLMGuard: &LLMGuardConfig{Threshold: 0.92, MatchType: "sentence"},
+			},
+			SandboxHooks: &SandboxHooks{
+				Tirith: &TirithConfig{FailOn: "high"},
+			},
+			Escalation: &EscalationConfig{OnCritical: "review"},
+		},
+	}
+	require.NoError(t, h.Validate())
+}
+
 func TestValidateRunnerEnv_HostFileSrcUnset(t *testing.T) {
 	h := &Harness{
 		Agent: "test.md",
