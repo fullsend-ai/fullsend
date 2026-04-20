@@ -1,0 +1,114 @@
+# Containerfile — sandbox image for the fullsend code agent.
+#
+# Extends the base fullsend sandbox image with tools needed by the code agent:
+#   - Go (compile + test target repos written in Go)
+#   - gitleaks (secret scanner, SHA256-verified)
+#   - pre-commit + gitlint (runs repo-defined hooks and validates commit messages)
+#
+# The base image already provides Claude Code, rsync, tirith, and LLM Guard.
+# See images/sandbox/Containerfile in fullsend-ai/fullsend for the base definition.
+#
+# This image is built AUTOMATICALLY by .github/workflows/build-images.yml
+# on every push to main that touches images/code/Containerfile.
+# You can also trigger it manually via workflow_dispatch.
+#
+# Published to: ghcr.io/fullsend-ai/fullsend-code:latest
+#
+# The harness references this image:
+#   image: ghcr.io/fullsend-ai/fullsend-code:latest
+
+# CI passes --build-arg BASE_IMAGE=... from the build-base job output.
+# The default lets local builds work when the sandbox image is already pulled.
+ARG BASE_IMAGE=ghcr.io/fullsend-ai/fullsend-sandbox:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# ---------------------------------------------------------------------------
+# CA certificates — git 2.43 on Ubuntu Noble is linked against
+# libcurl-gnutls which does NOT read SSL_CERT_FILE. It needs either
+# GIT_SSL_CAINFO env or http.sslCAInfo git config to find the CA bundle.
+#
+# The OpenShell sandbox does TLS termination for network policy and
+# injects its own CA at /etc/openshell-tls/ca-bundle.pem (NVIDIA/OpenShell#790).
+# The env file (code-agent.env) sets GIT_SSL_CAINFO dynamically at runtime.
+# The git system config below is a build-time fallback for the system bundle.
+RUN if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update -qq && apt-get install -y -qq ca-certificates && rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+      apk add --no-cache ca-certificates; \
+    elif command -v dnf >/dev/null 2>&1; then \
+      dnf install -y ca-certificates && dnf clean all; \
+    fi \
+    && update-ca-certificates 2>/dev/null || true
+# Set the system CA bundle as git's default sslCAInfo. At runtime, the
+# env file overrides this with the OpenShell bundle if present.
+RUN git config --system http.sslCAInfo /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Go toolchain — needed to compile and run tests in Go-based target repos.
+# Without this the agent falls back to manual code review (no `go build`,
+# `go test`, or `go vet`), wasting ~4 tool calls trying to find Go.
+#
+# Pinned version + SHA256 checksum for supply chain safety.
+# To update: get the latest linux-amd64 archive + sha256 from https://go.dev/dl/?mode=json
+ARG GO_VERSION=1.24.13
+ARG GO_SHA256=1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730
+
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+      -o /tmp/go.tar.gz \
+    && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    GOPATH="/sandbox/go" \
+    GOMODCACHE="/sandbox/go/pkg/mod"
+
+# ---------------------------------------------------------------------------
+# gitleaks — secret scanner used by scripts/scan-secrets.
+# When gitleaks is on PATH, the scan-secrets script uses it directly
+# with zero download latency. Without it, scan-secrets falls back to
+# downloading and verifying at runtime (slower, needs network).
+#
+# To update: bump GITLEAKS_VERSION and GITLEAKS_SHA256 from:
+#   https://github.com/gitleaks/gitleaks/releases/download/v<VERSION>/gitleaks_<VERSION>_checksums.txt
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+RUN curl -fsSL \
+      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+      -o /tmp/gitleaks.tar.gz \
+    && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && chmod +x /usr/local/bin/gitleaks \
+    && rm /tmp/gitleaks.tar.gz
+
+# ---------------------------------------------------------------------------
+# pre-commit + gitlint — pre-commit runs repo-defined hooks (formatting,
+# linting, etc.) on changed files before committing. gitlint validates
+# commit message format. Baking them into the image avoids pip installs
+# on every run and ensures they're available even if pip is restricted.
+ARG PRECOMMIT_VERSION=4.5.1
+ARG GITLINT_VERSION=0.19.1
+RUN pip install "pre-commit==${PRECOMMIT_VERSION}" "gitlint-core==${GITLINT_VERSION}" 2>/dev/null \
+    || pip3 install "pre-commit==${PRECOMMIT_VERSION}" "gitlint-core==${GITLINT_VERSION}" 2>/dev/null \
+    || true
+# The venv's bin dir (/sandbox/.venv/bin) is not on PATH inside the
+# sandbox Bash shell. Symlink the binaries into /usr/local/bin so the
+# agent can find them without PATH manipulation.
+RUN for bin in pre-commit gitlint; do \
+      if [ -x "/sandbox/.venv/bin/$bin" ]; then \
+        ln -sf "/sandbox/.venv/bin/$bin" "/usr/local/bin/$bin"; \
+      fi; \
+    done
+
+# ---------------------------------------------------------------------------
+# scan-secrets — gitleaks wrapper used by the code-implementation skill.
+# Baked into the image so the agent has it at /usr/local/bin without
+# needing host_files or network access. /usr is read-only in the
+# sandbox policy, so the agent cannot tamper with it at runtime.
+COPY scan-secrets /usr/local/bin/scan-secrets
+RUN chmod +x /usr/local/bin/scan-secrets
+
+USER sandbox

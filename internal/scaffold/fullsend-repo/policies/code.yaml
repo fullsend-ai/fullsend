@@ -1,0 +1,137 @@
+version: 1
+
+# Sandbox policy for the code agent.
+#
+# Grants network access the code agent needs beyond the base sandbox:
+#   - Vertex AI (us-east5 inference + GCP auth token exchange)
+#   - GitHub API (gh/git only — curl intentionally excluded to prevent
+#     disallowedTools bypass via raw HTTP with the injected GH_TOKEN)
+#   - gitleaks releases (fallback download if not pre-installed in image)
+#   - npm/PyPI/Go registries (running tests may pull dev dependencies)
+#   - pre-commit binary needs github (clone hook repos), package registries
+#     (pip install hook deps), and GitHub releases (hook binaries like gitleaks)
+
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  vertex_ai:
+    name: vertex-ai
+    endpoints:
+      - host: "us-east5-aiplatform.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "oauth2.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "www.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "iamcredentials.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/curl"
+      - path: "**/claude"
+      - path: "**/node"
+
+  github_api:
+    name: github-api
+    endpoints:
+      - host: "api.github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/gh"
+      - path: "**/git"
+      - path: "**/node"
+      - path: "**/pre-commit"
+
+  gitleaks_releases:
+    name: gitleaks-releases
+    endpoints:
+      - host: "github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "objects.githubusercontent.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "release-assets.githubusercontent.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/curl"
+      - path: "**/wget"
+      - path: "**/pre-commit"
+
+  package_registries:
+    name: package-registries
+    endpoints:
+      - host: "registry.npmjs.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "pypi.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "files.pythonhosted.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "proxy.golang.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "sum.golang.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "storage.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/npm"
+      - path: "**/node"
+      - path: "**/pip"
+      - path: "**/pip3"
+      - path: "**/python"
+      - path: "**/python3"
+      - path: "**/python3.*"
+      - path: "**/go"
+      - path: "**/pre-commit"

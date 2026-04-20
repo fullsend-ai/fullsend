@@ -25,6 +25,7 @@ jobs:
       actions: write
       contents: write
       issues: write
+      packages: read
       pull-requests: write
 
     steps:
@@ -54,6 +55,12 @@ jobs:
             exit 1
           fi
 
+      - name: Extract target repo name
+        id: repo-parts
+        env:
+          SOURCE_REPO: ${{ inputs.source_repo }}
+        run: echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"
+
       - name: Generate app token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -61,6 +68,7 @@ jobs:
           app-id: ${{ vars.FULLSEND_CODER_APP_ID }}
           private-key: ${{ secrets.FULLSEND_CODER_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo-parts.outputs.name }}
 
       - name: Checkout target repository
         uses: actions/checkout@v6
@@ -69,6 +77,14 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           path: target-repo
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate inputs
+        env:
+          ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
+          REPO_FULL_NAME: ${{ inputs.source_repo }}
+          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+        run: bash scripts/pre-code.sh
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -82,11 +98,16 @@ jobs:
           CODE_TARGET_REPO_DIR: target-repo
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CODE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+          CODE_ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
         uses: ./.github/actions/fullsend
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
+          REPO_FULL_NAME: ${{ inputs.source_repo }}
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PUSH_TOKEN_SOURCE: github-app
         with:
           agent: code

@@ -1,0 +1,40 @@
+# harness/code.yaml — code agent with pre/post script pipeline.
+#
+# Flow: pre_script → sandbox (agent) → post_script
+#   pre_script  : validates inputs on the runner BEFORE sandbox creation
+#   agent       : reads the issue, implements, tests, scans, commits locally
+#   post_script : protected-path check, secret scan, push branch, create PR
+#
+# The agent NEVER pushes or creates PRs (disallowedTools enforces this).
+# Only the post-script, running on the runner with PUSH_TOKEN, can write.
+agent: agents/code.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-code:latest
+policy: policies/code.yaml
+
+pre_script: scripts/pre-code.sh
+post_script: scripts/post-code.sh
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/code-agent.env
+    dest: /tmp/workspace/.env.d/code-agent.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/workspace/.gcp-credentials.json
+
+skills:
+  - skills/code-implementation
+
+# Environment variables available to post_script on the runner.
+# These are expanded from the runner environment and NEVER enter the sandbox.
+runner_env:
+  PUSH_TOKEN: "${PUSH_TOKEN}"
+  PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+  REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  ISSUE_NUMBER: "${ISSUE_NUMBER}"
+  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+
+timeout_minutes: 25
