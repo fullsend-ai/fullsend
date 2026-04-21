@@ -36,8 +36,8 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have created scaffold files + CODEOWNERS in the .fullsend repo
-	require.True(t, len(client.CreatedFiles) >= 15,
-		"expected at least 15 files (14 scaffold + CODEOWNERS), got %d", len(client.CreatedFiles))
+	require.True(t, len(client.CreatedFiles) >= 23,
+		"expected at least 23 files (22 scaffold + CODEOWNERS), got %d", len(client.CreatedFiles))
 
 	paths := make(map[string]string) // path -> content
 	for _, f := range client.CreatedFiles {
@@ -112,7 +112,7 @@ func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
 	require.NoError(t, err)
 
 	// All scaffold files should have been created (CODEOWNERS excluded since it failed)
-	assert.Len(t, client.created, 14)
+	assert.Len(t, client.created, 22)
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
@@ -160,7 +160,7 @@ func TestWorkflowsLayer_Analyze_AllPresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Len(t, report.Details, 15)
+	assert.Len(t, report.Details, 23)
 }
 
 func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
@@ -174,7 +174,7 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusNotInstalled, report.Status)
-	assert.Len(t, report.WouldInstall, 15)
+	assert.Len(t, report.WouldInstall, 23)
 }
 
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {

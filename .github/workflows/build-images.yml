@@ -1,0 +1,170 @@
+name: Build Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/**/Containerfile"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: >-
+          Which image to build (directory name under images/, e.g. "code").
+          Leave empty to build all images that have a Containerfile.
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/fullsend
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  discover:
+    name: Discover images
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.find.outputs.images }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Find Containerfiles
+        id: find
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_IMAGE}" ]]; then
+            if [[ ! "${INPUT_IMAGE}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+              echo "::error::Invalid image name — only alphanumeric, hyphens, and underscores allowed"
+              exit 1
+            fi
+            if [[ ! -f "images/${INPUT_IMAGE}/Containerfile" ]]; then
+              echo "::error::No Containerfile found at images/${INPUT_IMAGE}/Containerfile"
+              exit 1
+            fi
+            echo "images=[\"${INPUT_IMAGE}\"]" >> "${GITHUB_OUTPUT}"
+          else
+            images="[]"
+            for cf in images/*/Containerfile; do
+              dir="$(basename "$(dirname "${cf}")")"
+              images="$(echo "${images}" | jq -c --arg d "${dir}" '. + [$d]')"
+            done
+            echo "images=${images}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Show discovered images
+        env:
+          IMAGES: ${{ steps.find.outputs.images }}
+        run: echo "Will build:${IMAGES}"
+
+  build-base:
+    name: Build base sandbox
+    runs-on: ubuntu-latest
+    needs: discover
+    outputs:
+      base-image: ${{ steps.tag.outputs.base_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compute base image tag
+        id: tag
+        run: echo "base_image=${{ env.IMAGE_PREFIX }}-sandbox:${{ github.sha }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Base image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-sandbox
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+
+      - name: Build and push base sandbox
+        uses: docker/build-push-action@v7
+        with:
+          context: images/sandbox
+          file: images/sandbox/Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-agent:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    needs: [discover, build-base]
+    if: needs.discover.outputs.images != '[]'
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.discover.outputs.images) }}
+        exclude:
+          - image: sandbox
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.image }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: images/${{ matrix.image }}
+          file: images/${{ matrix.image }}/Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ needs.build-base.outputs.base-image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          FULL_TAG: ${{ env.IMAGE_PREFIX }}-${{ matrix.image }}:latest
+          BASE_USED: ${{ needs.build-base.outputs.base-image }}
+        run: |
+          {
+            echo "### Built \`${IMAGE_NAME}\` image"
+            echo ""
+            echo "**Registry:** \`${FULL_TAG}\`"
+            echo "**Base image:** \`${BASE_USED}\`"
+            echo ""
+            echo "Reference this in your harness YAML:"
+            echo "\`\`\`yaml"
+            echo "image: ${FULL_TAG}"
+            echo "\`\`\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
