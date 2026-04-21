@@ -86,7 +86,7 @@ The harness draws its configuration from the adopting organization's **`.fullsen
 
 **Open questions:**
 
-- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)?
+- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Tool permissions are injected as a host-managed `.claude/settings.json` — configured outside, enforced inside; see [ADR 0024](ADRs/0024-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
 - How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
 - How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).)
 
@@ -99,7 +99,7 @@ This is the thing that actually reasons and acts. Everything else in this docume
 **Open questions:**
 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
-- How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls?
+- How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0024](ADRs/0024-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
 - What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?)
 

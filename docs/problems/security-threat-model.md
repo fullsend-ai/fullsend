@@ -64,7 +64,7 @@ The attack surface is the same as for visible prompt injection — PR descriptio
 - Can prompt injection be reliably detected? Current research suggests it's fundamentally hard.
 - Should we treat all PR content as untrusted, even from org members? (Relates to insider threat.)
 - How do we handle the case where legitimate code contains text that looks like prompt injection? (e.g., a test for prompt injection defenses)
-- What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); other blast radius dimensions remain open.)
+- What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0024](../ADRs/0024-allowed-and-disallowed-tools-for-agents.md). Other blast radius dimensions remain open.)
 - Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass? Stripping at ingestion is simpler but risks breaking legitimate internationalized content. A detection pass preserves the original but requires every agent to handle invisible content correctly.
 - How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use?
 

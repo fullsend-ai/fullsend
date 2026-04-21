@@ -116,7 +116,7 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 ## Open questions
 
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
-- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); other resource access remains open.)
+- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); tool access restrictions decided in [ADR 0024](../ADRs/0024-allowed-and-disallowed-tools-for-agents.md); other resource access remains open.)
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?
 - Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership?
