@@ -103,20 +103,21 @@ Critical findings exit non-zero. Non-critical findings are sanitized.`,
 				}
 			}
 
-			// LLM Guard ML scan (fail-open — skips if Python/llm-guard unavailable).
-			{
-				printer.StepStart("Running LLM Guard ML scan")
-				lgScanner := security.NewLLMGuardScanner(0, "", false) // Path A: fail-open
+			// ML-based prompt injection scan (fail-open — skips if ONNX runtime unavailable).
+			if security.MLScanAvailable() {
+				printer.StepStart("Running ML injection scan")
 				for name, text := range fields {
-					lgResult := lgScanner.Scan(text)
-					if !lgResult.Safe {
-						for i := range lgResult.Findings {
-							lgResult.Findings[i].Detail = fmt.Sprintf("[%s] %s", name, lgResult.Findings[i].Detail)
+					mlResult := security.RunMLScan(text, false)
+					if !mlResult.Safe {
+						for i := range mlResult.Findings {
+							mlResult.Findings[i].Detail = fmt.Sprintf("[%s] %s", name, mlResult.Findings[i].Detail)
 						}
-						allFindings = append(allFindings, lgResult.Findings...)
+						allFindings = append(allFindings, mlResult.Findings...)
 					}
 				}
-				printer.StepDone("LLM Guard scan complete")
+				printer.StepDone("ML injection scan complete")
+			} else {
+				printer.StepInfo("ML injection scan not available (build without ORT tag)")
 			}
 
 			// Print findings

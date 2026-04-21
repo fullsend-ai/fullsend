@@ -1,0 +1,14 @@
+This package contains code ported from:
+
+1. gopkg.in/neurosnap/sentences.v1
+   Copyright (c) 2015 Eric Bower
+   Licensed under the MIT License
+   https://github.com/neurosnap/sentences
+
+2. github.com/jdkato/prose/v2
+   Copyright (c) 2017-2018 Joseph Kato
+   Licensed under the MIT License
+   https://github.com/jdkato/prose
+
+The english.json training data originates from the NLTK Punkt tokenizer
+(Apache 2.0) via the neurosnap/sentences project.

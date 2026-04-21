@@ -1,7 +1,6 @@
 package security
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -242,45 +241,6 @@ func TestSSRFValidator_DNSResolution(t *testing.T) {
 		r := v.ValidateURL("http://10.0.0.1/internal", false)
 		assert.False(t, r.Safe)
 		assert.True(t, hasFinding(r, "blocked_ip"))
-	})
-}
-
-func TestLLMGuardScanner_Required(t *testing.T) {
-	t.Run("required=true fails closed when python unavailable", func(t *testing.T) {
-		scanner := &LLMGuardScanner{
-			Threshold: 0.92,
-			MatchType: "sentence",
-			Required:  true,
-		}
-		origPath := os.Getenv("PATH")
-		t.Setenv("PATH", "/nonexistent")
-		defer os.Setenv("PATH", origPath)
-
-		result := scanner.Scan("test input")
-		assert.False(t, result.Safe)
-		assert.True(t, hasFinding(result, "python_unavailable"))
-	})
-
-	t.Run("required=false fails open when python unavailable", func(t *testing.T) {
-		scanner := &LLMGuardScanner{
-			Threshold: 0.92,
-			MatchType: "sentence",
-			Required:  false,
-		}
-		origPath := os.Getenv("PATH")
-		t.Setenv("PATH", "/nonexistent")
-		defer os.Setenv("PATH", origPath)
-
-		result := scanner.Scan("test input")
-		assert.True(t, result.Safe)
-	})
-
-	t.Run("constructor propagates required flag", func(t *testing.T) {
-		scanner := NewLLMGuardScanner(0, "", true)
-		assert.True(t, scanner.Required)
-
-		scanner2 := NewLLMGuardScanner(0, "", false)
-		assert.False(t, scanner2.Required)
 	})
 }
 

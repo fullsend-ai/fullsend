@@ -6,8 +6,9 @@
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - pre-commit + gitlint (repo hook runner + commit message validator)
 #   - tirith (Rust CLI for terminal security scanning hooks)
-#   - LLM Guard with ONNX runtime + pre-downloaded DeBERTa-v3 model
-#     for prompt injection detection without cold-start latency
+#   - ONNX Runtime + ProtectAI DeBERTa-v3 model for prompt injection
+#     detection (loaded natively by fullsend via Go/hugot — no Python
+#     runtime dependency, no cold-start latency)
 #
 # Must extend the OpenShell base image — the sandbox supervisor is
 # side-loaded at runtime.
@@ -28,19 +29,6 @@ FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:f0d1ec92bf219759c1
 USER root
 
 # ---------------------------------------------------------------------------
-# Workaround for NVIDIA/OpenShell#886: the sandbox proxy does TLS
-# termination and re-signs traffic with its own CA at
-# /etc/openshell-tls/ca-bundle.pem, but does not auto-configure
-# git/curl/pip to trust it. Set the env vars at image level so
-# every tool picks up the proxy CA without per-agent env files.
-# Remove after upstream fixes CA propagation.
-ENV GIT_SSL_CAINFO="/etc/openshell-tls/ca-bundle.pem" \
-    SSL_CERT_FILE="/etc/openshell-tls/ca-bundle.pem" \
-    REQUESTS_CA_BUNDLE="/etc/openshell-tls/ca-bundle.pem" \
-    CURL_CA_BUNDLE="/etc/openshell-tls/ca-bundle.pem" \
-    NODE_EXTRA_CA_CERTS="/etc/openshell-tls/ca-bundle.pem"
-
-# ---------------------------------------------------------------------------
 # Install rsync (for safe repo write-back).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends rsync \
@@ -51,18 +39,48 @@ RUN apt-get update \
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # ---------------------------------------------------------------------------
-# Install Python and LLM Guard with ONNX runtime for ML-based prompt
-# injection scanning. Pre-download the DeBERTa-v3 model so first scan
-# has no cold-start delay.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir "llm-guard[onnxruntime]==0.3.14" \
-    && python3 -c "\
-from llm_guard.input_scanners import PromptInjection; \
-from llm_guard.input_scanners.prompt_injection import MatchType; \
-PromptInjection(threshold=0.92, match_type=MatchType.SENTENCE, use_onnx=True)" \
-    && echo "LLM Guard model pre-downloaded successfully"
+# ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
+# scanning. The fullsend binary loads the model directly via Go (hugot +
+# onnxruntime) — no Python, no cold-start latency.
+#
+# Download ProtectAI DeBERTa-v3 ONNX model files directly via curl.
+# The model is loaded at runtime by Go/onnxruntime — no Python dependency.
+ARG PROTECTAI_MODEL_REV=e6535ca4ce3ba852083e75ec585d7c8aeb4be4c5
+ARG PROTECTAI_MODEL_DIR=/opt/fullsend/models/protectai-deberta-v3/onnx
+ARG PROTECTAI_MODEL_ONNX_SHA256=f0ea7f239f765aedbde7c9e163a7cb38a79c5b8853d3f76db5152172047b228c
+ARG PROTECTAI_CONFIG_SHA256=3093743035223c46b1497a72e939e56fa0a50afbd7bafbf7eb8aad060b8d23f8
+ARG PROTECTAI_TOKENIZER_SHA256=752fe5f0d5678ad563e1bd2ecc1ddf7a3ba7e2024d0ac1dba1a72975e26dff2f
+ARG PROTECTAI_SPECIAL_TOKENS_SHA256=b2f1b2f15f29a6b6d9d6ea4eca1675d2c231a71477f151d48f79cc83a625ba21
+ARG PROTECTAI_TOKENIZER_CONFIG_SHA256=77d3dd1a9c30397a06545251ed9274bd92e4a85feb98497eeed50c920f962274
+RUN mkdir -p "${PROTECTAI_MODEL_DIR}" \
+    && for f in model.onnx config.json tokenizer.json special_tokens_map.json tokenizer_config.json; do \
+         curl -fsSL --retry 3 --retry-delay 5 \
+           "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2/resolve/${PROTECTAI_MODEL_REV}/onnx/${f}" \
+           -o "${PROTECTAI_MODEL_DIR}/${f}"; \
+       done \
+    && echo "${PROTECTAI_MODEL_ONNX_SHA256}  ${PROTECTAI_MODEL_DIR}/model.onnx" | sha256sum -c - \
+    && echo "${PROTECTAI_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/config.json" | sha256sum -c - \
+    && echo "${PROTECTAI_TOKENIZER_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer.json" | sha256sum -c - \
+    && echo "${PROTECTAI_SPECIAL_TOKENS_SHA256}  ${PROTECTAI_MODEL_DIR}/special_tokens_map.json" | sha256sum -c - \
+    && echo "${PROTECTAI_TOKENIZER_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer_config.json" | sha256sum -c - \
+    && echo "ProtectAI DeBERTa-v3 model downloaded at rev ${PROTECTAI_MODEL_REV} (all files SHA256-verified)"
+
+# ---------------------------------------------------------------------------
+# ONNX Runtime shared library — loaded by hugot at runtime.
+# Pinned version for supply chain safety.
+# To update: bump ORT_VERSION from:
+#   https://github.com/microsoft/onnxruntime/releases
+ARG ORT_VERSION=1.24.1
+ARG ORT_SHA256=9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f
+RUN curl -fsSL \
+      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" \
+      -o /tmp/ort.tgz \
+    && echo "${ORT_SHA256}  /tmp/ort.tgz" | sha256sum -c - \
+    && tar xzf /tmp/ort.tgz -C /tmp/ \
+    && cp "/tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/ \
+    && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so \
+    && /sbin/ldconfig \
+    && rm -rf /tmp/ort.tgz "/tmp/onnxruntime-linux-x64-${ORT_VERSION}"
 
 # ---------------------------------------------------------------------------
 # gitleaks — secret scanner used by scan-secrets and post-scripts.
@@ -86,14 +104,12 @@ RUN curl -fsSL \
 # even if pip is network-restricted inside the sandbox.
 ARG PRECOMMIT_VERSION=4.5.1
 ARG GITLINT_VERSION=0.19.1
-RUN pip3 install --no-cache-dir \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --break-system-packages \
       "pre-commit==${PRECOMMIT_VERSION}" \
       "gitlint-core==${GITLINT_VERSION}"
-RUN for bin in pre-commit gitlint; do \
-      if [ -x "/sandbox/.venv/bin/$bin" ]; then \
-        ln -sf "/sandbox/.venv/bin/$bin" "/usr/local/bin/$bin"; \
-      fi; \
-    done
 
 # ---------------------------------------------------------------------------
 # tirith — terminal security scanner for PreToolUse hooks.
@@ -108,6 +124,27 @@ RUN curl -fsSL "https://github.com/sheeki03/tirith/releases/download/v${TIRITH_V
     && tar xzf /tmp/tirith.tar.gz -C /usr/local/bin tirith \
     && chmod +x /usr/local/bin/tirith \
     && rm /tmp/tirith.tar.gz
+
+# ---------------------------------------------------------------------------
+# Workaround for NVIDIA/OpenShell#886: the sandbox proxy does TLS
+# termination and re-signs traffic with its own CA at
+# /etc/openshell-tls/ca-bundle.pem, but does not auto-configure
+# git/curl/pip to trust it. Set the env vars at image level so
+# every tool picks up the proxy CA without per-agent env files.
+# Remove after upstream fixes CA propagation.
+#
+# The CA bundle path only exists at runtime (injected by OpenShell).
+# To avoid breaking curl/pip during builds of child images that inherit
+# these ENV vars, we create a symlink to the system CA bundle. At
+# runtime, OpenShell overwrites the file with the real proxy CA.
+RUN mkdir -p /etc/openshell-tls \
+    && ln -sf /etc/ssl/certs/ca-certificates.crt /etc/openshell-tls/ca-bundle.pem
+ENV GIT_SSL_CAINFO="/etc/openshell-tls/ca-bundle.pem" \
+    SSL_CERT_FILE="/etc/openshell-tls/ca-bundle.pem" \
+    REQUESTS_CA_BUNDLE="/etc/openshell-tls/ca-bundle.pem" \
+    CURL_CA_BUNDLE="/etc/openshell-tls/ca-bundle.pem" \
+    NODE_EXTRA_CA_CERTS="/etc/openshell-tls/ca-bundle.pem" \
+    HF_HUB_OFFLINE="1"
 
 # Switch back to the sandbox user.
 USER sandbox
