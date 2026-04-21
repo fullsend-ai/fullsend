@@ -78,7 +78,6 @@ case "${ACTION}" in
 
     echo "Applying label..."
     add_label "needs-info"
-    remove_label "ready-to-triage"
     ;;
 
   duplicate)
@@ -91,7 +90,6 @@ case "${ACTION}" in
 
     echo "Applying label and closing..."
     add_label "duplicate"
-    remove_label "ready-to-triage"
     gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
     ;;
 
@@ -105,7 +103,6 @@ case "${ACTION}" in
 
     echo "Applying label..."
     add_label "ready-to-code"
-    remove_label "ready-to-triage"
     ;;
 
   *)
