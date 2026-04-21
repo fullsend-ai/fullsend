@@ -736,7 +736,7 @@ func buildClaudeCommand(agentName, model, repoDir string) string {
 	}
 
 	return fmt.Sprintf(
-		"cd %s && source %s && claude --print --output-format stream-json %s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
+		"cd %s && source %s && claude --print --verbose --output-format stream-json %s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
 		repoDir, envFile, modelFlag, safe,
 	)
 }
