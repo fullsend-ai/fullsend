@@ -29,4 +29,17 @@ for label in needs-info ready-to-code duplicate not-ready not-reproducible; do
   gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${label}" -X DELETE --silent 2>/dev/null || true
 done
 
+# Verify no triage labels remain — the pipeline depends on mutual exclusivity.
+REMAINING=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" \
+  --jq '[.[] | select(.name == "needs-info" or .name == "ready-to-code" or .name == "duplicate") | .name] | join(", ")' 2>/dev/null || echo "VERIFY_FAILED")
+
+if [[ "${REMAINING}" == "VERIFY_FAILED" ]]; then
+  echo "ERROR: cannot verify label state — API call failed"
+  exit 1
+fi
+if [[ -n "${REMAINING}" ]]; then
+  echo "ERROR: triage labels still present after reset: ${REMAINING}"
+  exit 1
+fi
+
 echo "Label reset complete."

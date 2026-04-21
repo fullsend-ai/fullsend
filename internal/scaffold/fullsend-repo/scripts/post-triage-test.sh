@@ -78,11 +78,11 @@ run_test() {
 
 run_test "insufficient-posts-comment-and-labels" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=needs-info --silent"
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
 
 run_test "sufficient-posts-summary-and-labels" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
 
 run_test "duplicate-labels" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
@@ -91,6 +91,11 @@ run_test "duplicate-labels" \
 run_test "duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh issue close 42 --repo test-org/test-repo --reason not planned"
+
+run_test "duplicate-self-reference-fails" \
+  '{"action":"duplicate","reasoning":"same issue","duplicate_of":42,"comment":"Duplicate of itself."}' \
+  "" \
+  "true"
 
 run_test "unknown-action-fails" \
   '{"action":"not_a_bug","reasoning":"working as intended","comment":"This is working as intended."}' \

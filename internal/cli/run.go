@@ -70,23 +70,6 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 		return fmt.Errorf("resolving paths: %w", err)
 	}
 
-	// Temporarily set FULLSEND_DIR so ValidateRunnerEnv sees it when
-	// checking ${VAR} references. The custom expander below handles the
-	// actual expansion without polluting the process environment long-term.
-	prevFullsendDir, hadFullsendDir := os.LookupEnv("FULLSEND_DIR")
-	os.Setenv("FULLSEND_DIR", absFullsendDir)
-	defer func() {
-		if hadFullsendDir {
-			os.Setenv("FULLSEND_DIR", prevFullsendDir)
-		} else {
-			os.Unsetenv("FULLSEND_DIR")
-		}
-	}()
-
-	if err := h.ValidateRunnerEnv(); err != nil {
-		printer.StepFail("Environment validation failed")
-		return fmt.Errorf("validating env: %w", err)
-	}
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
 	// harness configs can reference files relative to the fullsend directory
 	// (e.g., ${FULLSEND_DIR}/schemas/triage-result.schema.json).
@@ -95,6 +78,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 			return absFullsendDir
 		}
 		return os.Getenv(key)
+	}
+	if err := h.ValidateRunnerEnvWith(expander); err != nil {
+		printer.StepFail("Environment validation failed")
+		return fmt.Errorf("validating env: %w", err)
 	}
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
@@ -221,8 +208,12 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 	// Post-script runs after sandbox cleanup (defers are LIFO).
 	if h.PostScript != "" {
 		defer func() {
-			if h.ValidationLoop != nil && !validationPassed {
+			if !validationPassed {
 				printer.StepWarn("Skipping post-script: validation did not pass")
+				return
+			}
+			if runErr != nil {
+				printer.StepWarn("Skipping post-script: agent run failed")
 				return
 			}
 			postStart := time.Now()
@@ -736,6 +727,9 @@ func buildClaudeCommand(agentName, model, repoDir string) string {
 	}
 
 	return fmt.Sprintf(
+		// --verbose increases log output in the job log. If artifact upload is
+		// added to this workflow, consider whether verbose output should be
+		// redacted or made conditional via an env var.
 		"cd %s && source %s && claude --print --verbose --output-format stream-json %s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
 		repoDir, envFile, modelFlag, safe,
 	)

@@ -59,7 +59,10 @@ echo "Issue: #${ISSUE_NUMBER}"
 
 # add_label uses the labels API to avoid firing issues.edited.
 add_label() {
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" -f "labels[]=$1" --silent
+  if ! gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" -f "labels[]=$1" --silent; then
+    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER}" >&2
+    exit 1
+  fi
 }
 
 case "${ACTION}" in
@@ -69,7 +72,7 @@ case "${ACTION}" in
       exit 1
     fi
     echo "Posting clarifying question..."
-    gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body "${COMMENT}"
+    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label..."
     add_label "needs-info"
@@ -80,8 +83,13 @@ case "${ACTION}" in
       echo "ERROR: action is 'duplicate' but no comment provided"
       exit 1
     fi
+    DUPLICATE_OF=$(jq -r '.duplicate_of' "${RESULT_FILE}")
+    if [[ "${DUPLICATE_OF}" -eq "${ISSUE_NUMBER}" ]]; then
+      echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})"
+      exit 1
+    fi
     echo "Posting duplicate notice..."
-    gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body "${COMMENT}"
+    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label and closing..."
     add_label "duplicate"
@@ -94,7 +102,7 @@ case "${ACTION}" in
       exit 1
     fi
     echo "Posting triage summary..."
-    gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body "${COMMENT}"
+    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label..."
     add_label "ready-to-code"

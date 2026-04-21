@@ -238,6 +238,9 @@ func (h *Harness) Validate() error {
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
 	}
+	if h.PostScript != "" && h.ValidationLoop == nil {
+		return fmt.Errorf("post_script requires validation_loop (ADR 0022: no unvalidated output may reach mutations)")
+	}
 	if err := h.validateSecurity(); err != nil {
 		return err
 	}
@@ -347,13 +350,13 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	return nil
 }
 
-// ValidateRunnerEnv checks that all ${VAR} references in RunnerEnv and
-// HostFiles.Src expand to non-empty values in the host environment.
-func (h *Harness) ValidateRunnerEnv() error {
+// ValidateRunnerEnvWith checks that all ${VAR} references in RunnerEnv and
+// HostFiles.Src expand to non-empty values using the provided expander function.
+func (h *Harness) ValidateRunnerEnvWith(expander func(string) string) error {
 	checkVarRefs := func(source, value string) error {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
-			if os.Getenv(varName) == "" {
+			if expander(varName) == "" {
 				return fmt.Errorf("%s: host variable %s is not set (referenced in %q)", source, varName, value)
 			}
 		}
@@ -371,6 +374,12 @@ func (h *Harness) ValidateRunnerEnv() error {
 		}
 	}
 	return nil
+}
+
+// ValidateRunnerEnv checks that all ${VAR} references in RunnerEnv and
+// HostFiles.Src expand to non-empty values in the host environment.
+func (h *Harness) ValidateRunnerEnv() error {
+	return h.ValidateRunnerEnvWith(os.Getenv)
 }
 
 // ValidateFilesExist checks that all file paths referenced by the harness
