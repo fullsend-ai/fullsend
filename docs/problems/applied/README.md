@@ -5,6 +5,8 @@ This directory contains organization-specific considerations for applying fullse
 ## Current consumers
 
 - **[konflux-ci](konflux-ci/)** — Kubernetes-native CI/CD platform. The original proving ground for fullsend.
+- **[red-hat-p-d](red-hat-p-d/)** — Red Hat Product & Delivery organization. Validating agentic SDLC model through    
+  Full Send team experiment.
 
 ## Adding a new consumer
 
