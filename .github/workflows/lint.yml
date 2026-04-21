@@ -38,3 +38,23 @@ jobs:
 
       - name: Run ADR linting
         run: make lint
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Run Vitest (admin SPA)
+        run: npm test
+
+      - name: Run svelte-check
+        run: npm run check

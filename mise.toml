@@ -1,0 +1,10 @@
+# Pin Node and Go for JS tooling and `make lint` / Go tests.
+# Activate: https://mise.jdx.dev/getting-started.html#activate-mise
+# First time in a clone/worktree: `mise trust` (see https://mise.jdx.dev/cli/trust.html).
+# Then `cd` into this repo; `node`, `npm`, and `go` come from mise.
+[tools]
+node = "22"
+go = "1.25.8"
+
+[env]
+_.file = ".env.local"

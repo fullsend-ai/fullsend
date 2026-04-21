@@ -9,6 +9,33 @@ compatibility_date = "2026-04-09"
 workers_dev = true
 preview_urls = true
 
+# Local dev: `npm run dev` sets CLOUDFLARE_INCLUDE_PROCESS_ENV so Wrangler reads `GITHUB_APP_*`
+# from the same process environment as Vite. Deployed/preview: set vars or secrets in Cloudflare / CI.
+
 [assets]
 directory = "./public"
 not_found_handling = "single-page-application"
+# With compatibility_date >= 2025-04-01, navigations (Sec-Fetch-Mode: navigate) skip the Worker by
+# default. Admin sign-in uses location.assign to GET /api/oauth/authorize — without this, that hop
+# is served as SPA fallback (/index.html) instead of the OAuth redirect. See:
+# https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/
+run_worker_first = ["/api/*"]
+
+# Native rate limits (Wrangler ≥ 4.36). namespace_id must be a string of a positive integer (Cloudflare docs).
+# Local dev: bases below. CI (site-deploy.yml): patch-wrangler-rate-limit-namespace-ids.mjs sets
+# top-level name = CLOUDFLARE_PROJECT_NAME (so wrangler secret bulk matches deploy --name) and
+# namespace_id = base + offset(sha256(CLOUDFLARE_PROJECT_NAME)) so different Worker names get different namespaces.
+# Limits are per key per Cloudflare location. Keys are path + IP.
+[[ratelimits]]
+name = "OAUTH_TOKEN_RATE_LIMITER"
+namespace_id = "482401"
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[ratelimits]]
+name = "GITHUB_USER_RATE_LIMITER"
+namespace_id = "482402"
+  [ratelimits.simple]
+  limit = 120
+  period = 60

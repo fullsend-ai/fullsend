@@ -30,6 +30,15 @@ jobs:
       # PR/fork Worker + static files ship in the Build Site artifact under _bundle/; we copy only public/ and worker/ (never extract TOML from the zip into cloudflare_site/).
       - uses: actions/checkout@v6.0.2
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install JS dependencies
+        run: npm ci
+
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
@@ -63,6 +72,11 @@ jobs:
           mkdir -p cloudflare_site/public cloudflare_site/worker
           cp -a _bundle/public/. cloudflare_site/public/
           cp -a _bundle/worker/. cloudflare_site/worker/
+
+      - name: Patch wrangler.toml for CI (worker name + rate limit namespaces)
+        env:
+          CLOUDFLARE_PROJECT_NAME: ${{ vars.CLOUDFLARE_PROJECT_NAME }}
+        run: node cloudflare_site/scripts/patch-wrangler-rate-limit-namespace-ids.mjs
 
       - name: Resolve preview context (PR number + preview alias)
         id: preview-context
@@ -113,18 +127,29 @@ jobs:
         if: github.event.workflow_run.event == 'push'
         uses: cloudflare/wrangler-action@v3.14.1
         with:
-          wranglerVersion: "4.30.0"
+          wranglerVersion: "4.36.0"
           workingDirectory: cloudflare_site
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy --name="${{ vars.CLOUDFLARE_PROJECT_NAME }}"
+          vars: |
+            GITHUB_APP_CLIENT_ID
+            TURNSTILE_SITE_KEY
+          secrets: |
+            GITHUB_APP_CLIENT_SECRET
+            TURNSTILE_SECRET_KEY
+        env:
+          GITHUB_APP_CLIENT_ID: ${{ vars.FULLSEND_GITHUB_APP_CLIENT_ID }}
+          GITHUB_APP_CLIENT_SECRET: ${{ secrets.FULLSEND_GITHUB_APP_CLIENT_SECRET }}
+          TURNSTILE_SITE_KEY: ${{ vars.FULLSEND_TURNSTILE_SITE_KEY }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.FULLSEND_TURNSTILE_SECRET_KEY }}
 
       - name: Upload preview version (Workers + static assets)
         id: cf-preview
         if: github.event.workflow_run.event == 'pull_request'
         uses: cloudflare/wrangler-action@v3.14.1
         with:
-          wranglerVersion: "4.30.0"
+          wranglerVersion: "4.36.0"
           workingDirectory: cloudflare_site
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -132,6 +157,17 @@ jobs:
             versions upload
             --name="${{ vars.CLOUDFLARE_PROJECT_NAME }}"
             --preview-alias ${{ steps.preview-context.outputs.preview_alias }}
+          vars: |
+            GITHUB_APP_CLIENT_ID
+            TURNSTILE_SITE_KEY
+          secrets: |
+            GITHUB_APP_CLIENT_SECRET
+            TURNSTILE_SECRET_KEY
+        env:
+          GITHUB_APP_CLIENT_ID: ${{ vars.FULLSEND_GITHUB_APP_CLIENT_ID }}
+          GITHUB_APP_CLIENT_SECRET: ${{ secrets.FULLSEND_GITHUB_APP_CLIENT_SECRET }}
+          TURNSTILE_SITE_KEY: ${{ vars.FULLSEND_TURNSTILE_SITE_KEY }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.FULLSEND_TURNSTILE_SECRET_KEY }}
 
       - name: Resolve deployment URL
         id: meta

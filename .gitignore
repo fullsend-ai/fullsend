@@ -1,3 +1,8 @@
+.env.local
+node_modules/
+web/admin/dist
+.dev.vars
+.wrangler
 .worktrees/
 __pycache__/
 *.pyc
@@ -6,3 +11,4 @@ __pycache__/
 _site/
 bin/
 .playwright/
+.vscode/
