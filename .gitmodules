@@ -1,0 +1,4 @@
+[submodule "experiments"]
+	path = experiments
+	url = git@github.com:fullsend-ai/experiments.git
+	branch = main
