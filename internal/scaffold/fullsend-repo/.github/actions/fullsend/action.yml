@@ -111,7 +111,7 @@ runs:
           --target-repo "${GITHUB_WORKSPACE}/target-repo"
 
     - name: Upload fullsend artifacts
-      if: inputs.agent != '__install_only__'
+      if: always() && inputs.agent != '__install_only__'
       uses: actions/upload-artifact@v7
       with:
         name: fullsend-${{ inputs.agent }}
