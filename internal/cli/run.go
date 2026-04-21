@@ -494,8 +494,8 @@ func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Har
 	// Agent and skill definitions go in CLAUDE_CONFIG_DIR so `claude --agent`
 	// finds them regardless of the repo's own .claude/ directory. When
 	// CLAUDE_CONFIG_DIR is set, Claude uses it instead of ~/.claude/.
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/hooks %s/bin %s/.env.d %s/.security %s",
-		sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s %s/bin %s/.env.d %s/.security %s",
+		sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, security.SandboxHooksDir, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig)
 	if _, _, _, err := sandbox.SSH(sshConfigPath, sandboxName, mkdirCmd, 10*time.Second); err != nil {
 		return fmt.Errorf("creating workspace dirs: %w", err)
 	}
@@ -817,7 +817,7 @@ func bootstrapSecurityHooks(sshConfigPath, sandboxName string, h *harness.Harnes
 		}
 		tmpFile.Close()
 
-		remotePath := fmt.Sprintf("%s/.claude/hooks/%s", sandbox.SandboxWorkspace, name)
+		remotePath := fmt.Sprintf("%s/%s", security.SandboxHooksDir, name)
 		if err := sandbox.SCP(sshConfigPath, sandboxName, tmpFile.Name(), remotePath); err != nil {
 			os.Remove(tmpFile.Name())
 			return fmt.Errorf("copying hook %s to sandbox: %w", name, err)
