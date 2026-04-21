@@ -44,7 +44,7 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui.Printer) error {
+func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui.Printer) (runErr error) {
 	printer.Banner()
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -233,7 +233,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
-				printer.StepWarn("Post-script failed: " + err.Error())
+				printer.StepFail("Post-script failed: " + err.Error())
+				if runErr == nil {
+					runErr = fmt.Errorf("post-script %s failed: %w", h.PostScript, err)
+				}
 			} else {
 				printer.StepDone(fmt.Sprintf("Post-script completed (%.1fs)", time.Since(postStart).Seconds()))
 			}
