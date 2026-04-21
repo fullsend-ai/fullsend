@@ -1,5 +1,5 @@
 ---
-title: "20. Harness-level output schema enforcement"
+title: "21. Harness-level output schema enforcement"
 status: Accepted
 relates_to:
   - security-threat-model
@@ -10,7 +10,7 @@ topics:
   - harness
 ---
 
-# 20. Harness-level output schema enforcement
+# 21. Harness-level output schema enforcement
 
 Date: 2026-04-15
 
