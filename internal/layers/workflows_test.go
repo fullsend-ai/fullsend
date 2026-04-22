@@ -112,7 +112,7 @@ func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
 	require.NoError(t, err)
 
 	// All scaffold files should have been created (CODEOWNERS excluded since it failed)
-	assert.Len(t, client.created, 27)
+	assert.Len(t, client.created, 28)
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
@@ -160,7 +160,7 @@ func TestWorkflowsLayer_Analyze_AllPresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Len(t, report.Details, 28)
+	assert.Len(t, report.Details, 29)
 }
 
 func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
@@ -174,7 +174,7 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusNotInstalled, report.Status)
-	assert.Len(t, report.WouldInstall, 28)
+	assert.Len(t, report.WouldInstall, 29)
 }
 
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
