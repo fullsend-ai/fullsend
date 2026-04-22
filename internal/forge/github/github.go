@@ -533,6 +533,46 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 	return data, nil
 }
 
+// DeleteFile deletes a file from the repository's default branch.
+// It first fetches the file to obtain its SHA (required by the GitHub Contents
+// API), then issues the DELETE. Retries on transient 404/409 errors.
+func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message string) error {
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
+
+	return c.retryOnTransient(ctx, path, func() error {
+		// GET the file to obtain its SHA.
+		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
+		if err != nil {
+			return fmt.Errorf("get file for delete: %w", err)
+		}
+		if err := checkStatus(existingResp, http.StatusOK); err != nil {
+			return fmt.Errorf("get file %s for delete: %w", path, err)
+		}
+
+		var existing struct {
+			SHA string `json:"sha"`
+		}
+		if err := decodeJSON(existingResp, &existing); err != nil {
+			return fmt.Errorf("decode file sha: %w", err)
+		}
+
+		payload := map[string]string{
+			"message": message,
+			"sha":     existing.SHA,
+		}
+
+		resp, err := c.do(ctx, http.MethodDelete, apiPath, payload)
+		if err != nil {
+			return fmt.Errorf("delete file %s: %w", path, err)
+		}
+		defer resp.Body.Close()
+		if err := checkStatus(resp, http.StatusOK); err != nil {
+			return fmt.Errorf("delete file %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
 // CreateBranch creates a new branch from the repository's default branch.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// Step 1: Get the default branch name.

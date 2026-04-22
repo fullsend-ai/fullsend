@@ -91,6 +91,7 @@ type Client interface {
 	CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 
 	// Branch operations
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error

@@ -75,6 +75,7 @@ type FakeClient struct {
 	CreatedBranches   []string // "owner/repo/branch"
 	CreatedProposals  []ChangeProposal
 	DeletedRepos      []string // "owner/repo"
+	DeletedFiles      []FileRecord
 	CreatedSecrets    []SecretRecord
 	Variables         []VariableRecord
 	DeletedOrgSecrets []string // "org/name"
@@ -264,6 +265,29 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
 	return data, nil
+}
+
+func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteFile"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + path
+	if _, ok := f.FileContents[key]; !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+
+	delete(f.FileContents, key)
+	f.DeletedFiles = append(f.DeletedFiles, FileRecord{
+		Owner:   owner,
+		Repo:    repo,
+		Path:    path,
+		Message: message,
+	})
+	return nil
 }
 
 func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName string) error {
