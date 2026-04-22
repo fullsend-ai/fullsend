@@ -175,12 +175,12 @@ this review and requires a new evaluation.
 
 Map the outcome to an action value:
 
-| Outcome            | Action              |
-|--------------------|---------------------|
-| approve            | `approve`           |
-| request-changes    | `request-changes`   |
-| comment-only       | `comment`           |
-| failure            | `failure`           |
+| Outcome            | Action              | Required fields                    |
+|--------------------|---------------------|------------------------------------|
+| approve            | `approve`           | `body`, `head_sha`                 |
+| request-changes    | `request-changes`   | `body`, `head_sha`, `findings[]`   |
+| comment-only       | `comment`           | `body`, `head_sha`                 |
+| failure            | `failure`           | `reason` (body optional)           |
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 
