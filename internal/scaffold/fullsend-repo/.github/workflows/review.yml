@@ -54,6 +54,12 @@ jobs:
             exit 1
           fi
 
+      - name: Extract target repo name
+        id: repo-parts
+        env:
+          SOURCE_REPO: ${{ inputs.source_repo }}
+        run: echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"
+
       - name: Generate sandbox token (read-only)
         id: sandbox-token
         uses: actions/create-github-app-token@v3
@@ -61,6 +67,7 @@ jobs:
           client-id: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
           private-key: ${{ secrets.FULLSEND_REVIEW_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo-parts.outputs.name }}
           permission-contents: read
           permission-pull-requests: read
           permission-issues: read
@@ -72,6 +79,7 @@ jobs:
           app-id: ${{ vars.FULLSEND_REVIEW_APP_ID }}
           private-key: ${{ secrets.FULLSEND_REVIEW_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo-parts.outputs.name }}
           permission-pull-requests: write
 
       - name: Checkout target repository
