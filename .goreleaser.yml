@@ -30,6 +30,28 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Refactoring
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
 
 release:
   github:
@@ -37,3 +59,9 @@ release:
     name: fullsend
   name_template: "{{ .Tag }}{{ if .TagSubject }}: {{ .TagSubject }}{{ end }}"
   prerelease: auto
+
+announce:
+  slack:
+    enabled: true
+    channel: "#fullsend-releases"
+    message_template: '{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}'
