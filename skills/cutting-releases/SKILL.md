@@ -42,7 +42,18 @@ Decide the next version following semver:
 | Bug fixes only | `v0.0.X` |
 | Release candidate | `v0.X.0-rc.N` |
 
-### 3. Ask for a tag subject
+### 3. Confirm the version with the user
+
+Use `AskUserQuestion` to present your proposed version tag and the rationale
+for your choice. For example:
+
+> I'd suggest `v0.2.0` — there are 5 new `feat:` commits since `v0.1.0` and
+> no breaking changes. Does that look right, or would you prefer a different
+> version?
+
+Do not proceed until the user confirms.
+
+### 4. Ask for a tag subject
 
 Use `AskUserQuestion` to ask:
 
@@ -52,7 +63,7 @@ Use `AskUserQuestion` to ask:
 The answer becomes the tag subject line. If blank, the tag message is just the
 version number.
 
-### 4. Gather changes since last tag
+### 5. Gather changes since last tag
 
 ```
 git log --oneline <previous-tag>..HEAD
@@ -62,11 +73,11 @@ Summarize the changes into categories (features, fixes, refactors). Exclude
 commits that start with `docs:`, `test:`, or `chore:` — GoReleaser filters
 these from the changelog anyway.
 
-### 5. Create the annotated tag
+### 6. Create the annotated tag
 
 Build the tag message:
 
-- **Line 1 (subject):** The tag subject from step 3, or just the version.
+- **Line 1 (subject):** The tag subject from step 4, or just the version.
 - **Lines 3+:** Summary of highlights organized by category.
 
 ```
@@ -76,7 +87,7 @@ git tag -a v0.X.0 -m "<message>"
 The first line of the annotation flows into the GitHub release title via
 GoReleaser's `name_template: "{{ .Tag }}{{ if .TagSubject }}: {{ .TagSubject }}{{ end }}"`.
 
-### 6. Push the tag
+### 7. Push the tag
 
 ```
 git push origin <tag>
@@ -88,7 +99,7 @@ GoReleaser takes over from here. Verify the workflow starts:
 gh run list --workflow=release.yml --limit=1
 ```
 
-### 7. Verify the release
+### 8. Verify the release
 
 Once the workflow completes, confirm the release was created:
 
