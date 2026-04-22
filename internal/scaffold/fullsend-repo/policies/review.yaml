@@ -20,22 +20,7 @@ network_policies:
   vertex_ai:
     name: vertex-ai
     endpoints:
-      - host: "us-east5-aiplatform.googleapis.com"
-        port: 443
-        protocol: tcp
-        enforcement: enforce
-        access: allow
-      - host: "oauth2.googleapis.com"
-        port: 443
-        protocol: tcp
-        enforcement: enforce
-        access: allow
-      - host: "www.googleapis.com"
-        port: 443
-        protocol: tcp
-        enforcement: enforce
-        access: allow
-      - host: "iamcredentials.googleapis.com"
+      - host: "*.googleapis.com"
         port: 443
         protocol: tcp
         enforcement: enforce
