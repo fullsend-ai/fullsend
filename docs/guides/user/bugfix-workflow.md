@@ -1,6 +1,6 @@
 # Bugfix workflow
 
-How fullsend handles a bug report from issue creation to merged fix, end to end. This guide is for developers working in a repo where fullsend is [installed and enrolled](../admin/installing-fullsend.md).
+How fullsend handles a bug report from issue creation to merged fix, end to end. This guide is for developers working in a repo where fullsend is [installed and enrolled](../admin/installation.md).
 
 ## Overview
 
@@ -161,5 +161,5 @@ Fullsend does not lock you out. The labels are the state machine, and you have f
 
 - [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) — initial fullsend design (full workflow specification)
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
-- [Installing fullsend](../admin/installing-fullsend.md) — prerequisite: admin setup guide
+- [Installing fullsend](../admin/installation.md) — prerequisite: admin setup guide
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security
