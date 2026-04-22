@@ -1,0 +1,115 @@
+site_name: Fullsend
+site_description: Fully autonomous agentic software development for GitHub-hosted organizations
+repo_url: https://github.com/fullsend-ai/fullsend
+repo_name: fullsend-ai/fullsend
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Vision: vision.md
+  - Architecture: architecture.md
+  - Roadmap: roadmap.md
+  - Landscape: landscape.md
+  - Glossary: glossary.md
+  - Problems:
+      - Intent Representation: problems/intent-representation.md
+      - Security Threat Model: problems/security-threat-model.md
+      - Agent Architecture: problems/agent-architecture.md
+      - Agent Infrastructure: problems/agent-infrastructure.md
+      - Autonomy Spectrum: problems/autonomy-spectrum.md
+      - Governance: problems/governance.md
+      - Repo Readiness: problems/repo-readiness.md
+      - Code Review: problems/code-review.md
+      - Architectural Invariants: problems/architectural-invariants.md
+      - Agent-Compatible Code: problems/agent-compatible-code.md
+      - Codebase Context: problems/codebase-context.md
+      - Downstream/Upstream: problems/downstream-upstream.md
+      - Human Factors: problems/human-factors.md
+      - Contributor Guidance: problems/contributor-guidance.md
+      - Contribution Volume: problems/contribution-volume.md
+      - Performance Verification: problems/performance-verification.md
+      - Production Feedback: problems/production-feedback.md
+      - Testing the Agents: problems/testing-agents.md
+      - Operational Observability: problems/operational-observability.md
+      - Applied:
+          - Overview: problems/applied/README.md
+          - Konflux CI: problems/applied/konflux-ci/README.md
+  - Architecture Decision Records:
+      - ADRs/0000-adr-template.md
+      - ADRs/0001-use-adrs-for-decision-making.md
+      - ADRs/0002-initial-fullsend-design.md
+      - ADRs/0003-org-config-repo-convention.md
+      - ADRs/0004-go-as-implementation-language.md
+      - ADRs/0005-forge-abstraction-layer.md
+      - ADRs/0006-ordered-layer-model.md
+      - ADRs/0007-per-role-github-apps.md
+      - ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md
+      - ADRs/0009-pull-request-target-in-shim-workflows.md
+      - ADRs/0010-stored-session-for-e2e-browser-auth.md
+      - ADRs/0011-admin-install-org-config-yaml-v1.md
+      - ADRs/0012-admin-install-fullsend-repo-files-v1.md
+      - ADRs/0013-admin-install-repo-enrollment-v1.md
+      - ADRs/0014-admin-install-github-apps-secrets-v1.md
+      - ADRs/0015-normative-specifications-directory.md
+      - ADRs/0016-unidirectional-control-flow.md
+      - ADRs/0017-credential-isolation-for-sandboxed-agents.md
+      - ADRs/0018-scripted-pipeline-for-multi-agent-orchestration.md
+      - ADRs/0019-web-source-and-cloudflare-site-layout.md
+      - ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md
+      - ADRs/0021-jsonl-reasoning-trace-exposure.md
+      - ADRs/0022-harness-level-output-schema-enforcement.md
+  - Normative Specs:
+      - Org Config YAML: normative/admin-install/v1/adr-0011-org-config-yaml/SPEC.md
+      - Fullsend Repo Files: normative/admin-install/v1/adr-0012-fullsend-repo-files/SPEC.md
+      - Enrollment: normative/admin-install/v1/adr-0013-enrollment/SPEC.md
+      - GitHub Apps & Secrets: normative/admin-install/v1/adr-0014-github-apps-and-secrets/SPEC.md
+  - Plans:
+      - ADR46 Drift Scanner: plans/2026-03-06-adr46-drift-scanner.md
+      - Retro Feedback Loop: plans/retro-feedback-loop.md
+      - Vertex Inference Provisioning: plans/vertex-inference-provisioning.md
+  - Design Specs:
+      - Site Cloudflare Pages: superpowers/plans/2026-04-09-site-cloudflare-pages.md
+      - Admin SPA Design: superpowers/specs/2026-04-06-fullsend-admin-spa-design.md
+      - Site Cloudflare Pages Design: superpowers/specs/2026-04-09-site-cloudflare-pages-design.md
+      - Installer Agent Content: superpowers/specs/2026-04-17-installer-agent-content-design.md
+      - Enrollment Reconciliation: superpowers/specs/2026-04-18-enrollment-reconciliation-design.md
+  - Operations:
+      - Site Deployment: site-deployment.md

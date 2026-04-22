@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap lint lint-all check fmt \
-       mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
+       docs-serve mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        script-test test \
        e2e-test e2e-playwright e2e-export-session e2e-upload-session
 
@@ -12,6 +12,7 @@ help:
 	@echo "  lint-all             - Run linting on all files"
 	@echo "  check                - Run ruff and ty checks on Python"
 	@echo "  fmt                  - Format Python code with ruff"
+	@echo "  docs-serve           - Serve the documentation site locally (MkDocs)"
 	@echo "  mindmap              - Open the interactive document graph in a browser"
 	@echo "  go-build             - Build the fullsend binary"
 	@echo "  go-test              - Run Go tests with race detection and coverage"
@@ -68,6 +69,9 @@ check:
 
 fmt:
 	uvx ruff format .
+
+docs-serve:
+	uvx --with mkdocs-material mkdocs serve
 
 mindmap:
 	@xdg-open web/public/index.html 2>/dev/null || open web/public/index.html 2>/dev/null || echo "Open web/public/index.html in your browser"

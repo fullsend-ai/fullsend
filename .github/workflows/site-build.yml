@@ -20,15 +20,23 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MkDocs
+        run: pip install mkdocs-material
+
+      - name: Build documentation site
+        run: mkdocs build --strict
+
       - name: Prepare deploy bundle
         run: |
           set -euo pipefail
           mkdir -p _bundle/public
-          # Static tree → artifact public/ (Deploy copies only _bundle/public and _bundle/worker into cloudflare_site/).
-          # Root page: interactive graph (source of truth: web/public/index.html).
-          # When a Vite app exists under web/, extend this step (e.g. _bundle/public/admin/).
-          cp web/public/index.html _bundle/public/index.html
-          # Worker source from this checkout (PR head on PR builds) — deploy never clones PR for Wrangler; only this tree is untrusted.
+          # MkDocs output → artifact public/ (graph viz included via docs/map/ symlink)
+          cp -a site/. _bundle/public/
+          # Worker source from this checkout (PR head on PR builds).
           mkdir -p _bundle/worker
           cp -a cloudflare_site/worker/. _bundle/worker/
 
