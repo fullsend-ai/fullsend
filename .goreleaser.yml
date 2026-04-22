@@ -36,3 +36,4 @@ release:
     owner: fullsend-ai
     name: fullsend
   name_template: "{{ .Tag }}{{ if .TagSubject }}: {{ .TagSubject }}{{ end }}"
+  prerelease: auto
