@@ -15,6 +15,8 @@
 
 set -euo pipefail
 
+echo "::notice::🔗 Triage target: ${GITHUB_ISSUE_URL}"
+
 if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
   echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
   exit 1

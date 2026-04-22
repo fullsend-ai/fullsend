@@ -34,6 +34,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/pre-triage.sh",
 		"scripts/scan-secrets",
 		"scripts/pre-code.sh",
+		"scripts/pre-review.sh",
 		"scripts/post-code.sh",
 		"scripts/reconcile-repos.sh",
 		"scripts/validate-output-schema.sh",
@@ -64,7 +65,7 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 27, "expected at least 27 files, got %d", len(paths))
+	assert.True(t, len(paths) >= 28, "expected at least 28 files, got %d", len(paths))
 }
 
 func TestTriageWorkflowContent(t *testing.T) {

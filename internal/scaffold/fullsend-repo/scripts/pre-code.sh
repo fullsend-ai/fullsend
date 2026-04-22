@@ -10,6 +10,8 @@
 #   GITHUB_ISSUE_URL   — must be a valid GitHub issue URL
 set -euo pipefail
 
+echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
+
 errors=0
 
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then

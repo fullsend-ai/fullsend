@@ -7,6 +7,8 @@ skills:
   - skills/pr-review
   - skills/code-review
 
+pre_script: scripts/pre-review.sh
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /tmp/workspace/.env.d/gcp-vertex.env
@@ -29,6 +31,7 @@ runner_env:
   REVIEW_TOKEN: "${REVIEW_TOKEN}"
   REPO_FULL_NAME: "${REPO_FULL_NAME}"
   PR_NUMBER: "${PR_NUMBER}"
+  GITHUB_PR_URL: "${GITHUB_PR_URL}"
   FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/review-result.schema.json
 
 timeout_minutes: 20
