@@ -81,11 +81,15 @@ use warnings;
 use Encode qw(decode FB_CROAK);
 
 my @checks = (
-  ["tag-character",      qr/[\x{E0000}-\x{E007F}]/],
-  ["zero-width",         qr/[\x{200B}-\x{200D}\x{FEFF}]/],
-  ["bidi-override",      qr/[\x{202A}-\x{202E}]/],
-  ["bidi-isolate",       qr/[\x{2066}-\x{2069}]/],
-  ["invisible-operator", qr/[\x{2060}-\x{2064}]/],
+  ["tag-character",        qr/[\x{E0000}-\x{E007F}]/],
+  ["zero-width",           qr/[\x{200B}-\x{200D}\x{FEFF}]/],
+  ["soft-hyphen",          qr/[\x{00AD}]/],
+  ["bidi-override",        qr/[\x{202A}-\x{202E}]/],
+  ["bidi-isolate",         qr/[\x{2066}-\x{2069}]/],
+  ["invisible-operator",   qr/[\x{2060}-\x{2064}]/],
+  ["variation-selector",   qr/[\x{FE00}-\x{FE0F}]/],
+  ["ansi-escape",          qr/\x{1B}\[[0-9;]*[a-zA-Z]/],
+  ["null-byte",            qr/\x{00}/],
 );
 
 for my $file (@ARGV) {
