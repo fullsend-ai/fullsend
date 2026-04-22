@@ -49,6 +49,7 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/triage.yml")
 	assert.Contains(t, paths, ".github/workflows/code.yml")
 	assert.Contains(t, paths, ".github/workflows/review.yml")
+	assert.Contains(t, paths, ".github/workflows/fix.yml")
 	assert.Contains(t, paths, ".github/workflows/repo-maintenance.yml")
 	assert.Contains(t, paths, "CODEOWNERS")
 
@@ -111,8 +112,9 @@ func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
 	// Install should succeed even though CODEOWNERS write failed
 	require.NoError(t, err)
 
-	// All scaffold files should have been created (CODEOWNERS excluded since it failed)
-	assert.Len(t, client.created, 36)
+	// All scaffold files should have been created (CODEOWNERS excluded since it failed).
+	// Count = managedFiles - 1 (CODEOWNERS).
+	assert.Len(t, client.created, len(managedFiles)-1)
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
@@ -160,7 +162,7 @@ func TestWorkflowsLayer_Analyze_AllPresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Len(t, report.Details, 37)
+	assert.Len(t, report.Details, len(managedFiles))
 }
 
 func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
@@ -174,7 +176,7 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusNotInstalled, report.Status)
-	assert.Len(t, report.WouldInstall, 37)
+	assert.Len(t, report.WouldInstall, len(managedFiles))
 }
 
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {

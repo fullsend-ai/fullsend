@@ -84,7 +84,9 @@ jobs:
         github.event.comment.body == '/review' ||
         startsWith(github.event.comment.body, '/review ')
       )) ||
-      github.event_name == 'pull_request_target'
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'pull_request_review'
+        && github.event.review.state != 'changes_requested')
     steps:
       - name: Dispatch review
         env:
@@ -99,3 +101,62 @@ jobs:
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
+
+  dispatch-fix-bot:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fix-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    if: >-
+      github.event_name == 'pull_request_review'
+        && github.event.review.state == 'changes_requested'
+        && endsWith(github.event.review.user.login, '[bot]')
+        && github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+    steps:
+      - name: Dispatch fix (bot-triggered)
+        env:
+          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
+          EVENT_PAYLOAD: ${{ toJSON(github.event) }}
+          EVENT_TYPE: ${{ github.event_name }}
+          SOURCE_REPO: ${{ github.repository }}
+          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+        run: |
+          gh workflow run fix.yml \
+            --repo "$DISPATCH_REPO" \
+            --field event_type="$EVENT_TYPE" \
+            --field source_repo="$SOURCE_REPO" \
+            --field event_payload="$EVENT_PAYLOAD" \
+            --field trigger_source="bot"
+
+  dispatch-fix-human:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fix-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    if: >-
+      github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && (
+          github.event.comment.body == '/fix'
+          || startsWith(github.event.comment.body, '/fix ')
+        )
+        && (
+          github.event.comment.author_association == 'OWNER'
+          || github.event.comment.author_association == 'MEMBER'
+          || github.event.comment.author_association == 'COLLABORATOR'
+        )
+    steps:
+      - name: Dispatch fix (human-triggered)
+        env:
+          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
+          EVENT_PAYLOAD: ${{ toJSON(github.event) }}
+          EVENT_TYPE: ${{ github.event_name }}
+          SOURCE_REPO: ${{ github.repository }}
+          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+        run: |
+          gh workflow run fix.yml \
+            --repo "$DISPATCH_REPO" \
+            --field event_type="$EVENT_TYPE" \
+            --field source_repo="$SOURCE_REPO" \
+            --field event_payload="$EVENT_PAYLOAD" \
+            --field trigger_source="human"
