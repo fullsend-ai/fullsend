@@ -60,8 +60,8 @@ release:
   name_template: "{{ .Tag }}{{ if .TagSubject }}: {{ .TagSubject }}{{ end }}"
   prerelease: auto
 
-announce:
-  slack:
-    enabled: true
-    channel: "#forum-konflux-fullsend"
-    message_template: '{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}'
+# announce:
+#   slack:
+#     enabled: true
+#     channel: "#forum-konflux-fullsend"
+#     message_template: '{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}'
