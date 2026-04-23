@@ -271,6 +271,195 @@ ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinato
 Traceability layer across issue, **Triage**, **Code**, **Review**, checks, and merge for incident response and correlation across automation runs.
 ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observability).
 
+## Runtime execution flow
+
+The diagrams below show the runtime path from event to completed agent task. The installer, admin CLI, and enrollment machinery are not shown — only what happens when an agent actually runs.
+
+The architecture is a set of concentric layers, each wrapping the next:
+
+```
+Dispatcher → Agent Runner → Sandbox → Agent Runtime → LLM
+```
+
+Each outer layer configures and constrains the layer inside it. No inner layer can modify an outer layer. Credentials exist only in the outermost layers and never cross the sandbox boundary inward.
+
+### Abstract model
+
+This diagram is platform-agnostic. It uses a nested-box layout to show the concentric wrapping structure: each layer wraps the one inside it, and control flows inward (setup), then outward (teardown and delivery). No specific SCM, CI system, sandbox runtime, or LLM is named.
+
+```
+event ──► DISPATCHER
+          Filters event, selects agent role, dispatches run
+                │
+                ▼
+          ╔═══════════════════════════════════════════════════════╗
+          ║ AGENT RUNNER                                          ║
+          ║                                                       ║
+          ║ Loads harness definition for agent role:              ║
+          ║   agent prompt, sandbox image, network policy,        ║
+          ║   skills, pre/post scripts, validation config,        ║
+          ║   output schema, host files, env vars                 ║
+          ║                                                       ║
+          ║ Runs pre-script on host:                              ║
+          ║   validate inputs, prefetch data                      ║
+          ║                                                       ║
+          ║ ┌───────────────────────────────────────────────────┐ ║
+          ║ │ SANDBOX (ephemeral, per-run)                      │ ║
+          ║ │                                                   │ ║
+          ║ │ Created with image + network policy.              │ ║
+          ║ │ Bootstrapped with agent def, skills, repo code,   │ ║
+          ║ │ env vars, host files, security hooks.             │ ║
+          ║ │ No credentials present inside this boundary.      │ ║
+          ║ │                                                   │ ║
+          ║ │ Pre-agent security scan (context injection).      │ ║
+          ║ │                                                   │ ║
+          ║ │ ┌───────────────────────────────────────────────┐ │ ║
+          ║ │ │ AGENT RUNTIME                                 │ │ ║
+          ║ │ │                                               │ │ ║
+          ║ │ │ LLM tool-use loop:                            │ │ ║
+          ║ │ │   read code, edit files, run tests, iterate   │ │ ║
+          ║ │ │                                               │ │ ║
+          ║ │ │ Boundaries enforced by enclosing sandbox:     │ │ ║
+          ║ │ │   network policy, security hooks,             │ │ ║
+          ║ │ │   no credentials, filesystem restrictions     │ │ ║
+          ║ │ │                                               │ │ ║
+          ║ │ │ Produces: modified repo, output artifacts     │ │ ║
+          ║ │ └───────────────────────────────────────────────┘ │ ║
+          ║ │                                                   │ ║
+          ║ └───────────────────────────────────────────────────┘ ║
+          ║                                                       ║
+          ║ Extracts from destroyed sandbox:                      ║
+          ║   output files, reasoning transcripts, modified repo  ║
+          ║                                                       ║
+          ║ Post-agent security scan (redact secrets from output) ║
+          ║                                                       ║
+          ║ Validation loop (if configured):                      ║
+          ║   schema check on host                                ║
+          ║   ├─ pass: continue                                   ║
+          ║   ├─ fail + retries remain: re-run agent w/ feedback  ║
+          ║   └─ fail + retries exhausted: HARD FAILURE           ║
+          ║     (no unvalidated output emitted)                   ║
+          ║                                                       ║
+          ║ Runs post-script on host (outside sandbox):           ║
+          ║   push code, create PR, post comments, apply labels   ║
+          ║                                                       ║
+          ╚═══════════════════════════════════════════════════════╝
+                │
+                ▼
+          Results applied to external system
+```
+
+**Key invariants visible in this layout:**
+
+- **Credentials never cross the sandbox boundary.** They exist in the agent runner layer; the sandbox and everything inside it operate without them.
+- **Control flows inward (setup) then outward (teardown).** The harness configures the sandbox; the sandbox constrains the runtime. No inner layer can modify an outer layer.
+- **Validation gates output.** When configured, no unvalidated output crosses from runner to external system. Exhausted retries are a hard failure, not a fallback.
+- **The sandbox is ephemeral.** Created per-run, destroyed after extraction. No state carries between runs.
+
+### MVP embodiment: GitHub + GitHub Actions + OpenShell + Claude Code
+
+The same wrapping structure, with each layer mapped to its concrete technology.
+
+```
+GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
+                 Evaluates dispatch conditions (event type, labels, /slash commands).
+                 Sends workflow_dispatch to .fullsend repo via FULLSEND_DISPATCH_TOKEN.
+                       │
+                       ▼
+                 ╔═══════════════════════════════════════════════════════════════╗
+                 ║ GITHUB ACTIONS JOB (.fullsend repo, e.g. code.yml)            ║
+                 ║                                                               ║
+                 ║ Validates source repo is enrolled in config.yaml.             ║
+                 ║ Generates scoped GitHub App tokens:                           ║
+                 ║   read-only token → enters sandbox (clone, read issues)       ║
+                 ║   read-write token → stays on runner (push, create PR)        ║
+                 ║ Checks out .fullsend repo + target repo.                      ║
+                 ║                                                               ║
+                 ║ ┌───────────────────────────────────────────────────────────┐ ║
+                 ║ │ FULLSEND CLI (fullsend run code)                          │ ║
+                 ║ │                                                           │ ║
+                 ║ │ Loads harness/code.yaml:                                  │ ║
+                 ║ │   agent: agents/code.md                                   │ ║
+                 ║ │   image: ghcr.io/fullsend-ai/fullsend-code:latest         │ ║
+                 ║ │   policy: policies/code.yaml                              │ ║
+                 ║ │   skills: [skills/code-implementation]                    │ ║
+                 ║ │   pre_script: scripts/pre-code.sh                         │ ║
+                 ║ │   post_script: scripts/post-code.sh                       │ ║
+                 ║ │                                                           │ ║
+                 ║ │ Pre-script: validates ISSUE_NUMBER, REPO_FULL_NAME,       │ ║
+                 ║ │ URL consistency.                                          │ ║
+                 ║ │                                                           │ ║
+                 ║ │ ┌───────────────────────────────────────────────────────┐ │ ║
+                 ║ │ │ OPENSHELL SANDBOX                                     │ │ ║
+                 ║ │ │                                                       │ │ ║
+                 ║ │ │ Created with --from image, --policy code.yaml.        │ │ ║
+                 ║ │ │ Bootstrapped via SCP/SSH:                             │ │ ║
+                 ║ │ │   agent def    → /tmp/claude-config/agents/           │ │ ║
+                 ║ │ │   skills       → /tmp/claude-config/skills/           │ │ ║
+                 ║ │ │   .env, host files (GCP creds), security hooks        │ │ ║
+                 ║ │ │   target repo  → /tmp/workspace/target-repo/          │ │ ║
+                 ║ │ │                                                       │ │ ║
+                 ║ │ │ Network policy enforced (L7, per-binary):             │ │ ║
+                 ║ │ │   Vertex AI     → claude, node only                   │ │ ║
+                 ║ │ │   GitHub API    → gh, git only                        │ │ ║
+                 ║ │ │   Pkg registries → npm, pip, go                       │ │ ║
+                 ║ │ │                                                       │ │ ║
+                 ║ │ │ Pre-agent scan: fullsend scan context                 │ │ ║
+                 ║ │ │ (injection detection on CLAUDE.md, AGENTS.md, etc.)   │ │ ║
+                 ║ │ │                                                       │ │ ║
+                 ║ │ │ ┌───────────────────────────────────────────────────┐ │ │ ║
+                 ║ │ │ │ CLAUDE CODE (claude --agent code)                 │ │ │ ║
+                 ║ │ │ │                                                   │ │ │ ║
+                 ║ │ │ │ Tool-use loop:                                    │ │ │ ║
+                 ║ │ │ │   read files, edit code, run tests, iterate       │ │ │ ║
+                 ║ │ │ │                                                   │ │ │ ║
+                 ║ │ │ │ Model: Opus (via Vertex AI)                       │ │ │ ║
+                 ║ │ │ │ Security hooks active: Tirith, SSRF, secret scan  │ │ │ ║
+                 ║ │ │ │ No credentials in environment.                    │ │ │ ║
+                 ║ │ │ │                                                   │ │ │ ║
+                 ║ │ │ │ Produces: modified repo, output artifacts         │ │ │ ║
+                 ║ │ │ └───────────────────────────────────────────────────┘ │ │ ║
+                 ║ │ │                                                       │ │ ║
+                 ║ │ └───────────────────────────────────────────────────────┘ │ ║
+                 ║ │                                                           │ ║
+                 ║ │ Extracts from destroyed sandbox:                          │ ║
+                 ║ │   /tmp/workspace/output/, JSONL transcripts,              │ ║
+                 ║ │   rsync repo back (--no-links, exclude .git/hooks/)       │ ║
+                 ║ │                                                           │ ║
+                 ║ │ Post-agent secret scan (redact from extracted output).    │ ║
+                 ║ │                                                           │ ║
+                 ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN):      │ ║
+                 ║ │   1. Verify feature branch (not main/master)              │ ║
+                 ║ │   2. Protected-path check                                 │ ║
+                 ║ │   3. gitleaks secret scan                                 │ ║
+                 ║ │   4. pre-commit hooks                                     │ ║
+                 ║ │   5. git push --force-with-lease                          │ ║
+                 ║ │   6. Create/update PR with ready-for-review label         │ ║
+                 ║ │                                                           │ ║
+                 ║ └───────────────────────────────────────────────────────────┘ ║
+                 ║                                                               ║
+                 ║ Upload artifacts (fullsend-code)                              ║
+                 ╚═══════════════════════════════════════════════════════════════╝
+                       │
+                       ▼
+                 Branch pushed, PR created with ready-for-review label
+```
+
+**Layer mapping (abstract → MVP):**
+
+| Abstract layer | MVP technology | ADR |
+|---|---|---|
+| Dispatcher | Shim workflow (`fullsend.yml`) in enrolled repo → `workflow_dispatch` to `.fullsend` | [ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md) |
+| Agent runner | GitHub Actions job → `fullsend run` CLI (via `.github/actions/fullsend` composite action) | |
+| Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
+| Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
+| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`) | |
+| Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
+| Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
+| Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |
+| Post-script | `post-code.sh`: protected-path check, gitleaks scan, pre-commit, push, PR creation | |
+| Observability | JSONL transcript extraction, security findings, trace ID correlation | [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md) |
+
 ## Repository layout (design workspace vs. web delivery)
 
 The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source and future bundled UI live under **`web/`** (the interactive document graph is `web/public/index.html` at `/`). Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
