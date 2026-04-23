@@ -28,6 +28,7 @@ func TestAgentAppConfig_Fullsend(t *testing.T) {
 	assert.Equal(t, "read", cfg.Permissions.Checks)
 	assert.Equal(t, "write", cfg.Permissions.Administration)
 	assert.Equal(t, "read", cfg.Permissions.Members)
+	assert.Equal(t, "write", cfg.Permissions.OrganizationSecrets)
 
 	assert.Contains(t, cfg.Events, "issues")
 	assert.Contains(t, cfg.Events, "push")
