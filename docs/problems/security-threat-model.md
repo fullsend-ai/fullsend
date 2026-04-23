@@ -68,6 +68,65 @@ The attack surface is the same as for visible prompt injection — PR descriptio
 - Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass? Stripping at ingestion is simpler but risks breaking legitimate internationalized content. A detection pass preserves the original but requires every agent to handle invisible content correctly.
 - How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use?
 
+### Attack vector: Agent configuration shadowing
+
+A particularly dangerous form of prompt injection that operates through the agent runtime's own configuration resolution rather than through content the agent parses as untrusted input.
+
+#### How it works
+
+Modern agent runtimes (OpenCode, Claude Code, and tools following the [Agent Skills](https://agentskills.io) standard) load configuration — skills, rules files, custom commands — from multiple filesystem locations and merge them. When a name collision occurs, the runtime resolves it using a priority order. In many runtimes, project-local files take precedence over global ones:
+
+| Runtime | Resolution order (highest priority first) |
+|---|---|
+| OpenCode | Project (`.opencode/skills/`) > Global (`~/.config/opencode/skills/`) > Plugin |
+| Claude Code | Enterprise > Personal (`~/.claude/skills/`) > Project (`.claude/skills/`) > Plugin (namespaced) |
+
+OpenCode also searches `.claude/skills/` and `.agents/skills/` for cross-tool compatibility, widening the attack surface.
+
+If the agent harness installs trusted skills at the global scope (e.g. review checklists, security policies, approval criteria), an attacker who can place a file in the project-local scope with the same skill name can **shadow the trusted version**. The runtime silently loads the attacker's version instead.
+
+This is not limited to skills. The same class of attack applies to any agent configuration that the runtime resolves with project-local-wins-over-global semantics:
+
+- **Skills** (`.opencode/skills/`, `.claude/skills/`, `.agents/skills/`) — the most structured and well-documented vector
+- **Rules files** (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`) — can override behavioral instructions
+- **Custom commands** (`.claude/commands/`, `.opencode/commands/`) — can redefine slash commands the agent or user invokes
+- **Runtime configuration** (`.opencode/config`, settings files) — can alter model selection, tool permissions, or other runtime behavior
+
+#### Why it's worse than content-level prompt injection
+
+In a typical prompt injection, the attacker's payload is embedded in content (a PR description, a code comment, a commit message) that the agent processes as *data*. Defenses like input sanitization, spotlighting (marking data boundaries), and sandwiching (repeating instructions around untrusted content) operate on this boundary between instructions and data.
+
+Configuration shadowing bypasses all of these defenses because the malicious content never passes through the data channel. It arrives through the **trusted configuration channel** — the same mechanism that loads the agent's legitimate instructions. The runtime hands the attacker's instructions to the agent as authoritative system-level guidance. No sanitization is applied. No data/instruction boundary exists to enforce. The agent follows the shadowed configuration because that is exactly what the runtime told it to do.
+
+A shadowed review skill could, for example:
+- Weaken approval criteria so marginal changes pass review
+- Add exceptions for specific file patterns or authors
+- Omit security checks that the trusted version requires
+- Subtly alter the agent's interpretation of what constitutes a "passing" review
+
+#### Concrete example: skill shadowing in OpenCode
+
+An agent harness installs a trusted review skill at `~/.config/opencode/skills/code-review/SKILL.md` that enforces security checks. An attacker submits a PR that includes `.opencode/skills/code-review/SKILL.md` with a modified version that omits the security checks. When the agent processes the PR, OpenCode's skill discovery loads the project-local version (higher priority), and the agent reviews the PR using the attacker's weakened criteria — without any indication that the trusted skill was overridden.
+
+Claude Code's priority order (personal > project) makes it less vulnerable to this specific attack for personal skills, but its enterprise tier creates an analogous risk: a personal skill could shadow an enterprise-mandated one if the resolution logic has gaps. Plugin skills in Claude Code are namespaced (`plugin:skill`), which avoids shadowing entirely for that tier.
+
+#### Defense: pre-flight integrity checks in the agent harness
+
+The mitigation must operate **outside the agent process**, in the harness or sandbox layer, before the agent runtime launches. By the time the agent loads a shadowed skill, it is already executing attacker-controlled instructions.
+
+The harness should:
+
+1. **Enumerate trusted configuration** — catalog all skills, rules files, and commands installed at the global/harness scope
+2. **Scan the target repository** — before launching the agent, inspect the repo checkout for any project-local configuration files in the paths the runtime will search (`.opencode/skills/`, `.claude/skills/`, `.agents/skills/`, `AGENTS.md` in unexpected locations, etc.)
+3. **Detect conflicts** — if any project-local configuration name matches a trusted global name, **abort and flag** the conflict. Do not launch the agent.
+4. **Consider flagging all project-local agent config** — even non-conflicting project-local skills are worth scrutiny, since they inject arbitrary instructions into the agent's context. A repo that isn't expected to carry agent configuration but suddenly does may indicate an attack.
+
+This is a direct application of cross-cutting principle 6 (immutable agent policy): the agent's instructions must not be modifiable through the channels it operates on. A PR is such a channel. Skill files in a PR are agent instructions delivered through that channel.
+
+#### Relationship to Threat 5 (agent-to-agent injection)
+
+If a compromised implementation agent submits a PR that includes shadowed skill files, and a review agent processes that PR, the skill shadowing becomes an agent-to-agent injection vector. The implementation agent's output (the PR content) manipulates the review agent's behavior not through the review content itself, but through the review agent's own configuration loading. This is why zero trust between agents (principle 3) must extend to the filesystem state of the repositories agents operate on — not just to the textual content of PRs and comments.
+
 ## Threat 2: Insider threat / compromised credentials
 
 ### The attack
