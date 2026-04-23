@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# lint-broken-symlinks - Find and report broken symlinks in the repository
+#
+# This script checks for symlinks that point to non-existent targets.
+# Broken symlinks can cause issues with tools like scp, tar, and git operations.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+error() { echo "ERROR: $1" >&2; }
+success() { echo "OK: $1"; }
+info() { echo "INFO: $1"; }
+
+cd "$REPO_ROOT"
+
+info "Checking for broken symlinks..."
+
+# Check only tracked symlinks (git mode 120000) to avoid false positives
+# from development artifacts in .venv/, bin/, etc.
+broken_symlinks=()
+while IFS= read -r symlink; do
+    if [[ ! -e "$symlink" ]]; then
+        target=$(readlink "$symlink")
+        broken_symlinks+=("$symlink -> $target")
+    fi
+done < <(git ls-files -s | awk '$1 == "120000" {print $4}')
+
+if [[ ${#broken_symlinks[@]} -eq 0 ]]; then
+    success "No broken symlinks found"
+    exit 0
+fi
+
+echo "========================"
+echo "Broken symlinks found:"
+echo "========================"
+for symlink in "${broken_symlinks[@]}"; do
+    error "$symlink"
+done
+echo "========================"
+error "${#broken_symlinks[@]} broken symlink(s) found"
+exit 1

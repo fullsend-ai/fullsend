@@ -77,3 +77,10 @@ repos:
         language: system
         files: ^docs/ADRs/.*\.md$
         pass_filenames: false
+
+      - id: lint-broken-symlinks
+        name: lint broken symlinks
+        entry: ./hack/lint-broken-symlinks
+        language: script
+        pass_filenames: false
+        always_run: true
