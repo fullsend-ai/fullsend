@@ -42,6 +42,20 @@ type VariableRecord struct {
 	Owner, Repo, Name, Value string
 }
 
+// UpdatedCommentRecord records an issue comment update call.
+type UpdatedCommentRecord struct {
+	Owner, Repo string
+	CommentID   int
+	Body        string
+}
+
+// MinimizedCommentRecord records a comment minimize call.
+type MinimizedCommentRecord struct {
+	Owner, Repo string
+	CommentID   int
+	Reason      string
+}
+
 // FakeClient is a thread-safe test double for forge.Client.
 // Pre-populate its fields to control return values, and inspect
 // recorder slices after the test to verify which calls were made.
@@ -69,6 +83,9 @@ type FakeClient struct {
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
 
+	// Issue comments for ListIssueComments / UpdateIssueComment.
+	IssueComments map[string][]IssueComment // key: "owner/repo/number"
+
 	// Call recorders
 	CreatedRepos      []Repository
 	CreatedFiles      []FileRecord
@@ -80,6 +97,8 @@ type FakeClient struct {
 	Variables         []VariableRecord
 	DeletedOrgSecrets []string // "org/name"
 	CreatedOrgSecrets []OrgSecretRecord
+	UpdatedComments   []UpdatedCommentRecord
+	MinimizedComments []MinimizedCommentRecord
 
 	// internal counter for change proposal numbers
 	proposalCounter int
@@ -521,13 +540,69 @@ func (f *FakeClient) CloseIssue(_ context.Context, _, _ string, _ int) error {
 	return f.err("CloseIssue")
 }
 
-func (f *FakeClient) ListIssueComments(_ context.Context, _, _ string, _ int) ([]IssueComment, error) {
+func (f *FakeClient) ListIssueComments(_ context.Context, owner, repo string, number int) ([]IssueComment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e := f.err("ListIssueComments"); e != nil {
 		return nil, e
 	}
+	if f.IssueComments != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if comments, ok := f.IssueComments[key]; ok {
+			return comments, nil
+		}
+	}
 	return nil, nil
+}
+
+func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, number int, body string) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("CreateIssueComment"); e != nil {
+		return nil, e
+	}
+	comment := IssueComment{
+		ID:        42, // fixed ID for test predictability
+		Body:      body,
+		Author:    f.AuthenticatedUser,
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if f.IssueComments == nil {
+		f.IssueComments = make(map[string][]IssueComment)
+	}
+	f.IssueComments[key] = append(f.IssueComments[key], comment)
+	return &comment, nil
+}
+
+func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, commentID int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("UpdateIssueComment"); e != nil {
+		return e
+	}
+	f.UpdatedComments = append(f.UpdatedComments, UpdatedCommentRecord{
+		Owner:     owner,
+		Repo:      repo,
+		CommentID: commentID,
+		Body:      body,
+	})
+	return nil
+}
+
+func (f *FakeClient) MinimizeComment(_ context.Context, owner, repo string, commentID int, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("MinimizeComment"); e != nil {
+		return e
+	}
+	f.MinimizedComments = append(f.MinimizedComments, MinimizedCommentRecord{
+		Owner:     owner,
+		Repo:      repo,
+		CommentID: commentID,
+		Reason:    reason,
+	})
+	return nil
 }
 
 func (f *FakeClient) MergeChangeProposal(_ context.Context, _, _ string, _ int) error {

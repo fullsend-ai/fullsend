@@ -985,6 +985,83 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return comments, nil
 }
 
+// CreateIssueComment creates a new comment on an issue or pull request.
+func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
+	payload := map[string]string{"body": body}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
+	if err != nil {
+		return nil, fmt.Errorf("create issue comment on #%d: %w", number, err)
+	}
+	var result struct {
+		ID   int    `json:"id"`
+		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue comment: %w", err)
+	}
+	return &forge.IssueComment{
+		ID:        result.ID,
+		Body:      result.Body,
+		Author:    result.User.Login,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
+// UpdateIssueComment updates the body of an existing issue comment.
+func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
+	payload := map[string]string{"body": body}
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID), payload)
+	if err != nil {
+		return fmt.Errorf("update issue comment %d: %w", commentID, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// MinimizeComment minimizes (hides) an issue or review comment via the
+// GitHub GraphQL API. The reason must be one of: ABUSE, OFF_TOPIC,
+// OUTDATED, RESOLVED, DUPLICATE, SPAM.
+//
+// This uses the REST-to-GraphQL bridge: POST /graphql with a mutation.
+// The comment's GraphQL node ID is fetched first via the REST API.
+func (c *LiveClient) MinimizeComment(ctx context.Context, owner, repo string, commentID int, reason string) error {
+	// Step 1: Get the GraphQL node ID for this comment.
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID))
+	if err != nil {
+		return fmt.Errorf("get comment %d for minimize: %w", commentID, err)
+	}
+	var comment struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := decodeJSON(resp, &comment); err != nil {
+		return fmt.Errorf("decode comment %d node_id: %w", commentID, err)
+	}
+
+	// Step 2: Call the minimizeComment GraphQL mutation.
+	query := `mutation($id: ID!, $reason: ReportedContentClassifiers!) {
+		minimizeComment(input: {subjectId: $id, classifier: $reason}) {
+			minimizedComment { isMinimized }
+		}
+	}`
+	gqlPayload := map[string]any{
+		"query": query,
+		"variables": map[string]string{
+			"id":     comment.NodeID,
+			"reason": reason,
+		},
+	}
+	gqlResp, err := c.post(ctx, "/graphql", gqlPayload)
+	if err != nil {
+		return fmt.Errorf("minimize comment %d: %w", commentID, err)
+	}
+	gqlResp.Body.Close()
+	return nil
+}
+
 // MergeChangeProposal squash-merges a pull request by number.
 func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
 	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})
@@ -1183,9 +1260,9 @@ func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value strin
 		selectedRepoIDs = []int64{}
 	}
 	payload := map[string]any{
-		"encrypted_value":       base64.StdEncoding.EncodeToString(encrypted),
-		"key_id":                pubKey.KeyID,
-		"visibility":            "selected",
+		"encrypted_value":         base64.StdEncoding.EncodeToString(encrypted),
+		"key_id":                  pubKey.KeyID,
+		"visibility":              "selected",
 		"selected_repository_ids": selectedRepoIDs,
 	}
 
