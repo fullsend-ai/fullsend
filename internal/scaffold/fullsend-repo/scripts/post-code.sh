@@ -6,11 +6,15 @@
 # security-sensitive component in the pipeline.
 #
 # Security layers (defense-in-depth):
-#   1. Protected-path check — reject if agent touched forbidden paths
-#   2. Authoritative secret scan — final gate before any push
-#   3. Authoritative pre-commit — run repo hooks on changed files
-#   4. Branch validation — refuse to push main/master
-#   5. Token isolation — PUSH_TOKEN never enters the sandbox
+#   1. Authoritative secret scan — final gate before any push
+#   2. Authoritative pre-commit — run repo hooks on changed files
+#   3. Branch validation — refuse to push main/master
+#   4. Token isolation — PUSH_TOKEN never enters the sandbox
+#
+# Note: Protected-path enforcement is handled by the review agent's
+# post-script (post-review.sh), which refuses to auto-approve PRs
+# touching sensitive paths. This allows the code agent to propose
+# changes to any path while ensuring human review is required.
 #
 # Required environment variables:
 #   PUSH_TOKEN        — token with contents:write + pull-requests:write on target repo
@@ -30,19 +34,6 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PROTECTED_PATHS=(
-  ".github/"
-  ".claude/"
-  "agents/"
-  "harness/"
-  "policies/"
-  "scripts/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
-)
-
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
@@ -80,7 +71,7 @@ echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
 
 # ---------------------------------------------------------------------------
-# 2. Protected-path check
+# 2. Enumerate changed files
 # ---------------------------------------------------------------------------
 MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
 if [ -n "${MERGE_BASE}" ]; then
@@ -98,17 +89,6 @@ fi
 
 echo "Changed files:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
-
-for pattern in "${PROTECTED_PATHS[@]}"; do
-  MATCHES="$(echo "${CHANGED_FILES}" | grep "^${pattern}" || true)"
-  if [ -n "${MATCHES}" ]; then
-    echo "::error::BLOCKED — agent modified protected path: ${pattern}"
-    echo "${MATCHES}" | sed 's/^/  ::error::  /'
-    exit 1
-  fi
-done
-
-echo "Protected-path check passed"
 
 # ---------------------------------------------------------------------------
 # 3. Authoritative secret scan
@@ -241,7 +221,6 @@ Closes #${ISSUE_NUMBER}
 ### Post-script verification
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
-- [x] No protected paths modified
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
 - [x] Pre-commit hooks passed (authoritative run on runner)
 - [x] Tests ran inside sandbox

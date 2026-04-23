@@ -4,6 +4,11 @@
 # Runs on the GitHub Actions runner AFTER the sandbox is destroyed.
 # CWD is runDir.
 #
+# Security: Protected-path enforcement. If the PR touches any path in
+# PROTECTED_PATHS, the post-script downgrades an "approve" to "comment"
+# and explains that human approval is required. The review agent's
+# findings are still posted — only the approval action is blocked.
+#
 # Required environment variables:
 #   REVIEW_TOKEN    — token with pull-requests:write on the target repo
 #   PR_NUMBER       — GitHub PR number
@@ -76,6 +81,68 @@ The review agent reviewed commit \`${REVIEWED_SHA}\` but the PR HEAD is now \`${
 EOF
 )"
     exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Protected-path enforcement
+# ---------------------------------------------------------------------------
+# If the agent wants to approve but the PR touches protected paths,
+# downgrade to "comment" so a human must approve instead. The review
+# findings are still posted — only the approval action is blocked.
+PROTECTED_PATHS=(
+  ".github/"
+  ".claude/"
+  "agents/"
+  "harness/"
+  "policies/"
+  "scripts/"
+  "api-servers/"
+  "CODEOWNERS"
+  ".pre-commit-config.yaml"
+  ".gitattributes"
+)
+
+if [ "${ACTION}" = "approve" ]; then
+  PR_FILES="$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --json files --jq '.files[].path' 2>/dev/null || true)"
+
+  PROTECTED_MATCHES=""
+  for pattern in "${PROTECTED_PATHS[@]}"; do
+    MATCHES="$(echo "${PR_FILES}" | grep "^${pattern}" || true)"
+    if [ -n "${MATCHES}" ]; then
+      PROTECTED_MATCHES="${PROTECTED_MATCHES}${MATCHES}"$'\n'
+    fi
+  done
+
+  if [ -n "${PROTECTED_MATCHES}" ]; then
+    echo "::warning::PR touches protected paths — downgrading approve to comment"
+    echo "${PROTECTED_MATCHES}" | sed '/^$/d' | sed 's/^/  /'
+    ACTION="comment"
+
+    # Read the original body and append a protected-path notice
+    ORIGINAL_BODY="$(jq -r '.body' "${RESULT_FILE}")"
+    PROTECTED_LIST="$(echo "${PROTECTED_MATCHES}" | sed '/^$/d' | sed 's/^/- `/' | sed 's/$/ `/')"
+    PROTECTED_NOTICE="
+
+---
+
+> **⚠️ Auto-approval blocked — protected paths modified**
+>
+> This PR modifies paths that require human approval:
+>
+${PROTECTED_LIST}
+>
+> The review findings above still apply. A human reviewer with
+> appropriate permissions must approve this PR.
+>
+> <sub>Enforced by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> review post-script</sub>"
+
+    # Write combined body to result so the case block picks it up
+    PATCHED_BODY="${ORIGINAL_BODY}${PROTECTED_NOTICE}"
+    # Patch the result file so the case block reads the updated body
+    jq --arg body "${PATCHED_BODY}" '.body = $body' "${RESULT_FILE}" > "${RESULT_FILE}.tmp" \
+      && mv "${RESULT_FILE}.tmp" "${RESULT_FILE}"
   fi
 fi
 
