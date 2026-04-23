@@ -345,8 +345,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		})
 	}
 
-	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, false, nil, nil)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, inferenceProvider, false, nil, nil)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -415,9 +414,6 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
 	printer.Blank()
 
-	// Collect IDs for repos that will be enrolled.
-	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-
 	// Build agent entries for config.
 	agents := make([]config.AgentEntry, len(agentCreds))
 	for i, ac := range agentCreds {
@@ -431,7 +427,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, vendorFullsendBinary, func(ctx context.Context) (string, error) {
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, inferenceProvider, vendorBinary, vendorFullsendBinary, func(ctx context.Context) (string, error) {
 		return promptDispatchToken(ctx, client, printer, org)
 	})
 
@@ -489,7 +485,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewWorkflowsLayer(org, client, printer, ""),
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewInferenceLayer(org, client, nil, printer),
-		layers.NewDispatchTokenLayer(org, client, "", nil, printer, nil),
+		layers.NewDispatchTokenLayer(org, client, "", printer, nil),
 		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
 	)
 
@@ -608,7 +604,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		inferenceProvider = vertex.NewAnalyzeOnly()
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, agentCreds, nil, inferenceProvider, false, nil, nil)
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, nil, agentCreds, inferenceProvider, false, nil, nil)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -628,7 +624,6 @@ func buildLayerStack(
 	hasPrivate bool,
 	enabledRepos []string,
 	agentCreds []layers.AgentCredentials,
-	enrolledRepoIDs []int64,
 	inferenceProvider inference.Provider,
 	vendorBinary bool,
 	vendorFn layers.VendorFunc,
@@ -640,7 +635,7 @@ func buildLayerStack(
 		layers.NewVendorBinaryLayer(org, client, printer, vendorBinary, vendorFn),
 		layers.NewSecretsLayer(org, client, agentCreds, printer),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
-		layers.NewDispatchTokenLayer(org, client, "", enrolledRepoIDs, printer, promptTokenFn),
+		layers.NewDispatchTokenLayer(org, client, "", printer, promptTokenFn),
 		layers.NewEnrollmentLayer(org, client, enabledRepos, cfg.DisabledRepos(), printer),
 	)
 }
@@ -763,22 +758,6 @@ func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[st
 		return nil
 	}
 	return cfg.AgentSlugs()
-}
-
-// collectEnrolledRepoIDs returns the IDs of repos whose names appear in
-// the enabledRepos list.
-func collectEnrolledRepoIDs(allRepos []forge.Repository, enabledRepos []string) []int64 {
-	enabled := make(map[string]bool, len(enabledRepos))
-	for _, name := range enabledRepos {
-		enabled[name] = true
-	}
-	var ids []int64
-	for _, r := range allRepos {
-		if enabled[r.Name] {
-			ids = append(ids, r.ID)
-		}
-	}
-	return ids
 }
 
 // promptDispatchToken checks whether the dispatch token org secret already
