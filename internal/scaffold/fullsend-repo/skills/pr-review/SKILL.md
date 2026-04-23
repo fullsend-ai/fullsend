@@ -102,8 +102,9 @@ step 3.
 
 - Non-rendering Unicode in changed files
 
-  Run the helper at `scripts/scan-unicode` (or the path in the `SCAN_UNICODE`
-  environment variable). Before starting, verify that it exists:
+  Run the helper using the `SCAN_UNICODE` environment variable (or
+  `scripts/scan-unicode` as a fallback). Before starting, verify that it
+  exists:
 
     ```bash
       test -x "${SCAN_UNICODE:-scripts/scan-unicode}"
@@ -115,15 +116,15 @@ step 3.
   ```bash
   # Write PR title to temp file and scan
   gh pr view <number> --json title --jq '.title' > /tmp/pr-title.txt
-  scripts/scan-unicode /tmp/pr-title.txt
+  "${SCAN_UNICODE:-scripts/scan-unicode}" /tmp/pr-title.txt
 
   # Write PR body to temp file and scan
   gh pr view <number> --json body --jq '.body' > /tmp/pr-body.txt
-  scripts/scan-unicode /tmp/pr-body.txt
+  "${SCAN_UNICODE:-scripts/scan-unicode}" /tmp/pr-body.txt
 
   # Write commit messages to temp file and scan
   gh pr view <number> --json commits --jq '.commits[].messageHeadline' > /tmp/commit-msgs.txt
-  scripts/scan-unicode /tmp/commit-msgs.txt
+  "${SCAN_UNICODE:-scripts/scan-unicode}" /tmp/commit-msgs.txt
   ```
 
 #### Scope authorization
