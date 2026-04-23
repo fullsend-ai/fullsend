@@ -133,6 +133,9 @@ type Client interface {
 	CreateIssue(ctx context.Context, owner, repo, title, body string) (*Issue, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
+	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
+	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
+	MinimizeComment(ctx context.Context, owner, repo string, commentID int, reason string) error
 
 	// Change proposal merge
 	MergeChangeProposal(ctx context.Context, owner, repo string, number int) error
