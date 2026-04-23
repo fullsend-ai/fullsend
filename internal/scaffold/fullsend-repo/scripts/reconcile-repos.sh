@@ -25,6 +25,7 @@ Once merged, issues, PRs, and comments in this repo will be handled by the fulls
 UNENROLL_PR_BODY="This PR removes the fullsend shim workflow. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
+DISPATCH_SECRET_NAME="FULLSEND_DISPATCH_TOKEN"
 REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -75,6 +76,37 @@ close_pr_on_branch() {
   fi
 }
 
+# grant_secret_access adds a repo to the org secret's selected repositories.
+grant_secret_access() {
+  local repo="$1"
+  local repo_id
+  repo_id=$(gh api "repos/$ORG/$repo" --jq '.id' 2>/dev/null || true)
+  if [ -z "$repo_id" ]; then
+    echo "::warning::Could not get repo ID for $repo, skipping secret access grant"
+    return
+  fi
+  if gh api "orgs/$ORG/actions/secrets/$DISPATCH_SECRET_NAME/repositories/$repo_id" \
+    --method PUT --silent 2>/dev/null; then
+    echo "  Granted $DISPATCH_SECRET_NAME access to $repo"
+  else
+    echo "::warning::Failed to grant $DISPATCH_SECRET_NAME access to $repo"
+  fi
+}
+
+# revoke_secret_access removes a repo from the org secret's selected repositories.
+revoke_secret_access() {
+  local repo="$1"
+  local repo_id
+  repo_id=$(gh api "repos/$ORG/$repo" --jq '.id' 2>/dev/null || true)
+  if [ -z "$repo_id" ]; then
+    echo "::warning::Could not get repo ID for $repo, skipping secret access revoke"
+    return
+  fi
+  gh api "orgs/$ORG/actions/secrets/$DISPATCH_SECRET_NAME/repositories/$repo_id" \
+    --method DELETE --silent 2>/dev/null || true
+  echo "  Revoked $DISPATCH_SECRET_NAME access from $repo"
+}
+
 # ===========================
 # Phase 1: Enroll enabled repos
 # ===========================
@@ -97,6 +129,7 @@ if [ -n "$ENABLED_REPOS" ]; then
     # Check if already enrolled (shim exists on default branch).
     if gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
       echo "✓ $REPO already enrolled"
+      grant_secret_access "$REPO"
       SKIPPED=$((SKIPPED + 1))
       continue
     fi
@@ -116,6 +149,7 @@ if [ -n "$ENABLED_REPOS" ]; then
         FAILED=$((FAILED + 1))
       else
         ENROLLED=$((ENROLLED + 1))
+        grant_secret_access "$REPO"
       fi
       continue
     fi
@@ -190,6 +224,7 @@ if [ -n "$ENABLED_REPOS" ]; then
     fi
 
     echo "✓ Created enrollment PR for $REPO: $PR_URL"
+    grant_secret_access "$REPO"
     echo "::notice::Enrollment PR: $PR_URL"
     ENROLLED=$((ENROLLED + 1))
   done <<< "$ENABLED_REPOS"
@@ -228,6 +263,7 @@ if [ -n "$DISABLED_REPOS" ]; then
     # Check if shim exists on default branch.
     if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
       echo "✓ $REPO already unenrolled (no shim on default branch)"
+      revoke_secret_access "$REPO"
       SKIPPED=$((SKIPPED + 1))
       continue
     fi
@@ -300,6 +336,7 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     echo "✓ Created removal PR for $REPO: $PR_URL"
+    revoke_secret_access "$REPO"
     echo "::notice::Removal PR: $PR_URL"
     UNENROLLED=$((UNENROLLED + 1))
   done <<< "$DISABLED_REPOS"
