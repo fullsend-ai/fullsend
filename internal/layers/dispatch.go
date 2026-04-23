@@ -19,7 +19,7 @@ type PromptTokenFunc func(ctx context.Context) (string, error)
 // repos use to trigger workflow_dispatch events on the .fullsend repo.
 //
 // The dispatch token is a fine-grained PAT scoped to the .fullsend repo
-// with actions:write permission. It is stored as an org-level Actions
+// with actions:write and contents:read permissions. It is stored as an org-level Actions
 // secret with visibility "selected", scoped to enrolled repos only.
 // This way, enrolled repos can trigger dispatches but never access the
 // App private keys (which are repo-level secrets on .fullsend).

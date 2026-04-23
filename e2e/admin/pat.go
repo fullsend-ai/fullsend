@@ -120,7 +120,7 @@ func createPAT(page playwright.Page, note, password, screenshotDir string, logf 
 }
 
 // createDispatchPAT creates a fine-grained GitHub Personal Access Token
-// scoped to the .fullsend repo with Actions read/write permission.
+// scoped to the .fullsend repo with Actions read/write and Contents read permissions.
 // This mirrors what the real CLI does in promptDispatchToken — the user
 // is guided to create a fine-grained PAT at GitHub's token creation page.
 // The e2e test automates the browser interaction instead.
@@ -391,6 +391,36 @@ func createDispatchPAT(page playwright.Page, org, password, screenshotDir string
 	logf("[dispatch-pat] Checked Actions permission")
 	time.Sleep(1 * time.Second)
 	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-after-actions-check", logf)
+
+	// Also select the Contents permission (defaults to Read-only, which is
+	// what we need). This allows the dispatch token to resolve the default
+	// branch on private .fullsend repos via GraphQL.
+	_, err = page.Evaluate(`() => {
+		const items = document.querySelectorAll('*');
+		for (const el of items) {
+			if (el.textContent.trim() === 'Contents' && el.closest('[role="option"], label, li')) {
+				el.closest('[role="option"], label, li').click();
+				return true;
+			}
+		}
+		for (const el of items) {
+			if (el.textContent.trim() === 'Contents') {
+				const parent = el.parentElement;
+				const checkbox = parent.querySelector('input[type="checkbox"]');
+				if (checkbox) { checkbox.click(); return true; }
+				parent.click();
+				return true;
+			}
+		}
+		return false;
+	}`)
+	if err != nil {
+		saveDebugScreenshot(page, screenshotDir, "dispatch-pat-contents-checkbox", logf)
+		return "", fmt.Errorf("clicking Contents checkbox via JS: %w", err)
+	}
+	logf("[dispatch-pat] Checked Contents permission (Read-only)")
+	time.Sleep(1 * time.Second)
+	saveDebugScreenshot(page, screenshotDir, "dispatch-pat-after-contents-check", logf)
 
 	// Close the permissions popover by pressing Escape.
 	page.Keyboard().Press("Escape")

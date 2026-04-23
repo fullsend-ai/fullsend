@@ -808,7 +808,7 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 		"https://github.com/settings/personal-access-tokens/new"+
 			"?name=fullsend-dispatch-%s"+
 			"&description=Dispatch+token+for+fullsend+agent+pipeline+in+%s."+
-			"+Scoped+to+.fullsend+repo+with+Actions+write+only."+
+			"+Scoped+to+.fullsend+repo+with+Actions+write+and+Contents+read."+
 			"&target_name=%s",
 		escapedOrg, escapedOrg, escapedOrg,
 	)
@@ -825,10 +825,10 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 	}
 
 	printer.Blank()
-	printer.StepWarn("IMPORTANT: The installer's URL tried to pre-fill actions/write")
+	printer.StepWarn("IMPORTANT: The installer's URL tried to pre-fill permissions")
 	printer.StepWarn("in the query parameters, but GitHub's fine-grained PAT page doesn't")
 	printer.StepWarn("always honor those pre-fill params. So you just have to click that")
-	printer.StepWarn("'+ Add permissions' button and add Actions manually.")
+	printer.StepWarn("'+ Add permissions' button and add Actions and Contents manually.")
 	printer.Blank()
 	printer.StepWarn("GitHub's resource owner selector has a known quirk.")
 	printer.StepWarn("If the owner is pre-filled, you may need to de-select and")
@@ -842,12 +842,13 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 	printer.StepInfo("  3. Pick ONLY the .fullsend repository (not other repos)")
 	printer.StepInfo("  4. Click the '+ Add permissions' button (top right of Permissions section)")
 	printer.StepInfo("  5. Look for 'Actions' in the dropdown/list that appears")
-	printer.StepInfo("  6. Set it to 'Read and write'")
-	printer.StepInfo("  7. Click 'Generate token' (the green button at the bottom left)")
-	printer.StepInfo("  8. GitHub will show the token ONCE on the next page — copy it immediately")
+	printer.StepInfo("  6. Set Actions to 'Read and write'")
+	printer.StepInfo("  7. Also add 'Contents' and leave it at 'Read-only'")
+	printer.StepInfo("  8. Click 'Generate token' (the green button at the bottom left)")
+	printer.StepInfo("  9. GitHub will show the token ONCE on the next page — copy it immediately")
 	printer.StepInfo("     (If you navigate away before copying, you'll need to delete the token")
 	printer.StepInfo("      and create a new one — GitHub never shows it again)")
-	printer.StepInfo("  9. Paste the token below")
+	printer.StepInfo(" 10. Paste the token below")
 	printer.Blank()
 	printer.StepInfo("Paste the token here:")
 
@@ -890,7 +891,7 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 				"Delete it at https://github.com/settings/tokens and recreate with:\n"+
 				"  1. Resource owner: "+org+"\n"+
 				"  2. Repository access: Only select repositories → "+forge.ConfigRepoName+"\n"+
-				"  3. Permissions: Actions → Read and write\n\n"+
+				"  3. Permissions: Actions → Read and write, Contents → Read-only\n\n"+
 				"Error: "+err.Error(),
 		)
 		return "", fmt.Errorf("dispatch token verification failed")
