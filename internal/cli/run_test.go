@@ -73,12 +73,13 @@ func TestBuildClaudeCommand_EscapesQuotes(t *testing.T) {
 	assert.Contains(t, cmd, "'test'\\''name'")
 }
 
-func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
+func TestBuildScanContextCommand_UsesAbsolutePath(t *testing.T) {
 	traceID := "aabbccdd-1122-4334-8556-aabbccddeeff"
 	cmd := buildScanContextCommand("/tmp/workspace/repo", traceID)
-	assert.Contains(t, cmd, "source /tmp/workspace/.env &&")
+	// Must NOT rely on source .env for PATH — use absolute path instead.
+	assert.NotContains(t, cmd, "source")
 	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
-	assert.Contains(t, cmd, "-exec fullsend scan context")
+	assert.Contains(t, cmd, "-exec /tmp/workspace/bin/fullsend scan context")
 }
 
 func TestEnvToList_Sorted(t *testing.T) {

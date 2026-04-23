@@ -327,6 +327,17 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 	// that were just copied into the sandbox.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running pre-agent security scan")
+
+		// Pre-flight: verify the fullsend binary is reachable inside the
+		// sandbox. SCP can report success before the file is visible to a
+		// subsequent SSH session (OpenShell filesystem sync race).
+		fullsendBin := fmt.Sprintf("%s/bin/fullsend", sandbox.SandboxWorkspace)
+		checkCmd := fmt.Sprintf("test -x %s", fullsendBin)
+		if _, _, rc, checkErr := sandbox.SSH(sshConfigPath, sandboxName, checkCmd, 10*time.Second); checkErr != nil || rc != 0 {
+			printer.StepFail("fullsend binary not found in sandbox at " + fullsendBin)
+			return fmt.Errorf("pre-agent scan: fullsend binary not executable in sandbox (bootstrap may have failed)")
+		}
+
 		scanCmd := buildScanContextCommand(repoDir, traceID)
 		stdout, stderr, exitCode, sshErr := sandbox.SSH(sshConfigPath, sandboxName, scanCmd, 60*time.Second)
 		if sshErr != nil {
@@ -336,6 +347,12 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 			}
 			printer.StepWarn("Continuing despite scan failure (fail_mode: open)")
 		} else if exitCode != 0 {
+			// Distinguish infrastructure errors (scanner binary missing,
+			// find failures) from genuine injection findings.
+			if strings.Contains(stderr, "No such file or directory") || strings.Contains(stderr, "command not found") {
+				printer.StepFail("Security scan infrastructure error: " + stderr)
+				return fmt.Errorf("pre-agent scan infrastructure error (scanner not found): %s", stderr)
+			}
 			printer.StepWarn("Security scan findings:\n" + stdout)
 			if stderr != "" {
 				printer.StepWarn("Scan stderr: " + stderr)
@@ -803,12 +820,15 @@ func buildScanContextCommand(repoDir, traceID string) string {
 	sort.Strings(inames) // deterministic ordering
 	inameExpr := strings.Join(inames, " -o ")
 
-	// Source .env to get PATH with /tmp/workspace/bin where fullsend is installed.
-	envFile := sandbox.SandboxWorkspace + "/.env"
+	// Use the absolute path to the fullsend binary instead of relying on
+	// PATH resolution via `source .env`. The .env sourcing is fragile in
+	// sandboxes where the file may not yet be visible due to filesystem
+	// sync delays after SCP.
+	fullsendBin := sandbox.SandboxWorkspace + "/bin/fullsend"
 
 	return fmt.Sprintf(
-		"source %s && FULLSEND_TRACE_ID='%s' find '%s' -maxdepth 3 -type f \\( %s \\) -exec fullsend scan context {} +",
-		envFile, traceID, escapedDir, inameExpr,
+		"FULLSEND_TRACE_ID='%s' find '%s' -maxdepth 3 -type f \\( %s \\) -exec %s scan context {} +",
+		traceID, escapedDir, inameExpr, fullsendBin,
 	)
 }
 
