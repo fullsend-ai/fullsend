@@ -13,23 +13,22 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func newDispatchLayer(t *testing.T, client *forge.FakeClient, token string, repoIDs []int64) (*DispatchTokenLayer, *bytes.Buffer) {
+func newDispatchLayer(t *testing.T, client *forge.FakeClient, token string) (*DispatchTokenLayer, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewDispatchTokenLayer("test-org", client, token, repoIDs, printer, nil)
+	layer := NewDispatchTokenLayer("test-org", client, token, printer, nil)
 	return layer, &buf
 }
 
 func TestDispatchTokenLayer_Name(t *testing.T) {
-	layer, _ := newDispatchLayer(t, &forge.FakeClient{}, "", nil)
+	layer, _ := newDispatchLayer(t, &forge.FakeClient{}, "")
 	assert.Equal(t, "dispatch-token", layer.Name())
 }
 
 func TestDispatchTokenLayer_Install_CreatesOrgSecret(t *testing.T) {
 	client := &forge.FakeClient{}
-	repoIDs := []int64{100, 200, 300}
-	layer, _ := newDispatchLayer(t, client, "ghp_secrettoken123", repoIDs)
+	layer, _ := newDispatchLayer(t, client, "ghp_secrettoken123")
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -38,7 +37,7 @@ func TestDispatchTokenLayer_Install_CreatesOrgSecret(t *testing.T) {
 	assert.Equal(t, "test-org", client.CreatedOrgSecrets[0].Org)
 	assert.Equal(t, "FULLSEND_DISPATCH_TOKEN", client.CreatedOrgSecrets[0].Name)
 	assert.Equal(t, "ghp_secrettoken123", client.CreatedOrgSecrets[0].Value)
-	assert.Equal(t, repoIDs, client.CreatedOrgSecrets[0].RepoIDs)
+	assert.Nil(t, client.CreatedOrgSecrets[0].RepoIDs)
 }
 
 func TestDispatchTokenLayer_Install_ReusesExistingToken(t *testing.T) {
@@ -47,25 +46,22 @@ func TestDispatchTokenLayer_Install_ReusesExistingToken(t *testing.T) {
 			"test-org/FULLSEND_DISPATCH_TOKEN": true,
 		},
 	}
-	repoIDs := []int64{100, 200}
-	layer, _ := newDispatchLayer(t, client, "", repoIDs)
+	layer, _ := newDispatchLayer(t, client, "")
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// No secret should be created when reusing existing
+	// No secret should be created when reusing existing.
 	assert.Empty(t, client.CreatedOrgSecrets)
-
-	// But SetOrgSecretRepos should still be called to update access list
-	require.Contains(t, client.OrgSecretRepoIDs, "test-org/FULLSEND_DISPATCH_TOKEN")
-	assert.Equal(t, repoIDs, client.OrgSecretRepoIDs["test-org/FULLSEND_DISPATCH_TOKEN"])
+	// No SetOrgSecretRepos call — reconcile-repos.sh handles this now.
+	assert.Empty(t, client.OrgSecretRepoIDs)
 }
 
 func TestDispatchTokenLayer_Install_Error(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{"CreateOrgSecret": errors.New("permission denied")},
 	}
-	layer, _ := newDispatchLayer(t, client, "ghp_token", []int64{100})
+	layer, _ := newDispatchLayer(t, client, "ghp_token")
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
@@ -78,7 +74,7 @@ func TestDispatchTokenLayer_Uninstall_DeletesSecret(t *testing.T) {
 			"test-org/FULLSEND_DISPATCH_TOKEN": true,
 		},
 	}
-	layer, _ := newDispatchLayer(t, client, "", nil)
+	layer, _ := newDispatchLayer(t, client, "")
 
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
@@ -91,7 +87,7 @@ func TestDispatchTokenLayer_Uninstall_AlreadyDeleted(t *testing.T) {
 	client := &forge.FakeClient{
 		OrgSecrets: map[string]bool{}, // secret doesn't exist
 	}
-	layer, _ := newDispatchLayer(t, client, "", nil)
+	layer, _ := newDispatchLayer(t, client, "")
 
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
@@ -106,7 +102,7 @@ func TestDispatchTokenLayer_Analyze_Installed(t *testing.T) {
 			"test-org/FULLSEND_DISPATCH_TOKEN": true,
 		},
 	}
-	layer, _ := newDispatchLayer(t, client, "", nil)
+	layer, _ := newDispatchLayer(t, client, "")
 
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
@@ -121,7 +117,7 @@ func TestDispatchTokenLayer_Analyze_NotInstalled(t *testing.T) {
 	client := &forge.FakeClient{
 		OrgSecrets: map[string]bool{},
 	}
-	layer, _ := newDispatchLayer(t, client, "", nil)
+	layer, _ := newDispatchLayer(t, client, "")
 
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
@@ -133,7 +129,7 @@ func TestDispatchTokenLayer_Analyze_NotInstalled(t *testing.T) {
 }
 
 func TestDispatchTokenLayer_RequiredScopes(t *testing.T) {
-	layer, _ := newDispatchLayer(t, &forge.FakeClient{}, "", nil)
+	layer, _ := newDispatchLayer(t, &forge.FakeClient{}, "")
 
 	assert.Equal(t, []string{"admin:org"}, layer.RequiredScopes(OpInstall))
 	assert.Equal(t, []string{"admin:org"}, layer.RequiredScopes(OpUninstall))
@@ -144,7 +140,6 @@ func TestDispatchTokenLayer_Install_CallsPromptFn(t *testing.T) {
 	client := &forge.FakeClient{
 		OrgSecrets: map[string]bool{}, // secret does not exist
 	}
-	repoIDs := []int64{100, 200}
 
 	promptFn := func(ctx context.Context) (string, error) {
 		return "ghp_prompted_token", nil
@@ -152,7 +147,7 @@ func TestDispatchTokenLayer_Install_CallsPromptFn(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewDispatchTokenLayer("test-org", client, "", repoIDs, printer, promptFn)
+	layer := NewDispatchTokenLayer("test-org", client, "", printer, promptFn)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -161,14 +156,14 @@ func TestDispatchTokenLayer_Install_CallsPromptFn(t *testing.T) {
 	assert.Equal(t, "test-org", client.CreatedOrgSecrets[0].Org)
 	assert.Equal(t, "FULLSEND_DISPATCH_TOKEN", client.CreatedOrgSecrets[0].Name)
 	assert.Equal(t, "ghp_prompted_token", client.CreatedOrgSecrets[0].Value)
-	assert.Equal(t, repoIDs, client.CreatedOrgSecrets[0].RepoIDs)
+	assert.Nil(t, client.CreatedOrgSecrets[0].RepoIDs)
 }
 
 func TestDispatchTokenLayer_Install_ErrorWhenNoPromptFn(t *testing.T) {
 	client := &forge.FakeClient{
 		OrgSecrets: map[string]bool{}, // secret does not exist
 	}
-	layer, _ := newDispatchLayer(t, client, "", []int64{100})
+	layer, _ := newDispatchLayer(t, client, "")
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
@@ -187,7 +182,7 @@ func TestDispatchTokenLayer_Install_PromptFnError(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewDispatchTokenLayer("test-org", client, "", []int64{100}, printer, promptFn)
+	layer := NewDispatchTokenLayer("test-org", client, "", printer, promptFn)
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
