@@ -71,7 +71,6 @@ func TestAgentAppConfig_Review(t *testing.T) {
 	assert.Equal(t, "read", cfg.Permissions.Issues)
 
 	assert.Contains(t, cfg.Events, "pull_request")
-	assert.Contains(t, cfg.Events, "pull_request_review")
 }
 
 func TestAgentAppConfig_UnknownRole(t *testing.T) {

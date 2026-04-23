@@ -25,6 +25,13 @@ fi
 echo "::add-mask::${REVIEW_TOKEN}"
 export GH_TOKEN="${REVIEW_TOKEN}"
 
+# Refuse to post reviews on merged or closed PRs
+PR_STATE=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state --jq '.state')
+if [ "${PR_STATE}" != "OPEN" ]; then
+  echo "PR is ${PR_STATE}, skipping review"
+  exit 0
+fi
+
 # Find the agent result from the last iteration
 RESULT_FILE=$(find .  -maxdepth 4 -path '*/iteration-*/output/agent-result.json' | sort -V | tail -1)
 

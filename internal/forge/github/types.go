@@ -98,7 +98,7 @@ func AgentAppConfig(org, role string) AppConfig {
 			Checks:       "read",
 			Issues:       "read",
 		}
-		base.Events = []string{"pull_request", "pull_request_review"}
+		base.Events = []string{"pull_request"}
 
 	default:
 		base.Description = fmt.Sprintf("Fullsend %s agent for %s", role, org)
