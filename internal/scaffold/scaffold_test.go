@@ -56,6 +56,8 @@ func TestShimTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "dispatch-triage")
 	assert.Contains(t, s, "dispatch-code")
 	assert.Contains(t, s, "dispatch-review")
+	assert.Contains(t, s, "permissions:")
+	assert.Contains(t, s, "contents: read")
 }
 
 func TestWalkFullsendRepo(t *testing.T) {
