@@ -92,9 +92,6 @@ jobs:
           TRIAGE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
         run: bash .github/scripts/setup-agent-env.sh
 
-      - name: Install validation dependencies
-        run: pip install --quiet "jsonschema>=4.18.0"
-
       - name: Run triage agent
         uses: ./.github/actions/fullsend
         env:
