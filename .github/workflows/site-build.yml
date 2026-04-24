@@ -2,8 +2,18 @@ name: Build Site
 
 on:
   pull_request:
+    paths:
+      - 'web/**'
+      - 'cloudflare_site/**'
+      - '.github/workflows/site-build.yml'
+      - '.github/workflows/site-deploy.yml'
   push:
     branches: [main]
+    paths:
+      - 'web/**'
+      - 'cloudflare_site/**'
+      - '.github/workflows/site-build.yml'
+      - '.github/workflows/site-deploy.yml'
 
 permissions:
   contents: read
