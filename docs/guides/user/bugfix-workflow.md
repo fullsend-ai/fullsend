@@ -54,7 +54,7 @@ You can control the pipeline from issue or PR comments:
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
-| `/implement` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
+| `/code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
 | `/review` | PR comment | Enqueues a new review round for the current PR head |
 
 ### What to expect from agent PRs
@@ -105,7 +105,7 @@ The triage agent:
 
 ### Stage 2: Code
 
-**Triggered by:** `ready-to-code` label or `/implement` command.
+**Triggered by:** `ready-to-code` label or `/code` command.
 
 The code agent:
 
@@ -144,7 +144,7 @@ Once the PR is merged (by human, merge queue, or automation per org governance),
 ### Restarting a stage
 
 - `/triage` — wipes all labels, reopens the issue, runs triage fresh.
-- `/implement` — restarts the code agent from the current issue state.
+- `/code` — restarts the code agent from the current issue state.
 - `/review` — enqueues a new review round.
 
 ### Taking over manually
