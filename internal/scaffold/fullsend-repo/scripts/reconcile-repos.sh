@@ -22,6 +22,11 @@ UNENROLL_PR_TITLE="chore: disconnect from fullsend agent pipeline"
 ENROLL_PR_BODY="This PR adds a shim workflow that routes repository events to the fullsend agent dispatch workflow in the \`.fullsend\` config repo.
 
 Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline."
+UPDATE_PR_TITLE="Update fullsend shim workflow"
+UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
+
+The shim content has drifted from the template — this brings it back in sync."
+UNENROLL_PR_TITLE="chore: disconnect from fullsend agent pipeline"
 UNENROLL_PR_BODY="This PR removes the fullsend shim workflow. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
@@ -75,6 +80,66 @@ close_pr_on_branch() {
   fi
 }
 
+# ensure_branch creates or resets a branch to the default branch tip.
+# Sets DEFAULT_BRANCH as a side effect (callers need it for PR creation).
+# Returns 0 on success, 1 on failure (with error logged).
+ensure_branch() {
+  local repo="$1"
+  local branch="$2"
+
+  DEFAULT_BRANCH=$(gh api "repos/$ORG/$repo" --jq .default_branch 2>/dev/null || true)
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    echo "::error::Could not determine default branch for $repo"
+    return 1
+  fi
+
+  local default_sha
+  default_sha=$(gh api "repos/$ORG/$repo/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
+  if [ -z "$default_sha" ]; then
+    echo "::error::Could not get default branch SHA for $repo"
+    return 1
+  fi
+
+  if ! gh api "repos/$ORG/$repo/git/refs" \
+    --method POST \
+    --field "ref=refs/heads/$branch" \
+    --field "sha=$default_sha" \
+    --silent 2>/dev/null; then
+    # Branch exists — force it to the current default branch tip to avoid
+    # operating on a stale or attacker-controlled branch.
+    if ! gh api "repos/$ORG/$repo/git/refs/heads/$branch" \
+      --method PATCH \
+      --field "sha=$default_sha" \
+      --field "force=true" \
+      --silent; then
+      echo "::error::Failed to create or update branch $branch on $repo"
+      return 1
+    fi
+  fi
+}
+
+# write_shim_to_branch writes the shim template to a file on a branch.
+# Returns 0 on success, 1 on failure (with error logged).
+write_shim_to_branch() {
+  local repo="$1"
+  local branch="$2"
+  local content_b64="$3"
+  local commit_msg="$4"
+
+  local existing_sha
+  existing_sha=$(gh api "repos/$ORG/$repo/contents/$SHIM_PATH?ref=$branch" --jq .sha 2>/dev/null || true)
+
+  local args=(--method PUT --field "message=$commit_msg" --field "branch=$branch" --field "content=$content_b64")
+  if [ -n "$existing_sha" ]; then
+    args+=(--field "sha=$existing_sha")
+  fi
+
+  if ! gh api "repos/$ORG/$repo/contents/$SHIM_PATH" "${args[@]}" --silent; then
+    echo "::error::Failed to write shim to $repo (path=$SHIM_PATH, branch=$branch)"
+    return 1
+  fi
+}
+
 # ===========================
 # Phase 1: Enroll enabled repos
 # ===========================
@@ -96,11 +161,8 @@ if [ -n "$ENABLED_REPOS" ]; then
 
     # Check if already enrolled (shim exists on default branch).
     # Fetch content and SHA in one call to avoid race between reads.
-    REMOTE_RESPONSE=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq '[.content, .sha] | @tsv' 2>/dev/null || true)
-    if [ -n "$REMOTE_RESPONSE" ]; then
-      REMOTE_CONTENT=$(printf '%s' "$REMOTE_RESPONSE" | cut -f1)
-      REMOTE_SHA=$(printf '%s' "$REMOTE_RESPONSE" | cut -f2)
-
+    REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
+    if [ -n "$REMOTE_CONTENT" ]; then
       # File exists — compare content against current template.
       EXPECTED_B64=$(base64 -w0 < "$SHIM_TEMPLATE")
       # GitHub returns base64 with newlines; strip them for comparison.
@@ -114,45 +176,12 @@ if [ -n "$ENABLED_REPOS" ]; then
       # Shim is stale — update via PR to respect branch protection.
       echo "⟳ $REPO enrolled but shim is stale — creating update PR"
 
-      DEFAULT_BRANCH=$(gh api "repos/$ORG/$REPO" --jq .default_branch 2>/dev/null || true)
-      if [ -z "$DEFAULT_BRANCH" ]; then
-        echo "::error::Could not determine default branch for $REPO"
+      if ! ensure_branch "$REPO" "$ENROLL_BRANCH"; then
         FAILED=$((FAILED + 1))
         continue
       fi
 
-      DEFAULT_SHA=$(gh api "repos/$ORG/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
-      if [ -z "$DEFAULT_SHA" ]; then
-        echo "::error::Could not get default branch SHA for $REPO"
-        FAILED=$((FAILED + 1))
-        continue
-      fi
-
-      # Create or reset the enrollment branch to the default branch tip.
-      if ! gh api "repos/$ORG/$REPO/git/refs" \
-        --method POST \
-        --field "ref=refs/heads/$ENROLL_BRANCH" \
-        --field "sha=$DEFAULT_SHA" \
-        --silent 2>/dev/null; then
-        if ! gh api "repos/$ORG/$REPO/git/refs/heads/$ENROLL_BRANCH" \
-          --method PATCH \
-          --field "sha=$DEFAULT_SHA" \
-          --field "force=true" \
-          --silent; then
-          echo "::error::Failed to create or update branch $ENROLL_BRANCH on $REPO"
-          FAILED=$((FAILED + 1))
-          continue
-        fi
-      fi
-
-      # Write updated shim to the enrollment branch.
-      BRANCH_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$ENROLL_BRANCH" --jq .sha 2>/dev/null || true)
-      UPDATE_ARGS=(--method PUT --field "message=chore: update fullsend shim workflow" --field "branch=$ENROLL_BRANCH" --field "content=$EXPECTED_B64")
-      if [ -n "$BRANCH_SHA" ]; then
-        UPDATE_ARGS+=(--field "sha=$BRANCH_SHA")
-      fi
-      if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" "${UPDATE_ARGS[@]}" --silent; then
-        echo "::error::Failed to write updated shim to $REPO"
+      if ! write_shim_to_branch "$REPO" "$ENROLL_BRANCH" "$EXPECTED_B64" "chore: update fullsend shim workflow"; then
         FAILED=$((FAILED + 1))
         continue
       fi
@@ -164,8 +193,8 @@ if [ -n "$ENABLED_REPOS" ]; then
           --repo "$ORG/$REPO" \
           --head "$ENROLL_BRANCH" \
           --base "$DEFAULT_BRANCH" \
-          --title "$ENROLL_PR_TITLE" \
-          --body "$ENROLL_PR_BODY"); then
+          --title "$UPDATE_PR_TITLE" \
+          --body "$UPDATE_PR_BODY"); then
           echo "::error::Failed to create update PR for $REPO"
           FAILED=$((FAILED + 1))
           continue
@@ -184,13 +213,7 @@ if [ -n "$ENABLED_REPOS" ]; then
     if [ -n "$EXISTING_PR" ]; then
       echo "✓ $REPO has existing enrollment PR: $EXISTING_PR"
       # Update the shim on the existing branch to reflect the latest content.
-      EXISTING_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$ENROLL_BRANCH" --jq .sha 2>/dev/null || true)
-      UPDATE_ARGS=(--method PUT --field "message=chore: update fullsend shim workflow" --field "branch=$ENROLL_BRANCH" --field "content=$(base64 -w0 < "$SHIM_TEMPLATE")")
-      if [ -n "$EXISTING_SHA" ]; then
-        UPDATE_ARGS+=(--field "sha=$EXISTING_SHA")
-      fi
-      if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" "${UPDATE_ARGS[@]}" --silent; then
-        echo "::error::Failed to update shim on $REPO"
+      if ! write_shim_to_branch "$REPO" "$ENROLL_BRANCH" "$(base64 -w0 < "$SHIM_TEMPLATE")" "chore: update fullsend shim workflow"; then
         FAILED=$((FAILED + 1))
       else
         ENROLLED=$((ENROLLED + 1))
@@ -200,39 +223,9 @@ if [ -n "$ENABLED_REPOS" ]; then
 
     echo "Enrolling $REPO..."
 
-    # Get default branch.
-    DEFAULT_BRANCH=$(gh api "repos/$ORG/$REPO" --jq .default_branch 2>/dev/null || true)
-    if [ -z "$DEFAULT_BRANCH" ]; then
-      echo "::error::Could not determine default branch for $REPO"
+    if ! ensure_branch "$REPO" "$ENROLL_BRANCH"; then
       FAILED=$((FAILED + 1))
       continue
-    fi
-
-    # Create enrollment branch from default branch tip.
-    DEFAULT_SHA=$(gh api "repos/$ORG/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
-    if [ -z "$DEFAULT_SHA" ]; then
-      echo "::error::Could not get default branch SHA for $REPO"
-      FAILED=$((FAILED + 1))
-      continue
-    fi
-
-    # Create branch, or update it to the default branch tip if it already exists.
-    if ! gh api "repos/$ORG/$REPO/git/refs" \
-      --method POST \
-      --field "ref=refs/heads/$ENROLL_BRANCH" \
-      --field "sha=$DEFAULT_SHA" \
-      --silent 2>/dev/null; then
-      # Branch exists — force it to the current default branch tip to avoid
-      # operating on a stale or attacker-controlled branch.
-      if ! gh api "repos/$ORG/$REPO/git/refs/heads/$ENROLL_BRANCH" \
-        --method PATCH \
-        --field "sha=$DEFAULT_SHA" \
-        --field "force=true" \
-        --silent; then
-        echo "::error::Failed to create or update branch $ENROLL_BRANCH on $REPO"
-        FAILED=$((FAILED + 1))
-        continue
-      fi
     fi
 
     # Encode shim template content.
@@ -243,14 +236,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       continue
     fi
 
-    # Write shim workflow to branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" \
-      --method PUT \
-      --field "message=chore: add fullsend shim workflow" \
-      --field "branch=$ENROLL_BRANCH" \
-      --field "content=$SHIM_CONTENT" \
-      --silent; then
-      echo "::error::Failed to write shim to $REPO (path=$SHIM_PATH, branch=$ENROLL_BRANCH)"
+    if ! write_shim_to_branch "$REPO" "$ENROLL_BRANCH" "$SHIM_CONTENT" "chore: add fullsend shim workflow"; then
       FAILED=$((FAILED + 1))
       continue
     fi
@@ -312,37 +298,9 @@ if [ -n "$DISABLED_REPOS" ]; then
 
     echo "Unenrolling $REPO..."
 
-    # Get default branch.
-    DEFAULT_BRANCH=$(gh api "repos/$ORG/$REPO" --jq .default_branch 2>/dev/null || true)
-    if [ -z "$DEFAULT_BRANCH" ]; then
-      echo "::error::Could not determine default branch for $REPO"
+    if ! ensure_branch "$REPO" "$UNENROLL_BRANCH"; then
       FAILED=$((FAILED + 1))
       continue
-    fi
-
-    # Create removal branch from default branch tip.
-    DEFAULT_SHA=$(gh api "repos/$ORG/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
-    if [ -z "$DEFAULT_SHA" ]; then
-      echo "::error::Could not get default branch SHA for $REPO"
-      FAILED=$((FAILED + 1))
-      continue
-    fi
-
-    # Create branch, or force-update to default branch tip.
-    if ! gh api "repos/$ORG/$REPO/git/refs" \
-      --method POST \
-      --field "ref=refs/heads/$UNENROLL_BRANCH" \
-      --field "sha=$DEFAULT_SHA" \
-      --silent 2>/dev/null; then
-      if ! gh api "repos/$ORG/$REPO/git/refs/heads/$UNENROLL_BRANCH" \
-        --method PATCH \
-        --field "sha=$DEFAULT_SHA" \
-        --field "force=true" \
-        --silent; then
-        echo "::error::Failed to create or update branch $UNENROLL_BRANCH on $REPO"
-        FAILED=$((FAILED + 1))
-        continue
-      fi
     fi
 
     # Fetch file SHA on the removal branch (required for DELETE).
