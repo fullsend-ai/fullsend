@@ -312,6 +312,12 @@ and how you will verify it works.
 
 Write the code change, then verify it.
 
+**Context efficiency:** A PostToolUse hook automatically compacts verification
+tool output. Successful runs of scan-secrets, pre-commit, tests, linters, and
+gitlint produce a one-line summary; only failures show full output. You do not
+need to redirect output or parse results manually — just run the commands and
+react to what you see.
+
 **Implementation:**
 
 - **Follow existing patterns.** If the repo uses a specific error handling idiom,
@@ -451,13 +457,36 @@ authoritative pre-commit check on the runner before pushing.
 echo "::notice::STEP 9c: Tests and linters"
 ```
 
-You MUST run the test suite that covers the code you changed. Determine
-which test command to use by reading the Makefile, CONTRIBUTING.md, or
-existing CI workflows.
+You MUST run the test suite that covers the code you changed.
+
+**Run targeted tests** — only test the packages/modules you changed:
+
+- **Go:** `go test ./path/to/changed/pkg/...` for each changed package.
+  Use `go test ./...` only if changes span many packages or affect shared
+  libraries.
+- **Python:** `pytest path/to/test_file.py` or
+  `pytest tests/unit/test_module.py` for the module you changed. Run
+  `pytest` (full suite) only as a final check.
+- **JS/TS:** `npm test -- --testPathPattern='changed-module'` or the
+  framework's equivalent filter flag.
+- **Makefile targets:** If the Makefile has granular test targets (e.g.,
+  `make test-unit`, `make test-pkg PKG=./internal/foo`), prefer those
+  over `make test`.
+
+Determine which packages to test from your changed files:
 
 ```bash
-# Use the repo's actual test command — check Makefile or CI config
-make test        # or: go test ./..., npm test, pytest, etc.
+git diff --name-only origin/<target-branch>..HEAD
+```
+
+Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
+a final validation after targeted tests pass, but prefer targeted runs
+first to save time and context budget.
+
+Also run linters. Determine which lint command to use by reading the
+Makefile, CONTRIBUTING.md, or existing CI workflows.
+
+```bash
 make lint        # or: golangci-lint run, eslint, ruff, etc.
 ```
 
