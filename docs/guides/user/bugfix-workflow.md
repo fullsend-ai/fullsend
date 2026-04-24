@@ -15,11 +15,13 @@ Each stage is triggered by labels and can be restarted with slash commands. The 
 ```
 Issue filed → Triage → ready-to-code → Code Agent → ready-for-review → Review → ready-for-merge → Merge
                 │                          ↑                              │
-                │                          └──────── changes requested ───┘
+                │                          └── changes requested (planned) ┘
                 ├── duplicate → closed
                 ├── not-ready → waiting for info
                 └── not-reproducible → human intervention
 ```
+
+> **Note:** The automated rework loop (Review → Code Agent on "changes requested") is not yet implemented. Today, a "changes requested" outcome requires human intervention. The planned [fix agent (#197)](https://github.com/fullsend-ai/fullsend/issues/197) will automate this loop.
 
 ## What you need to know as a developer
 
@@ -80,7 +82,7 @@ Agent PRs go through the same review process as human PRs:
 The review stage runs N independent review agents in parallel. One is randomly selected as coordinator. The coordinator collects verdicts and applies one of three outcomes:
 
 - **Unanimous approve:** All reviewers agree the PR is good. Label `ready-for-merge` is applied. The PR can be merged per your org's governance policy.
-- **Unanimous rework:** All reviewers agree changes are needed. Label `ready-to-code` is re-applied and the code agent resumes work.
+- **Unanimous rework:** All reviewers agree changes are needed. Label `ready-to-code` is re-applied. Today, a human must address the review feedback manually. When the [fix agent (#197)](https://github.com/fullsend-ai/fullsend/issues/197) is implemented, this rework loop will be automated.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
 Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
