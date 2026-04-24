@@ -4,6 +4,11 @@
        script-test test \
        e2e-test e2e-playwright e2e-export-session e2e-upload-session
 
+# Let Go automatically download the toolchain version required by go.mod.
+# This ensures local builds use the right version without manual intervention.
+# goreleaser is unaffected because it does not invoke Makefile targets.
+export GOTOOLCHAIN := auto
+
 help:
 	@echo "Available targets:"
 	@echo "  help                 - Show this help message"
