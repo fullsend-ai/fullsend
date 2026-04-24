@@ -411,9 +411,13 @@ func TestHeartbeatConcurrency(t *testing.T) {
 	printer := ui.New(&buf)
 	done := make(chan struct{})
 
+	var tickerWg sync.WaitGroup
+
 	// Use a short-interval heartbeat to force actual concurrent writes.
 	ticker := time.NewTicker(1 * time.Millisecond)
+	tickerWg.Add(1)
 	go func() {
+		defer tickerWg.Done()
 		defer ticker.Stop()
 		for {
 			select {
@@ -425,17 +429,21 @@ func TestHeartbeatConcurrency(t *testing.T) {
 		}
 	}()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	var loopWg sync.WaitGroup
+	loopWg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer loopWg.Done()
 		for i := 0; i < 100; i++ {
 			printer.Heartbeat("main goroutine")
 		}
 	}()
 
-	wg.Wait()
+	// Wait for the loop goroutine to finish, then signal the ticker
+	// goroutine to stop and wait for it to exit. This ensures no
+	// goroutine is writing to the buffer when we read it.
+	loopWg.Wait()
 	close(done)
+	tickerWg.Wait()
 
 	output := buf.String()
 	if !strings.Contains(output, "main goroutine") {
