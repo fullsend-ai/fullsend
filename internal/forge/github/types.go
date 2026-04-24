@@ -4,13 +4,14 @@ import "fmt"
 
 // AppPermissions defines the permissions for a GitHub App.
 type AppPermissions struct {
-	Issues         string `json:"issues,omitempty"`
-	PullRequests   string `json:"pull_requests,omitempty"`
-	Checks         string `json:"checks,omitempty"`
-	Contents       string `json:"contents,omitempty"`
-	Workflows      string `json:"workflows,omitempty"`
-	Administration string `json:"administration,omitempty"`
-	Members        string `json:"members,omitempty"`
+	Issues              string `json:"issues,omitempty"`
+	PullRequests        string `json:"pull_requests,omitempty"`
+	Checks              string `json:"checks,omitempty"`
+	Contents            string `json:"contents,omitempty"`
+	Workflows           string `json:"workflows,omitempty"`
+	Administration      string `json:"administration,omitempty"`
+	Members             string `json:"members,omitempty"`
+	OrganizationSecrets string `json:"organization_secrets,omitempty"`
 }
 
 // HookAttributes configures the webhook for a GitHub App.
@@ -63,13 +64,14 @@ func AgentAppConfig(org, role string) AppConfig {
 	case "fullsend":
 		base.Description = fmt.Sprintf("Fullsend orchestrator for %s", org)
 		base.Permissions = AppPermissions{
-			Contents:       "write",
-			Workflows:      "write",
-			Issues:         "read",
-			PullRequests:   "write",
-			Checks:         "read",
-			Administration: "write",
-			Members:        "read",
+			Contents:            "write",
+			Workflows:           "write",
+			Issues:              "read",
+			PullRequests:        "write",
+			Checks:              "read",
+			Administration:      "write",
+			Members:             "read",
+			OrganizationSecrets: "write",
 		}
 		base.Events = []string{"issues", "push", "workflow_dispatch"}
 

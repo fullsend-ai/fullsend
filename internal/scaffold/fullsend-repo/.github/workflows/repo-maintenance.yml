@@ -29,6 +29,8 @@ jobs:
           private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      # Reconciles enrollment state and org secret access for each repo.
+      # Requires the fullsend app to have organization_secrets:write permission.
       - name: Reconcile target repos
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
