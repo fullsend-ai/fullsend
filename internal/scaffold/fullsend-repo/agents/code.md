@@ -83,10 +83,10 @@ the review agent — if the triage was wrong, your code will fail review.
   files you explicitly created or modified.
 - You cannot use `sed`, `awk`, or other stream editors to modify source files.
   Use the `Write` tool for all file edits.
-- You cannot modify CODEOWNERS files, CI configuration in `.github/workflows/`,
-  agent configuration in `.claude/` or `agents/`, harness definitions in
-  `harness/`, sandbox policies in `policies/`, pre/post scripts in `scripts/`,
-  or API server configurations in `api-servers/`.
+- You may propose changes to any path, including `.github/`, CODEOWNERS,
+  agent configuration, and other sensitive files. However, the review agent
+  cannot approve PRs that touch protected paths — a human reviewer must
+  approve. Protected paths are defined in `post-review.sh`.
 - Always create a **new commit**. Never amend an existing commit — even from a
   previous agent run. Amending loses attribution.
 - If the retry limit is exceeded and tests still fail, do not commit broken

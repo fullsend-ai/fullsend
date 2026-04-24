@@ -4,6 +4,10 @@
 # Runs on the GitHub Actions runner AFTER the sandbox is destroyed.
 # CWD is runDir.
 #
+# This script is the sole enforcement point for protected-path checks:
+# if the PR touches sensitive paths, an "approve" action is downgraded
+# to "comment" so only a human can grant approval.
+#
 # Required environment variables:
 #   REVIEW_TOKEN    — token with pull-requests:write on the target repo
 #   PR_NUMBER       — GitHub PR number
@@ -79,6 +83,65 @@ EOF
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Protected-path check: the review agent must not approve PRs that touch
+# sensitive paths. If the PR modifies any of these, downgrade "approve" to
+# "comment" so only a human can grant approval. This is the sole enforcement
+# point — the code agent is free to propose changes to any path.
+# ---------------------------------------------------------------------------
+REVIEW_PROTECTED_PATHS=(
+  ".github/"
+  ".claude/"
+  "agents/"
+  "harness/"
+  "policies/"
+  "scripts/"
+  "api-servers/"
+  "CODEOWNERS"
+  ".pre-commit-config.yaml"
+  ".gitattributes"
+)
+
+if [ "${ACTION}" = "approve" ]; then
+  PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
+  if [ -z "${PR_FILES}" ]; then
+    echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve"
+    exit 1
+  fi
+
+  PROTECTED_MATCHES=""
+  while IFS= read -r file; do
+    [ -z "${file}" ] && continue
+    for pattern in "${REVIEW_PROTECTED_PATHS[@]}"; do
+      if [[ "${file}" == "${pattern}"* ]]; then
+        PROTECTED_MATCHES="${PROTECTED_MATCHES}${file}"$'\n'
+        break
+      fi
+    done
+  done <<< "${PR_FILES}"
+
+  if [ -n "${PROTECTED_MATCHES}" ]; then
+    echo "PR touches protected paths — downgrading approve to comment"
+    echo "${PROTECTED_MATCHES}" | sed '/^$/d' | sed 's/^/  /'
+    ACTION="comment"
+
+    PROTECTED_NOTICE=$'\n\n---\n\n'
+    PROTECTED_NOTICE+=$'> **Protected paths detected** — this PR modifies files under one or more\n'
+    PROTECTED_NOTICE+=$'> protected paths. The review agent cannot approve PRs that touch these paths.\n'
+    PROTECTED_NOTICE+=$'> A human reviewer must approve this PR.\n'
+    PROTECTED_NOTICE+=$'>\n'
+    PROTECTED_NOTICE+=$'> Protected files in this PR:\n'
+    while IFS= read -r f; do
+      [ -z "${f}" ] && continue
+      PROTECTED_NOTICE+="> - \`${f}\`"$'\n'
+    done <<< "${PROTECTED_MATCHES}"
+
+    ORIGINAL_BODY=$(jq -r '.body' "${RESULT_FILE}")
+    MODIFIED_BODY="${ORIGINAL_BODY}${PROTECTED_NOTICE}"
+    export MODIFIED_REVIEW_BODY="${MODIFIED_BODY}"
+  fi
+fi
+
 BODY_FILE=$(mktemp)
 trap 'rm -f "${BODY_FILE}"' EXIT
 
@@ -113,7 +176,11 @@ EOF
     ;;
 esac
 
-jq -r '.body' "${RESULT_FILE}" > "${BODY_FILE}"
+if [ -n "${MODIFIED_REVIEW_BODY:-}" ]; then
+  printf '%s' "${MODIFIED_REVIEW_BODY}" > "${BODY_FILE}"
+else
+  jq -r '.body' "${RESULT_FILE}" > "${BODY_FILE}"
+fi
 gh pr review "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" "${FLAG}" --body-file "${BODY_FILE}"
 
 echo "Review posted: ${ACTION} on ${REPO_FULL_NAME}#${PR_NUMBER}"
