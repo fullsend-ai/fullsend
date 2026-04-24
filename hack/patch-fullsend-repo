@@ -1,0 +1,133 @@
+#!/bin/bash
+
+# patch-fullsend-repo - Sync a remote .fullsend repo to the current scaffold
+#
+# Clones the target org's .fullsend repository, copies all scaffold files
+# into it (adding new files, overwriting changed ones), and opens a PR for
+# review. Remote-only files (e.g. CODEOWNERS, README.md, config.yaml) are
+# left untouched.
+#
+# Usage: hack/patch-fullsend-repo <org>
+#   e.g. hack/patch-fullsend-repo konflux-ci
+#
+# Requires: gh CLI authenticated with repo read/write access
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 <github-org>" >&2
+    echo "  e.g. $0 konflux-ci" >&2
+    exit 1
+fi
+
+ORG="$1"
+REPO="${ORG}/.fullsend"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCAFFOLD_DIR="$(cd "${SCRIPT_DIR}/../internal/scaffold/fullsend-repo" && pwd)"
+
+if [[ ! -d "$SCAFFOLD_DIR" ]]; then
+    echo "error: scaffold directory not found: ${SCAFFOLD_DIR}" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Clone the remote repo
+# ---------------------------------------------------------------------------
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+echo "Cloning ${REPO}..."
+if ! gh repo clone "${REPO}" "$WORKDIR/repo" -- --depth=1 2>&1; then
+    echo "error: failed to clone ${REPO}" >&2
+    exit 1
+fi
+
+CLONE_DIR="$WORKDIR/repo"
+
+# ---------------------------------------------------------------------------
+# Copy scaffold files into the clone
+# ---------------------------------------------------------------------------
+echo "Syncing scaffold files..."
+rsync -a --checksum "$SCAFFOLD_DIR/" "$CLONE_DIR/"
+
+# ---------------------------------------------------------------------------
+# Check for changes
+# ---------------------------------------------------------------------------
+cd "$CLONE_DIR"
+
+if git diff --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
+    echo "No differences — ${REPO} is already in sync with the scaffold."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Build the change summary
+# ---------------------------------------------------------------------------
+ADDED_FILES=$(git ls-files --others --exclude-standard | sort)
+CHANGED_FILES=$(git diff --name-only | sort)
+
+echo
+echo "=== Changes ==="
+if [[ -n "$ADDED_FILES" ]]; then
+    echo
+    echo "New files:"
+    echo "$ADDED_FILES" | sed 's/^/  /'
+fi
+if [[ -n "$CHANGED_FILES" ]]; then
+    echo
+    echo "Modified files:"
+    echo "$CHANGED_FILES" | sed 's/^/  /'
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# Create branch, commit, push, open PR
+# ---------------------------------------------------------------------------
+BRANCH="fullsend/scaffold-sync-$(date +%Y-%m-%d)"
+git checkout -b "$BRANCH"
+
+git add -A
+git commit -m "$(cat <<'COMMIT_EOF'
+chore: sync .fullsend repo with upstream scaffold
+
+Align this repo with the current fullsend scaffold templates from
+fullsend-ai/fullsend:internal/scaffold/fullsend-repo.
+COMMIT_EOF
+)"
+
+echo "Pushing branch ${BRANCH}..."
+git push -u origin "$BRANCH"
+
+# Build PR body
+PR_BODY="## Summary"$'\n\n'
+PR_BODY+="Sync this .fullsend repo with the current scaffold templates from "'`fullsend-ai/fullsend:internal/scaffold/fullsend-repo`.'$'\n\n'
+
+if [[ -n "$ADDED_FILES" ]]; then
+    PR_BODY+="### New files"$'\n\n'
+    while IFS= read -r f; do
+        PR_BODY+="- \`${f}\`"$'\n'
+    done <<< "$ADDED_FILES"
+    PR_BODY+=$'\n'
+fi
+
+if [[ -n "$CHANGED_FILES" ]]; then
+    PR_BODY+="### Modified files"$'\n\n'
+    while IFS= read -r f; do
+        PR_BODY+="- \`${f}\`"$'\n'
+    done <<< "$CHANGED_FILES"
+    PR_BODY+=$'\n'
+fi
+
+PR_BODY+="## Review checklist"$'\n\n'
+PR_BODY+="- [ ] Verify no org-specific customizations were overwritten"$'\n'
+PR_BODY+="- [ ] Check that remote-only files (CODEOWNERS, README.md, config.yaml) are untouched"$'\n'
+
+echo "Creating PR..."
+PR_URL=$(gh pr create \
+    --repo "$REPO" \
+    --head "$BRANCH" \
+    --title "chore: sync .fullsend with upstream scaffold" \
+    --body "$PR_BODY")
+
+echo
+echo "PR created: ${PR_URL}"
