@@ -65,6 +65,11 @@ add_label() {
   fi
 }
 
+# remove_label silently removes a label (no error if absent).
+remove_label() {
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/$1" -X DELETE --silent 2>/dev/null || true
+}
+
 case "${ACTION}" in
   insufficient)
     if [[ -z "${COMMENT}" ]]; then
@@ -75,6 +80,7 @@ case "${ACTION}" in
     printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label..."
+    remove_label "blocked"
     add_label "needs-info"
     ;;
 
@@ -92,8 +98,34 @@ case "${ACTION}" in
     printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label and closing..."
+    remove_label "blocked"
     add_label "duplicate"
     gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
+    ;;
+
+  blocked)
+    # NOTE: There is no automatic mechanism to remove the "blocked" label when
+    # the blocking issue is resolved. Currently, editing the issue re-triggers
+    # triage, and the agent checks whether existing blockers are still open
+    # (Step 2c in triage.md). A scheduled workflow to check blocked issues
+    # periodically would be a more complete solution. (See review notes.)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'blocked' but no comment provided"
+      exit 1
+    fi
+    BLOCKED_BY=$(jq -r '.blocked_by // empty' "${RESULT_FILE}")
+    if [[ -z "${BLOCKED_BY}" ]]; then
+      echo "ERROR: action is 'blocked' but no blocked_by URL provided"
+      exit 1
+    fi
+    echo "Blocked by: ${BLOCKED_BY}"
+    echo "Posting blocked notice..."
+    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+
+    echo "Applying label..."
+    remove_label "ready-to-code"
+    remove_label "needs-info"
+    add_label "blocked"
     ;;
 
   sufficient)
@@ -105,6 +137,7 @@ case "${ACTION}" in
     printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label..."
+    remove_label "blocked"
     add_label "ready-to-code"
     ;;
 

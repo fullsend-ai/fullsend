@@ -53,6 +53,14 @@ run_test "valid-duplicate" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"Duplicate of #10."}' \
   "true"
 
+run_test "valid-blocked-issue" \
+  '{"action":"blocked","reasoning":"upstream dependency","blocked_by":"https://github.com/org/repo/issues/99","comment":"Blocked on upstream."}' \
+  "true"
+
+run_test "valid-blocked-pr" \
+  '{"action":"blocked","reasoning":"waiting on PR","blocked_by":"https://github.com/org/repo/pull/55","comment":"Blocked on a PR."}' \
+  "true"
+
 # --- Conditional requirement failures ---
 
 run_test "insufficient-missing-clarity-scores" \
@@ -65,6 +73,14 @@ run_test "duplicate-missing-duplicate-of" \
 
 run_test "sufficient-missing-triage-summary" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"comment":"Done."}' \
+  "false"
+
+run_test "blocked-missing-blocked-by" \
+  '{"action":"blocked","reasoning":"upstream dependency","comment":"Blocked."}' \
+  "false"
+
+run_test "blocked-malformed-url" \
+  '{"action":"blocked","reasoning":"upstream dependency","blocked_by":"not-a-url","comment":"Blocked."}' \
   "false"
 
 # --- Structural failures ---

@@ -80,13 +80,25 @@ run_test "insufficient-posts-comment-and-labels" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
 
+run_test "insufficient-removes-blocked-label" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
 run_test "sufficient-posts-summary-and-labels" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
 
+run_test "sufficient-removes-blocked-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
 run_test "duplicate-labels" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=duplicate --silent"
+
+run_test "duplicate-removes-blocked-label" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
 run_test "duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
@@ -94,6 +106,24 @@ run_test "duplicate-closes-issue" \
 
 run_test "duplicate-self-reference-fails" \
   '{"action":"duplicate","reasoning":"same issue","duplicate_of":42,"comment":"Duplicate of itself."}' \
+  "" \
+  "true"
+
+run_test "blocked-posts-comment-and-labels" \
+  '{"action":"blocked","reasoning":"needs upstream fix","blocked_by":"https://github.com/other-org/other-repo/issues/99","comment":"This issue is blocked on an upstream dependency."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "blocked-applies-blocked-label" \
+  '{"action":"blocked","reasoning":"needs upstream fix","blocked_by":"https://github.com/other-org/other-repo/issues/99","comment":"This issue is blocked on an upstream dependency."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=blocked --silent"
+
+run_test "blocked-missing-blocked-by-fails" \
+  '{"action":"blocked","reasoning":"needs upstream fix","comment":"Blocked on upstream."}' \
+  "" \
+  "true"
+
+run_test "blocked-missing-comment-fails" \
+  '{"action":"blocked","reasoning":"needs upstream fix","blocked_by":"https://github.com/other-org/other-repo/issues/99"}' \
   "" \
   "true"
 

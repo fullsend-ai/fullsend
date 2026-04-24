@@ -16,6 +16,7 @@ Each stage is triggered by labels and can be restarted with slash commands. The 
 Issue filed → Triage → ready-to-code → Code Agent → ready-for-review → Review → ready-for-merge → Merge
                 │                          ↑                              │
                 │                          └──────── changes requested ───┘
+                ├── blocked → waiting for dependency
                 ├── duplicate → closed
                 ├── not-ready → waiting for info
                 └── not-reproducible → human intervention
@@ -37,6 +38,7 @@ These labels track where an issue is in the pipeline:
 
 | Label | Meaning | What happens next |
 |-------|---------|-------------------|
+| `blocked` | Progress depends on another issue or PR | Triage comment links to the blocker; re-triage on edit checks if blocker is resolved |
 | `duplicate` | Same issue already tracked elsewhere | Issue closed, link to canonical issue |
 | `not-ready` | Missing information | Triage comment explains what's needed; edit the issue body to fix |
 | `not-reproducible` | Bug couldn't be reproduced in the sandbox | Human intervention required; triage comment documents what was tried |
@@ -96,10 +98,11 @@ Every push to a PR in the review stage triggers a new review round. This means `
 The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
-2. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `not-ready` and posts a comment explaining what's missing.
-3. **Attempts reproduction.** Runs the reported steps in an isolated sandbox. If the bug cannot be reproduced, it labels `not-reproducible` and posts a detailed comment documenting what was tried.
-4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
-5. **Hands off.** Labels `ready-to-code` with a summary comment.
+2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a blocker is found, it labels `blocked` and posts a comment linking to the blocking issue or PR. On re-triage, it checks whether existing blockers have been resolved.
+3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `not-ready` and posts a comment explaining what's missing.
+4. **Attempts reproduction.** Runs the reported steps in an isolated sandbox. If the bug cannot be reproduced, it labels `not-reproducible` and posts a detailed comment documenting what was tried.
+5. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
+6. **Hands off.** Labels `ready-to-code` with a summary comment.
 
 **If triage gets it wrong:** Edit the issue body with better information and triage re-runs automatically. Or use `/triage` to force a fresh run — this clears all previous labels and starts from scratch.
 

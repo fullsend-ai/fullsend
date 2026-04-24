@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient"]
+      "enum": ["insufficient", "duplicate", "sufficient", "blocked"]
     },
     "reasoning": {
       "type": "string",
@@ -29,6 +29,11 @@
     },
     "triage_summary": {
       "$ref": "#/$defs/triage_summary"
+    },
+    "blocked_by": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$",
+      "description": "HTML URL of the blocking issue or PR (e.g., https://github.com/org/repo/issues/99 or https://github.com/org/repo/pull/55)"
     }
   },
   "allOf": [
@@ -43,6 +48,10 @@
     {
       "if": { "properties": { "action": { "const": "sufficient" } }, "required": ["action"] },
       "then": { "required": ["clarity_scores", "triage_summary"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "blocked" } }, "required": ["action"] },
+      "then": { "required": ["blocked_by"] }
     }
   ],
   "$defs": {

@@ -718,13 +718,13 @@ Files over 64KB save fine if they contain only ASCII characters.`
 
 	hasTriageLabel := false
 	for _, name := range labelNames {
-		if name == "needs-info" || name == "ready-to-code" || name == "duplicate" {
+		if name == "needs-info" || name == "ready-to-code" || name == "duplicate" || name == "blocked" {
 			hasTriageLabel = true
 			break
 		}
 	}
 	assert.True(t, hasTriageLabel,
-		"issue should have a triage label (needs-info, ready-to-code, or duplicate), got: %v", labelNames)
+		"issue should have a triage label (needs-info, ready-to-code, duplicate, or blocked), got: %v", labelNames)
 }
 
 // runUnenrollmentTest disables test-repo in config.yaml, runs install to
