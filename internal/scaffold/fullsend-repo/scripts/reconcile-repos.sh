@@ -95,8 +95,12 @@ if [ -n "$ENABLED_REPOS" ]; then
     close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"
 
     # Check if already enrolled (shim exists on default branch).
-    REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
-    if [ -n "$REMOTE_CONTENT" ]; then
+    # Fetch content and SHA in one call to avoid race between reads.
+    REMOTE_RESPONSE=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq '[.content, .sha] | @tsv' 2>/dev/null || true)
+    if [ -n "$REMOTE_RESPONSE" ]; then
+      REMOTE_CONTENT=$(printf '%s' "$REMOTE_RESPONSE" | cut -f1)
+      REMOTE_SHA=$(printf '%s' "$REMOTE_RESPONSE" | cut -f2)
+
       # File exists — compare content against current template.
       EXPECTED_B64=$(base64 -w0 < "$SHIM_TEMPLATE")
       # GitHub returns base64 with newlines; strip them for comparison.
@@ -106,19 +110,72 @@ if [ -n "$ENABLED_REPOS" ]; then
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
-      echo "⟳ $REPO enrolled but shim is stale — updating"
-      REMOTE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .sha 2>/dev/null || true)
-      UPDATE_ARGS=(--method PUT --field "message=chore: update fullsend shim workflow" --field "content=$EXPECTED_B64")
-      if [ -n "$REMOTE_SHA" ]; then
-        UPDATE_ARGS+=(--field "sha=$REMOTE_SHA")
+
+      # Shim is stale — update via PR to respect branch protection.
+      echo "⟳ $REPO enrolled but shim is stale — creating update PR"
+
+      DEFAULT_BRANCH=$(gh api "repos/$ORG/$REPO" --jq .default_branch 2>/dev/null || true)
+      if [ -z "$DEFAULT_BRANCH" ]; then
+        echo "::error::Could not determine default branch for $REPO"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
+
+      DEFAULT_SHA=$(gh api "repos/$ORG/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
+      if [ -z "$DEFAULT_SHA" ]; then
+        echo "::error::Could not get default branch SHA for $REPO"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
+
+      # Create or reset the enrollment branch to the default branch tip.
+      if ! gh api "repos/$ORG/$REPO/git/refs" \
+        --method POST \
+        --field "ref=refs/heads/$ENROLL_BRANCH" \
+        --field "sha=$DEFAULT_SHA" \
+        --silent 2>/dev/null; then
+        if ! gh api "repos/$ORG/$REPO/git/refs/heads/$ENROLL_BRANCH" \
+          --method PATCH \
+          --field "sha=$DEFAULT_SHA" \
+          --field "force=true" \
+          --silent; then
+          echo "::error::Failed to create or update branch $ENROLL_BRANCH on $REPO"
+          FAILED=$((FAILED + 1))
+          continue
+        fi
+      fi
+
+      # Write updated shim to the enrollment branch.
+      BRANCH_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$ENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+      UPDATE_ARGS=(--method PUT --field "message=chore: update fullsend shim workflow" --field "branch=$ENROLL_BRANCH" --field "content=$EXPECTED_B64")
+      if [ -n "$BRANCH_SHA" ]; then
+        UPDATE_ARGS+=(--field "sha=$BRANCH_SHA")
       fi
       if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" "${UPDATE_ARGS[@]}" --silent; then
-        echo "::error::Failed to update stale shim on $REPO"
+        echo "::error::Failed to write updated shim to $REPO"
         FAILED=$((FAILED + 1))
-      else
-        echo "✓ $REPO shim updated"
-        ENROLLED=$((ENROLLED + 1))
+        continue
       fi
+
+      # Create or update the PR.
+      EXISTING_PR=$(gh pr list --repo "$ORG/$REPO" --head "$ENROLL_BRANCH" --json url --jq '.[0].url // empty' 2>/dev/null || true)
+      if [ -z "$EXISTING_PR" ]; then
+        if ! PR_URL=$(gh pr create \
+          --repo "$ORG/$REPO" \
+          --head "$ENROLL_BRANCH" \
+          --base "$DEFAULT_BRANCH" \
+          --title "$ENROLL_PR_TITLE" \
+          --body "$ENROLL_PR_BODY"); then
+          echo "::error::Failed to create update PR for $REPO"
+          FAILED=$((FAILED + 1))
+          continue
+        fi
+        echo "✓ Created shim update PR for $REPO: $PR_URL"
+        echo "::notice::Shim update PR: $PR_URL"
+      else
+        echo "✓ Updated shim on existing PR for $REPO: $EXISTING_PR"
+      fi
+      ENROLLED=$((ENROLLED + 1))
       continue
     fi
 
