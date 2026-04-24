@@ -95,9 +95,30 @@ if [ -n "$ENABLED_REPOS" ]; then
     close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"
 
     # Check if already enrolled (shim exists on default branch).
-    if gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
-      echo "✓ $REPO already enrolled"
-      SKIPPED=$((SKIPPED + 1))
+    REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
+    if [ -n "$REMOTE_CONTENT" ]; then
+      # File exists — compare content against current template.
+      EXPECTED_B64=$(base64 -w0 < "$SHIM_TEMPLATE")
+      # GitHub returns base64 with newlines; strip them for comparison.
+      REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\n')
+      if [ "$REMOTE_B64" = "$EXPECTED_B64" ]; then
+        echo "✓ $REPO already enrolled (shim up to date)"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+      fi
+      echo "⟳ $REPO enrolled but shim is stale — updating"
+      REMOTE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .sha 2>/dev/null || true)
+      UPDATE_ARGS=(--method PUT --field "message=chore: update fullsend shim workflow" --field "content=$EXPECTED_B64")
+      if [ -n "$REMOTE_SHA" ]; then
+        UPDATE_ARGS+=(--field "sha=$REMOTE_SHA")
+      fi
+      if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" "${UPDATE_ARGS[@]}" --silent; then
+        echo "::error::Failed to update stale shim on $REPO"
+        FAILED=$((FAILED + 1))
+      else
+        echo "✓ $REPO shim updated"
+        ENROLLED=$((ENROLLED + 1))
+      fi
       continue
     fi
 
