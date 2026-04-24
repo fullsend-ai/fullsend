@@ -108,6 +108,23 @@ case "${ACTION}" in
     add_label "ready-to-code"
     ;;
 
+  feature-request)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'feature-request' but no comment provided"
+      exit 1
+    fi
+    echo "Posting feature-request comment..."
+    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+
+    echo "Removing bug-related labels..."
+    for label in bug bug-report; do
+      gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${label}" -X DELETE --silent 2>/dev/null || true
+    done
+
+    echo "Applying feature-request label..."
+    add_label "feature-request"
+    ;;
+
   *)
     echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet"
     exit 1
