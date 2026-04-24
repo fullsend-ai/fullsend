@@ -106,6 +106,19 @@ run_test "duplicate-self-reference-fails" \
   "" \
   "true"
 
+run_test "feature-request-posts-comment" \
+  '{"action":"feature-request","reasoning":"CSV export never existed","comment":"This appears to be a feature request rather than a bug — the ability to export to CSV is not part of the current functionality. Relabeling so it can be prioritized as a feature."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "feature-request-applies-label" \
+  '{"action":"feature-request","reasoning":"CSV export never existed","comment":"This appears to be a feature request rather than a bug — the ability to export to CSV is not part of the current functionality. Relabeling so it can be prioritized as a feature."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature-request --silent"
+
+run_test "feature-request-no-comment-fails" \
+  '{"action":"feature-request","reasoning":"CSV export never existed","comment":""}' \
+  "" \
+  "true"
+
 run_test "unknown-action-fails" \
   '{"action":"not_a_bug","reasoning":"working as intended","comment":"This is working as intended."}' \
   "" \
