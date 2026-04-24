@@ -16,7 +16,7 @@ Date: 2026-04-01
 
 ## Status
 
-Accepted
+Accepted (credential delivery tiers extended by [ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md))
 
 ## Context
 
