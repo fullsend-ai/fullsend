@@ -96,7 +96,7 @@ COMMIT_EOF
 )"
 
 echo "Pushing branch ${BRANCH}..."
-git push -u origin "$BRANCH"
+git push --force-with-lease -u origin "$BRANCH"
 
 # Build PR body
 PR_BODY="## Summary"$'\n\n'
