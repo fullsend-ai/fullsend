@@ -101,6 +101,15 @@ case "${ACTION}" in
       echo "ERROR: action is 'sufficient' but no comment provided"
       exit 1
     fi
+
+    # Guard: reject sufficient results that contain information_gaps.
+    # If the agent identified open questions, it should have used "insufficient".
+    GAP_COUNT=$(jq '.triage_summary.information_gaps // [] | length' "${RESULT_FILE}")
+    if [[ "${GAP_COUNT}" -gt 0 ]]; then
+      echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage"
+      exit 1
+    fi
+
     echo "Posting triage summary..."
     printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 

@@ -72,8 +72,7 @@
         "environment": { "type": "string" },
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
-        "proposed_test_case": { "type": "string", "minLength": 1 },
-        "information_gaps": { "type": "array", "items": { "type": "string" } }
+        "proposed_test_case": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }
