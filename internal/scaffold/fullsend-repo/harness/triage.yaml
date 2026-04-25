@@ -9,6 +9,9 @@ host_files:
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/workspace/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /tmp/workspace/.gcp-oidc-token
+    optional: true
   - src: env/triage.env
     dest: /tmp/workspace/.env.d/triage.env
     expand: true

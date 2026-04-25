@@ -24,6 +24,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      id-token: write
       issues: write
       packages: read
       pull-requests: write
@@ -99,7 +100,15 @@ jobs:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
         run: bash scripts/pre-code.sh
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (WIF)
+        if: secrets.FULLSEND_GCP_WIF_PROVIDER != ''
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.FULLSEND_GCP_WIF_SA_EMAIL }}
+
+      - name: Authenticate to Google Cloud (SA key)
+        if: secrets.FULLSEND_GCP_WIF_PROVIDER == ''
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
@@ -112,6 +121,41 @@ jobs:
               echo "::add-mask::${val}"
             fi
           done
+
+      - name: Prepare sandbox credentials
+        run: |
+          CRED_CONFIG="$GOOGLE_APPLICATION_CREDENTIALS"
+          CRED_TYPE=$(jq -r '.type // empty' "$CRED_CONFIG" 2>/dev/null || true)
+          if [[ "$CRED_TYPE" == "external_account" ]]; then
+            # The auth action writes credential_source.url (not .file) pointing to
+            # GitHub's OIDC endpoint. The sandbox cannot reach that endpoint, so we
+            # pre-fetch the OIDC token here and create a file-based credential config.
+            OIDC_URL=$(jq -r '.credential_source.url // empty' "$CRED_CONFIG")
+            OIDC_AUTH=$(jq -r '.credential_source.headers.Authorization // empty' "$CRED_CONFIG")
+            if [[ -z "$OIDC_URL" || -z "$OIDC_AUTH" ]]; then
+              echo "::error::WIF credential config missing credential_source.url or auth header"
+              exit 1
+            fi
+
+            OIDC_DEST="$RUNNER_TEMP/gcp-oidc-token"
+            curl -sSf -H "Authorization: $OIDC_AUTH" "$OIDC_URL" > "$OIDC_DEST"
+
+            SANDBOX_CREDS="$RUNNER_TEMP/sandbox-gcp-credentials.json"
+            jq '{
+              type: .type,
+              audience: .audience,
+              subject_token_type: .subject_token_type,
+              token_url: .token_url,
+              service_account_impersonation_url: .service_account_impersonation_url,
+              credential_source: {
+                file: "/tmp/workspace/.gcp-oidc-token",
+                format: .credential_source.format
+              }
+            }' "$CRED_CONFIG" > "$SANDBOX_CREDS"
+
+            echo "GOOGLE_APPLICATION_CREDENTIALS=$SANDBOX_CREDS" >> "$GITHUB_ENV"
+            echo "GCP_OIDC_TOKEN_FILE=$OIDC_DEST" >> "$GITHUB_ENV"
+          fi
 
       - name: Setup agent environment
         env:

@@ -45,6 +45,12 @@ func TestInstallCmd_Flags(t *testing.T) {
 	vendorBinaryFlag := cmd.Flags().Lookup("vendor-fullsend-binary")
 	require.NotNil(t, vendorBinaryFlag, "expected --vendor-fullsend-binary flag")
 	assert.Equal(t, "false", vendorBinaryFlag.DefValue)
+
+	wifProviderFlag := cmd.Flags().Lookup("gcp-wif-provider")
+	require.NotNil(t, wifProviderFlag, "expected --gcp-wif-provider flag")
+
+	wifSAEmailFlag := cmd.Flags().Lookup("gcp-wif-sa-email")
+	require.NotNil(t, wifSAEmailFlag, "expected --gcp-wif-sa-email flag")
 }
 
 func TestUninstallCmd_RequiresOrg(t *testing.T) {

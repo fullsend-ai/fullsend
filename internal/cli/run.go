@@ -635,6 +635,9 @@ func bootstrapEnv(sshConfigPath, sandboxName, repoDir string, h *harness.Harness
 	for _, hf := range h.HostFiles {
 		hostPath := os.ExpandEnv(hf.Src)
 		if hostPath == "" {
+			if hf.Optional {
+				continue
+			}
 			return fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
 		}
 
