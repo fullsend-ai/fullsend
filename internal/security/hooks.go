@@ -19,6 +19,9 @@ var TirithCheckHook []byte
 //go:embed hooks/unicode_posttool.py
 var UnicodePostToolHook []byte
 
+//go:embed hooks/context_suppress_posttool.py
+var ContextSuppressPostToolHook []byte
+
 // hookEntry represents a single hook command in Claude settings.
 type hookEntry struct {
 	Type    string `json:"type"`
@@ -72,11 +75,17 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 		})
 	}
 
-	// PostToolUse hooks for Bash|WebFetch|Read: secret redaction then unicode
-	// scanning. Combined into a single matcher so Claude Code chains them
-	// sequentially (separate matchers run in parallel on the original result,
-	// which would cause modifications to conflict).
+	// PostToolUse hooks for Bash|WebFetch|Read. Combined into a single matcher
+	// so Claude Code chains them sequentially (separate matchers run in parallel
+	// on the original result, which would cause modifications to conflict).
+	// Order: context suppress (compacts verbose success output) → secret redact
+	// → unicode scan. Suppressing first avoids scanning text we'd discard.
 	var postToolHooks []hookEntry
+	if contextSuppressPostToolEnabled(sec) {
+		postToolHooks = append(postToolHooks, hookEntry{
+			Type: "command", Command: "python3 " + SandboxHooksDir + "/context_suppress_posttool.py",
+		})
+	}
 	if secretRedactPostToolEnabled(sec) {
 		postToolHooks = append(postToolHooks, hookEntry{
 			Type: "command", Command: "python3 " + SandboxHooksDir + "/secret_redact_posttool.py",
@@ -121,6 +130,9 @@ func HookFiles(h *harness.Harness) map[string][]byte {
 	if unicodePostToolEnabled(sec) {
 		files["unicode_posttool.py"] = UnicodePostToolHook
 	}
+	if contextSuppressPostToolEnabled(sec) {
+		files["context_suppress_posttool.py"] = ContextSuppressPostToolHook
+	}
 
 	return files
 }
@@ -159,4 +171,11 @@ func unicodePostToolEnabled(sec *harness.SecurityConfig) bool {
 		return true
 	}
 	return boolDefault(sec.SandboxHooks.UnicodePostTool, true)
+}
+
+func contextSuppressPostToolEnabled(sec *harness.SecurityConfig) bool {
+	if sec == nil || sec.SandboxHooks == nil {
+		return true
+	}
+	return boolDefault(sec.SandboxHooks.ContextSuppressPostTool, true)
 }

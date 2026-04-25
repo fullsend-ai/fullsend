@@ -110,10 +110,11 @@ type LLMGuardConfig struct {
 // SandboxHooks configures Claude Code PreToolUse/PostToolUse hooks
 // that run inside the sandbox during agent execution.
 type SandboxHooks struct {
-	Tirith               *TirithConfig `yaml:"tirith,omitempty"`
-	SSRFPreTool          *bool         `yaml:"ssrf_pretool,omitempty"`           // default: true
-	SecretRedactPostTool *bool         `yaml:"secret_redact_posttool,omitempty"` // default: true
-	UnicodePostTool      *bool         `yaml:"unicode_posttool,omitempty"`       // default: true
+	Tirith                  *TirithConfig `yaml:"tirith,omitempty"`
+	SSRFPreTool             *bool         `yaml:"ssrf_pretool,omitempty"`              // default: true
+	SecretRedactPostTool    *bool         `yaml:"secret_redact_posttool,omitempty"`    // default: true
+	UnicodePostTool         *bool         `yaml:"unicode_posttool,omitempty"`          // default: true
+	ContextSuppressPostTool *bool         `yaml:"context_suppress_posttool,omitempty"` // default: true
 }
 
 // TirithConfig configures the Tirith Rust CLI scanner for terminal security.
