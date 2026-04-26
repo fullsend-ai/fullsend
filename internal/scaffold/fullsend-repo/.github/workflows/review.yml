@@ -12,15 +12,21 @@ on:
       event_payload:
         required: true
         type: string
+  repository_dispatch:
+    types:
+      - fullsend-review
 
 concurrency:
-  group: fullsend-review-${{ fromJSON(inputs.event_payload).pull_request.number || fromJSON(inputs.event_payload).issue.number }}
+  group: fullsend-review-${{ fromJSON(github.event_name == 'repository_dispatch' && github.event.client_payload.event_payload || inputs.event_payload).pull_request.number || fromJSON(github.event_name == 'repository_dispatch' && github.event.client_payload.event_payload || inputs.event_payload).issue.number }}
   cancel-in-progress: true
 
 jobs:
   review:
     name: Review
     runs-on: ubuntu-latest
+    env:
+      DISPATCH_SOURCE_REPO: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.source_repo || inputs.source_repo }}
+      DISPATCH_EVENT_PAYLOAD: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.event_payload || inputs.event_payload }}
     permissions:
       actions: write
       contents: read
@@ -33,7 +39,7 @@ jobs:
 
       - name: Validate source repo is enrolled
         env:
-          SOURCE_REPO: ${{ inputs.source_repo }}
+          SOURCE_REPO: ${{ env.DISPATCH_SOURCE_REPO }}
         run: |
           # Format check — must be owner/repo, safe characters only
           if [[ ! "$SOURCE_REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
@@ -57,7 +63,7 @@ jobs:
       - name: Extract target repo name
         id: repo-parts
         env:
-          SOURCE_REPO: ${{ inputs.source_repo }}
+          SOURCE_REPO: ${{ env.DISPATCH_SOURCE_REPO }}
         run: echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"
 
       - name: Generate sandbox token (read-only)
@@ -85,7 +91,7 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v6
         with:
-          repository: ${{ inputs.source_repo }}
+          repository: ${{ env.DISPATCH_SOURCE_REPO }}
           token: ${{ steps.sandbox-token.outputs.token }}
           path: target-repo
           fetch-depth: 1
@@ -119,10 +125,10 @@ jobs:
       - name: Run review agent
         uses: ./.github/actions/fullsend
         env:
-          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
-          GITHUB_PR_URL: ${{ fromJSON(inputs.event_payload).pull_request.html_url || fromJSON(inputs.event_payload).issue.html_url }}
+          GITHUB_ISSUE_URL: ${{ fromJSON(env.DISPATCH_EVENT_PAYLOAD).issue.html_url }}
+          GITHUB_PR_URL: ${{ fromJSON(env.DISPATCH_EVENT_PAYLOAD).pull_request.html_url || fromJSON(env.DISPATCH_EVENT_PAYLOAD).issue.html_url }}
           REVIEW_TOKEN: ${{ steps.review-token.outputs.token }}
-          REPO_FULL_NAME: ${{ inputs.source_repo }}
-          PR_NUMBER: ${{ fromJSON(inputs.event_payload).pull_request.number || fromJSON(inputs.event_payload).issue.number }}
+          REPO_FULL_NAME: ${{ env.DISPATCH_SOURCE_REPO }}
+          PR_NUMBER: ${{ fromJSON(env.DISPATCH_EVENT_PAYLOAD).pull_request.number || fromJSON(env.DISPATCH_EVENT_PAYLOAD).issue.number }}
         with:
           agent: review

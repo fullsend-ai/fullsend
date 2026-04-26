@@ -12,15 +12,21 @@ on:
       event_payload:
         required: true
         type: string
+  repository_dispatch:
+    types:
+      - fullsend-triage
 
 concurrency:
-  group: fullsend-triage-${{ fromJSON(inputs.event_payload).issue.number }}
+  group: fullsend-triage-${{ fromJSON(github.event_name == 'repository_dispatch' && github.event.client_payload.event_payload || inputs.event_payload).issue.number }}
   cancel-in-progress: true
 
 jobs:
   triage:
     name: Triage
     runs-on: ubuntu-latest
+    env:
+      DISPATCH_SOURCE_REPO: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.source_repo || inputs.source_repo }}
+      DISPATCH_EVENT_PAYLOAD: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.event_payload || inputs.event_payload }}
     permissions:
       actions: write
       contents: read
@@ -32,7 +38,7 @@ jobs:
 
       - name: Validate source repo is enrolled
         env:
-          SOURCE_REPO: ${{ inputs.source_repo }}
+          SOURCE_REPO: ${{ env.DISPATCH_SOURCE_REPO }}
         run: |
           # Format check — must be owner/repo, safe characters only
           if [[ ! "$SOURCE_REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
@@ -64,7 +70,7 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v6
         with:
-          repository: ${{ inputs.source_repo }}
+          repository: ${{ env.DISPATCH_SOURCE_REPO }}
           token: ${{ steps.app-token.outputs.token }}
           path: target-repo
           fetch-depth: 1
@@ -98,6 +104,6 @@ jobs:
       - name: Run triage agent
         uses: ./.github/actions/fullsend
         env:
-          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          GITHUB_ISSUE_URL: ${{ fromJSON(env.DISPATCH_EVENT_PAYLOAD).issue.html_url }}
         with:
           agent: triage

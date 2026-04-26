@@ -1,0 +1,75 @@
+# Receives workflow_dispatch from enrolled-repo shims (stage + event metadata),
+# then emits a repository_dispatch so triage.yml / code.yml / review.yml can use
+# on.repository_dispatch.
+#
+# Security / credentials:
+# - POST .../dispatches MUST use an installation token from the orchestrator
+#   GitHub App (FULLSEND_FULLSEND_APP_*). That app manifest includes contents:write,
+#   which matches GitHub's requirement for repository_dispatch — without placing
+#   FULLSEND_DISPATCH_TOKEN (PAT) in the Contents-class path for this API.
+# - Do not use FULLSEND_DISPATCH_TOKEN here; keep PAT on enrolled repos for
+#   workflow_dispatch only (gh workflow run dispatch-agent.yml).
+# - Triage / code / review workflows keep using their per-role app tokens; this
+#   file is the only agent pipeline step that uses the orchestrator app.
+name: Dispatch agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Agent stage (maps to repository_dispatch event_type fullsend-<stage>)
+        required: true
+        type: choice
+        options:
+          - triage
+          - code
+          - review
+      event_type:
+        description: Original GitHub event name from the shim (e.g. issues, issue_comment)
+        required: true
+        type: string
+      source_repo:
+        description: Enrolled repository owner/name the agent should run against
+        required: true
+        type: string
+      event_payload:
+        description: JSON string of the original github.event forwarded by the shim
+        required: true
+        type: string
+
+concurrency:
+  group: dispatch-agent-${{ inputs.stage }}-${{ inputs.source_repo }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Emit repository_dispatch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Generate fullsend app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.FULLSEND_FULLSEND_APP_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Emit repository_dispatch for agent workflow
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DISPATCH_TYPE: fullsend-${{ inputs.stage }}
+          ORIG_EVENT_TYPE: ${{ inputs.event_type }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
+        run: |
+          set -euo pipefail
+          body="$(jq -n \
+            --arg dt "$DISPATCH_TYPE" \
+            --arg oet "$ORIG_EVENT_TYPE" \
+            --arg sr "$SOURCE_REPO" \
+            --arg ep "$EVENT_PAYLOAD" \
+            '{event_type: $dt, client_payload: {event_type: $oet, source_repo: $sr, event_payload: $ep}}')"
+          printf '%s' "$body" | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -

@@ -1,6 +1,10 @@
 # fullsend shim workflow
 # Routes events to per-role agent dispatch workflows in .fullsend.
 #
+# Credentials: uses ONLY secrets.FULLSEND_DISPATCH_TOKEN (PAT) to run
+# gh workflow run dispatch-agent.yml on owner/.fullsend. The orchestrator
+# GitHub App PEM lives only on .fullsend; enrolled repos never see it.
+#
 # Security: pull_request_target runs the BASE branch version of this workflow,
 # preventing PRs from modifying it to exfiltrate the dispatch token.
 # This shim never checks out PR code, so it is not vulnerable to "pwn request"
@@ -38,7 +42,7 @@ jobs:
         )
       )
     steps:
-      - name: Dispatch triage
+      - name: Dispatch triage stage
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ toJSON(github.event) }}
@@ -46,8 +50,9 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run triage.yml \
+          gh workflow run dispatch-agent.yml \
             --repo "$DISPATCH_REPO" \
+            --field stage=triage \
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
@@ -62,7 +67,7 @@ jobs:
         startsWith(github.event.comment.body, '/code ')
       ))
     steps:
-      - name: Dispatch code
+      - name: Dispatch code stage
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ toJSON(github.event) }}
@@ -70,8 +75,9 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run code.yml \
+          gh workflow run dispatch-agent.yml \
             --repo "$DISPATCH_REPO" \
+            --field stage=code \
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
@@ -87,7 +93,7 @@ jobs:
       )) ||
       github.event_name == 'pull_request_target'
     steps:
-      - name: Dispatch review
+      - name: Dispatch review stage
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ toJSON(github.event) }}
@@ -95,8 +101,9 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run review.yml \
+          gh workflow run dispatch-agent.yml \
             --repo "$DISPATCH_REPO" \
+            --field stage=review \
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"

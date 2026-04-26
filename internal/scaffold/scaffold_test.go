@@ -17,6 +17,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		".github/workflows/triage.yml",
 		".github/workflows/code.yml",
 		".github/workflows/review.yml",
+		".github/workflows/dispatch-agent.yml",
 		".github/workflows/repo-maintenance.yml",
 		".github/actions/fullsend/action.yml",
 		".github/scripts/setup-agent-env.sh",
@@ -56,6 +57,8 @@ func TestShimTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "dispatch-triage")
 	assert.Contains(t, s, "dispatch-code")
 	assert.Contains(t, s, "dispatch-review")
+	assert.Contains(t, s, "dispatch-agent.yml")
+	assert.Contains(t, s, "--field stage=triage")
 }
 
 func TestWalkFullsendRepo(t *testing.T) {
@@ -73,6 +76,7 @@ func TestTriageWorkflowContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "repository_dispatch")
 	assert.Contains(t, s, "event_type")
 	assert.Contains(t, s, "source_repo")
 	assert.Contains(t, s, "event_payload")
