@@ -7,9 +7,11 @@
 # Required env vars:
 #   FULLSEND_OUTPUT_SCHEMA — path to the JSON Schema file
 #
-# The script looks for agent-result.json (or any .json file) in the
-# iteration output directory. The working directory is the iteration dir
-# (set by run.go).
+# Optional env vars:
+#   FULLSEND_OUTPUT_FILE  — filename to validate (default: agent-result.json)
+#
+# The script looks for the output file in the iteration output directory.
+# The working directory is the iteration dir (set by run.go).
 
 set -euo pipefail
 
@@ -22,7 +24,7 @@ if [[ ! -d "${OUTPUT_DIR}" ]]; then
   exit 1
 fi
 
-RESULT_FILE="${OUTPUT_DIR}/agent-result.json"
+RESULT_FILE="${OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE:-agent-result.json}"
 if [[ ! -f "${RESULT_FILE}" ]]; then
   echo "FAIL: ${RESULT_FILE} not found"
   exit 1

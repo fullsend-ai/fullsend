@@ -1,0 +1,115 @@
+version: 1
+
+# Sandbox policy for the fix agent.
+#
+# Identical to the code agent policy — the fix agent needs the same network
+# access (Vertex AI, GitHub API for gh pr view/diff, package registries)
+# because it runs tests and linters. The review body is pre-fetched by the
+# workflow; gh api is banned via disallowedTools in agents/fix.md.
+
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  vertex_ai:
+    name: vertex-ai
+    endpoints:
+      - host: "*.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/claude"
+      - path: "**/node"
+
+  github_api:
+    name: github-api
+    endpoints:
+      - host: "api.github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/gh"
+      - path: "**/git"
+      - path: "**/node"
+      - path: "**/pre-commit"
+
+  gitleaks_releases:
+    name: gitleaks-releases
+    endpoints:
+      - host: "github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "objects.githubusercontent.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "release-assets.githubusercontent.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/pre-commit"
+
+  package_registries:
+    name: package-registries
+    endpoints:
+      - host: "registry.npmjs.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "pypi.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "files.pythonhosted.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "proxy.golang.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "sum.golang.org"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "storage.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/npm"
+      - path: "**/node"
+      - path: "**/pip"
+      - path: "**/pip3"
+      - path: "**/python"
+      - path: "**/python3"
+      - path: "**/python3.*"
+      - path: "**/go"
+      - path: "**/pre-commit"
