@@ -15,11 +15,12 @@
 #   STALE_DAYS         - days of inactivity before a branch is considered stale (default: 30)
 #   PROTECTED_PATTERNS - space-separated branch patterns to skip (default: "main master release/*")
 #   MAX_BRANCHES       - maximum number of branches to process per run (default: 100)
+#   DRY_RUN            - set to "true" to preview deletions (alternative to --dry-run flag)
 
 set -euo pipefail
 
 dry_run=false
-if [[ "${1:-}" == "--dry-run" ]]; then
+if [[ "${1:-}" == "--dry-run" ]] || [[ "${DRY_RUN:-}" == "true" ]]; then
   dry_run=true
 fi
 
@@ -68,6 +69,15 @@ while IFS= read -r branch; do
     continue
   fi
 
+  encoded_branch=$(urlencode_branch "${branch}")
+
+  gh_protected=$(gh api "repos/${GH_REPO}/branches/${encoded_branch}" --jq '.protected' 2>/dev/null) || true
+  if [[ "${gh_protected}" == "true" ]]; then
+    echo "SKIP (GitHub protected): ${branch}"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
   pr_count=$(gh pr list --repo "${GH_REPO}" --head "${branch}" --state open --json number --jq 'length')
   if [ "${pr_count}" -gt 0 ]; then
     echo "SKIP (open PR): ${branch}"
@@ -75,8 +85,7 @@ while IFS= read -r branch; do
     continue
   fi
 
-  encoded_branch=$(urlencode_branch "${branch}")
-  last_commit=$(gh api -X GET "repos/${GH_REPO}/commits" -f sha="${branch}" -f per_page=1 --jq '.[0].commit.committer.date' 2>/dev/null) || true
+  last_commit=$(gh api -X GET "repos/${GH_REPO}/commits" -f sha="${encoded_branch}" -f per_page=1 --jq '.[0].commit.committer.date' 2>/dev/null) || true
 
   if [[ -z "${last_commit}" ]]; then
     echo "SKIP (no commit data): ${branch}"
@@ -85,7 +94,7 @@ while IFS= read -r branch; do
   fi
 
   if [[ "${last_commit}" < "${cutoff}" ]]; then
-    last_sha=$(gh api -X GET "repos/${GH_REPO}/commits" -f sha="${branch}" -f per_page=1 --jq '.[0].sha' 2>/dev/null) || true
+    last_sha=$(gh api -X GET "repos/${GH_REPO}/commits" -f sha="${encoded_branch}" -f per_page=1 --jq '.[0].sha' 2>/dev/null) || true
     if [ "${dry_run}" = true ]; then
       echo "WOULD DELETE: ${branch} (last commit: ${last_commit}, sha: ${last_sha:-unknown})"
     else
