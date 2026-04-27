@@ -242,22 +242,14 @@ func TestManagedFilesDoNotIncludeOldPlaceholders(t *testing.T) {
 }
 
 // codeownersErrorClient is a test double that errors only on CODEOWNERS writes.
-// It embeds FakeClient for all other methods.
+// It embeds FakeClient for all other methods (including SyncFiles).
 type codeownersErrorClient struct {
 	*forge.FakeClient
-	created []forge.FileRecord
 }
 
-func (c *codeownersErrorClient) CreateOrUpdateFile(_ context.Context, owner, repo, path, message string, content []byte) error {
+func (c *codeownersErrorClient) CreateOrUpdateFile(_ context.Context, _, _, path, _ string, _ []byte) error {
 	if path == "CODEOWNERS" {
 		return errors.New("codeowners write failed")
 	}
-	c.created = append(c.created, forge.FileRecord{
-		Owner:   owner,
-		Repo:    repo,
-		Path:    path,
-		Message: message,
-		Content: content,
-	})
 	return nil
 }
