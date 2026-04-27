@@ -522,6 +522,12 @@ func (c *LiveClient) syncFilesOnce(ctx context.Context, owner, repo, branch, mes
 		return fmt.Errorf("get existing tree: %w", err)
 	}
 
+	for i := range files {
+		if files[i].Mode == "" {
+			files[i].Mode = "100644"
+		}
+	}
+
 	existingIndex := make(map[string]treeEntry, len(existing))
 	for _, e := range existing {
 		existingIndex[e.Path] = e
@@ -529,12 +535,8 @@ func (c *LiveClient) syncFilesOnce(ctx context.Context, owner, repo, branch, mes
 
 	var changed []forge.TreeFile
 	for _, f := range files {
-		mode := f.Mode
-		if mode == "" {
-			mode = "100644"
-		}
 		newSHA := gitBlobSHA(f.Content)
-		if cur, ok := existingIndex[f.Path]; ok && cur.SHA == newSHA && cur.Mode == mode {
+		if cur, ok := existingIndex[f.Path]; ok && cur.SHA == newSHA && cur.Mode == f.Mode {
 			continue
 		}
 		changed = append(changed, f)
@@ -550,13 +552,9 @@ func (c *LiveClient) syncFilesOnce(ctx context.Context, owner, repo, branch, mes
 		if err != nil {
 			return fmt.Errorf("create blob for %s: %w", f.Path, err)
 		}
-		mode := f.Mode
-		if mode == "" {
-			mode = "100644"
-		}
 		treeEntries = append(treeEntries, map[string]string{
 			"path": f.Path,
-			"mode": mode,
+			"mode": f.Mode,
 			"type": "blob",
 			"sha":  blobSHA,
 		})
