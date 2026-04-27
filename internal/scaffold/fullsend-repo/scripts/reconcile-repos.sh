@@ -15,22 +15,25 @@ CONFIG_DIR="${1:-.}"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SHIM_TEMPLATE="$CONFIG_DIR/templates/shim-workflow.yaml"
 SHIM_PATH=".github/workflows/fullsend.yaml"
+REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
+
 ENROLL_BRANCH="fullsend/onboard"
 UNENROLL_BRANCH="fullsend/offboard"
+
 ENROLL_PR_TITLE="chore: connect to fullsend agent pipeline"
 UNENROLL_PR_TITLE="chore: disconnect from fullsend agent pipeline"
+UPDATE_PR_TITLE="chore: update fullsend shim workflow"
+
 ENROLL_PR_BODY="This PR adds a shim workflow that routes repository events to the fullsend agent dispatch workflow in the \`.fullsend\` config repo.
 
 Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline."
-UPDATE_PR_TITLE="Update fullsend shim workflow"
-UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
-
-The shim content has drifted from the template — this brings it back in sync."
-UNENROLL_PR_TITLE="chore: disconnect from fullsend agent pipeline"
 UNENROLL_PR_BODY="This PR removes the fullsend shim workflow. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
-REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
+UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
+
+The shim content has drifted from the template — this brings it back in sync."
+
 
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "::error::config.yaml not found at $CONFIG_FILE"
@@ -46,6 +49,7 @@ ORG="${GITHUB_REPOSITORY_OWNER:?GITHUB_REPOSITORY_OWNER must be set}"
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
 
 ENROLLED=0
+UPDATED=0
 UNENROLLED=0
 SKIPPED=0
 FAILED=0
@@ -166,7 +170,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       # File exists — compare content against current template.
       EXPECTED_B64=$(base64 -w0 < "$SHIM_TEMPLATE")
       # GitHub returns base64 with newlines; strip them for comparison.
-      REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\n')
+      REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
       if [ "$REMOTE_B64" = "$EXPECTED_B64" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
@@ -204,7 +208,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       else
         echo "✓ Updated shim on existing PR for $REPO: $EXISTING_PR"
       fi
-      ENROLLED=$((ENROLLED + 1))
+      UPDATED=$((UPDATED + 1))
       continue
     fi
 
@@ -346,6 +350,7 @@ fi
 echo ""
 echo "=== Reconciliation summary ==="
 echo "Enrolled: $ENROLLED"
+echo "Updated (stale shim): $UPDATED"
 echo "Unenrolled: $UNENROLLED"
 echo "Skipped (already reconciled): $SKIPPED"
 echo "Failed: $FAILED"
