@@ -11,29 +11,19 @@ import (
 
 const codeownersPath = "CODEOWNERS"
 
-// managedFiles lists every file this layer manages.
-// Populated at init from the scaffold plus the CODEOWNERS sentinel.
-var managedFiles []string
-
-func init() {
-	if err := scaffold.WalkFullsendRepo(func(path string, _ []byte) error {
-		managedFiles = append(managedFiles, path)
-		return nil
-	}); err != nil {
-		panic(fmt.Sprintf("walking scaffold: %v", err))
-	}
-	managedFiles = append(managedFiles, codeownersPath)
-}
-
 // WorkflowsLayer manages workflow files and CODEOWNERS in the .fullsend
 // config repo. It writes the reusable agent dispatch workflow, the repo
 // onboarding workflow, and a CODEOWNERS file that grants the installing
 // user ownership of all config-repo contents.
+//
+// Optional agents (e.g. scribe) are only installed when their role
+// appears in the configured roles list.
 type WorkflowsLayer struct {
 	org               string
 	client            forge.Client
 	ui                *ui.Printer
 	authenticatedUser string
+	roles             []string
 }
 
 // Compile-time check that WorkflowsLayer implements Layer.
@@ -41,12 +31,16 @@ var _ Layer = (*WorkflowsLayer)(nil)
 
 // NewWorkflowsLayer creates a new WorkflowsLayer.
 // user is the authenticated user who will own CODEOWNERS entries.
-func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, user string) *WorkflowsLayer {
+// roles controls which agent scaffold files are installed; optional
+// agents are skipped unless their role is present. Pass nil to install
+// all scaffold files (including optional agents).
+func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, user string, roles []string) *WorkflowsLayer {
 	return &WorkflowsLayer{
 		org:               org,
 		client:            client,
 		ui:                printer,
 		authenticatedUser: user,
+		roles:             roles,
 	}
 }
 
@@ -79,7 +73,7 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 // this. CODEOWNERS is written last and its failure is non-fatal because
 // some orgs restrict CODEOWNERS writes to specific teams.
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
-	err := scaffold.WalkFullsendRepo(func(path string, content []byte) error {
+	err := scaffold.WalkFullsendRepoForRoles(l.roles, func(path string, content []byte) error {
 		l.ui.StepStart("Writing " + path)
 		writeErr := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, path, "chore: update "+path, content)
 		if writeErr != nil {
@@ -114,8 +108,15 @@ func (l *WorkflowsLayer) Uninstall(_ context.Context) error {
 func (l *WorkflowsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
+	var managed []string
+	_ = scaffold.WalkFullsendRepoForRoles(l.roles, func(path string, _ []byte) error {
+		managed = append(managed, path)
+		return nil
+	})
+	managed = append(managed, codeownersPath)
+
 	var present, missing []string
-	for _, path := range managedFiles {
+	for _, path := range managed {
 		_, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, path)
 		if err != nil {
 			if forge.IsNotFound(err) {

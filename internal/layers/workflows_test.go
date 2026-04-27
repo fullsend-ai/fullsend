@@ -17,9 +17,14 @@ import (
 
 func newWorkflowsLayer(t *testing.T, client *forge.FakeClient) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
+	return newWorkflowsLayerWithRoles(t, client, nil)
+}
+
+func newWorkflowsLayerWithRoles(t *testing.T, client *forge.FakeClient, roles []string) (*WorkflowsLayer, *bytes.Buffer) {
+	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", roles)
 	return layer, &buf
 }
 
@@ -105,14 +110,14 @@ func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
 	client := &codeownersErrorClient{FakeClient: &forge.FakeClient{}}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", nil)
 
 	err := layer.Install(context.Background())
 	// Install should succeed even though CODEOWNERS write failed
 	require.NoError(t, err)
 
 	// All scaffold files should have been created (CODEOWNERS excluded since it failed)
-	assert.Len(t, client.created, 37)
+	assert.Len(t, client.created, 45)
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
@@ -160,7 +165,7 @@ func TestWorkflowsLayer_Analyze_AllPresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Len(t, report.Details, 38)
+	assert.Len(t, report.Details, 46)
 }
 
 func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
@@ -174,7 +179,7 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusNotInstalled, report.Status)
-	assert.Len(t, report.WouldInstall, 38)
+	assert.Len(t, report.WouldInstall, 46)
 }
 
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
@@ -199,33 +204,62 @@ func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
 	assert.Contains(t, fixJoined, "CODEOWNERS")
 }
 
-func TestManagedFilesMatchScaffold(t *testing.T) {
-	var scaffoldPaths []string
-	err := scaffold.WalkFullsendRepo(func(path string, _ []byte) error {
-		scaffoldPaths = append(scaffoldPaths, path)
-		return nil
-	})
+func TestWorkflowsLayer_DefaultRoles_ExcludesScribe(t *testing.T) {
+	defaultRoles := []string{"fullsend", "triage", "coder", "review"}
+	client := &forge.FakeClient{}
+	layer, _ := newWorkflowsLayerWithRoles(t, client, defaultRoles)
+
+	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	for _, path := range scaffoldPaths {
-		found := false
-		for _, managed := range managedFiles {
-			if managed == path {
-				found = true
-				break
-			}
-		}
-		assert.True(t, found, "managedFiles should include scaffold file %s", path)
+	for _, f := range client.CreatedFiles {
+		assert.NotContains(t, f.Path, "scribe",
+			"scribe file %s should not be installed with default roles", f.Path)
 	}
 }
 
-func TestManagedFilesDoNotIncludeOldPlaceholders(t *testing.T) {
-	for _, path := range managedFiles {
-		assert.NotEqual(t, ".github/workflows/agent.yaml", path,
-			"managedFiles should not include old agent.yaml placeholder")
-		assert.NotEqual(t, ".github/workflows/repo-onboard.yaml", path,
-			"managedFiles should not include old repo-onboard.yaml placeholder")
+func TestWorkflowsLayer_WithScribeRole_IncludesScribe(t *testing.T) {
+	rolesWithScribe := []string{"fullsend", "triage", "coder", "review", "scribe"}
+	client := &forge.FakeClient{}
+	layer, _ := newWorkflowsLayerWithRoles(t, client, rolesWithScribe)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	paths := make(map[string]bool)
+	for _, f := range client.CreatedFiles {
+		paths[f.Path] = true
 	}
+	assert.True(t, paths[".github/workflows/scribe.yml"],
+		"scribe workflow should be installed when scribe role is configured")
+	assert.True(t, paths["agents/scribe.md"],
+		"scribe agent prompt should be installed when scribe role is configured")
+}
+
+func TestWorkflowsLayer_NilRoles_IncludesAll(t *testing.T) {
+	client := &forge.FakeClient{}
+	layer, _ := newWorkflowsLayerWithRoles(t, client, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	paths := make(map[string]bool)
+	for _, f := range client.CreatedFiles {
+		paths[f.Path] = true
+	}
+	assert.True(t, paths[".github/workflows/scribe.yml"],
+		"nil roles should install all files including scribe")
+}
+
+func TestScaffoldDoesNotIncludeOldPlaceholders(t *testing.T) {
+	err := scaffold.WalkFullsendRepo(func(path string, _ []byte) error {
+		assert.NotEqual(t, ".github/workflows/agent.yaml", path,
+			"scaffold should not include old agent.yaml placeholder")
+		assert.NotEqual(t, ".github/workflows/repo-onboard.yaml", path,
+			"scaffold should not include old repo-onboard.yaml placeholder")
+		return nil
+	})
+	require.NoError(t, err)
 }
 
 // codeownersErrorClient is a test double that errors only on CODEOWNERS writes.

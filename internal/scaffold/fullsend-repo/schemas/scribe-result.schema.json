@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scribe-result.schema.json",
+  "title": "Scribe Agent Result",
+  "description": "Structured output from the scribe agent mapping meeting topics to the issue backlog.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["topics", "new_issues", "stats"],
+  "properties": {
+    "topics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/topic" }
+    },
+    "new_issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/new_issue" }
+    },
+    "stats": { "$ref": "#/$defs/stats" }
+  },
+  "$defs": {
+    "topic": {
+      "type": "object",
+      "required": ["topic", "summary", "confidence"],
+      "properties": {
+        "topic": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "existing_issue": { "type": ["integer", "null"], "minimum": 1 },
+        "new_issue_title": { "type": ["string", "null"], "maxLength": 200 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "omit_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "new_issue": {
+      "type": "object",
+      "required": ["title", "summary", "body", "confidence"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "summary": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 15000 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["meeting-notes"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "stats": {
+      "type": "object",
+      "required": ["notes_processed", "topics_extracted", "existing_matched", "new_proposed", "omitted"],
+      "properties": {
+        "notes_processed": { "type": "integer", "minimum": 0 },
+        "topics_extracted": { "type": "integer", "minimum": 0 },
+        "existing_matched": { "type": "integer", "minimum": 0 },
+        "new_proposed": { "type": "integer", "minimum": 0 },
+        "omitted": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,40 @@
+agent: agents/scribe.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+policy: policies/scribe.yaml
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/workspace/.gcp-credentials.json
+  - src: env/scribe.env
+    dest: /tmp/workspace/.env.d/scribe.env
+    expand: true
+  - src: ${RUNNER_TEMP}/scribe-workspace/notes
+    dest: /tmp/workspace/notes
+  - src: ${RUNNER_TEMP}/scribe-workspace/backlog.json
+    dest: /tmp/workspace/backlog.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json
+    dest: /tmp/workspace/scribe-meta.json
+
+skills: []
+
+pre_script: scripts/pre-scribe.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
+post_script: scripts/post-scribe.sh
+
+runner_env:
+  SCRIBE_REPO: ${REPO}
+  SCRIBE_SEARCH_QUERY: ${SEARCH_QUERY}
+  SCRIBE_LOOKBACK_HOURS: ${LOOKBACK_HOURS}
+  SCRIBE_DRY_RUN: ${DRY_RUN}
+  GH_TOKEN: ${GH_TOKEN}
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/scribe-result.schema.json
+
+timeout_minutes: 15

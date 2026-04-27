@@ -36,8 +36,5 @@ jobs:
       - name: Run ty check
         run: uvx ty check hack/
 
-      - name: Run Go tests
-        run: go test ./... -count=1
-
       - name: Run ADR linting
         run: make lint

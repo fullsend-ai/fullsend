@@ -1,0 +1,114 @@
+name: Scribe
+
+on:
+  schedule:
+    # Mon–Thu at 16:10 UTC (shortly after typical 9–11 AM ET team syncs).
+    # Adjust to match your meeting schedule.
+    - cron: '10 16 * * 1-4'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview mode — no GitHub writes (ALWAYS use true during development)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      lookback_hours:
+        description: 'How far back to search for meeting notes'
+        required: false
+        default: '3'
+        type: string
+      min_confidence:
+        description: 'Minimum confidence score (0.0–1.0) for topics to pass the security gate'
+        required: false
+        default: '0.6'
+        type: string
+
+# Scheduled runs ALWAYS use dry_run=true as a safety measure.
+# Change the env default below ONLY after thorough testing.
+env:
+  SCRIBE_DRY_RUN_DEFAULT: 'true'
+
+concurrency:
+  group: fullsend-scribe
+  cancel-in-progress: true
+
+jobs:
+  scribe:
+    name: Scribe
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout .fullsend repository
+        uses: actions/checkout@v6
+
+      - name: Determine dry-run mode
+        id: config
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "dry_run=${SCRIBE_DRY_RUN_DEFAULT}" >> "${GITHUB_OUTPUT}"
+            echo "lookback=3" >> "${GITHUB_OUTPUT}"
+            echo "min_confidence=${{ vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "dry_run=${{ inputs.dry_run || 'true' }}" >> "${GITHUB_OUTPUT}"
+            echo "lookback=${{ inputs.lookback_hours || '3' }}" >> "${GITHUB_OUTPUT}"
+            echo "min_confidence=${{ inputs.min_confidence || vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Safety check
+        run: |
+          echo "::notice::Scribe dry_run=${{ steps.config.outputs.dry_run }}"
+          if [[ "${{ steps.config.outputs.dry_run }}" != "true" && "${{ steps.config.outputs.dry_run }}" != "false" ]]; then
+            echo "::error::Invalid dry_run value — must be 'true' or 'false'"
+            exit 1
+          fi
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_SCRIBE_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_SCRIBE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
+
+      - name: Mask GCP credential file paths
+        run: |
+          for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
+            val="${!var:-}"
+            if [[ -n "${val}" ]]; then
+              echo "::add-mask::${val}"
+            fi
+          done
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: SCRIBE_
+          SCRIBE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SCRIBE_REPO: ${{ github.repository_owner }}/${{ vars.SCRIBE_TARGET_REPO || github.event.repository.name }}
+          SCRIBE_SEARCH_QUERY: ${{ vars.SCRIBE_GDRIVE_SEARCH_QUERY }}
+          SCRIBE_NAME_FILTER: ${{ vars.SCRIBE_GDRIVE_NAME_FILTER || '' }}
+          SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
+          SCRIBE_DRY_RUN: ${{ steps.config.outputs.dry_run }}
+          SCRIBE_MIN_CONFIDENCE: ${{ steps.config.outputs.min_confidence }}
+          SCRIBE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          SCRIBE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Install validation dependencies
+        run: pip install --quiet "jsonschema>=4.18.0"
+
+      - name: Run scribe agent
+        uses: ./.github/actions/fullsend
+        with:
+          agent: scribe
