@@ -647,3 +647,29 @@ func (f *FakeClient) SetOrgSecretRepos(_ context.Context, org, name string, repo
 	f.OrgSecretRepoIDs[org+"/"+name] = repoIDs
 	return nil
 }
+
+func (f *FakeClient) SyncFiles(_ context.Context, owner, repo, _, _ string, files []TreeFile) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("SyncFiles"); e != nil {
+		return e
+	}
+
+	for _, tf := range files {
+		f.CreatedFiles = append(f.CreatedFiles, FileRecord{
+			Owner:   owner,
+			Repo:    repo,
+			Path:    tf.Path,
+			Content: tf.Content,
+		})
+	}
+
+	if f.FileContents == nil {
+		f.FileContents = make(map[string][]byte)
+	}
+	for _, tf := range files {
+		f.FileContents[owner+"/"+repo+"/"+tf.Path] = tf.Content
+	}
+	return nil
+}

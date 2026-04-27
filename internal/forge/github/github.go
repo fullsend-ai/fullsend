@@ -4,6 +4,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,15 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"golang.org/x/crypto/nacl/box"
 )
+
+// gitBlobSHA computes the SHA-1 hash that git uses for blob objects.
+// Format: sha1("blob {size}\0{content}")
+func gitBlobSHA(content []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
 
 // LiveClient implements forge.Client for the GitHub REST API.
 type LiveClient struct {
@@ -389,12 +399,12 @@ func (c *LiveClient) CreateFileOnBranch(ctx context.Context, owner, repo, branch
 }
 
 // CreateOrUpdateFile creates a file or updates it if it already exists.
+// Skips the write if the file's content already matches (idempotent).
 // Retries on 404/409 to handle async repo initialization and branch ref races.
 func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
 	return c.retryOnTransient(ctx, path, func() error {
-		// Try to get existing file for its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
 		if err != nil {
 			return fmt.Errorf("check existing file: %w", err)
@@ -412,6 +422,9 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 			if err := decodeJSON(existingResp, &existing); err != nil {
 				return fmt.Errorf("decode existing file: %w", err)
 			}
+			if existing.SHA == gitBlobSHA(content) {
+				return nil
+			}
 			payload["sha"] = existing.SHA
 		} else {
 			existingResp.Body.Close()
@@ -428,12 +441,12 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 
 // CreateOrUpdateFileOnBranch creates or updates a file on a specific branch.
 // Like CreateOrUpdateFile, it fetches the existing SHA before updating.
+// Skips the write if content already matches (idempotent).
 // Retries on 404/409 for async repo init and branch ref races.
 func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
 	return c.retryOnTransient(ctx, path, func() error {
-		// Try to get existing file on the branch for its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath+"?ref="+branch, nil)
 		if err != nil {
 			return fmt.Errorf("check existing file on branch: %w", err)
@@ -452,6 +465,9 @@ func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo
 			if err := decodeJSON(existingResp, &existing); err != nil {
 				return fmt.Errorf("decode existing file: %w", err)
 			}
+			if existing.SHA == gitBlobSHA(content) {
+				return nil
+			}
 			payload["sha"] = existing.SHA
 		} else {
 			existingResp.Body.Close()
@@ -464,6 +480,243 @@ func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo
 		resp.Body.Close()
 		return nil
 	})
+}
+
+// SyncFiles atomically commits multiple files in a single commit using the
+// Git Trees/Blobs/Commits API. Files that haven't changed are skipped.
+// If nothing changed, no commit is created. File modes (100755 for executables)
+// are preserved.
+func (c *LiveClient) SyncFiles(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) error {
+	return c.retryOnTransient(ctx, "sync-files", func() error {
+		return c.syncFilesOnce(ctx, owner, repo, branch, message, files)
+	})
+}
+
+func (c *LiveClient) syncFilesOnce(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) error {
+	if branch == "" {
+		r, err := c.getRepoBranch(ctx, owner, repo)
+		if err != nil {
+			return err
+		}
+		branch = r
+	}
+
+	commitSHA, err := c.getRef(ctx, owner, repo, branch)
+	if err != nil {
+		return fmt.Errorf("get ref heads/%s: %w", branch, err)
+	}
+
+	treeSHA, err := c.getCommitTree(ctx, owner, repo, commitSHA)
+	if err != nil {
+		return fmt.Errorf("get commit tree: %w", err)
+	}
+
+	existing, err := c.getTreeRecursive(ctx, owner, repo, treeSHA)
+	if err != nil {
+		return fmt.Errorf("get existing tree: %w", err)
+	}
+
+	existingIndex := make(map[string]treeEntry, len(existing))
+	for _, e := range existing {
+		existingIndex[e.Path] = e
+	}
+
+	var changed []forge.TreeFile
+	for _, f := range files {
+		mode := f.Mode
+		if mode == "" {
+			mode = "100644"
+		}
+		newSHA := gitBlobSHA(f.Content)
+		if cur, ok := existingIndex[f.Path]; ok && cur.SHA == newSHA && cur.Mode == mode {
+			continue
+		}
+		changed = append(changed, f)
+	}
+
+	if len(changed) == 0 {
+		return nil
+	}
+
+	var treeEntries []map[string]string
+	for _, f := range changed {
+		blobSHA, err := c.createBlob(ctx, owner, repo, f.Content)
+		if err != nil {
+			return fmt.Errorf("create blob for %s: %w", f.Path, err)
+		}
+		mode := f.Mode
+		if mode == "" {
+			mode = "100644"
+		}
+		treeEntries = append(treeEntries, map[string]string{
+			"path": f.Path,
+			"mode": mode,
+			"type": "blob",
+			"sha":  blobSHA,
+		})
+	}
+
+	newTreeSHA, err := c.createTree(ctx, owner, repo, treeSHA, treeEntries)
+	if err != nil {
+		return fmt.Errorf("create tree: %w", err)
+	}
+
+	newCommitSHA, err := c.createCommit(ctx, owner, repo, message, newTreeSHA, commitSHA)
+	if err != nil {
+		return fmt.Errorf("create commit: %w", err)
+	}
+
+	if err := c.updateRef(ctx, owner, repo, branch, newCommitSHA); err != nil {
+		return fmt.Errorf("update ref: %w", err)
+	}
+
+	return nil
+}
+
+type treeEntry struct {
+	Path string
+	Mode string
+	SHA  string
+}
+
+func (c *LiveClient) getRepoBranch(ctx context.Context, owner, repo string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+	if err != nil {
+		return "", fmt.Errorf("get repo default branch: %w", err)
+	}
+	var r struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := decodeJSON(resp, &r); err != nil {
+		return "", fmt.Errorf("decode repo: %w", err)
+	}
+	return r.DefaultBranch, nil
+}
+
+func (c *LiveClient) getRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
+	if err != nil {
+		return "", err
+	}
+	var ref struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := decodeJSON(resp, &ref); err != nil {
+		return "", fmt.Errorf("decode ref: %w", err)
+	}
+	return ref.Object.SHA, nil
+}
+
+func (c *LiveClient) getCommitTree(ctx context.Context, owner, repo, commitSHA string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	if err != nil {
+		return "", err
+	}
+	var commit struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := decodeJSON(resp, &commit); err != nil {
+		return "", fmt.Errorf("decode commit: %w", err)
+	}
+	return commit.Tree.SHA, nil
+}
+
+func (c *LiveClient) getTreeRecursive(ctx context.Context, owner, repo, treeSHA string) ([]treeEntry, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, treeSHA))
+	if err != nil {
+		return nil, err
+	}
+	var tree struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Mode string `json:"mode"`
+			Type string `json:"type"`
+			SHA  string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := decodeJSON(resp, &tree); err != nil {
+		return nil, fmt.Errorf("decode tree: %w", err)
+	}
+	var entries []treeEntry
+	for _, e := range tree.Tree {
+		if e.Type != "blob" {
+			continue
+		}
+		entries = append(entries, treeEntry{Path: e.Path, Mode: e.Mode, SHA: e.SHA})
+	}
+	return entries, nil
+}
+
+func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content []byte) (string, error) {
+	payload := map[string]string{
+		"content":  base64.StdEncoding.EncodeToString(content),
+		"encoding": "base64",
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), payload)
+	if err != nil {
+		return "", err
+	}
+	var blob struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(resp, &blob); err != nil {
+		return "", fmt.Errorf("decode blob: %w", err)
+	}
+	return blob.SHA, nil
+}
+
+func (c *LiveClient) createTree(ctx context.Context, owner, repo, baseTree string, entries []map[string]string) (string, error) {
+	payload := map[string]any{
+		"base_tree": baseTree,
+		"tree":      entries,
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), payload)
+	if err != nil {
+		return "", err
+	}
+	var tree struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(resp, &tree); err != nil {
+		return "", fmt.Errorf("decode tree: %w", err)
+	}
+	return tree.SHA, nil
+}
+
+func (c *LiveClient) createCommit(ctx context.Context, owner, repo, message, treeSHA, parentSHA string) (string, error) {
+	payload := map[string]any{
+		"message": message,
+		"tree":    treeSHA,
+		"parents": []string{parentSHA},
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), payload)
+	if err != nil {
+		return "", err
+	}
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(resp, &commit); err != nil {
+		return "", fmt.Errorf("decode commit: %w", err)
+	}
+	return commit.SHA, nil
+}
+
+func (c *LiveClient) updateRef(ctx context.Context, owner, repo, branch, sha string) error {
+	payload := map[string]any{
+		"sha":   sha,
+		"force": false,
+	}
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch), payload)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // putFileWithRetry wraps a single PUT to the Contents API with retry on

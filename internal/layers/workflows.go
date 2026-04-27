@@ -71,27 +71,22 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 }
 
 // Install writes the workflow files and CODEOWNERS to the .fullsend repo.
-// CODEOWNERS failure is treated as a warning, not a fatal error.
-//
-// Note: writing multiple files sequentially via the Contents API can cause
-// transient 404s because each file write creates a new commit and the branch
-// ref is updated asynchronously. The GitHub client's retry logic handles
-// this. CODEOWNERS is written last and its failure is non-fatal because
-// some orgs restrict CODEOWNERS writes to specific teams.
+// All scaffold files are committed atomically in a single commit via SyncFiles.
+// Unchanged files are skipped automatically. CODEOWNERS is written separately
+// because its failure is treated as a warning, not a fatal error (some orgs
+// restrict CODEOWNERS writes to specific teams).
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
-	err := scaffold.WalkFullsendRepo(func(path string, content []byte) error {
-		l.ui.StepStart("Writing " + path)
-		writeErr := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, path, "chore: update "+path, content)
-		if writeErr != nil {
-			l.ui.StepFail("Failed to write " + path)
-			return fmt.Errorf("writing %s: %w", path, writeErr)
-		}
-		l.ui.StepDone("Wrote " + path)
-		return nil
-	})
+	files, err := scaffold.CollectTreeFiles()
 	if err != nil {
-		return err
+		return fmt.Errorf("collecting scaffold files: %w", err)
 	}
+
+	l.ui.StepStart(fmt.Sprintf("Syncing %d scaffold files", len(files)))
+	if err := l.client.SyncFiles(ctx, l.org, forge.ConfigRepoName, "", "chore: sync scaffold files", files); err != nil {
+		l.ui.StepFail("Failed to sync scaffold files")
+		return fmt.Errorf("syncing scaffold files: %w", err)
+	}
+	l.ui.StepDone(fmt.Sprintf("Synced %d scaffold files", len(files)))
 
 	l.ui.StepStart("Writing " + codeownersPath)
 	if err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, codeownersPath,
