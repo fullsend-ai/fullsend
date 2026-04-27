@@ -35,11 +35,17 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// Should have created scaffold files + CODEOWNERS in the .fullsend repo
-	require.True(t, len(client.CreatedFiles) >= len(managedFiles),
-		"expected at least %d files (scaffold + CODEOWNERS), got %d", len(managedFiles), len(client.CreatedFiles))
+	// SyncFiles writes scaffold files, CreateOrUpdateFile writes CODEOWNERS.
+	// Both record into CreatedFiles.
+	var scaffoldCount int
+	_ = scaffold.WalkFullsendRepo(func(_ string, _ []byte) error {
+		scaffoldCount++
+		return nil
+	})
+	require.Equal(t, scaffoldCount+1, len(client.CreatedFiles),
+		"expected %d scaffold files + CODEOWNERS", scaffoldCount)
 
-	paths := make(map[string]string) // path -> content
+	paths := make(map[string]string)
 	for _, f := range client.CreatedFiles {
 		assert.Equal(t, "test-org", f.Owner)
 		assert.Equal(t, ".fullsend", f.Repo)
@@ -53,7 +59,6 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/repo-maintenance.yml")
 	assert.Contains(t, paths, "CODEOWNERS")
 
-	// Verify CODEOWNERS contains the authenticated user
 	assert.Contains(t, paths["CODEOWNERS"], "admin-user")
 }
 
@@ -102,25 +107,32 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 }
 
 func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
-	// Use a custom client that only errors on CODEOWNERS path
 	client := &codeownersErrorClient{FakeClient: &forge.FakeClient{}}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
 
 	err := layer.Install(context.Background())
-	// Install should succeed even though CODEOWNERS write failed
 	require.NoError(t, err)
 
-	// All scaffold files should have been created (CODEOWNERS excluded since it failed).
-	// Count = managedFiles - 1 (CODEOWNERS).
-	assert.Len(t, client.created, len(managedFiles)-1)
+	// Scaffold files written via SyncFiles (recorded in FakeClient.CreatedFiles).
+	// CODEOWNERS failed via CreateOrUpdateFile override, so not recorded.
+	var scaffoldCount int
+	_ = scaffold.WalkFullsendRepo(func(_ string, _ []byte) error {
+		scaffoldCount++
+		return nil
+	})
+	assert.Len(t, client.FakeClient.CreatedFiles, scaffoldCount)
+
+	for _, f := range client.FakeClient.CreatedFiles {
+		assert.NotEqual(t, "CODEOWNERS", f.Path)
+	}
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{
-			"CreateOrUpdateFile": errors.New("write failed"),
+			"SyncFiles": errors.New("write failed"),
 		},
 	}
 	layer, _ := newWorkflowsLayer(t, client)

@@ -4,6 +4,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"strings"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 //go:embed all:fullsend-repo
@@ -33,4 +36,27 @@ func WalkFullsendRepo(fn func(path string, content []byte) error) error {
 		relPath := path[len("fullsend-repo/"):]
 		return fn(relPath, data)
 	})
+}
+
+// CollectTreeFiles returns all scaffold files as TreeFile entries with
+// appropriate git modes. Files under scripts/ and .github/scripts/ are
+// marked executable (100755).
+func CollectTreeFiles() ([]forge.TreeFile, error) {
+	var files []forge.TreeFile
+	err := WalkFullsendRepo(func(path string, data []byte) error {
+		files = append(files, forge.TreeFile{
+			Path:    path,
+			Content: data,
+			Mode:    fileMode(path),
+		})
+		return nil
+	})
+	return files, err
+}
+
+func fileMode(path string) string {
+	if strings.HasPrefix(path, "scripts/") || strings.HasPrefix(path, ".github/scripts/") {
+		return "100755"
+	}
+	return "100644"
 }
