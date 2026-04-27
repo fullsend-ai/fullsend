@@ -210,3 +210,22 @@ func TestValidateTriageDeleted(t *testing.T) {
 	_, err := FullsendRepoFile("scripts/validate-triage.sh")
 	assert.Error(t, err, "validate-triage.sh should have been deleted")
 }
+
+func TestCollectTreeFiles(t *testing.T) {
+	files, err := CollectTreeFiles()
+	require.NoError(t, err)
+	assert.True(t, len(files) >= 28, "expected at least 28 files, got %d", len(files))
+
+	modes := make(map[string]string)
+	for _, f := range files {
+		modes[f.Path] = f.Mode
+		assert.NotEmpty(t, f.Content, "%s should have content", f.Path)
+	}
+
+	assert.Equal(t, "100755", modes["scripts/pre-code.sh"])
+	assert.Equal(t, "100755", modes["scripts/scan-secrets"])
+	assert.Equal(t, "100755", modes["scripts/post-triage.sh"])
+	assert.Equal(t, "100755", modes[".github/scripts/setup-agent-env.sh"])
+	assert.Equal(t, "100644", modes[".github/workflows/triage.yml"])
+	assert.Equal(t, "100644", modes["agents/code.md"])
+}

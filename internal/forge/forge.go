@@ -71,6 +71,13 @@ type Installation struct {
 	Permissions map[string]string
 }
 
+// TreeFile represents a file to be committed as part of an atomic tree update.
+type TreeFile struct {
+	Path    string // repo-relative path (e.g. "scripts/pre-code.sh")
+	Content []byte
+	Mode    string // git tree mode: "100644" (regular) or "100755" (executable)
+}
+
 // Client abstracts all git forge operations.
 // Implementations exist for GitHub (and eventually GitLab, Forgejo).
 type Client interface {
@@ -143,6 +150,13 @@ type Client interface {
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
 	// On GitHub, this fetches job logs for each job in the run.
 	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
+
+	// SyncFiles atomically commits multiple files in a single commit.
+	// It compares each file against the current tree and only commits
+	// files that have changed. Returns nil without committing if all
+	// files are already up to date. If branch is empty, the repo's
+	// default branch is used.
+	SyncFiles(ctx context.Context, owner, repo, branch, message string, files []TreeFile) error
 
 	// App installation operations
 	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
