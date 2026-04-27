@@ -249,6 +249,7 @@ func TestSyncFiles_AllUnchanged(t *testing.T) {
 		{Path: "file.txt", Content: content, Mode: "100644"},
 	})
 	require.NoError(t, err)
+	assert.Equal(t, 4, callNum, "should only make GET calls (repo, ref, commit, tree), no POST/PATCH")
 }
 
 func TestSyncFiles_CommitsChangedFiles(t *testing.T) {
@@ -350,6 +351,74 @@ func TestSyncFiles_PreservesExecutableMode(t *testing.T) {
 		{Path: "scripts/pre-code.sh", Content: content, Mode: "100755"},
 	})
 	require.NoError(t, err)
+}
+
+func TestCreateOrUpdateFileOnBranch_SkipsUnchanged(t *testing.T) {
+	content := []byte("branch content")
+	blobSHA := gitBlobSHA(content)
+
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			assert.Equal(t, "GET", r.Method)
+			assert.Contains(t, r.URL.RawQuery, "ref=feature")
+			json.NewEncoder(w).Encode(map[string]any{"sha": blobSHA})
+		default:
+			t.Error("expected no PUT when content is unchanged")
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateFileOnBranch(context.Background(), "owner", "repo", "feature", "file.txt", "update", content)
+	require.NoError(t, err)
+	assert.Equal(t, 1, callNum, "should only GET, no PUT")
+}
+
+func TestSyncFiles_RetriesOnTransient(t *testing.T) {
+	content := []byte("new")
+	newBlobSHA := gitBlobSHA(content)
+
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/o/r/git/ref/heads/main":
+			attempt++
+			if attempt == 1 {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]any{"sha": "c1"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/o/r/git/commits/c1":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]any{"sha": "t1"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/o/r/git/trees/t1":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []map[string]any{}})
+		case r.Method == "POST" && r.URL.Path == "/repos/o/r/git/blobs":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"sha": newBlobSHA})
+		case r.Method == "POST" && r.URL.Path == "/repos/o/r/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"sha": "t2"})
+		case r.Method == "POST" && r.URL.Path == "/repos/o/r/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"sha": "c2"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/o/r/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.SyncFiles(context.Background(), "o", "r", "main", "sync", []forge.TreeFile{
+		{Path: "file.txt", Content: content, Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, attempt, "should have retried after 404")
 }
 
 func TestGetFileContent(t *testing.T) {
