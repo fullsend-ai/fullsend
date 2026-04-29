@@ -399,7 +399,24 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 	assert.Equal(t, "1", parsedCfg.Version)
 	assert.Len(t, parsedCfg.Agents, len(defaultRoles))
 
-	// Agent runtime files exist (from scaffold).
+	// Scaffold sync PR exists — merge it so files land on the default branch.
+	configPRs, err := env.client.ListRepoPullRequests(ctx, testOrg, forge.ConfigRepoName)
+	require.NoError(t, err, "listing PRs on .fullsend")
+	var scaffoldPR *forge.ChangeProposal
+	for i, pr := range configPRs {
+		if pr.Head == "fullsend/sync-scaffold" {
+			scaffoldPR = &configPRs[i]
+			break
+		}
+	}
+	require.NotNil(t, scaffoldPR, "scaffold sync PR should exist on .fullsend")
+	t.Logf("Found scaffold sync PR: %s", scaffoldPR.URL)
+
+	err = env.client.MergeChangeProposal(ctx, testOrg, forge.ConfigRepoName, scaffoldPR.Number)
+	require.NoError(t, err, "merging scaffold sync PR")
+	t.Logf("Merged scaffold sync PR #%d", scaffoldPR.Number)
+
+	// Verify scaffold files exist on default branch after merge.
 	for _, path := range []string{
 		".github/workflows/triage.yml",
 		".github/workflows/code.yml",
@@ -436,7 +453,7 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 		"CODEOWNERS",
 	} {
 		_, err := env.client.GetFileContent(ctx, testOrg, forge.ConfigRepoName, path)
-		assert.NoError(t, err, "%s should exist in .fullsend", path)
+		assert.NoError(t, err, "%s should exist in .fullsend after merge", path)
 	}
 
 	// Secrets and variables exist for each role.
