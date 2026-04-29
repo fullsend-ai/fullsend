@@ -483,18 +483,8 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 	assert.NoError(t, err, "checking dispatch token org secret")
 	assert.True(t, dispatchExists, "FULLSEND_DISPATCH_TOKEN org secret should exist")
 
-	// Enrollment PR exists for test-repo.
-	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
-	require.NoError(t, err, "listing PRs for %s", testRepo)
-	found := false
-	for _, pr := range prs {
-		if strings.Contains(pr.Title, "fullsend") {
-			found = true
-			t.Logf("Found enrollment PR: %s", pr.URL)
-			break
-		}
-	}
-	assert.True(t, found, "enrollment PR should exist for %s", testRepo)
+	// Enrollment is deferred — the repo-maintenance workflow creates PRs
+	// after the scaffold PR merges, so we only verify via analyze below.
 
 	// Analyze reports installed.
 	user, err := env.client.GetAuthenticatedUser(ctx)
