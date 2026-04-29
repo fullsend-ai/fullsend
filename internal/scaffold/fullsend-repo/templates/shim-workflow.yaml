@@ -17,6 +17,8 @@ name: fullsend
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 on:
   issues:
@@ -70,6 +72,48 @@ jobs:
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
+      - name: Post run links
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+          ITEM_NUMBER: ${{ github.event.issue.number }}
+          WORKFLOW_FILE: triage.yml
+          AGENT_LABEL: triage
+        run: |
+          set -euo pipefail
+          SHIM_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          DISPATCH_RUN_URL=""
+          for attempt in 1 2 3; do
+            sleep 3
+            DISPATCH_RUN_URL=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+              --repo "$DISPATCH_REPO" \
+              --workflow "$WORKFLOW_FILE" \
+              --limit 1 \
+              --json url \
+              --jq '.[0].url' 2>/dev/null) && [ -n "$DISPATCH_RUN_URL" ] && break
+            DISPATCH_RUN_URL=""
+          done
+          DISPATCH_FALLBACK="${GITHUB_SERVER_URL}/${DISPATCH_REPO}/actions/workflows/${WORKFLOW_FILE}"
+          DISPATCH_LINK="${DISPATCH_RUN_URL:-$DISPATCH_FALLBACK}"
+          MARKER="<!-- fullsend:run-links:${AGENT_LABEL} -->"
+          BODY=$(cat <<EOF
+          ${MARKER}
+          **fullsend ${AGENT_LABEL}** is running
+
+          - Shim workflow: [Run ${GITHUB_RUN_ID}](${SHIM_URL})
+          - Agent workflow: [View run](${DISPATCH_LINK})
+          EOF
+          )
+          EXISTING_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${ITEM_NUMBER}/comments" \
+            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" 2>/dev/null | head -1 || true)
+          if [ -n "$EXISTING_ID" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh issue comment "$ITEM_NUMBER" --repo "${GITHUB_REPOSITORY}" --body "$BODY"
+          fi
 
   dispatch-code:
     runs-on: ubuntu-latest
@@ -106,6 +150,48 @@ jobs:
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
+      - name: Post run links
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+          ITEM_NUMBER: ${{ github.event.issue.number }}
+          WORKFLOW_FILE: code.yml
+          AGENT_LABEL: code
+        run: |
+          set -euo pipefail
+          SHIM_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          DISPATCH_RUN_URL=""
+          for attempt in 1 2 3; do
+            sleep 3
+            DISPATCH_RUN_URL=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+              --repo "$DISPATCH_REPO" \
+              --workflow "$WORKFLOW_FILE" \
+              --limit 1 \
+              --json url \
+              --jq '.[0].url' 2>/dev/null) && [ -n "$DISPATCH_RUN_URL" ] && break
+            DISPATCH_RUN_URL=""
+          done
+          DISPATCH_FALLBACK="${GITHUB_SERVER_URL}/${DISPATCH_REPO}/actions/workflows/${WORKFLOW_FILE}"
+          DISPATCH_LINK="${DISPATCH_RUN_URL:-$DISPATCH_FALLBACK}"
+          MARKER="<!-- fullsend:run-links:${AGENT_LABEL} -->"
+          BODY=$(cat <<EOF
+          ${MARKER}
+          **fullsend ${AGENT_LABEL}** is running
+
+          - Shim workflow: [Run ${GITHUB_RUN_ID}](${SHIM_URL})
+          - Agent workflow: [View run](${DISPATCH_LINK})
+          EOF
+          )
+          EXISTING_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${ITEM_NUMBER}/comments" \
+            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" 2>/dev/null | head -1 || true)
+          if [ -n "$EXISTING_ID" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh issue comment "$ITEM_NUMBER" --repo "${GITHUB_REPOSITORY}" --body "$BODY"
+          fi
 
   dispatch-review:
     runs-on: ubuntu-latest
@@ -148,3 +234,45 @@ jobs:
             --field event_type="$EVENT_TYPE" \
             --field source_repo="$SOURCE_REPO" \
             --field event_payload="$EVENT_PAYLOAD"
+      - name: Post run links
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+          ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          WORKFLOW_FILE: review.yml
+          AGENT_LABEL: review
+        run: |
+          set -euo pipefail
+          SHIM_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          DISPATCH_RUN_URL=""
+          for attempt in 1 2 3; do
+            sleep 3
+            DISPATCH_RUN_URL=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+              --repo "$DISPATCH_REPO" \
+              --workflow "$WORKFLOW_FILE" \
+              --limit 1 \
+              --json url \
+              --jq '.[0].url' 2>/dev/null) && [ -n "$DISPATCH_RUN_URL" ] && break
+            DISPATCH_RUN_URL=""
+          done
+          DISPATCH_FALLBACK="${GITHUB_SERVER_URL}/${DISPATCH_REPO}/actions/workflows/${WORKFLOW_FILE}"
+          DISPATCH_LINK="${DISPATCH_RUN_URL:-$DISPATCH_FALLBACK}"
+          MARKER="<!-- fullsend:run-links:${AGENT_LABEL} -->"
+          BODY=$(cat <<EOF
+          ${MARKER}
+          **fullsend ${AGENT_LABEL}** is running
+
+          - Shim workflow: [Run ${GITHUB_RUN_ID}](${SHIM_URL})
+          - Agent workflow: [View run](${DISPATCH_LINK})
+          EOF
+          )
+          EXISTING_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${ITEM_NUMBER}/comments" \
+            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" 2>/dev/null | head -1 || true)
+          if [ -n "$EXISTING_ID" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh issue comment "$ITEM_NUMBER" --repo "${GITHUB_REPOSITORY}" --body "$BODY"
+          fi
