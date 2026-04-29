@@ -577,31 +577,49 @@ func vendorBinaryForE2E(t *testing.T, env *e2eEnv) {
 	t.Log("Vendored binary uploaded successfully")
 }
 
-// mergeEnrollmentPR finds and merges the enrollment PR for test-repo so the
-// shim workflow is active on the default branch. This must run before both
+// mergeEnrollmentPR polls for and merges the enrollment PR for test-repo so
+// the shim workflow is active on the default branch. This must run before both
 // the triage smoke test and the unenrollment test.
+//
+// Enrollment PRs are created asynchronously by the repo-maintenance workflow
+// after the scaffold PR merges, so we poll until the PR appears.
 func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
-	prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
-	require.NoError(t, err, "listing PRs for %s", testRepo)
+	const (
+		pollInterval = 15 * time.Second
+		pollTimeout  = 5 * time.Minute
+	)
 
+	deadline := time.Now().Add(pollTimeout)
 	var enrollmentPR *forge.ChangeProposal
-	for _, pr := range prs {
-		if strings.Contains(pr.Title, "fullsend") {
-			cp := pr
-			enrollmentPR = &cp
+
+	for time.Now().Before(deadline) {
+		prs, err := env.client.ListRepoPullRequests(ctx, testOrg, testRepo)
+		require.NoError(t, err, "listing PRs for %s", testRepo)
+
+		for _, pr := range prs {
+			if strings.Contains(pr.Title, "fullsend") {
+				cp := pr
+				enrollmentPR = &cp
+				break
+			}
+		}
+		if enrollmentPR != nil {
 			break
 		}
+
+		t.Logf("Enrollment PR not yet created for %s, polling (%.0fs remaining)...",
+			testRepo, time.Until(deadline).Seconds())
+		time.Sleep(pollInterval)
 	}
-	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s (timed out after %s)", testRepo, pollTimeout)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
-	err = env.client.MergeChangeProposal(ctx, testOrg, testRepo, enrollmentPR.Number)
+	err := env.client.MergeChangeProposal(ctx, testOrg, testRepo, enrollmentPR.Number)
 	require.NoError(t, err, "merging enrollment PR")
 
-	// Wait for GitHub to process the merge.
 	time.Sleep(5 * time.Second)
 	t.Log("Enrollment PR merged")
 }
