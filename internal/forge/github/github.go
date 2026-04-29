@@ -348,13 +348,14 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 	}
 
 	var r struct {
-		ID            int64  `json:"id"`
-		Name          string `json:"name"`
-		FullName      string `json:"full_name"`
-		DefaultBranch string `json:"default_branch"`
-		Private       bool   `json:"private"`
-		Archived      bool   `json:"archived"`
-		Fork          bool   `json:"fork"`
+		ID            int64           `json:"id"`
+		Name          string          `json:"name"`
+		FullName      string          `json:"full_name"`
+		DefaultBranch string          `json:"default_branch"`
+		Private       bool            `json:"private"`
+		Archived      bool            `json:"archived"`
+		Fork          bool            `json:"fork"`
+		Permissions   map[string]bool `json:"permissions"`
 	}
 	if err := decodeJSON(resp, &r); err != nil {
 		return nil, fmt.Errorf("decode repo: %w", err)
@@ -368,6 +369,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		Private:       r.Private,
 		Archived:      r.Archived,
 		Fork:          r.Fork,
+		Permissions:   r.Permissions,
 	}, nil
 }
 

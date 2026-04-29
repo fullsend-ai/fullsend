@@ -29,6 +29,7 @@ type Repository struct {
 	Private       bool
 	Archived      bool
 	Fork          bool
+	Permissions   map[string]bool // token's effective permissions (e.g. "push": true)
 }
 
 // ChangeProposal represents a pull request or merge request.

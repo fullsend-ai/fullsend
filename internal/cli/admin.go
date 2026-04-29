@@ -937,24 +937,18 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 		return "", fmt.Errorf("dispatch token cannot be empty")
 	}
 
-	// Verify the token can actually dispatch workflows on .fullsend by
-	// triggering a real workflow_dispatch event. This is the exact operation
-	// the shim will perform, so if this works, the shim will work.
-	// The dispatch triggers triage.yml with a "verify" event type — the
-	// workflow will run but the entrypoint script will see it's a verify
-	// event and exit cleanly.
-	printer.StepStart("Verifying token can dispatch workflows on " + forge.ConfigRepoName)
+	// Verify the token has the required permissions on .fullsend by
+	// checking the repo API response. The token needs Actions (write)
+	// and Contents (read) — GitHub returns these as push/pull in the
+	// permissions object.
+	printer.StepStart("Verifying token permissions on " + forge.ConfigRepoName)
 	verifyClient := gh.New(token)
-	err = verifyClient.DispatchWorkflow(ctx, org, forge.ConfigRepoName, "triage.yml", "main", map[string]string{
-		"event_type":    "verify",
-		"source_repo":   org + "/" + forge.ConfigRepoName,
-		"event_payload": "{}",
-	})
+	repo, err := verifyClient.GetRepo(ctx, org, forge.ConfigRepoName)
 	if err != nil {
-		printer.StepFail("Token cannot dispatch workflows on " + forge.ConfigRepoName)
+		printer.StepFail("Token cannot access " + forge.ConfigRepoName)
 		printer.Blank()
 		printer.ErrorBox("Dispatch token verification failed",
-			"The token could not trigger a workflow on "+org+"/"+forge.ConfigRepoName+".\n\n"+
+			"The token could not access "+org+"/"+forge.ConfigRepoName+".\n\n"+
 				"This usually means the PAT was not configured correctly.\n"+
 				"Delete it at https://github.com/settings/tokens and recreate with:\n"+
 				"  1. Resource owner: "+org+"\n"+
@@ -964,7 +958,19 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 		)
 		return "", fmt.Errorf("dispatch token verification failed")
 	}
-	printer.StepDone("Token verified — test dispatch succeeded")
+	if !repo.Permissions["push"] {
+		printer.StepFail("Token missing required permissions on " + forge.ConfigRepoName)
+		printer.Blank()
+		printer.ErrorBox("Dispatch token verification failed",
+			"The token can access "+org+"/"+forge.ConfigRepoName+" but is missing write permissions.\n\n"+
+				"Delete it at https://github.com/settings/tokens and recreate with:\n"+
+				"  1. Resource owner: "+org+"\n"+
+				"  2. Repository access: Only select repositories → "+forge.ConfigRepoName+"\n"+
+				"  3. Permissions: Actions → Read and write, Contents → Read-only",
+		)
+		return "", fmt.Errorf("dispatch token verification failed")
+	}
+	printer.StepDone("Token verified — permissions OK")
 
 	printer.Blank()
 	return token, nil

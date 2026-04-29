@@ -5,7 +5,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,19 +26,8 @@ func TestEnrollmentLayer_Name(t *testing.T) {
 	assert.Equal(t, "enrollment", layer.Name())
 }
 
-func TestEnrollmentLayer_Install_DispatchesWorkflow(t *testing.T) {
-	now := time.Now().UTC()
-	client := &forge.FakeClient{
-		WorkflowRuns: map[string]*forge.WorkflowRun{
-			"test-org/.fullsend/repo-maintenance.yml": {
-				ID:         1,
-				Status:     "completed",
-				Conclusion: "success",
-				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
-				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
-			},
-		},
-	}
+func TestEnrollmentLayer_Install_ReportsPendingEnrollment(t *testing.T) {
+	client := &forge.FakeClient{}
 	repos := []string{"repo-a", "repo-b"}
 	layer, buf := newEnrollmentLayer(t, client, repos, nil)
 
@@ -47,22 +35,23 @@ func TestEnrollmentLayer_Install_DispatchesWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "dispatched repo-maintenance workflow")
-	assert.Contains(t, output, "enrollment completed successfully")
+	assert.Contains(t, output, "repo-a will be enrolled when the scaffold PR is merged")
+	assert.Contains(t, output, "repo-b will be enrolled when the scaffold PR is merged")
 }
 
-func TestEnrollmentLayer_Install_ReportsEnrollmentPRs(t *testing.T) {
-	now := time.Now().UTC()
+func TestEnrollmentLayer_Install_ReportsPendingUnenrollment(t *testing.T) {
+	client := &forge.FakeClient{}
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-x"})
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "repo-x will be unenrolled when the scaffold PR is merged")
+}
+
+func TestEnrollmentLayer_Install_ReportsExistingPRs(t *testing.T) {
 	client := &forge.FakeClient{
-		WorkflowRuns: map[string]*forge.WorkflowRun{
-			"test-org/.fullsend/repo-maintenance.yml": {
-				ID:         1,
-				Status:     "completed",
-				Conclusion: "success",
-				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
-				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
-			},
-		},
 		PullRequests: map[string][]forge.ChangeProposal{
 			"test-org/repo-a": {
 				{Title: "chore: connect to fullsend agent pipeline", URL: "https://github.com/test-org/repo-a/pull/1"},
@@ -80,17 +69,7 @@ func TestEnrollmentLayer_Install_ReportsEnrollmentPRs(t *testing.T) {
 }
 
 func TestEnrollmentLayer_Install_ReportsRemovalPRs(t *testing.T) {
-	now := time.Now().UTC()
 	client := &forge.FakeClient{
-		WorkflowRuns: map[string]*forge.WorkflowRun{
-			"test-org/.fullsend/repo-maintenance.yml": {
-				ID:         1,
-				Status:     "completed",
-				Conclusion: "success",
-				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
-				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
-			},
-		},
 		PullRequests: map[string][]forge.ChangeProposal{
 			"test-org/repo-x": {
 				{Title: "chore: disconnect from fullsend agent pipeline", URL: "https://github.com/test-org/repo-x/pull/5"},
@@ -115,43 +94,6 @@ func TestEnrollmentLayer_Install_NoRepos(t *testing.T) {
 
 	output := buf.String()
 	assert.Contains(t, output, "no repositories to reconcile")
-}
-
-func TestEnrollmentLayer_Install_DispatchError(t *testing.T) {
-	client := &forge.FakeClient{
-		Errors: map[string]error{
-			"DispatchWorkflow": assert.AnError,
-		},
-	}
-	repos := []string{"repo-a"}
-	layer, _ := newEnrollmentLayer(t, client, repos, nil)
-
-	err := layer.Install(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dispatching repo-maintenance")
-}
-
-func TestEnrollmentLayer_Install_WorkflowWarning(t *testing.T) {
-	now := time.Now().UTC()
-	client := &forge.FakeClient{
-		WorkflowRuns: map[string]*forge.WorkflowRun{
-			"test-org/.fullsend/repo-maintenance.yml": {
-				ID:         1,
-				Status:     "completed",
-				Conclusion: "failure",
-				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
-				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
-			},
-		},
-	}
-	repos := []string{"repo-a"}
-	layer, buf := newEnrollmentLayer(t, client, repos, nil)
-
-	err := layer.Install(context.Background())
-	require.NoError(t, err)
-
-	output := buf.String()
-	assert.Contains(t, output, "conclusion: failure")
 }
 
 func TestEnrollmentLayer_Uninstall_Noop(t *testing.T) {

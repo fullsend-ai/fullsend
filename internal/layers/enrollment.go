@@ -3,18 +3,12 @@ package layers
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const (
-	shimWorkflowPath = ".github/workflows/fullsend.yaml"
-
-	// repoMaintenanceWorkflow is the workflow file that handles enrollment.
-	repoMaintenanceWorkflow = "repo-maintenance.yml"
-)
+const shimWorkflowPath = ".github/workflows/fullsend.yaml"
 
 // EnrollmentLayer monitors workflow-driven enrollment of target repos.
 // Enrollment is performed by the repo-maintenance workflow in .fullsend,
@@ -61,93 +55,26 @@ func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 	}
 }
 
-// Install dispatches the repo-maintenance workflow to handle enrollment,
-// waits for it to complete, and reports any enrollment PRs created.
+// Install records the enrollment configuration. The actual enrollment
+// happens when the scaffold PR is merged — the repo-maintenance workflow
+// triggers automatically and creates enrollment PRs for each target repo.
 func (l *EnrollmentLayer) Install(ctx context.Context) error {
 	if len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0 {
 		l.ui.StepInfo("no repositories to reconcile")
 		return nil
 	}
 
-	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
-
-	l.ui.StepStart("dispatching repo-maintenance workflow for enrollment")
-	err := l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
-	if err != nil {
-		return fmt.Errorf("dispatching repo-maintenance: %w", err)
+	for _, repo := range l.enabledRepos {
+		l.ui.StepInfo(fmt.Sprintf("%s will be enrolled when the scaffold PR is merged", repo))
 	}
-	l.ui.StepDone("dispatched repo-maintenance workflow")
-
-	// Wait for the workflow run to complete.
-	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
-	if err != nil {
-		l.ui.StepWarn(fmt.Sprintf("could not confirm enrollment: %v", err))
-		l.ui.StepInfo("check the repo-maintenance workflow in .fullsend for results")
-		return nil // non-fatal — enrollment may still succeed
+	for _, repo := range l.disabledRepos {
+		l.ui.StepInfo(fmt.Sprintf("%s will be unenrolled when the scaffold PR is merged", repo))
 	}
 
-	if run.Conclusion == "success" {
-		l.ui.StepDone("enrollment completed successfully")
-	} else {
-		l.ui.StepWarn(fmt.Sprintf("enrollment workflow completed with conclusion: %s", run.Conclusion))
-		l.showWorkflowLogs(ctx, run.ID)
-	}
-	l.ui.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
-
-	// Discover and report reconciliation PRs.
+	// Report any existing reconciliation PRs from prior runs.
 	l.reportReconciliationPRs(ctx)
 
 	return nil
-}
-
-// awaitWorkflowRun polls for a repo-maintenance workflow run created after
-// dispatchTime and waits for it to complete.
-func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime time.Time) (*forge.WorkflowRun, error) {
-	for attempt := range 36 { // 3 minutes max
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
-
-		runs, err := l.client.ListWorkflowRuns(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow)
-		if err != nil {
-			l.ui.StepInfo(fmt.Sprintf("waiting for workflow run (attempt %d)...", attempt+1))
-			continue
-		}
-
-		for i := range runs {
-			run := &runs[i]
-			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-			if parseErr != nil {
-				continue
-			}
-			if runTime.Before(dispatchTime) {
-				continue
-			}
-
-			if run.Status == "completed" {
-				return run, nil
-			}
-			l.ui.StepInfo(fmt.Sprintf("workflow run %d: %s", run.ID, run.Status))
-			break // found our run, keep waiting
-		}
-	}
-	return nil, fmt.Errorf("timed out waiting for repo-maintenance workflow")
-}
-
-// showWorkflowLogs fetches and displays workflow run logs locally so the user
-// can diagnose enrollment failures without visiting the GitHub Actions UI.
-func (l *EnrollmentLayer) showWorkflowLogs(ctx context.Context, runID int) {
-	logs, err := l.client.GetWorkflowRunLogs(ctx, l.org, forge.ConfigRepoName, runID)
-	if err != nil {
-		l.ui.StepInfo(fmt.Sprintf("could not fetch workflow logs: %v", err))
-		return
-	}
-	if logs != "" {
-		l.ui.StepInfo("workflow logs:")
-		l.ui.Raw(logs)
-	}
 }
 
 // reportReconciliationPRs lists PRs on enabled and disabled repos and reports
