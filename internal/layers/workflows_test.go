@@ -103,7 +103,7 @@ func TestWorkflowsLayer_Install_ReusesExistingPR(t *testing.T) {
 func TestWorkflowsLayer_Install_BranchAlreadyExists(t *testing.T) {
 	client := newFakeClientWithRepo()
 	client.Errors = map[string]error{
-		"CreateBranch": errors.New("branch already exists"),
+		"CreateBranch": forge.ErrAlreadyExists,
 	}
 	layer, _ := newWorkflowsLayer(t, client)
 

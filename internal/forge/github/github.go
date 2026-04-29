@@ -637,7 +637,8 @@ func (c *LiveClient) getTreeRecursive(ctx context.Context, owner, repo, treeSHA 
 		return nil, err
 	}
 	var tree struct {
-		Tree []struct {
+		Truncated bool `json:"truncated"`
+		Tree      []struct {
 			Path string `json:"path"`
 			Mode string `json:"mode"`
 			Type string `json:"type"`
@@ -646,6 +647,9 @@ func (c *LiveClient) getTreeRecursive(ctx context.Context, owner, repo, treeSHA 
 	}
 	if err := decodeJSON(resp, &tree); err != nil {
 		return nil, fmt.Errorf("decode tree: %w", err)
+	}
+	if tree.Truncated {
+		return nil, fmt.Errorf("tree %s is truncated (too many entries); SyncFiles cannot diff reliably", treeSHA)
 	}
 	var entries []treeEntry
 	for _, e := range tree.Tree {
@@ -738,9 +742,9 @@ func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, paylo
 	})
 }
 
-// retryOnTransient retries an operation that may fail with 404 or 409 due to
-// GitHub's async repo initialization or branch ref update races. It uses
-// linear backoff (2s between attempts) and up to 5 attempts (~10s total).
+// retryOnTransient retries an operation that may fail with transient GitHub
+// errors: 404 (async repo init), 409 (ref conflict), or 422 (non-fast-forward
+// from concurrent push). Linear backoff, 2s between attempts, up to 5 (~10s).
 func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func() error) error {
 	const attempts = 5
 	const delay = 2 * time.Second
@@ -752,9 +756,8 @@ func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func
 			return nil
 		}
 
-		// Only retry on 404 (repo not ready) or 409 (branch ref conflict).
 		var apiErr *APIError
-		if !errors.As(lastErr, &apiErr) || (apiErr.StatusCode != 404 && apiErr.StatusCode != 409) {
+		if !errors.As(lastErr, &apiErr) || (apiErr.StatusCode != 404 && apiErr.StatusCode != 409 && apiErr.StatusCode != 422) {
 			return lastErr
 		}
 
@@ -867,6 +870,10 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			return fmt.Errorf("create branch %s: %w", branchName, forge.ErrAlreadyExists)
+		}
 		return fmt.Errorf("create branch %s: %w", branchName, err)
 	}
 	resp.Body.Close()

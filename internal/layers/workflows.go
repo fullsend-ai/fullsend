@@ -93,8 +93,9 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 		Mode:    "100644",
 	})
 
-	// Create sync branch (ignore error — branch may already exist from prior run).
-	_ = l.client.CreateBranch(ctx, l.org, forge.ConfigRepoName, syncBranch)
+	if err := l.client.CreateBranch(ctx, l.org, forge.ConfigRepoName, syncBranch); err != nil && !forge.IsAlreadyExists(err) {
+		return fmt.Errorf("creating sync branch: %w", err)
+	}
 
 	l.ui.StepStart(fmt.Sprintf("Syncing %d scaffold files", len(files)))
 	if err := l.client.SyncFiles(ctx, l.org, forge.ConfigRepoName, syncBranch, "chore: sync scaffold files", files); err != nil {

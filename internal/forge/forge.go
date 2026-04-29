@@ -20,6 +20,14 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
+// ErrAlreadyExists indicates the resource already exists on the forge.
+var ErrAlreadyExists = errors.New("already exists")
+
+// IsAlreadyExists reports whether err indicates a resource already exists.
+func IsAlreadyExists(err error) bool {
+	return errors.Is(err, ErrAlreadyExists)
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
