@@ -16,6 +16,12 @@ host_files:
     dest: /tmp/workspace/notes
   - src: ${RUNNER_TEMP}/scribe-workspace/backlog.json
     dest: /tmp/workspace/backlog.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/closed-issues.json
+    dest: /tmp/workspace/closed-issues.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/open-prs.json
+    dest: /tmp/workspace/open-prs.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/repo-docs-index.json
+    dest: /tmp/workspace/repo-docs-index.json
   - src: ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json
     dest: /tmp/workspace/scribe-meta.json
 
@@ -34,6 +40,7 @@ runner_env:
   SCRIBE_SEARCH_QUERY: ${SEARCH_QUERY}
   SCRIBE_LOOKBACK_HOURS: ${LOOKBACK_HOURS}
   SCRIBE_DRY_RUN: ${DRY_RUN}
+  SCRIBE_MODE: ${MODE}
   GH_TOKEN: ${GH_TOKEN}
   FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/scribe-result.schema.json
 

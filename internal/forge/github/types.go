@@ -100,6 +100,14 @@ func AgentAppConfig(org, role string) AppConfig {
 		}
 		base.Events = []string{"pull_request"}
 
+	case "scribe":
+		base.Description = fmt.Sprintf("Fullsend scribe agent for %s", org)
+		base.Permissions = AppPermissions{
+			Issues:   "write",
+			Contents: "read",
+		}
+		base.Events = []string{"issues"}
+
 	default:
 		base.Description = fmt.Sprintf("Fullsend %s agent for %s", role, org)
 		base.Permissions = AppPermissions{

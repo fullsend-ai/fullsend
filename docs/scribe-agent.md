@@ -144,8 +144,10 @@ agents:
 | Secret | Description |
 |--------|-------------|
 | `FULLSEND_SCRIBE_APP_PRIVATE_KEY` | GitHub App PEM for the scribe role |
-| `FULLSEND_GCP_SA_KEY_JSON` | GCP service account key (Drive + Vertex AI) |
+| `FULLSEND_GCP_SA_KEY_JSON` | GCP service account key for Vertex AI inference |
+| `SCRIBE_GCP_SA_KEY_JSON` | GCP service account key for Google Drive access (the SA invited to the meeting) |
 | `FULLSEND_GCP_PROJECT_ID` | GCP project ID for Vertex AI |
+| `SCRIBE_SLACK_WEBHOOK_URL` | Slack incoming webhook URL for notifications (optional — omit to disable) |
 
 ### Required variables (on `.fullsend` repo)
 
@@ -154,9 +156,10 @@ agents:
 | `FULLSEND_SCRIBE_CLIENT_ID` | `Iv1.abc123...` | Yes |
 | `SCRIBE_GDRIVE_SEARCH_QUERY` | `fullsend team sync` | Yes |
 | `SCRIBE_GDRIVE_NAME_FILTER` | `Notes by Gemini` | Optional |
-| `SCRIBE_TARGET_REPO` | `fullsend` | Optional (defaults to `.fullsend` repo name) |
+| `SCRIBE_TARGET_REPO` | `fullsend` or `org/repo` | Optional (defaults to `.fullsend` repo). Supports bare name (prefixed with org) or fully-qualified `org/repo` for cross-org targeting. |
 | `FULLSEND_GCP_REGION` | `us-east5` | Optional |
 | `SCRIBE_MIN_CONFIDENCE` | `0.6` | Optional (see [Confidence threshold](#confidence-threshold)) |
+| `SCRIBE_MODE` | `all` | Optional (see [Agent mode](#agent-mode)) |
 
 ### Granting Drive access to meeting notes
 
@@ -196,41 +199,94 @@ them with the configured search query.
 > sharing, an admin may need to allowlist the SA's domain or adjust the
 > sharing policy for the relevant organizational unit.
 
+### Agent mode
+
+The scribe supports three modes, configurable via `SCRIBE_MODE`:
+
+| Mode | Behavior |
+|------|----------|
+| `all` (default) | Post comments on existing issues AND create new issues |
+| `comments_only` | Post comments on existing issues only — skip all new issue creation |
+| `new_issues_only` | Create new issues only — skip all comments on existing issues |
+
+The mode is configurable at three levels (highest precedence first):
+
+1. **Manual dispatch input** — the `mode` dropdown when triggering via
+   `workflow_dispatch`.
+2. **Repository variable** — set `SCRIBE_MODE` on the `.fullsend` repo.
+   Applies to both scheduled and manual runs.
+3. **Default** — `all`.
+
+Use `comments_only` during initial rollout to limit the blast radius —
+the agent will only add context to existing issues without creating new
+ones. Switch to `all` once you're confident in the output quality.
+
+### Notifications
+
+The post-script generates two notification outputs:
+
+**GitHub Step Summary** — a markdown table rendered on the Actions job page
+showing topic counts, comments posted, new issues created, gate rejections,
+and links to affected issues. Topic content is never included for rejected
+items (content gate rejections show only the category).
+
+**Slack notification** — if `SCRIBE_SLACK_WEBHOOK_URL` is set as a secret
+on the `.fullsend` repo, the post-script sends a Slack message with the
+same summary data. The message includes links to affected issues and a
+link to the workflow run. If the webhook is not configured, the
+notification is silently skipped.
+
+The Slack message follows the same safety rules as CI logs: no topic
+content for rejected items, no meeting note text, only titles of topics
+that passed the security gate.
+
 ### Trigger model
 
 Unlike triage/code/review (event-driven via shims), the scribe runs on a
 **cron schedule** — Mon–Thu at 16:10 UTC by default. Adjust the cron in
 `.github/workflows/scribe.yml` to match your meeting schedule.
 
-Manual dispatch is also supported via `workflow_dispatch` with `dry_run`
-and `lookback_hours` inputs.
+Manual dispatch is also supported via `workflow_dispatch` with `dry_run`,
+`lookback_hours`, `min_confidence`, and `mode` inputs.
 
 ## Security model
 
 The scribe processes private meeting content for a public issue tracker.
 The agent treats both meeting notes and LLM output as untrusted. Security
-is enforced at five layers:
+is enforced at six layers:
 
 1. **Input scrubbing** (pre-script) — removes PII (emails, phone numbers,
    IPs, SSNs), API keys, tokens, and meeting-specific metadata (attendee
    lists, organizer/host lines) before the text reaches the LLM sandbox.
    This is the primary defense: scrubbed data never enters the agent.
 
-2. **Deterministic gate** (post-script) — every extracted topic must pass
-   through the gate before any GitHub write. The gate checks
-   [confidence threshold](#confidence-threshold) (configurable, default 0.6),
-   sensitive content, length limits, code blocks, and rejects rather than
-   scrubs-and-posts.
+2. **Semantic content gate** (in-sandbox) — the agent evaluates every topic
+   for public appropriateness and emits a `public_safe` boolean plus a
+   `public_safe_category` from a fixed enum (`names`, `interpersonal`,
+   `hr`, `strategy`, `security`, `legal`, `confidential`). The category
+   describes the *type* of violation — it never quotes or paraphrases the
+   problematic content. This keeps semantic judgment inside the sandbox
+   (where LLM calls are allowed) while the enforcement stays deterministic
+   in the post-script. Topics with `public_safe: false` are rejected before
+   any GitHub write, and the post-script suppresses their title and summary
+   from CI logs to prevent secondary leakage.
 
-3. **Sandbox isolation** — the LLM runs inside an OpenShell sandbox with a
+3. **Deterministic gate** (post-script) — every extracted topic must pass
+   through the gate before any GitHub write. The gate checks the
+   `public_safe` flag first (rejecting without logging content), then
+   [confidence threshold](#confidence-threshold) (configurable, default 0.6),
+   sensitive content patterns (PII, secrets), length limits, code blocks.
+   It rejects rather than scrubs-and-posts.
+
+4. **Sandbox isolation** — the LLM runs inside an OpenShell sandbox with a
    restrictive network policy (only `*.googleapis.com`). It cannot reach
    GitHub directly. All GitHub writes happen in the post-script on the host.
 
-4. **Credential isolation** — GCP credentials are delivered via `host_files`
+5. **Credential isolation** — GCP credentials are delivered via `host_files`
    in the harness (per ADR 0017/0025). The GitHub App token is generated
    per-run and scoped to the scribe role.
 
-5. **Artifact hygiene** — the fullsend composite action excludes agent
+6. **Artifact hygiene** — the fullsend composite action excludes agent
    transcripts (`**/transcripts/**`) from uploaded artifacts. Transcripts
    contain the full agent conversation including tool inputs/outputs, which
    may include scrubbed-but-still-sensitive meeting content. Only the

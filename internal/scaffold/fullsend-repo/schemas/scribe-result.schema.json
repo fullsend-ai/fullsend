@@ -18,27 +18,35 @@
     "stats": { "$ref": "#/$defs/stats" }
   },
   "$defs": {
+    "public_safe_category": {
+      "type": ["string", "null"],
+      "enum": [null, "names", "interpersonal", "hr", "strategy", "security", "legal", "confidential"]
+    },
     "topic": {
       "type": "object",
-      "required": ["topic", "summary", "confidence"],
+      "required": ["topic", "summary", "confidence", "public_safe"],
       "properties": {
         "topic": { "type": "string", "minLength": 1, "maxLength": 200 },
         "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
         "existing_issue": { "type": ["integer", "null"], "minimum": 1 },
         "new_issue_title": { "type": ["string", "null"], "maxLength": 200 },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "public_safe": { "type": "boolean" },
+        "public_safe_category": { "$ref": "#/$defs/public_safe_category" },
         "omit_reason": { "type": ["string", "null"] }
       },
       "additionalProperties": false
     },
     "new_issue": {
       "type": "object",
-      "required": ["title", "summary", "body", "confidence"],
+      "required": ["title", "summary", "body", "confidence", "public_safe"],
       "properties": {
         "title": { "type": "string", "minLength": 1, "maxLength": 200 },
         "summary": { "type": "string", "minLength": 1 },
         "body": { "type": "string", "minLength": 1, "maxLength": 15000 },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "public_safe": { "type": "boolean" },
+        "public_safe_category": { "$ref": "#/$defs/public_safe_category" },
         "labels": {
           "type": "array",
           "items": { "type": "string" },

@@ -25,6 +25,15 @@ on:
         required: false
         default: '0.6'
         type: string
+      mode:
+        description: 'Agent mode: all (comments + new issues), comments_only, new_issues_only'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'comments_only'
+          - 'new_issues_only'
 
 # Scheduled runs ALWAYS use dry_run=true as a safety measure.
 # Change the env default below ONLY after thorough testing.
@@ -55,10 +64,12 @@ jobs:
             echo "dry_run=${SCRIBE_DRY_RUN_DEFAULT}" >> "${GITHUB_OUTPUT}"
             echo "lookback=3" >> "${GITHUB_OUTPUT}"
             echo "min_confidence=${{ vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+            echo "mode=${{ vars.SCRIBE_MODE || 'all' }}" >> "${GITHUB_OUTPUT}"
           else
             echo "dry_run=${{ inputs.dry_run || 'true' }}" >> "${GITHUB_OUTPUT}"
             echo "lookback=${{ inputs.lookback_hours || '3' }}" >> "${GITHUB_OUTPUT}"
             echo "min_confidence=${{ inputs.min_confidence || vars.SCRIBE_MIN_CONFIDENCE || '0.6' }}" >> "${GITHUB_OUTPUT}"
+            echo "mode=${{ inputs.mode || vars.SCRIBE_MODE || 'all' }}" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Safety check
@@ -77,6 +88,25 @@ jobs:
           private-key: ${{ secrets.FULLSEND_SCRIBE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      - name: Resolve target repository
+        id: target
+        run: |
+          TARGET="${{ vars.SCRIBE_TARGET_REPO }}"
+          if [[ -z "${TARGET}" ]]; then
+            TARGET="${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          elif [[ "${TARGET}" != */* ]]; then
+            TARGET="${{ github.repository_owner }}/${TARGET}"
+          fi
+          echo "repo=${TARGET}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
@@ -91,16 +121,27 @@ jobs:
             fi
           done
 
+      - name: Write Drive SA credentials
+        env:
+          SCRIBE_SA_KEY: ${{ secrets.SCRIBE_GCP_SA_KEY_JSON }}
+        run: |
+          SCRIBE_CREDS="${RUNNER_TEMP}/scribe-drive-sa.json"
+          printf '%s' "${SCRIBE_SA_KEY}" > "${SCRIBE_CREDS}"
+          echo "::add-mask::${SCRIBE_CREDS}"
+          echo "SCRIBE_DRIVE_CREDENTIALS=${SCRIBE_CREDS}" >> "${GITHUB_ENV}"
+
       - name: Setup agent environment
         env:
           AGENT_PREFIX: SCRIBE_
           SCRIBE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SCRIBE_REPO: ${{ github.repository_owner }}/${{ vars.SCRIBE_TARGET_REPO || github.event.repository.name }}
+          SCRIBE_REPO: ${{ steps.target.outputs.repo }}
           SCRIBE_SEARCH_QUERY: ${{ vars.SCRIBE_GDRIVE_SEARCH_QUERY }}
           SCRIBE_NAME_FILTER: ${{ vars.SCRIBE_GDRIVE_NAME_FILTER || '' }}
           SCRIBE_LOOKBACK_HOURS: ${{ steps.config.outputs.lookback }}
           SCRIBE_DRY_RUN: ${{ steps.config.outputs.dry_run }}
           SCRIBE_MIN_CONFIDENCE: ${{ steps.config.outputs.min_confidence }}
+          SCRIBE_MODE: ${{ steps.config.outputs.mode }}
+          SCRIBE_SLACK_WEBHOOK_URL: ${{ secrets.SCRIBE_SLACK_WEBHOOK_URL }}
           SCRIBE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           SCRIBE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
         run: bash .github/scripts/setup-agent-env.sh

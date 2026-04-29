@@ -73,6 +73,19 @@ func TestAgentAppConfig_Review(t *testing.T) {
 	assert.Contains(t, cfg.Events, "pull_request")
 }
 
+func TestAgentAppConfig_Scribe(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "scribe")
+
+	assert.Equal(t, "myorg-scribe", cfg.Name)
+	assert.Equal(t, "write", cfg.Permissions.Issues)
+	assert.Equal(t, "read", cfg.Permissions.Contents)
+	assert.Empty(t, cfg.Permissions.PullRequests)
+	assert.Empty(t, cfg.Permissions.Workflows)
+	assert.Empty(t, cfg.Permissions.Administration)
+
+	assert.Contains(t, cfg.Events, "issues")
+}
+
 func TestAgentAppConfig_UnknownRole(t *testing.T) {
 	cfg := AgentAppConfig("myorg", "custom-bot")
 

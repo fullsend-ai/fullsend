@@ -118,6 +118,11 @@ runs:
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${GITHUB_WORKSPACE}/target-repo"
 
+    - name: Remove transcripts before upload
+      if: always() && inputs.agent != '__install_only__'
+      shell: bash
+      run: find "${GITHUB_WORKSPACE}/output" -type d -name transcripts -exec rm -rf {} + 2>/dev/null || true
+
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'
       uses: actions/upload-artifact@v7
