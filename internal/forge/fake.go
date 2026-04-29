@@ -392,9 +392,16 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", owner, repo, f.proposalCounter),
 		Title:  title,
 		Number: f.proposalCounter,
+		Head:   head,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil
+}
+
+func (f *FakeClient) UpdateChangeProposal(_ context.Context, _, _ string, _ int, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err("UpdateChangeProposal")
 }
 
 func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string) ([]ChangeProposal, error) {

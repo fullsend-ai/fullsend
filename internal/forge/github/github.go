@@ -889,6 +889,9 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 		HTMLURL string `json:"html_url"`
 		Title   string `json:"title"`
 		Number  int    `json:"number"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
 	}
 	if err := decodeJSON(resp, &pr); err != nil {
 		return nil, fmt.Errorf("decode pull request: %w", err)
@@ -898,7 +901,22 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 		URL:    pr.HTMLURL,
 		Title:  pr.Title,
 		Number: pr.Number,
+		Head:   pr.Head.Ref,
 	}, nil
+}
+
+// UpdateChangeProposal updates the title and body of an existing pull request.
+func (c *LiveClient) UpdateChangeProposal(ctx context.Context, owner, repo string, number int, title, body string) error {
+	payload := map[string]string{
+		"title": title,
+		"body":  body,
+	}
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("update pull request: %w", err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // ListRepoPullRequests lists open pull requests for a repository with pagination.
@@ -915,6 +933,9 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
+			Head    struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
 		}
 		if err := decodeJSON(resp, &prs); err != nil {
 			return nil, fmt.Errorf("decode pull requests page %d: %w", page, err)
@@ -925,6 +946,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				URL:    pr.HTMLURL,
 				Title:  pr.Title,
 				Number: pr.Number,
+				Head:   pr.Head.Ref,
 			})
 		}
 

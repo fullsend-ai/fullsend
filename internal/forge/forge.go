@@ -36,6 +36,7 @@ type ChangeProposal struct {
 	URL    string
 	Title  string
 	Number int
+	Head   string // head branch name (e.g. "fullsend/sync-scaffold")
 }
 
 // WorkflowRun represents a CI/CD workflow execution.
@@ -129,6 +130,7 @@ type Client interface {
 
 	// Change proposals (PRs/MRs)
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error)
+	UpdateChangeProposal(ctx context.Context, owner, repo string, number int, title, body string) error
 	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
 
 	// Authentication

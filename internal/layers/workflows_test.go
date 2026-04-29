@@ -15,12 +15,20 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func newWorkflowsLayer(t *testing.T, client *forge.FakeClient) (*WorkflowsLayer, *bytes.Buffer) {
+func newWorkflowsLayer(t *testing.T, client forge.Client) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
 	return layer, &buf
+}
+
+func newFakeClientWithRepo() *forge.FakeClient {
+	return &forge.FakeClient{
+		Repos: []forge.Repository{
+			{Name: ".fullsend", FullName: "test-org/.fullsend", DefaultBranch: "main"},
+		},
+	}
 }
 
 func TestWorkflowsLayer_Name(t *testing.T) {
@@ -29,14 +37,13 @@ func TestWorkflowsLayer_Name(t *testing.T) {
 }
 
 func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
-	client := &forge.FakeClient{}
+	client := newFakeClientWithRepo()
 	layer, _ := newWorkflowsLayer(t, client)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// SyncFiles writes scaffold files, CreateOrUpdateFile writes CODEOWNERS.
-	// Both record into CreatedFiles.
+	// SyncFiles writes scaffold files + CODEOWNERS.
 	var scaffoldCount int
 	_ = scaffold.WalkFullsendRepo(func(_ string, _ []byte) error {
 		scaffoldCount++
@@ -58,12 +65,57 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/fix.yml")
 	assert.Contains(t, paths, ".github/workflows/repo-maintenance.yml")
 	assert.Contains(t, paths, "CODEOWNERS")
-
 	assert.Contains(t, paths["CODEOWNERS"], "admin-user")
 }
 
+func TestWorkflowsLayer_Install_CreatesBranchAndPR(t *testing.T) {
+	client := newFakeClientWithRepo()
+	layer, output := newWorkflowsLayer(t, client)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, client.CreatedBranches, "test-org/.fullsend/fullsend/sync-scaffold")
+	require.Len(t, client.CreatedProposals, 1)
+
+	pr := client.CreatedProposals[0]
+	assert.Equal(t, "chore: sync scaffold files", pr.Title)
+	assert.Equal(t, "fullsend/sync-scaffold", pr.Head)
+	assert.Contains(t, output.String(), pr.URL)
+}
+
+func TestWorkflowsLayer_Install_ReusesExistingPR(t *testing.T) {
+	client := newFakeClientWithRepo()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"test-org/.fullsend": {
+			{URL: "https://github.com/test-org/.fullsend/pull/42", Title: "chore: sync scaffold files", Number: 42, Head: "fullsend/sync-scaffold"},
+		},
+	}
+	layer, output := newWorkflowsLayer(t, client)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	assert.Empty(t, client.CreatedProposals, "should not create a new PR")
+	assert.Contains(t, output.String(), "https://github.com/test-org/.fullsend/pull/42")
+}
+
+func TestWorkflowsLayer_Install_BranchAlreadyExists(t *testing.T) {
+	client := newFakeClientWithRepo()
+	client.Errors = map[string]error{
+		"CreateBranch": errors.New("branch already exists"),
+	}
+	layer, _ := newWorkflowsLayer(t, client)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err, "should succeed even if branch already exists")
+
+	assert.NotEmpty(t, client.CreatedFiles, "should still sync files")
+	assert.Len(t, client.CreatedProposals, 1, "should still create PR")
+}
+
 func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
-	client := &forge.FakeClient{}
+	client := newFakeClientWithRepo()
 	layer, _ := newWorkflowsLayer(t, client)
 
 	err := layer.Install(context.Background())
@@ -78,14 +130,13 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 	}
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 
-	// Verify it matches the scaffold content
 	expected, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
 	assert.Equal(t, string(expected), triageContent)
 }
 
 func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
-	client := &forge.FakeClient{}
+	client := newFakeClientWithRepo()
 	layer, _ := newWorkflowsLayer(t, client)
 
 	err := layer.Install(context.Background())
@@ -100,33 +151,9 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 	}
 	require.NotEmpty(t, maintenanceContent, "repo-maintenance.yml should have been written")
 
-	// Verify it matches the scaffold content
 	expected, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
 	assert.Equal(t, string(expected), maintenanceContent)
-}
-
-func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
-	client := &codeownersErrorClient{FakeClient: &forge.FakeClient{}}
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
-
-	err := layer.Install(context.Background())
-	require.NoError(t, err)
-
-	// Scaffold files written via SyncFiles (recorded in FakeClient.CreatedFiles).
-	// CODEOWNERS failed via CreateOrUpdateFile override, so not recorded.
-	var scaffoldCount int
-	_ = scaffold.WalkFullsendRepo(func(_ string, _ []byte) error {
-		scaffoldCount++
-		return nil
-	})
-	assert.Len(t, client.FakeClient.CreatedFiles, scaffoldCount)
-
-	for _, f := range client.FakeClient.CreatedFiles {
-		assert.NotEqual(t, "CODEOWNERS", f.Path)
-	}
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
@@ -149,7 +176,6 @@ func TestWorkflowsLayer_Uninstall_Noop(t *testing.T) {
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
 
-	// No repos deleted, no files created
 	assert.Empty(t, client.DeletedRepos)
 	assert.Empty(t, client.CreatedFiles)
 }
@@ -158,7 +184,6 @@ func TestWorkflowsLayer_Analyze_AllPresent(t *testing.T) {
 	fileContents := map[string][]byte{
 		"test-org/.fullsend/CODEOWNERS": []byte("* @admin-user"),
 	}
-	// Populate all scaffold files
 	_ = scaffold.WalkFullsendRepo(func(path string, content []byte) error {
 		fileContents["test-org/.fullsend/"+path] = content
 		return nil
@@ -204,10 +229,8 @@ func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusDegraded, report.Status)
-	// Details should list what exists
 	joined := strings.Join(report.Details, " ")
 	assert.Contains(t, joined, "triage.yml")
-	// WouldFix should list what's missing
 	assert.NotEmpty(t, report.WouldFix)
 	fixJoined := strings.Join(report.WouldFix, " ")
 	assert.Contains(t, fixJoined, "CODEOWNERS")
@@ -240,17 +263,4 @@ func TestManagedFilesDoNotIncludeOldPlaceholders(t *testing.T) {
 		assert.NotEqual(t, ".github/workflows/repo-onboard.yaml", path,
 			"managedFiles should not include old repo-onboard.yaml placeholder")
 	}
-}
-
-// codeownersErrorClient is a test double that errors only on CODEOWNERS writes.
-// It embeds FakeClient for all other methods (including SyncFiles).
-type codeownersErrorClient struct {
-	*forge.FakeClient
-}
-
-func (c *codeownersErrorClient) CreateOrUpdateFile(_ context.Context, _, _, path, _ string, _ []byte) error {
-	if path == "CODEOWNERS" {
-		return errors.New("codeowners write failed")
-	}
-	return nil
 }

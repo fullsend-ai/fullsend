@@ -11,6 +11,14 @@ import (
 
 const codeownersPath = "CODEOWNERS"
 
+const syncBranch = "fullsend/sync-scaffold"
+const syncPRTitle = "chore: sync scaffold files"
+const syncPRBody = `Automated scaffold sync by "fullsend install".
+
+This PR updates scaffold configuration files to the latest version.
+
+> **Note:** Workflows will not execute until this PR is merged.`
+
 // managedFiles lists every file this layer manages.
 // Populated at init from the scaffold plus the CODEOWNERS sentinel.
 var managedFiles []string
@@ -70,33 +78,60 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 	}
 }
 
-// Install writes the workflow files and CODEOWNERS to the .fullsend repo.
-// All scaffold files are committed atomically in a single commit via SyncFiles.
-// Unchanged files are skipped automatically. CODEOWNERS is written separately
-// because its failure is treated as a warning, not a fatal error (some orgs
-// restrict CODEOWNERS writes to specific teams).
+// Install writes the workflow files and CODEOWNERS to the .fullsend repo
+// via a pull request. All files are committed atomically to a sync branch,
+// then a PR is created (or an existing one is reused).
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	files, err := scaffold.CollectTreeFiles()
 	if err != nil {
 		return fmt.Errorf("collecting scaffold files: %w", err)
 	}
 
+	files = append(files, forge.TreeFile{
+		Path:    codeownersPath,
+		Content: []byte(l.codeownersContent()),
+		Mode:    "100644",
+	})
+
+	// Create sync branch (ignore error — branch may already exist from prior run).
+	_ = l.client.CreateBranch(ctx, l.org, forge.ConfigRepoName, syncBranch)
+
 	l.ui.StepStart(fmt.Sprintf("Syncing %d scaffold files", len(files)))
-	if err := l.client.SyncFiles(ctx, l.org, forge.ConfigRepoName, "", "chore: sync scaffold files", files); err != nil {
+	if err := l.client.SyncFiles(ctx, l.org, forge.ConfigRepoName, syncBranch, "chore: sync scaffold files", files); err != nil {
 		l.ui.StepFail("Failed to sync scaffold files")
 		return fmt.Errorf("syncing scaffold files: %w", err)
 	}
 	l.ui.StepDone(fmt.Sprintf("Synced %d scaffold files", len(files)))
 
-	l.ui.StepStart("Writing " + codeownersPath)
-	if err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, codeownersPath,
-		"chore: update "+codeownersPath, []byte(l.codeownersContent())); err != nil {
-		l.ui.StepWarn("Could not write " + codeownersPath + ": " + err.Error())
-	} else {
-		l.ui.StepDone("Wrote " + codeownersPath)
+	pr, err := l.createOrUpdatePR(ctx)
+	if err != nil {
+		l.ui.StepWarn("Files synced but could not create PR: " + err.Error())
+		return nil
 	}
+	l.ui.StepDone("PR: " + pr.URL)
 
 	return nil
+}
+
+func (l *WorkflowsLayer) createOrUpdatePR(ctx context.Context) (*forge.ChangeProposal, error) {
+	prs, err := l.client.ListRepoPullRequests(ctx, l.org, forge.ConfigRepoName)
+	if err != nil {
+		return nil, fmt.Errorf("listing pull requests: %w", err)
+	}
+	for i := range prs {
+		if prs[i].Head == syncBranch {
+			_ = l.client.UpdateChangeProposal(ctx, l.org, forge.ConfigRepoName, prs[i].Number, syncPRTitle, syncPRBody)
+			return &prs[i], nil
+		}
+	}
+
+	repo, err := l.client.GetRepo(ctx, l.org, forge.ConfigRepoName)
+	if err != nil {
+		return nil, fmt.Errorf("getting repo: %w", err)
+	}
+
+	return l.client.CreateChangeProposal(ctx, l.org, forge.ConfigRepoName,
+		syncPRTitle, syncPRBody, syncBranch, repo.DefaultBranch)
 }
 
 // Uninstall is a no-op. Workflow files are removed when the config repo

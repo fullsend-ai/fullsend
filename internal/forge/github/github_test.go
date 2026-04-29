@@ -495,6 +495,7 @@ func TestCreateChangeProposal(t *testing.T) {
 			"html_url": "https://github.com/owner/repo/pull/42",
 			"title":    "Fix bug",
 			"number":   42,
+			"head":     map[string]any{"ref": "fix-branch"},
 		})
 	}))
 	defer srv.Close()
@@ -505,6 +506,7 @@ func TestCreateChangeProposal(t *testing.T) {
 	assert.Equal(t, 42, cp.Number)
 	assert.Equal(t, "Fix bug", cp.Title)
 	assert.Equal(t, "https://github.com/owner/repo/pull/42", cp.URL)
+	assert.Equal(t, "fix-branch", cp.Head)
 }
 
 func TestListRepoPullRequests(t *testing.T) {
@@ -515,8 +517,8 @@ func TestListRepoPullRequests(t *testing.T) {
 		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
 
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"html_url": "https://github.com/owner/repo/pull/1", "title": "PR 1", "number": 1},
-			{"html_url": "https://github.com/owner/repo/pull/2", "title": "PR 2", "number": 2},
+			{"html_url": "https://github.com/owner/repo/pull/1", "title": "PR 1", "number": 1, "head": map[string]any{"ref": "feature-a"}},
+			{"html_url": "https://github.com/owner/repo/pull/2", "title": "PR 2", "number": 2, "head": map[string]any{"ref": "feature-b"}},
 		})
 	}))
 	defer srv.Close()
@@ -526,7 +528,9 @@ func TestListRepoPullRequests(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, prs, 2)
 	assert.Equal(t, "PR 1", prs[0].Title)
+	assert.Equal(t, "feature-a", prs[0].Head)
 	assert.Equal(t, 2, prs[1].Number)
+	assert.Equal(t, "feature-b", prs[1].Head)
 }
 
 func TestGetAuthenticatedUser(t *testing.T) {
