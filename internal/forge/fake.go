@@ -42,6 +42,27 @@ type VariableRecord struct {
 	Owner, Repo, Name, Value string
 }
 
+// UpdatedCommentRecord records an issue comment update call.
+type UpdatedCommentRecord struct {
+	Owner, Repo string
+	CommentID   int
+	Body        string
+}
+
+// MinimizedCommentRecord records a comment minimize call.
+type MinimizedCommentRecord struct {
+	NodeID string
+	Reason string
+}
+
+// ReviewRecord records a pull request review creation call.
+type ReviewRecord struct {
+	Owner, Repo string
+	Number      int
+	Event, Body string
+	CommitSHA   string
+}
+
 // FakeClient is a thread-safe test double for forge.Client.
 // Pre-populate its fields to control return values, and inspect
 // recorder slices after the test to verify which calls were made.
@@ -69,6 +90,15 @@ type FakeClient struct {
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
 
+	// Issue comments for ListIssueComments / UpdateIssueComment.
+	IssueComments map[string][]IssueComment // key: "owner/repo/number"
+
+	// Pull request head SHA for GetPullRequestHeadSHA.
+	PullRequestHeadSHA string
+
+	// Pull request reviews for ListPullRequestReviews.
+	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
+
 	// Call recorders
 	CreatedRepos      []Repository
 	CreatedFiles      []FileRecord
@@ -80,9 +110,13 @@ type FakeClient struct {
 	Variables         []VariableRecord
 	DeletedOrgSecrets []string // "org/name"
 	CreatedOrgSecrets []OrgSecretRecord
+	UpdatedComments   []UpdatedCommentRecord
+	MinimizedComments []MinimizedCommentRecord
+	CreatedReviews    []ReviewRecord
 
-	// internal counter for change proposal numbers
+	// internal counters
 	proposalCounter int
+	commentCounter  int
 }
 
 // err checks for an injected error for the given method name.
@@ -521,11 +555,129 @@ func (f *FakeClient) CloseIssue(_ context.Context, _, _ string, _ int) error {
 	return f.err("CloseIssue")
 }
 
-func (f *FakeClient) ListIssueComments(_ context.Context, _, _ string, _ int) ([]IssueComment, error) {
+func (f *FakeClient) ListIssueComments(_ context.Context, owner, repo string, number int) ([]IssueComment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e := f.err("ListIssueComments"); e != nil {
 		return nil, e
+	}
+	if f.IssueComments != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if comments, ok := f.IssueComments[key]; ok {
+			return comments, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, number int, body string) (*IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("CreateIssueComment"); e != nil {
+		return nil, e
+	}
+	f.commentCounter++
+	comment := IssueComment{
+		ID:        f.commentCounter,
+		NodeID:    fmt.Sprintf("IC_fake_%d", f.commentCounter),
+		Body:      body,
+		Author:    f.AuthenticatedUser,
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if f.IssueComments == nil {
+		f.IssueComments = make(map[string][]IssueComment)
+	}
+	f.IssueComments[key] = append(f.IssueComments[key], comment)
+	return &comment, nil
+}
+
+func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, commentID int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("UpdateIssueComment"); e != nil {
+		return e
+	}
+	f.UpdatedComments = append(f.UpdatedComments, UpdatedCommentRecord{
+		Owner:     owner,
+		Repo:      repo,
+		CommentID: commentID,
+		Body:      body,
+	})
+	for key, comments := range f.IssueComments {
+		for i, c := range comments {
+			if c.ID == commentID {
+				f.IssueComments[key][i].Body = body
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func (f *FakeClient) MinimizeComment(_ context.Context, nodeID, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("MinimizeComment"); e != nil {
+		return e
+	}
+	f.MinimizedComments = append(f.MinimizedComments, MinimizedCommentRecord{
+		NodeID: nodeID,
+		Reason: reason,
+	})
+	return nil
+}
+
+func (f *FakeClient) GetPullRequestHeadSHA(_ context.Context, _, _ string, _ int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetPullRequestHeadSHA"); e != nil {
+		return "", e
+	}
+	return f.PullRequestHeadSHA, nil
+}
+
+func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("CreatePullRequestReview"); e != nil {
+		return e
+	}
+	f.CreatedReviews = append(f.CreatedReviews, ReviewRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Number:    number,
+		Event:     event,
+		Body:      body,
+		CommitSHA: commitSHA,
+	})
+
+	review := PullRequestReview{
+		ID:     len(f.CreatedReviews) + 1000,
+		NodeID: fmt.Sprintf("PRR_fake_%d", len(f.CreatedReviews)+1000),
+		User:   f.AuthenticatedUser,
+		State:  event,
+		Body:   body,
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if f.PRReviews == nil {
+		f.PRReviews = make(map[string][]PullRequestReview)
+	}
+	f.PRReviews[key] = append(f.PRReviews[key], review)
+	return nil
+}
+
+func (f *FakeClient) ListPullRequestReviews(_ context.Context, owner, repo string, number int) ([]PullRequestReview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestReviews"); e != nil {
+		return nil, e
+	}
+	if f.PRReviews != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if reviews, ok := f.PRReviews[key]; ok {
+			return reviews, nil
+		}
 	}
 	return nil, nil
 }

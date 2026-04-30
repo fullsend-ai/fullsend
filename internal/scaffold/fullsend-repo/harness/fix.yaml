@@ -1,0 +1,56 @@
+# harness/fix.yaml — fix agent with pre/post script pipeline.
+#
+# Flow: pre_script → sandbox (agent) → post_script
+#   pre_script  : validates inputs, checks iteration cap
+#   agent       : reads pre-fetched review body, fixes code, tests, scans, commits
+#   post_script : push commit, post summary comment on PR
+#
+# The agent NEVER pushes or creates PRs (disallowedTools enforces this).
+# Only the post-script, running on the runner with PUSH_TOKEN, can write.
+agent: agents/fix.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-code:latest
+policy: policies/fix.yaml
+
+pre_script: scripts/pre-fix.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
+post_script: scripts/post-fix.sh
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/fix-agent.env
+    dest: /tmp/workspace/.env.d/fix-agent.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/workspace/.gcp-credentials.json
+  - src: ${REVIEW_BODY_FILE}
+    dest: /tmp/workspace/review-body.txt
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /tmp/workspace/.gcp-oidc-token
+    optional: true
+
+skills:
+  - skills/fix-review
+
+runner_env:
+  PUSH_TOKEN: "${PUSH_TOKEN}"
+  PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+  REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  PR_NUMBER: "${PR_NUMBER}"
+  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+  TARGET_BRANCH: "${TARGET_BRANCH}"
+  TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
+  HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
+  FIX_ITERATION: "${FIX_ITERATION}"
+  REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
+  PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/fix-result.schema.json
+  FULLSEND_OUTPUT_FILE: fix-result.json
+
+timeout_minutes: 25

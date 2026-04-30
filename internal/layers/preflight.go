@@ -26,14 +26,37 @@ func (r *PreflightResult) OK() bool {
 	return len(r.Missing) == 0
 }
 
+// scopeDescriptions maps GitHub OAuth scopes to human-readable
+// explanations of why fullsend needs them. Scopes that don't appear
+// here are printed without a description.
+var scopeDescriptions = map[string]string{
+	"repo":        "read/write repository contents, secrets, and workflows",
+	"workflow":    "create and update GitHub Actions workflow files",
+	"admin:org":   "manage organization-level Actions secrets (dispatch token)",
+	"delete_repo": "delete the .fullsend config repository (uninstall only)",
+}
+
 // Error returns a human-readable error describing missing scopes and
 // how to fix the problem.
 func (r *PreflightResult) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "token is missing required scopes: %s\n", strings.Join(r.Missing, ", "))
+
+	b.WriteString("\nWhy each scope is needed:\n")
+	for _, scope := range r.Missing {
+		if desc, ok := scopeDescriptions[scope]; ok {
+			fmt.Fprintf(&b, "  • %s — %s\n", scope, desc)
+		} else {
+			fmt.Fprintf(&b, "  • %s\n", scope)
+		}
+	}
+
 	b.WriteString("\nTo add the missing scopes, run:\n")
 	fmt.Fprintf(&b, "  gh auth refresh -s %s\n", strings.Join(r.Missing, ","))
-	b.WriteString("\nOr set GH_TOKEN / GITHUB_TOKEN with a token that includes these scopes.")
+	b.WriteString("\nNote: gh auth scopes apply to every organization your\n")
+	b.WriteString("account belongs to. If that is a concern, create a\n")
+	b.WriteString("fine-grained personal access token scoped to a single org\n")
+	b.WriteString("and export it as GH_TOKEN instead.")
 	return b.String()
 }
 

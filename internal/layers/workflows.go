@@ -11,6 +11,20 @@ import (
 
 const codeownersPath = "CODEOWNERS"
 
+// managedFiles lists every file this layer manages.
+// Populated at init from the scaffold plus the CODEOWNERS sentinel.
+var managedFiles []string
+
+func init() {
+	if err := scaffold.WalkFullsendRepo(func(path string, _ []byte) error {
+		managedFiles = append(managedFiles, path)
+		return nil
+	}); err != nil {
+		panic(fmt.Sprintf("walking scaffold: %v", err))
+	}
+	managedFiles = append(managedFiles, codeownersPath)
+}
+
 // WorkflowsLayer manages workflow files and CODEOWNERS in the .fullsend
 // config repo. It writes the reusable agent dispatch workflow, the repo
 // onboarding workflow, and a CODEOWNERS file that grants the installing

@@ -315,6 +315,25 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 		printer.StepDone(fmt.Sprintf("Agent-input files copied (%.1fs)", time.Since(inputStart).Seconds()))
 	}
 
+	// 8c. Host-side scan (Path A): scan the target repo's context files
+	// (CLAUDE.md, AGENTS.md, SKILL.md, etc.) before the agent processes them.
+	// The target branch may contain attacker-controlled files from a PR.
+	if h.SecurityEnabled() {
+		printer.StepStart("Scanning target repo context files")
+		findings := scanRepoContextFiles(repoSrc)
+		if security.HasCriticalFindings(findings) {
+			if h.FailModeClosed() {
+				printer.StepFail("BLOCKED: critical injection findings in target repo context files")
+				return fmt.Errorf("target repo context scan blocked: critical injection findings")
+			}
+			printer.StepWarn("Target repo has critical injection findings (fail_mode: open)")
+		} else if len(findings) > 0 {
+			printer.StepWarn(fmt.Sprintf("Target repo context scan: %d finding(s)", len(findings)))
+		} else {
+			printer.StepDone("Target repo context files clean")
+		}
+	}
+
 	// 9a. Generate trace ID for security finding correlation.
 	traceID := security.GenerateTraceID()
 	printer.KeyValue("Trace ID", traceID)
@@ -323,8 +342,8 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 	}
 
 	// 9b. Pre-agent security scan (sandbox-internal, Path B).
-	// Scans context files (CLAUDE.md, AGENTS.md, .cursorrules, agent defs)
-	// that were just copied into the sandbox.
+	// Scans context files (CLAUDE.md, AGENTS.md, .cursorrules, agent defs,
+	// SKILL.md) that were just copied into the sandbox.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running pre-agent security scan")
 		scanCmd := buildScanContextCommand(repoDir, traceID)
@@ -556,6 +575,34 @@ func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Har
 		return fmt.Errorf("chmod fullsend binary: %w", err)
 	}
 
+	// Host-side scan (Path A): check agent definition and skills for injection
+	// before copying into sandbox. Complements the in-sandbox scan (Path B).
+	// Uses stderr (not printer) because bootstrapSandbox has no printer param.
+	var scanPipeline *security.Pipeline
+	if h.SecurityEnabled() {
+		scanPipeline = security.InputPipeline()
+	}
+
+	if scanPipeline != nil {
+		content, err := os.ReadFile(h.Agent)
+		if err != nil {
+			if h.FailModeClosed() {
+				return fmt.Errorf("cannot scan agent definition %q: %w", h.Agent, err)
+			}
+			fmt.Fprintf(os.Stderr, "WARNING: could not read agent definition %q for scan: %v\n", h.Agent, err)
+		} else {
+			result := scanPipeline.Scan(string(content))
+			if security.HasCriticalFindings(result.Findings) {
+				if h.FailModeClosed() {
+					return fmt.Errorf("agent definition %q blocked: critical injection findings", h.Agent)
+				}
+				fmt.Fprintf(os.Stderr, "WARNING: agent definition %q has critical injection findings (fail_mode: open)\n", h.Agent)
+			} else if len(result.Findings) > 0 {
+				fmt.Fprintf(os.Stderr, "WARNING: agent definition %q has %d injection finding(s)\n", h.Agent, len(result.Findings))
+			}
+		}
+	}
+
 	// Copy agent definition to $CLAUDE_CONFIG_DIR/agents/.
 	if err := sandbox.SCP(sshConfigPath, sandboxName, h.Agent,
 		fmt.Sprintf("%s/agents/", sandbox.SandboxClaudeConfig)); err != nil {
@@ -566,6 +613,35 @@ func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Har
 	// scripts/, references/, and assets/ bundled with the skill per the
 	// agentskills.io specification).
 	for _, skillPath := range h.Skills {
+		if scanPipeline != nil {
+			// Try common casings — Linux filesystems are case-sensitive.
+			// Keep in sync with security.ScannableFiles["skill.md"].
+			var skillContent []byte
+			for _, name := range []string{"SKILL.md", "skill.md", "Skill.md"} {
+				if c, err := os.ReadFile(filepath.Join(skillPath, name)); err == nil {
+					skillContent = c
+					break
+				}
+			}
+			if skillContent == nil {
+				// No SKILL.md found in any casing — not an error, skill may
+				// use scripts only. But in fail-closed, warn about unscanned skill.
+				if h.FailModeClosed() {
+					fmt.Fprintf(os.Stderr, "WARNING: skill %q has no SKILL.md to scan\n", skillPath)
+				}
+			} else {
+				result := scanPipeline.Scan(string(skillContent))
+				if security.HasCriticalFindings(result.Findings) {
+					if h.FailModeClosed() {
+						return fmt.Errorf("skill %q blocked: critical injection findings in SKILL.md", skillPath)
+					}
+					fmt.Fprintf(os.Stderr, "WARNING: skill %q has critical injection findings (fail_mode: open)\n", skillPath)
+				} else if len(result.Findings) > 0 {
+					fmt.Fprintf(os.Stderr, "WARNING: skill %q has %d injection finding(s)\n", skillPath, len(result.Findings))
+				}
+			}
+		}
+
 		if err := sandbox.SCP(sshConfigPath, sandboxName, skillPath,
 			fmt.Sprintf("%s/skills/", sandbox.SandboxClaudeConfig)); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
@@ -776,9 +852,14 @@ func buildClaudeCommand(agentName, model, repoDir string) string {
 	)
 }
 
+// maxContextScanDepth is the maximum directory depth for scanning context
+// files. Shared between host-side (scanRepoContextFiles) and sandbox-side
+// (buildScanContextCommand) scans to ensure parity.
+const maxContextScanDepth = 5
+
 // buildScanContextCommand builds the SSH command to run `fullsend scan context`
-// inside the sandbox. It finds known context files in the repo directory and
-// passes them as arguments.
+// inside the sandbox. It finds known context files (including SKILL.md in
+// skill directories) in the repo directory and passes them as arguments.
 func buildScanContextCommand(repoDir, traceID string) string {
 	// Defense-in-depth: validate traceID before shell interpolation even though
 	// GenerateTraceID() only produces safe hex characters.
@@ -815,9 +896,117 @@ func buildScanContextCommand(repoDir, traceID string) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 
 	return fmt.Sprintf(
-		"source %s && FULLSEND_TRACE_ID='%s' find '%s' -maxdepth 3 -type f \\( %s \\) -exec fullsend scan context {} +",
-		envFile, traceID, escapedDir, inameExpr,
+		"source %s && FULLSEND_TRACE_ID='%s' find '%s' -maxdepth %d -type f \\( %s \\) -exec fullsend scan context {} +",
+		envFile, traceID, escapedDir, maxContextScanDepth, inameExpr,
 	)
+}
+
+// relOrAbs returns path relative to base, falling back to the absolute path if Rel fails.
+func relOrAbs(base, path string) string {
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return path
+	}
+	return rel
+}
+
+// scanRepoContextFiles walks the target repo directory for known context
+// files (CLAUDE.md, AGENTS.md, SKILL.md, etc.) and runs the InputPipeline
+// on each. Returns all findings across scanned files.
+func scanRepoContextFiles(repoDir string) []security.Finding {
+	const maxContextFileSize int64 = 1 << 20 // 1 MB
+
+	skipDirs := map[string]bool{
+		".git": true, "node_modules": true, "vendor": true,
+		"__pycache__": true, ".venv": true,
+	}
+
+	pipeline := security.InputPipeline()
+	var allFindings []security.Finding
+
+	err := filepath.WalkDir(repoDir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			relPath := relOrAbs(repoDir, path)
+			allFindings = append(allFindings, security.Finding{
+				Scanner:  "context_injection",
+				Name:     "scan_error",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("could not access %s: %v", relPath, walkErr),
+				Position: -1,
+			})
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			rel := relOrAbs(repoDir, path)
+			// find -maxdepth N allows N levels below start; separator count maps to depth-1.
+			if rel != "." && strings.Count(rel, string(os.PathSeparator)) >= maxContextScanDepth-1 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if !security.ShouldScan(d.Name()) {
+			return nil
+		}
+		relPath := relOrAbs(repoDir, path)
+		info, err := d.Info()
+		if err != nil {
+			allFindings = append(allFindings, security.Finding{
+				Scanner:  "context_injection",
+				Name:     "scan_error",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: could not stat file: %v", relPath, err),
+				Position: -1,
+			})
+			return nil
+		}
+		if info.Size() > maxContextFileSize {
+			allFindings = append(allFindings, security.Finding{
+				Scanner:  "context_injection",
+				Name:     "file_too_large",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: skipped, exceeds %d byte limit (%d bytes)", relPath, maxContextFileSize, info.Size()),
+				Position: -1,
+			})
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			allFindings = append(allFindings, security.Finding{
+				Scanner:  "context_injection",
+				Name:     "scan_error",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%s: could not read file: %v", relPath, err),
+				Position: -1,
+			})
+			return nil
+		}
+		result := pipeline.Scan(string(content))
+		for i := range result.Findings {
+			result.Findings[i].Detail = fmt.Sprintf("%s: %s", relPath, result.Findings[i].Detail)
+		}
+		allFindings = append(allFindings, result.Findings...)
+		return nil
+	})
+	if err != nil {
+		allFindings = append(allFindings, security.Finding{
+			Scanner:  "context_injection",
+			Name:     "scan_error",
+			Severity: "high",
+			Detail:   fmt.Sprintf("walk terminated: %v", err),
+			Position: -1,
+		})
+	}
+
+	return allFindings
 }
 
 // scanOutputFiles runs the secret redactor on extracted output files,

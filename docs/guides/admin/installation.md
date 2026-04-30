@@ -5,17 +5,26 @@ This guide walks through installing fullsend in a GitHub organization and enroll
 ## Prerequisites
 
 - **GitHub organization** with admin access
-- **GitHub CLI** (`gh`) authenticated:
+- **GitHub CLI** (`gh`) authenticated — no special scopes are needed upfront. The installer runs a preflight check and tells you exactly which scopes are missing before making any changes. When prompted, run the `gh auth refresh -s <scopes>` command it suggests.
 
-  ```bash
-  gh auth refresh -s admin:org,repo,workflow
-  ```
+  > **Note on scope breadth:** `gh auth` scopes apply to *every* organization your account belongs to — GitHub does not support per-org scoping for classic OAuth tokens. If that is a concern, create a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) scoped to the target organization and export it as `GH_TOKEN` before running the installer.
 
 - **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
 
   *Note*: If running from a local clone of the repository use `go run ./cmd/fullsend/main.go <command>`
 
 - **GCP project** with the [Vertex AI API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled
+
+### OAuth scope reference
+
+The table below lists every scope the installer may request and why. You are never asked for all of them at once — the preflight check requests only the scopes needed for the operation you are running.
+
+| Scope | When needed | Why |
+|-------|-------------|-----|
+| `repo` | install, analyze | Read/write repository contents, manage repo-level secrets |
+| `workflow` | install | Create and update GitHub Actions workflow files in `.github/workflows/` |
+| `admin:org` | install, uninstall, analyze | Manage organization-level Actions secrets (the dispatch token) |
+| `delete_repo` | uninstall | Delete the `.fullsend` config repository |
 
 The default region is `global`. For a list of all available regions, see the [Vertex AI documentation](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude#regions).
 
@@ -123,8 +132,7 @@ The installer is interactive. It will open multiple browser windows to create an
 
 Near the end, the installer opens a browser to create a fine-grained personal access token (dispatch token). When creating it, make sure to grant **Actions: Read and write** permission scoped to the `.fullsend` repository — otherwise the verification step will fail with a 404.
 
-If the installer fails partway through, run `fullsend admin uninstall "$ORG_NAME"` to clean up before retrying. You will need to
-refresh the permissions to add `delete_repo`: `gh auth refresh -s delete_repo`.
+If the installer fails partway through, run `fullsend admin uninstall "$ORG_NAME"` to clean up before retrying. The uninstall preflight will prompt you to add the `delete_repo` scope if it is missing.
 
 **With WIF (recommended):**
 

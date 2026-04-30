@@ -159,6 +159,11 @@ and `Glob` to inspect project configuration:
    `package.json`, `pyproject.toml`, or equivalent build config.
 3. **Check for linter configuration.** Use `Glob` to find files like
    `.golangci.yml`, `.eslintrc*`, `.pre-commit-config.yaml`, `ruff.toml`.
+4. **Check for PR title conventions.** Look for title format requirements
+   in `CLAUDE.md`, `CONTRIBUTING.md`, or `.github/workflows/` (e.g., a
+   `check-pr-title` action with a regex). If the repo requires a specific
+   format like `type(TICKET): description`, note the convention — you will
+   use it when writing the commit subject in step 10.
 
 From these files, determine:
 
@@ -167,6 +172,10 @@ From these files, determine:
   `npm test`, `pytest`)
 - **Lint command** — how to run linters (e.g., `make lint`, `pre-commit run --files`)
 - **Commit conventions** — signing requirements, message format
+- **PR title conventions** — whether the repo enforces a title format via
+  CI (e.g., `type(TICKET): description`). The post-script uses the commit
+  subject as the PR title and will inject a `(#ISSUE_NUMBER)` scope if
+  missing, but matching the repo's expected format directly is preferred.
 - **Branch conventions** — naming patterns, target branch
 
 If a `TARGET_BRANCH` environment variable is set, use it. Otherwise, determine
@@ -581,7 +590,15 @@ The commit message must:
   `CONTRIBUTING.md`, `CLAUDE.md`, `.gitlint`, or the existing commit history
   uses a specific format (e.g., Conventional Commits, Angular-style, ticket
   prefixes), follow it.
-- **Fall back to `<type>: <description>` only if no convention was found.**
+- **Include the issue reference in the commit subject.** The post-script
+  uses the commit subject as the PR title. Many repos enforce PR title
+  conventions like `type(TICKET): description`. Always include the issue
+  number as a scope: `<type>(#<number>): <description>`. If the repo uses
+  Jira-style ticket IDs (e.g., `PROJ-123`) and the issue title or body
+  contains one, use that instead: `<type>(PROJ-123): <description>`.
+- **Fall back to `<type>(#<number>): <description>` if no convention was
+  found.** The `(#<number>)` scope ensures the PR title passes most
+  title-check CI jobs.
 - Reference the issue number with `Closes #<number>` in the body.
 
 **Title length — check `.gitlint` if it exists:**
@@ -624,7 +641,7 @@ The commit body should:
 - Note any trade-offs, assumptions, or edge cases
 
 ```bash
-git commit -s -m "<type>: <short-description>
+git commit -s -m "<type>(#<number>): <short-description>
 
 <What changed and why. Hard-wrap at the limit from
 .gitlint if one is configured. Write substantive

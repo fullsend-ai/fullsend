@@ -35,6 +35,11 @@ const (
 	// VariableRegion is the repo variable name for the GCP region.
 	VariableRegion = "FULLSEND_GCP_REGION"
 
+	// VariableAuthMode tells workflows which GCP auth method to use.
+	// Must be a variable (not a secret) because GitHub's dispatch-time
+	// validator does not recognise the secrets context.
+	VariableAuthMode = "FULLSEND_GCP_AUTH_MODE"
+
 	// SecretWIFProvider is the repo secret for the full WIF provider resource name.
 	// Stored as a secret so the value is masked in GitHub Actions logs.
 	SecretWIFProvider = "FULLSEND_GCP_WIF_PROVIDER"
@@ -108,10 +113,13 @@ func (p *Provider) SecretNames() []string {
 
 // Variables returns non-secret name/value pairs to store as repo variables.
 func (p *Provider) Variables() map[string]string {
-	if p.cfg.Region == "" {
-		return nil
+	vars := map[string]string{
+		VariableAuthMode: string(p.cfg.Mode),
 	}
-	return map[string]string{VariableRegion: p.cfg.Region}
+	if p.cfg.Region != "" {
+		vars[VariableRegion] = p.cfg.Region
+	}
+	return vars
 }
 
 // Provision acquires GCP credentials and returns them as secrets.

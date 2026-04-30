@@ -236,6 +236,12 @@ func decodeJSON(resp *http.Response, v any) error {
 }
 
 // ListOrgRepos returns all non-archived, non-fork repositories for an org.
+//
+// Forks are excluded because fullsend's trust model assumes org-owned repos
+// where CODEOWNERS governance and org-level permissions control agent
+// autonomy. Fork repos may have different ownership and CODEOWNERS configs,
+// which could bypass human-approval gates. Archived repos are excluded
+// because they represent inactive targets where agent work would be wasted.
 func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repository, error) {
 	var result []forge.Repository
 
@@ -956,33 +962,211 @@ func (c *LiveClient) CloseIssue(ctx context.Context, owner, repo string, number 
 	return nil
 }
 
-// ListIssueComments returns up to 100 comments on an issue (single page, no pagination).
+// ListIssueComments returns all comments on an issue, paginating automatically.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, number))
-	if err != nil {
-		return nil, fmt.Errorf("list issue comments: %w", err)
+	var result []forge.IssueComment
+
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list issue comments page %d: %w", page, err)
+		}
+		var raw []struct {
+			ID     int    `json:"id"`
+			NodeID string `json:"node_id"`
+			Body   string `json:"body"`
+			User   struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			CreatedAt string `json:"created_at"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding issue comments page %d: %w", page, err)
+		}
+
+		for _, r := range raw {
+			result = append(result, forge.IssueComment{
+				ID:        r.ID,
+				NodeID:    r.NodeID,
+				Body:      r.Body,
+				Author:    r.User.Login,
+				CreatedAt: r.CreatedAt,
+			})
+		}
+
+		if len(raw) < 100 {
+			break
+		}
 	}
-	var raw []struct {
-		ID   int    `json:"id"`
-		Body string `json:"body"`
-		User struct {
+	return result, nil
+}
+
+// CreateIssueComment creates a new comment on an issue or pull request.
+func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
+	payload := map[string]string{"body": body}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
+	if err != nil {
+		return nil, fmt.Errorf("create issue comment on #%d: %w", number, err)
+	}
+	var result struct {
+		ID     int    `json:"id"`
+		NodeID string `json:"node_id"`
+		Body   string `json:"body"`
+		User   struct {
 			Login string `json:"login"`
 		} `json:"user"`
 		CreatedAt string `json:"created_at"`
 	}
-	if err := decodeJSON(resp, &raw); err != nil {
-		return nil, fmt.Errorf("decoding issue comments: %w", err)
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue comment: %w", err)
 	}
-	comments := make([]forge.IssueComment, len(raw))
-	for i, r := range raw {
-		comments[i] = forge.IssueComment{
-			ID:        r.ID,
-			Body:      r.Body,
-			Author:    r.User.Login,
-			CreatedAt: r.CreatedAt,
+	return &forge.IssueComment{
+		ID:        result.ID,
+		NodeID:    result.NodeID,
+		Body:      result.Body,
+		Author:    result.User.Login,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
+// UpdateIssueComment updates the body of an existing issue comment.
+func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
+	payload := map[string]string{"body": body}
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID), payload)
+	if err != nil {
+		return fmt.Errorf("update issue comment %d: %w", commentID, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// MinimizeComment minimizes (hides) an issue or review comment via the
+// GitHub GraphQL API. The caller provides the GraphQL node ID directly
+// (available in IssueComment.NodeID and PullRequestReview.NodeID).
+// The reason must be one of: ABUSE, OFF_TOPIC, OUTDATED, RESOLVED,
+// DUPLICATE, SPAM.
+func (c *LiveClient) MinimizeComment(ctx context.Context, nodeID, reason string) error {
+	switch reason {
+	case "ABUSE", "OFF_TOPIC", "OUTDATED", "RESOLVED", "DUPLICATE", "SPAM":
+	default:
+		return fmt.Errorf("minimize comment %s: invalid reason %q", nodeID, reason)
+	}
+
+	query := `mutation($id: ID!, $reason: ReportedContentClassifiers!) {
+		minimizeComment(input: {subjectId: $id, classifier: $reason}) {
+			minimizedComment { isMinimized }
+		}
+	}`
+	gqlPayload := map[string]any{
+		"query": query,
+		"variables": map[string]string{
+			"id":     nodeID,
+			"reason": reason,
+		},
+	}
+	gqlResp, err := c.post(ctx, "/graphql", gqlPayload)
+	if err != nil {
+		return fmt.Errorf("minimize comment %s: %w", nodeID, err)
+	}
+	var gqlResult struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := decodeJSON(gqlResp, &gqlResult); err != nil {
+		return fmt.Errorf("decode minimize response: %w", err)
+	}
+	if len(gqlResult.Errors) > 0 {
+		return fmt.Errorf("minimize comment %s: %s", nodeID, gqlResult.Errors[0].Message)
+	}
+	return nil
+}
+
+// GetPullRequestHeadSHA returns the current HEAD commit SHA of a pull request.
+func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return "", fmt.Errorf("get pull request #%d: %w", number, err)
+	}
+
+	var pr struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return "", fmt.Errorf("decode pull request #%d: %w", number, err)
+	}
+	return pr.Head.SHA, nil
+}
+
+// CreatePullRequestReview submits a formal review on a pull request.
+// The event must be one of: APPROVE, REQUEST_CHANGES, COMMENT.
+// When commitSHA is non-empty it is sent as commit_id, pinning the
+// review to that commit. GitHub rejects the request if the commit is
+// not the PR's current HEAD, closing the TOCTOU gap between the
+// stale-head check and review submission.
+func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string) error {
+	switch event {
+	case "APPROVE", "REQUEST_CHANGES", "COMMENT":
+	default:
+		return fmt.Errorf("create review on #%d: invalid event %q", number, event)
+	}
+
+	payload := map[string]string{
+		"event": event,
+		"body":  body,
+	}
+	if commitSHA != "" {
+		payload["commit_id"] = commitSHA
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("create pull request review on #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ListPullRequestReviews returns all reviews on a pull request, paginating automatically.
+func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error) {
+	var result []forge.PullRequestReview
+
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull request reviews page %d: %w", page, err)
+		}
+		var raw []struct {
+			ID     int    `json:"id"`
+			NodeID string `json:"node_id"`
+			User   struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			State       string `json:"state"`
+			Body        string `json:"body"`
+			SubmittedAt string `json:"submitted_at"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding pull request reviews page %d: %w", page, err)
+		}
+
+		for _, r := range raw {
+			result = append(result, forge.PullRequestReview{
+				ID:          r.ID,
+				NodeID:      r.NodeID,
+				User:        r.User.Login,
+				State:       r.State,
+				Body:        r.Body,
+				SubmittedAt: r.SubmittedAt,
+			})
+		}
+
+		if len(raw) < 100 {
+			break
 		}
 	}
-	return comments, nil
+	return result, nil
 }
 
 // MergeChangeProposal squash-merges a pull request by number.

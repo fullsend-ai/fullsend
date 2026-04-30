@@ -183,7 +183,7 @@ fi
 echo "Creating PR..."
 
 COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
-COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed '/^Closes #/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
 
 COMMIT_BODY="$(echo "${COMMIT_BODY_RAW}" | awk '
   /^$/           { if (buf) print buf; print; buf=""; next }
@@ -193,22 +193,29 @@ COMMIT_BODY="$(echo "${COMMIT_BODY_RAW}" | awk '
   END            { if (buf) print buf }
 ')"
 
-PR_TITLE="${COMMIT_SUBJECT}"
-
-FILE_SUMMARY="$(echo "${CHANGED_FILES}" | sort | sed 's|^|  - `|; s|$|`|')"
+# ---------------------------------------------------------------------------
+# Ensure PR title includes an issue reference.
+#
+# Many repos enforce PR title conventions like "type(TICKET): description".
+# The code agent may produce a plain "type: description" commit subject that
+# omits the issue reference. When the title follows conventional commit format
+# (word + colon), inject the issue number as a scope if no scope is present.
+# ---------------------------------------------------------------------------
+if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
+  # Already has a scope — e.g. "fix(#42): ..." or "feat(PROJ-123): ..."
+  PR_TITLE="${COMMIT_SUBJECT}"
+elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
+  # Conventional commit without scope — inject issue reference
+  PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+else
+  # Non-conventional title — leave as-is
+  PR_TITLE="${COMMIT_SUBJECT}"
+fi
 
 if [ -z "${COMMIT_BODY}" ]; then
-  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}.
-
-### Changed files
-
-${FILE_SUMMARY}"
+  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
 else
-  DESCRIPTION="${COMMIT_BODY}
-
-### Changed files
-
-${FILE_SUMMARY}"
+  DESCRIPTION="${COMMIT_BODY}"
 fi
 
 PR_BODY="${DESCRIPTION}
@@ -222,9 +229,7 @@ Closes #${ISSUE_NUMBER}
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
 - [x] Pre-commit hooks passed (authoritative run on runner)
-- [x] Tests ran inside sandbox
-
-<sub>Created by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> code agent</sub>"
+- [x] Tests ran inside sandbox"
 
 PR_URL="$(gh pr create \
   --repo "${REPO_FULL_NAME}" \

@@ -41,8 +41,8 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have created scaffold files + CODEOWNERS in the .fullsend repo
-	require.True(t, len(client.CreatedFiles) >= 23,
-		"expected at least 23 files (22 scaffold + CODEOWNERS), got %d", len(client.CreatedFiles))
+	require.True(t, len(client.CreatedFiles) >= len(managedFiles),
+		"expected at least %d files (scaffold + CODEOWNERS), got %d", len(managedFiles), len(client.CreatedFiles))
 
 	paths := make(map[string]string) // path -> content
 	for _, f := range client.CreatedFiles {
@@ -54,6 +54,7 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/triage.yml")
 	assert.Contains(t, paths, ".github/workflows/code.yml")
 	assert.Contains(t, paths, ".github/workflows/review.yml")
+	assert.Contains(t, paths, ".github/workflows/fix.yml")
 	assert.Contains(t, paths, ".github/workflows/repo-maintenance.yml")
 	assert.Contains(t, paths, "CODEOWNERS")
 
@@ -116,8 +117,9 @@ func TestWorkflowsLayer_Install_CODEOWNERSOptional(t *testing.T) {
 	// Install should succeed even though CODEOWNERS write failed
 	require.NoError(t, err)
 
-	// All scaffold files should have been created (CODEOWNERS excluded since it failed)
-	assert.Len(t, client.created, 45)
+	// All scaffold files should have been created (CODEOWNERS excluded since it failed).
+	// Count = managedFiles - 1 (CODEOWNERS).
+	assert.Len(t, client.created, len(managedFiles)-1)
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
@@ -165,7 +167,7 @@ func TestWorkflowsLayer_Analyze_AllPresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Len(t, report.Details, 46)
+	assert.Len(t, report.Details, len(managedFiles))
 }
 
 func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
@@ -179,7 +181,7 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 
 	assert.Equal(t, "workflows", report.Name)
 	assert.Equal(t, StatusNotInstalled, report.Status)
-	assert.Len(t, report.WouldInstall, 46)
+	assert.Len(t, report.WouldInstall, len(managedFiles))
 }
 
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {

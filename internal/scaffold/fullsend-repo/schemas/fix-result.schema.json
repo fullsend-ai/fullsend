@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fix-result.schema.json",
+  "title": "Fix Agent Result",
+  "description": "Structured output from the fix agent documenting actions taken on review feedback.",
+  "type": "object",
+  "required": ["pr_number", "trigger_source", "actions", "summary", "tests_passed", "files_changed"],
+  "additionalProperties": false,
+  "properties": {
+    "pr_number": {
+      "type": "integer",
+      "description": "The PR number that was fixed."
+    },
+    "trigger_source": {
+      "type": "string",
+      "enum": ["bot", "human"],
+      "description": "Whether the fix was triggered by the review bot or a human /fix command."
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Which iteration of the review→fix loop this is."
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "description": "Actions taken on each review finding.",
+      "items": {
+        "type": "object",
+        "required": ["type", "finding"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["fix", "disagree"],
+            "description": "Action type: fix (addressed the finding), disagree (reasoned rejection)."
+          },
+          "finding": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Short label for the review finding being addressed."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "File path the finding references."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "What was done to address the finding (for fix actions)."
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Why the agent disagrees with the feedback (for disagree actions)."
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "fix" } }, "required": ["type"] },
+            "then": { "required": ["type", "finding", "description"] }
+          },
+          {
+            "if": { "properties": { "type": { "const": "disagree" } }, "required": ["type"] },
+            "then": { "required": ["type", "finding", "reason"] }
+          }
+        ]
+      }
+    },
+    "decision_points": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Significant decisions where alternatives were considered.",
+      "items": {
+        "type": "object",
+        "required": ["description", "rationale"],
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "What decision was made."
+          },
+          "alternatives": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 256 },
+            "description": "Other approaches that were considered."
+          },
+          "rationale": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Why this approach was chosen."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 4096,
+      "description": "Human-readable summary of what the fix agent did."
+    },
+    "strategy_change": {
+      "type": ["string", "null"],
+      "maxLength": 2048,
+      "description": "If the agent changed strategy due to escalation threshold, describe the new approach."
+    },
+    "tests_passed": {
+      "type": "boolean",
+      "description": "Whether all tests passed after the fix."
+    },
+    "files_changed": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "maxLength": 512 },
+      "description": "List of files modified by the fix agent."
+    }
+  }
+}

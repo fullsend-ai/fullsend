@@ -71,14 +71,14 @@ jobs:
           fetch-depth: 1
 
       - name: Authenticate to Google Cloud (WIF)
-        if: secrets.FULLSEND_GCP_WIF_PROVIDER != ''
+        if: vars.FULLSEND_GCP_AUTH_MODE == 'wif'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.FULLSEND_GCP_WIF_SA_EMAIL }}
 
       - name: Authenticate to Google Cloud (SA key)
-        if: secrets.FULLSEND_GCP_WIF_PROVIDER == ''
+        if: vars.FULLSEND_GCP_AUTH_MODE != 'wif'
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}

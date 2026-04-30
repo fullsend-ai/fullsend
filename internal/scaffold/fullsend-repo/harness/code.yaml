@@ -41,4 +41,4 @@ runner_env:
   REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
   TARGET_BRANCH: "${TARGET_BRANCH}"
 
-timeout_minutes: 25
+timeout_minutes: 35

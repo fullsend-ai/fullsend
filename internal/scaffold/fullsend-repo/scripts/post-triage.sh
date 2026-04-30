@@ -72,7 +72,7 @@ case "${ACTION}" in
       exit 1
     fi
     echo "Posting clarifying question..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
 
     echo "Applying label..."
     add_label "needs-info"
@@ -89,7 +89,7 @@ case "${ACTION}" in
       exit 1
     fi
     echo "Posting duplicate notice..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
 
     echo "Applying label and closing..."
     add_label "duplicate"
@@ -111,7 +111,7 @@ case "${ACTION}" in
     fi
 
     echo "Posting triage summary..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
 
     echo "Applying label..."
     add_label "ready-to-code"

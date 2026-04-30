@@ -58,16 +58,17 @@ func (c *ContextInjectionScanner) Scan(text string) ScanResult {
 // ScannableFiles is the set of filenames that should be scanned for
 // prompt injection before being loaded into agent context.
 var ScannableFiles = map[string]bool{
-	"agents.md":                       true,
-	".cursorrules":                    true,
-	"claude.md":                       true,
-	".claude.md":                      true,
-	"soul.md":                         true,
-	".hermes.md":                      true,
-	"hermes.md":                       true,
-	"gemini.md":                       true,
-	".gemini.md":                      true,
+	"agents.md":               true,
+	".cursorrules":            true,
+	"claude.md":               true,
+	".claude.md":              true,
+	"soul.md":                 true,
+	".hermes.md":              true,
+	"hermes.md":               true,
+	"gemini.md":               true,
+	".gemini.md":              true,
 	"copilot-instructions.md": true,
+	"skill.md":                true,
 }
 
 // ShouldScan reports whether a filename should be scanned for injection.

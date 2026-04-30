@@ -56,10 +56,12 @@ jobs:
     if: >-
       (github.event_name == 'issues' && github.event.action == 'labeled'
         && github.event.label.name == 'ready-to-code') ||
-      (github.event_name == 'issue_comment' && (
-        github.event.comment.body == '/code' ||
-        startsWith(github.event.comment.body, '/code ')
-      ))
+      (github.event_name == 'issue_comment'
+        && !github.event.issue.pull_request
+        && (
+          github.event.comment.body == '/code' ||
+          startsWith(github.event.comment.body, '/code ')
+        ))
     steps:
       - name: Dispatch code
         env:

@@ -98,3 +98,13 @@ func OutputPipeline() *Pipeline {
 		NewSecretRedactor(),
 	)
 }
+
+// HasCriticalFindings reports whether any finding has critical severity.
+func HasCriticalFindings(findings []Finding) bool {
+	for _, f := range findings {
+		if f.Severity == "critical" {
+			return true
+		}
+	}
+	return false
+}

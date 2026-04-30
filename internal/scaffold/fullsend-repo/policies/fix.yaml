@@ -1,15 +1,11 @@
 version: 1
 
-# Sandbox policy for the code agent.
+# Sandbox policy for the fix agent.
 #
-# Grants network access the code agent needs beyond the base sandbox:
-#   - Vertex AI (global inference + GCP auth token exchange)
-#   - GitHub API (gh/git only — curl intentionally excluded to prevent
-#     disallowedTools bypass via raw HTTP with the injected GH_TOKEN)
-#   - gitleaks releases (fallback download if not pre-installed in image)
-#   - npm/yarn/pnpm/PyPI/Go registries (running tests may pull dev dependencies)
-#   - pre-commit binary needs github (clone hook repos), package registries
-#     (pip install hook deps), and GitHub releases (hook binaries like gitleaks)
+# Identical to the code agent policy — the fix agent needs the same network
+# access (Vertex AI, GitHub API for gh pr view/diff, package registries)
+# because it runs tests and linters. The review body is pre-fetched by the
+# workflow; gh api is banned via disallowedTools in agents/fix.md.
 
 filesystem_policy:
   include_workdir: true
@@ -82,11 +78,6 @@ network_policies:
         protocol: tcp
         enforcement: enforce
         access: allow
-      - host: "registry.yarnpkg.com"
-        port: 443
-        protocol: tcp
-        enforcement: enforce
-        access: allow
       - host: "pypi.org"
         port: 443
         protocol: tcp
@@ -114,10 +105,6 @@ network_policies:
         access: allow
     binaries:
       - path: "**/npm"
-      - path: "**/npx"
-      - path: "**/yarn"
-      - path: "**/yarnpkg"
-      - path: "**/pnpm"
       - path: "**/node"
       - path: "**/pip"
       - path: "**/pip3"

@@ -119,4 +119,10 @@ func TestPreflightResult_Error(t *testing.T) {
 	assert.Contains(t, msg, "delete_repo")
 	assert.Contains(t, msg, "workflow")
 	assert.Contains(t, msg, "gh auth refresh -s delete_repo,workflow")
+	// Verify scope descriptions are included.
+	assert.Contains(t, msg, "Why each scope is needed")
+	assert.Contains(t, msg, "delete the .fullsend config repository")
+	assert.Contains(t, msg, "GitHub Actions workflow files")
+	// Verify fine-grained PAT guidance is included.
+	assert.Contains(t, msg, "fine-grained personal access token")
 }

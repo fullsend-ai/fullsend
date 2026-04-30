@@ -40,10 +40,13 @@ func newAdminCmd() *cobra.Command {
 //  3. gh auth token (subprocess call to the GitHub CLI)
 //
 // This chain allows users who are already authenticated with gh to use
-// fullsend without manually exporting tokens. Note that some operations
-// (like repo deletion) require the delete_repo scope, and workflow file
-// writes require the workflow scope — scopes that gh auth doesn't request
-// by default. Use: gh auth refresh -s delete_repo,workflow
+// fullsend without manually exporting tokens. The CLI runs a preflight
+// check before each operation and reports exactly which scopes are
+// missing, so callers do not need to request all scopes upfront.
+//
+// Note that gh auth scopes apply to every organization the account
+// belongs to. Users who want to limit the blast radius can create a
+// fine-grained PAT scoped to a single org and export it as GH_TOKEN.
 func resolveToken() (string, error) {
 	if token := os.Getenv("GH_TOKEN"); token != "" {
 		return token, nil
@@ -428,6 +431,11 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 // discovered (eligible) repo list. Repos filtered out by ListOrgRepos
 // (forks, archived) will not appear in discoveredNames, so this catches
 // the case where a user targets a fork or archived repo.
+//
+// This validation exists because fullsend's trust model is org-centric:
+// forks may live outside the org's permission boundary or lack the same
+// CODEOWNERS governance, and archived repos have no active development.
+// See the ListOrgRepos comment in forge.Client for the full rationale.
 func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 	if len(enabledRepos) == 0 {
 		return nil
@@ -875,12 +883,11 @@ func promptDispatchToken(ctx context.Context, client forge.Client, printer *ui.P
 	)
 
 	printer.StepStart("Opening browser for dispatch token creation")
+	printer.StepInfo("URL: " + patURL)
 
 	browser := appsetup.DefaultBrowser{}
 	if err := browser.Open(ctx, patURL); err != nil {
 		printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
-		printer.StepInfo("Open this URL manually:")
-		printer.StepInfo("  " + patURL)
 	} else {
 		printer.StepDone("Opened token creation page")
 	}

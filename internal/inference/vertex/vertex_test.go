@@ -284,11 +284,17 @@ func TestSecretNames(t *testing.T) {
 func TestVariables_WithRegion(t *testing.T) {
 	p := New(Config{Region: "global"}, nil)
 	vars := p.Variables()
-	assert.Equal(t, map[string]string{VariableRegion: "global"}, vars)
+	assert.Equal(t, map[string]string{VariableAuthMode: "sa_key", VariableRegion: "global"}, vars)
 }
 
 func TestVariables_WithoutRegion(t *testing.T) {
 	p := New(Config{}, nil)
 	vars := p.Variables()
-	assert.Nil(t, vars)
+	assert.Equal(t, map[string]string{VariableAuthMode: "sa_key"}, vars)
+}
+
+func TestVariables_WIFMode(t *testing.T) {
+	p := New(Config{Mode: AuthModeWIF, Region: "global"}, nil)
+	vars := p.Variables()
+	assert.Equal(t, map[string]string{VariableAuthMode: "wif", VariableRegion: "global"}, vars)
 }
