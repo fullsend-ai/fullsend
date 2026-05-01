@@ -431,20 +431,6 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 			return nil, res.err
 		}
 		s.ui.StepDone(fmt.Sprintf("App created: %s", res.creds.Slug))
-
-		// Upload the role-specific icon as the app's logo.
-		if logo, ok := ghTypes.IconForRole(role); ok {
-			s.ui.StepStart(fmt.Sprintf("Uploading logo for %s", res.creds.Slug))
-			jwt, err := generateAppJWT(res.creds.AppID, []byte(res.creds.PEM))
-			if err != nil {
-				s.ui.StepWarn(fmt.Sprintf("Could not generate JWT for logo upload: %v", err))
-			} else if err := uploadAppLogo(ctx, "https://api.github.com", jwt, logo); err != nil {
-				s.ui.StepWarn(fmt.Sprintf("Could not upload logo: %v", err))
-			} else {
-				s.ui.StepDone(fmt.Sprintf("Logo uploaded for %s", res.creds.Slug))
-			}
-		}
-
 		return res.creds, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
