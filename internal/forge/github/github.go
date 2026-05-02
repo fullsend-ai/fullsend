@@ -1255,17 +1255,6 @@ func (c *LiveClient) ListIssueTimeline(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
-// AddIssueComment posts a comment on an issue.
-func (c *LiveClient) AddIssueComment(ctx context.Context, owner, repo string, number int, body string) error {
-	payload := map[string]string{"body": body}
-	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
-	if err != nil {
-		return fmt.Errorf("add issue comment: %w", err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
 // EnsureLabel creates a label if it doesn't already exist. A 422 response
 // (label already exists) is treated as success.
 func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name, description, color string) error {

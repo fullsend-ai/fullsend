@@ -136,7 +136,7 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 28, "expected at least 28 files, got %d", len(paths))
+	assert.True(t, len(paths) >= 27, "expected at least 27 files, got %d", len(paths))
 }
 
 func TestTriageWorkflowContent(t *testing.T) {
@@ -230,6 +230,8 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-fix-")
 	assert.Contains(t, s, "cancel-in-progress: true")
+	// Verify gate command replaced bash script
+	assert.Contains(t, s, "fullsend gate fix")
 }
 
 func TestCodeHarnessContent(t *testing.T) {

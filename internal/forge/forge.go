@@ -167,7 +167,6 @@ type Client interface {
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
 	ListIssueTimeline(ctx context.Context, owner, repo string, number int) ([]TimelineEvent, error)
-	AddIssueComment(ctx context.Context, owner, repo string, number int, body string) error
 	EnsureLabel(ctx context.Context, owner, repo, name, description, color string) error
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels []string) error
 

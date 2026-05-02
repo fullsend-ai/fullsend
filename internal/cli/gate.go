@@ -25,6 +25,7 @@ runner BEFORE sandbox creation. Each subcommand corresponds to an
 agent stage (code, triage, review).`,
 	}
 	cmd.AddCommand(newGateCodeCmd())
+	cmd.AddCommand(newGateFixCmd())
 	return cmd
 }
 
@@ -182,8 +183,12 @@ func runGateCode(ctx context.Context, cfg gateCodeConfig, printer *ui.Printer) e
 	first := humanPRs[0]
 	printer.Raw(fmt.Sprintf("::notice::Found existing human PR #%d by @%s\n", first.PRNumber, first.PRAuthor))
 
-	_ = cfg.Client.EnsureLabel(ctx, owner, repo, "pr-open", "An open PR already addresses this issue", "D4C5F9")
-	_ = cfg.Client.AddIssueLabels(ctx, owner, repo, issueNum, []string{"pr-open"})
+	if err := cfg.Client.EnsureLabel(ctx, owner, repo, "pr-open", "An open PR already addresses this issue", "D4C5F9"); err != nil {
+		printer.Raw(fmt.Sprintf("::warning::Failed to ensure pr-open label: %v\n", err))
+	}
+	if err := cfg.Client.AddIssueLabels(ctx, owner, repo, issueNum, []string{"pr-open"}); err != nil {
+		printer.Raw(fmt.Sprintf("::warning::Failed to add pr-open label to issue #%d: %v\n", issueNum, err))
+	}
 
 	var prListMD string
 	for _, pr := range humanPRs {
@@ -211,7 +216,9 @@ To override, comment `+"`/code --force`"+` on this issue.
 	}
 
 	if !hasExisting {
-		_ = cfg.Client.AddIssueComment(ctx, owner, repo, issueNum, commentBody)
+		if _, err := cfg.Client.CreateIssueComment(ctx, owner, repo, issueNum, commentBody); err != nil {
+			printer.Raw(fmt.Sprintf("::warning::Failed to post comment on issue #%d: %v\n", issueNum, err))
+		}
 	} else {
 		printer.Raw(fmt.Sprintf("::notice::Skipping duplicate comment — bot already posted on issue #%d\n", issueNum))
 	}
@@ -219,6 +226,144 @@ To override, comment `+"`/code --force`"+` on this issue.
 	writeGateOutput(cfg.OutputFile, "skip", "true")
 
 	printer.StepDone(fmt.Sprintf("Skipping code agent — existing PR(s) found for issue #%d", issueNum))
+	return nil
+}
+
+func newGateFixCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "fix",
+		Short: "Gate for the fix agent — validates inputs and enforces iteration caps",
+		Long: `Validates workflow_dispatch inputs for the fix agent and enforces
+iteration caps to prevent unbounded fix loops.
+
+Required environment variables:
+  PR_NUMBER          — positive integer
+  REPO_FULL_NAME     — owner/repo format
+  TRIGGER_SOURCE     — GitHub username that triggered the fix
+
+Optional:
+  FIX_ITERATION      — current iteration count (default: 1)
+  ITERATION_CAP      — max bot-triggered iterations (default: 5)
+  ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
+  HUMAN_INSTRUCTION  — instruction text (validated for length)`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			printer := ui.New(os.Stdout)
+
+			cfg := gateFixConfig{
+				PRNumber:         os.Getenv("PR_NUMBER"),
+				RepoFullName:     os.Getenv("REPO_FULL_NAME"),
+				TriggerSource:    os.Getenv("TRIGGER_SOURCE"),
+				Iteration:        os.Getenv("FIX_ITERATION"),
+				IterationCap:     os.Getenv("ITERATION_CAP"),
+				IterationCapHuman: os.Getenv("ITERATION_CAP_HUMAN"),
+				HumanInstruction: os.Getenv("HUMAN_INSTRUCTION"),
+			}
+
+			return runGateFix(cmd.Context(), cfg, printer)
+		},
+	}
+}
+
+type gateFixConfig struct {
+	PRNumber         string
+	RepoFullName     string
+	TriggerSource    string
+	Iteration        string
+	IterationCap     string
+	IterationCapHuman string
+	HumanInstruction string
+}
+
+const maxInstructionBytes = 10000
+
+func isBotUser(username string) bool {
+	return strings.HasSuffix(username, "[bot]")
+}
+
+func validateGateFixInputs(prNumber, repoFullName, triggerSource string) []string {
+	var errs []string
+
+	if !issueNumberRe.MatchString(prNumber) {
+		errs = append(errs, fmt.Sprintf("PR_NUMBER must be a positive integer, got: '%s'", prNumber))
+	}
+	if !repoFullNameRe.MatchString(repoFullName) {
+		errs = append(errs, fmt.Sprintf("REPO_FULL_NAME must be owner/repo format, got: '%s'", repoFullName))
+	}
+	if triggerSource == "" {
+		errs = append(errs, "TRIGGER_SOURCE is required (GitHub username that triggered the fix)")
+	}
+
+	return errs
+}
+
+func runGateFix(_ context.Context, cfg gateFixConfig, printer *ui.Printer) error {
+	errs := validateGateFixInputs(cfg.PRNumber, cfg.RepoFullName, cfg.TriggerSource)
+	if len(errs) > 0 {
+		for _, e := range errs {
+			printer.Raw(fmt.Sprintf("::error::%s\n", e))
+		}
+		return fmt.Errorf("input validation failed with %d error(s)", len(errs))
+	}
+
+	// Human instruction length cap
+	if !isBotUser(cfg.TriggerSource) && len(cfg.HumanInstruction) > maxInstructionBytes {
+		printer.Raw(fmt.Sprintf("::error::HUMAN_INSTRUCTION is %d bytes (max: %d). Truncate the instruction.\n",
+			len(cfg.HumanInstruction), maxInstructionBytes))
+		return fmt.Errorf("HUMAN_INSTRUCTION is %d bytes (max: %d)", len(cfg.HumanInstruction), maxInstructionBytes)
+	}
+
+	// Parse iteration and caps with defaults
+	iteration := 1
+	if cfg.Iteration != "" {
+		if v, err := strconv.Atoi(cfg.Iteration); err == nil {
+			iteration = v
+		}
+	}
+
+	botCap := 5
+	if cfg.IterationCap != "" {
+		if v, err := strconv.Atoi(cfg.IterationCap); err == nil {
+			botCap = v
+		}
+	}
+
+	humanCap := 10
+	if cfg.IterationCapHuman != "" {
+		if v, err := strconv.Atoi(cfg.IterationCapHuman); err == nil {
+			humanCap = v
+		}
+	}
+
+	cap := humanCap
+	if isBotUser(cfg.TriggerSource) {
+		cap = botCap
+	}
+
+	if iteration > cap {
+		if isBotUser(cfg.TriggerSource) {
+			printer.Raw(fmt.Sprintf("::error::Fix iteration %d exceeds bot cap of %d. Escalating to human.\n", iteration, cap))
+			printer.Raw(fmt.Sprintf("::error::The review→fix loop has run %d times without converging.\n", iteration))
+			printer.Raw(fmt.Sprintf("::error::A human can still direct the agent with /fix (up to %d total iterations).\n", humanCap))
+		} else {
+			printer.Raw(fmt.Sprintf("::error::Fix iteration %d exceeds human cap of %d.\n", iteration, cap))
+			printer.Raw(fmt.Sprintf("::error::The /fix loop has run %d times. Further attempts are blocked.\n", iteration))
+		}
+		return fmt.Errorf("fix iteration %d exceeds cap of %d", iteration, cap)
+	}
+
+	printer.StepDone("Input validation passed")
+	printer.KeyValue("PR_NUMBER", cfg.PRNumber)
+	printer.KeyValue("REPO_FULL_NAME", cfg.RepoFullName)
+	printer.KeyValue("TRIGGER_SOURCE", cfg.TriggerSource)
+	printer.KeyValue("FIX_ITERATION", fmt.Sprintf("%d of %d", iteration, cap))
+	if !isBotUser(cfg.TriggerSource) && cfg.HumanInstruction != "" {
+		preview := cfg.HumanInstruction
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		printer.KeyValue("HUMAN_INSTRUCTION", preview)
+	}
+
 	return nil
 }
 

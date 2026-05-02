@@ -1,7 +1,7 @@
-# harness/fix.yaml — fix agent with pre/post script pipeline.
+# harness/fix.yaml — fix agent with post script pipeline.
 #
-# Flow: pre_script → sandbox (agent) → post_script
-#   pre_script  : validates inputs, checks iteration cap
+# Flow: (workflow: fullsend gate fix) → sandbox (agent) → post_script
+#   gate        : validates inputs, checks iteration cap (runs on runner)
 #   agent       : reads pre-fetched review body, fixes code, tests, scans, commits
 #   post_script : push commit, post summary comment on PR
 #
@@ -11,8 +11,6 @@ agent: agents/fix.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/fix.yaml
-
-pre_script: scripts/pre-fix.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh

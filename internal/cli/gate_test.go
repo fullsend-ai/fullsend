@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -254,4 +255,183 @@ func TestRunGateCode_ValidationFailure(t *testing.T) {
 	err := runGateCode(context.Background(), cfg, newTestPrinter())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "validation failed")
+}
+
+// ---------------------------------------------------------------------------
+// gate fix tests
+// ---------------------------------------------------------------------------
+
+func TestValidateGateFixInputs_Valid(t *testing.T) {
+	errs := validateGateFixInputs("42", "test-org/test-repo", "human-dev")
+	assert.Empty(t, errs)
+}
+
+func TestValidateGateFixInputs_InvalidPRNumber(t *testing.T) {
+	errs := validateGateFixInputs("0", "test-org/test-repo", "human-dev")
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "PR_NUMBER")
+}
+
+func TestValidateGateFixInputs_InvalidRepo(t *testing.T) {
+	errs := validateGateFixInputs("42", "bad repo!", "human-dev")
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "REPO_FULL_NAME")
+}
+
+func TestValidateGateFixInputs_EmptyTriggerSource(t *testing.T) {
+	errs := validateGateFixInputs("42", "test-org/test-repo", "")
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "TRIGGER_SOURCE")
+}
+
+func TestValidateGateFixInputs_MultipleErrors(t *testing.T) {
+	errs := validateGateFixInputs("", "", "")
+	assert.True(t, len(errs) >= 3, "expected at least 3 errors, got %d", len(errs))
+}
+
+func TestRunGateFix_Valid(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "human-dev",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.NoError(t, err)
+}
+
+func TestRunGateFix_ValidationFailure(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "bad",
+		RepoFullName:  "bad!",
+		TriggerSource: "",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "validation failed")
+}
+
+func TestRunGateFix_BotIterationCapExceeded(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "review-bot[bot]",
+		Iteration:     "6",
+		IterationCap:  "5",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds cap")
+}
+
+func TestRunGateFix_BotIterationAtCap(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "review-bot[bot]",
+		Iteration:     "5",
+		IterationCap:  "5",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.NoError(t, err)
+}
+
+func TestRunGateFix_HumanIterationCapExceeded(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:         "42",
+		RepoFullName:     "test-org/test-repo",
+		TriggerSource:    "human-dev",
+		Iteration:        "11",
+		IterationCapHuman: "10",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds cap")
+}
+
+func TestRunGateFix_HumanIterationAtCap(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:         "42",
+		RepoFullName:     "test-org/test-repo",
+		TriggerSource:    "human-dev",
+		Iteration:        "10",
+		IterationCapHuman: "10",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.NoError(t, err)
+}
+
+func TestRunGateFix_DefaultIterationCaps(t *testing.T) {
+	// Bot default cap is 5
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "review-bot[bot]",
+		Iteration:     "6",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+
+	// Human default cap is 10
+	cfg = gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "human-dev",
+		Iteration:     "11",
+	}
+	err = runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+}
+
+func TestRunGateFix_HumanInstructionTooLong(t *testing.T) {
+	longInstruction := strings.Repeat("x", 10001)
+	cfg := gateFixConfig{
+		PRNumber:         "42",
+		RepoFullName:     "test-org/test-repo",
+		TriggerSource:    "human-dev",
+		HumanInstruction: longInstruction,
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "HUMAN_INSTRUCTION")
+}
+
+func TestRunGateFix_HumanInstructionAtLimit(t *testing.T) {
+	instruction := strings.Repeat("x", 10000)
+	cfg := gateFixConfig{
+		PRNumber:         "42",
+		RepoFullName:     "test-org/test-repo",
+		TriggerSource:    "human-dev",
+		HumanInstruction: instruction,
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.NoError(t, err)
+}
+
+func TestRunGateFix_BotIgnoresInstructionLength(t *testing.T) {
+	longInstruction := strings.Repeat("x", 20000)
+	cfg := gateFixConfig{
+		PRNumber:         "42",
+		RepoFullName:     "test-org/test-repo",
+		TriggerSource:    "review-bot[bot]",
+		HumanInstruction: longInstruction,
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.NoError(t, err)
+}
+
+func TestRunGateFix_DefaultIteration(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "human-dev",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.NoError(t, err)
+}
+
+func TestIsBotUser(t *testing.T) {
+	assert.True(t, isBotUser("fullsend-ai[bot]"))
+	assert.True(t, isBotUser("review-bot[bot]"))
+	assert.False(t, isBotUser("human-dev"))
+	assert.False(t, isBotUser("bot-like-name"))
 }

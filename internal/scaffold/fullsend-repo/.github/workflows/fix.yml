@@ -261,6 +261,16 @@ jobs:
           fi
           echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
 
+      - name: Install fullsend CLI
+        run: |
+          if [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+            chmod +x "${GITHUB_WORKSPACE}/bin/fullsend"
+            echo "${GITHUB_WORKSPACE}/bin" >> "${GITHUB_PATH}"
+          else
+            echo "::error::fullsend binary not found; run: fullsend admin install --vendor-fullsend-binary"
+            exit 1
+          fi
+
       - name: Validate inputs
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -268,7 +278,7 @@ jobs:
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
-        run: bash scripts/pre-fix.sh
+        run: fullsend gate fix
 
       - name: Pre-mask GCP credential file path
         run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"

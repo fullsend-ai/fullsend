@@ -588,6 +588,12 @@ func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, n
 	if e := f.err("CreateIssueComment"); e != nil {
 		return nil, e
 	}
+	f.AddedComments = append(f.AddedComments, CommentRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Number: number,
+		Body:   body,
+	})
 	f.commentCounter++
 	comment := IssueComment{
 		ID:        f.commentCounter,
@@ -708,21 +714,6 @@ func (f *FakeClient) ListIssueTimeline(_ context.Context, owner, repo string, nu
 		}
 	}
 	return nil, nil
-}
-
-func (f *FakeClient) AddIssueComment(_ context.Context, owner, repo string, number int, body string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if e := f.err("AddIssueComment"); e != nil {
-		return e
-	}
-	f.AddedComments = append(f.AddedComments, CommentRecord{
-		Owner:  owner,
-		Repo:   repo,
-		Number: number,
-		Body:   body,
-	})
-	return nil
 }
 
 func (f *FakeClient) EnsureLabel(_ context.Context, owner, repo, name, description, color string) error {

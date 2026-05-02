@@ -428,7 +428,6 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 		"policies/fix.yaml",
 		"env/fix-agent.env",
 		"schemas/fix-result.schema.json",
-		"scripts/pre-fix.sh",
 		"scripts/post-fix.sh",
 		"scripts/process-fix-result.py",
 		"templates/shim-workflow.yaml",
