@@ -18,10 +18,13 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # build_mock creates a mock gh binary that returns preconfigured responses.
 # Arguments:
-#   $1 — output to return for "gh pr list" calls (tab-separated lines
-#         matching what gh --jq would produce, or empty for no PRs)
+#   $1 — output for timeline API calls (JSON lines matching cross-ref events)
+#   $2 — output for comments API calls (jq-filtered count, default "0")
+#   $3 — exit code for timeline API calls (default 0)
 build_mock() {
-  local pr_list_output="$1"
+  local timeline_output="$1"
+  local comments_output="${2:-0}"
+  local timeline_exit="${3:-0}"
   local mock_bin="${TMPDIR}/bin"
   local gh_log="${TMPDIR}/gh-calls.log"
 
@@ -29,36 +32,53 @@ build_mock() {
   mkdir -p "${mock_bin}"
   > "${gh_log}"
 
-  # Write the pr list output to a file so the mock can read it.
-  printf '%s' "${pr_list_output}" > "${TMPDIR}/pr-list-output.txt"
+  printf '%s' "${timeline_output}" > "${TMPDIR}/timeline-output.txt"
+  printf '%s' "${comments_output}" > "${TMPDIR}/comments-output.txt"
+  printf '%s' "${timeline_exit}" > "${TMPDIR}/timeline-exit.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
-CALL_LOG="LOGFILE_PLACEHOLDER"
-PR_OUTPUT="OUTPUT_PLACEHOLDER"
+CALL_LOG="__LOGFILE__"
+TIMELINE_OUTPUT="__TIMELINE__"
+COMMENTS_OUTPUT="__COMMENTS__"
+TIMELINE_EXIT="__TIMELINE_EXIT__"
 
 echo "gh $*" >> "${CALL_LOG}"
 
-# Route by subcommand
-if [[ "$1" == "pr" && "$2" == "list" ]]; then
-  cat "${PR_OUTPUT}"
+if [[ "$1" == "api" ]]; then
+  URL="$2"
+  if [[ "${URL}" == *"/timeline"* ]]; then
+    ECODE="$(cat "${TIMELINE_EXIT}")"
+    if [[ "${ECODE}" -ne 0 ]]; then
+      echo "API error" >&2
+      exit "${ECODE}"
+    fi
+    # Simulate --paginate --jq by just outputting the pre-filtered content.
+    cat "${TIMELINE_OUTPUT}"
+    exit 0
+  elif [[ "${URL}" == *"/comments"* ]] && [[ "$*" == *"--jq"* ]]; then
+    cat "${COMMENTS_OUTPUT}"
+    exit 0
+  elif [[ "${URL}" == *"/labels"* ]]; then
+    exit 0
+  fi
 elif [[ "$1" == "label" ]]; then
   exit 0
-elif [[ "$1" == "api" ]]; then
-  exit 0
 elif [[ "$1" == "issue" && "$2" == "comment" ]]; then
-  # Consume stdin (body-file reads from stdin)
   cat > /dev/null
   exit 0
 fi
 MOCKEOF
 
-  # Patch placeholders with actual paths (avoid sed on source files,
-  # but this is a generated mock — not repo source code).
+  # Patch placeholders.
   local escaped_log="${gh_log//\//\\/}"
-  local escaped_out="${TMPDIR//\//\\/}\/pr-list-output.txt"
-  perl -pi -e "s/LOGFILE_PLACEHOLDER/${escaped_log}/g" "${mock_bin}/gh"
-  perl -pi -e "s/OUTPUT_PLACEHOLDER/${escaped_out}/g" "${mock_bin}/gh"
+  local escaped_timeline="${TMPDIR//\//\\/}\/timeline-output.txt"
+  local escaped_comments="${TMPDIR//\//\\/}\/comments-output.txt"
+  local escaped_exit="${TMPDIR//\//\\/}\/timeline-exit.txt"
+  perl -pi -e "s/__LOGFILE__/${escaped_log}/g" "${mock_bin}/gh"
+  perl -pi -e "s/__TIMELINE__/${escaped_timeline}/g" "${mock_bin}/gh"
+  perl -pi -e "s/__COMMENTS__/${escaped_comments}/g" "${mock_bin}/gh"
+  perl -pi -e "s/__TIMELINE_EXIT__/${escaped_exit}/g" "${mock_bin}/gh"
 
   chmod +x "${mock_bin}/gh"
 
@@ -67,16 +87,17 @@ MOCKEOF
 
 run_test() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local timeline_output="$2"
   local expected_pattern="$3"
-  local expect_exit="$4"         # 0 = success, 1 = failure
-  local extra_env="${5:-}"       # additional env vars (KEY=VAL KEY2=VAL2)
+  local expect_exit="$4"
+  local extra_env="${5:-}"
+  local comments_output="${6:-0}"
+  local timeline_exit="${7:-0}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${timeline_output}" "${comments_output}" "${timeline_exit}")"
   local gh_log="${TMPDIR}/gh-calls.log"
 
-  # Set base env vars for the script.
   local env_cmd=(
     env
     PATH="${mock_bin}:${PATH}"
@@ -86,7 +107,6 @@ run_test() {
     GH_TOKEN="fake-token"
   )
 
-  # Add extra env vars if provided.
   if [[ -n "${extra_env}" ]]; then
     for kv in ${extra_env}; do
       env_cmd+=("${kv}")
@@ -96,7 +116,6 @@ run_test() {
   local exit_code=0
   "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
-  # Check exit code.
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
     echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
     cat "${TMPDIR}/stdout.log"
@@ -104,7 +123,6 @@ run_test() {
     return
   fi
 
-  # Check expected pattern in gh calls (if provided).
   if [[ -n "${expected_pattern}" ]]; then
     if ! grep -qF "${expected_pattern}" "${gh_log}" 2>/dev/null; then
       echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
@@ -118,16 +136,17 @@ run_test() {
   echo "PASS: ${test_name}"
 }
 
-# Check stdout contains a specific string.
 run_test_stdout() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local timeline_output="$2"
   local expected_stdout="$3"
   local expect_exit="$4"
   local extra_env="${5:-}"
+  local comments_output="${6:-0}"
+  local timeline_exit="${7:-0}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${timeline_output}" "${comments_output}" "${timeline_exit}")"
 
   local env_cmd=(
     env
@@ -167,10 +186,9 @@ run_test_stdout() {
 
 # --- Test cases ---
 
-# Tab character for readability.
 TAB=$'\t'
 
-# No existing PRs → agent proceeds (exit 0, no label/comment).
+# No existing PRs → agent proceeds (exit 0).
 run_test_stdout "no-existing-prs-proceeds" \
   "" \
   "No existing human PRs found" \
@@ -192,7 +210,7 @@ run_test_stdout "human-pr-skips-agent" \
   "Skipping code agent" \
   0
 
-# Bot PR only → gh --jq filters it out, so pr list returns empty → proceeds.
+# Bot PR only → timeline returns empty → proceeds.
 run_test_stdout "bot-pr-does-not-block" \
   "" \
   "No existing human PRs found" \
@@ -230,6 +248,59 @@ run_test "pr-label-created" \
   "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
   "gh label create pr-open --repo test-org/test-repo" \
   0
+
+# Timeline API uses correct endpoint.
+run_test "timeline-api-called" \
+  "" \
+  "gh api repos/test-org/test-repo/issues/42/timeline --paginate --jq" \
+  0
+
+# gh API failure → warns and proceeds (fail-open with warning).
+run_test_stdout "api-failure-warns-and-proceeds" \
+  "" \
+  "Failed to check for existing PRs" \
+  0 \
+  "" \
+  "[]" \
+  "1"
+
+run_test_stdout "api-failure-proceeds-with-agent" \
+  "" \
+  "No existing human PRs found" \
+  0 \
+  "" \
+  "[]" \
+  "1"
+
+# Invalid FULLSEND_BOT_LOGIN → exits with error.
+run_test_stdout "invalid-bot-login-rejected" \
+  "" \
+  "FULLSEND_BOT_LOGIN contains invalid characters" \
+  1 \
+  "FULLSEND_BOT_LOGIN=evil\$(whoami)"
+
+# Valid custom FULLSEND_BOT_LOGIN → accepted.
+run_test_stdout "valid-custom-bot-login" \
+  "" \
+  "No existing human PRs found" \
+  0 \
+  "FULLSEND_BOT_LOGIN=my-bot[bot]"
+
+# Comment idempotency — existing comment → should skip posting.
+run_test_stdout "idempotent-comment-skips-duplicate" \
+  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "Skipping duplicate comment" \
+  0 \
+  "" \
+  "1"
+
+# Comment idempotency — no existing comment → should post.
+run_test "idempotent-comment-posts-new" \
+  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -" \
+  0 \
+  "" \
+  "0"
 
 # --- Summary ---
 

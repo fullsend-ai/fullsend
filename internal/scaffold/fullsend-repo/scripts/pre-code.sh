@@ -54,64 +54,87 @@ echo "  GITHUB_ISSUE_URL=${GITHUB_ISSUE_URL}"
 # ---------------------------------------------------------------------------
 # Check for existing human PRs linked to this issue
 # ---------------------------------------------------------------------------
-# Skip if GH_TOKEN is not available (best-effort check).
+SKIP_PR_CHECK=false
+
 if [[ -z "${GH_TOKEN:-}" ]]; then
   echo "GH_TOKEN not set — skipping existing-PR check"
-  exit 0
+  SKIP_PR_CHECK=true
 fi
 
-# Allow override via CODE_FORCE (set when /code --force is used).
 if [[ "${CODE_FORCE:-}" == "true" ]]; then
   echo "CODE_FORCE=true — skipping existing-PR check"
-  exit 0
+  SKIP_PR_CHECK=true
 fi
 
-BOT_LOGIN="${FULLSEND_BOT_LOGIN:-fullsend-ai[bot]}"
+if [[ "${SKIP_PR_CHECK}" != "true" ]]; then
+  BOT_LOGIN="${FULLSEND_BOT_LOGIN:-fullsend-ai[bot]}"
+  BOT_LOGIN_RE='^[][a-zA-Z0-9._-]+$'
+  if [[ ! "${BOT_LOGIN}" =~ ${BOT_LOGIN_RE} ]]; then
+    echo "::error::FULLSEND_BOT_LOGIN contains invalid characters: '${BOT_LOGIN}'"
+    exit 1
+  fi
 
-echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
+  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
-# Search for open PRs in the repo that mention the issue number.
-# This catches PRs with "Closes #N", "Fixes #N", or "#N" in the body/title.
-# Use gh's built-in --jq to filter out bot-authored PRs in one call.
-HUMAN_PR_LINES="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
-  --search "${ISSUE_NUMBER} in:body,title" \
-  --json number,url,author \
-  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
-  2>/dev/null || true)"
+  # Use the timeline API to find PRs that reference this issue via
+  # cross-reference events. This avoids substring false positives from
+  # gh pr list --search (e.g. issue #42 matching a PR mentioning #421).
+  PR_LIST_EXIT=0
+  HUMAN_PR_LINES="$(gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/timeline" \
+    --paginate --jq '
+    [.[]
+      | select(.event == "cross-referenced")
+      | select(.source.issue.pull_request != null)
+      | select(.source.issue.state == "open")
+      | select(.source.issue.user.login != "'"${BOT_LOGIN}"'")
+      | "\(.source.issue.number)\t\(.source.issue.user.login)\t\(.source.issue.html_url)"
+    ] | unique | .[]' 2>&1)" || PR_LIST_EXIT=$?
 
-if [[ -n "${HUMAN_PR_LINES}" ]]; then
-  # Parse the first PR for the notice.
-  FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
-  FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
+  if [[ ${PR_LIST_EXIT} -ne 0 ]]; then
+    echo "::warning::Failed to check for existing PRs (exit ${PR_LIST_EXIT}): ${HUMAN_PR_LINES}"
+    HUMAN_PR_LINES=""
+  fi
 
-  echo "::notice::Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+  if [[ -n "${HUMAN_PR_LINES}" ]]; then
+    FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
+    FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
 
-  # Apply pr-open label to signal work is already underway.
-  gh label create "pr-open" --repo "${REPO_FULL_NAME}" \
-    --description "An open PR already addresses this issue" --color "D4C5F9" \
-    --force 2>/dev/null || true
-  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
-    -f "labels[]=pr-open" --silent 2>/dev/null || true
+    echo "::notice::Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
-  # Build a markdown list of existing PRs.
-  PR_LIST_MD=""
-  while IFS=$'\t' read -r pr_num pr_author pr_url; do
-    PR_LIST_MD="${PR_LIST_MD}
+    gh label create "pr-open" --repo "${REPO_FULL_NAME}" \
+      --description "An open PR already addresses this issue" --color "D4C5F9" \
+      --force 2>/dev/null || true
+    gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
+      -f "labels[]=pr-open" --silent 2>/dev/null || true
+
+    PR_LIST_MD=""
+    while IFS=$'\t' read -r pr_num pr_author pr_url; do
+      PR_LIST_MD="${PR_LIST_MD}
 - #${pr_num} by @${pr_author}"
-  done <<< "${HUMAN_PR_LINES}"
+    done <<< "${HUMAN_PR_LINES}"
 
-  COMMENT_BODY="An open PR already addresses this issue — skipping automated implementation.
+    COMMENT_BODY="An open PR already addresses this issue — skipping automated implementation.
 ${PR_LIST_MD}
 
 To override, comment \`/code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  printf '%s' "${COMMENT_BODY}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+    # Check for existing bot comment to avoid duplicates.
+    EXISTING_COMMENT="$(gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" \
+      --jq '[.[] | select(.body | startswith("An open PR already addresses"))] | length' \
+      2>/dev/null || echo "0")"
 
-  echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
-  exit 0
+    if [[ "${EXISTING_COMMENT}" == "0" ]]; then
+      printf '%s' "${COMMENT_BODY}" | gh issue comment "${ISSUE_NUMBER}" \
+        --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+    else
+      echo "::notice::Skipping duplicate comment — bot already posted on issue #${ISSUE_NUMBER}"
+    fi
+
+    echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
+    exit 0
+  fi
+
+  echo "No existing human PRs found — proceeding with code agent"
 fi
-
-echo "No existing human PRs found — proceeding with code agent"
