@@ -1,3 +1,5 @@
+> **Superseded by:** [2026-05-01-playwright-default-installer-design.md](2026-05-01-playwright-default-installer-design.md)
+
 # Auto Install with Icons (`--auto` mode)
 
 Add `--auto` mode to `fullsend admin install` that drives a Playwright browser through the entire install flow, including uploading role-specific icons as GitHub App logos.

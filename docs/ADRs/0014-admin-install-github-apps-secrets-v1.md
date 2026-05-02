@@ -32,3 +32,8 @@ The admin CLI creates or reuses per-role GitHub Apps and must persist the minimu
 - Any change to secret/variable names or install outcomes must update the SPEC and this ADR together.
 - Adopters can grep `.fullsend` for `FULLSEND_` to audit stored app credentials without reading Go source.
 - Client secret and webhook secret from the manifest flow remain outside this v1 repo surface unless a future ADR extends the surface.
+
+---
+
+See also [ADR-0026](0026-playwright-default-installer.md), which specifies
+browser automation for app creation, logo upload, and PAT lifecycle.

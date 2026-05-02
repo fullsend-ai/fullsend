@@ -143,3 +143,8 @@ it does expire, a developer runs `make e2e-upload-session` to refresh it.
   every two weeks (and less often on active repos).
 - Locally, developers can use username/password directly — `make e2e-test`
   auto-generates a session file when credentials are available.
+
+---
+
+See also [ADR-0026](0026-playwright-default-installer.md), which extends
+stored sessions to the production installer (ephemeral by default).
