@@ -35,7 +35,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/post-triage.sh",
 		"scripts/pre-triage.sh",
 		"scripts/scan-secrets",
-		"scripts/pre-code.sh",
 		"scripts/pre-review.sh",
 		"scripts/post-code.sh",
 		"scripts/reconcile-repos.sh",
@@ -137,7 +136,7 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 29, "expected at least 29 files, got %d", len(paths))
+	assert.True(t, len(paths) >= 28, "expected at least 28 files, got %d", len(paths))
 }
 
 func TestTriageWorkflowContent(t *testing.T) {
@@ -180,7 +179,7 @@ func TestCodeWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "workflow_dispatch")
 	assert.Contains(t, s, "FULLSEND_CODER_CLIENT_ID")
-	assert.Contains(t, s, "pre-code.sh")
+	assert.Contains(t, s, "fullsend gate code")
 	assert.Contains(t, s, "PUSH_TOKEN")
 	assert.Contains(t, s, "github-app")
 	assert.Contains(t, s, "sandbox-token")
@@ -190,6 +189,9 @@ func TestCodeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-code-")
 	assert.Contains(t, s, "cancel-in-progress: true")
+	// Verify gate step has id and downstream steps check skip output
+	assert.Contains(t, s, "id: gate")
+	assert.Contains(t, s, "steps.gate.outputs.skip")
 }
 
 func TestReviewWorkflowContent(t *testing.T) {
@@ -235,7 +237,6 @@ func TestCodeHarnessContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "agents/code.md")
-	assert.Contains(t, s, "pre_script")
 	assert.Contains(t, s, "post_script")
 	assert.Contains(t, s, "runner_env")
 	assert.Contains(t, s, "PUSH_TOKEN")

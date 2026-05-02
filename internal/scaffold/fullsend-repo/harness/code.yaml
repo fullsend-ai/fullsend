@@ -1,7 +1,7 @@
-# harness/code.yaml — code agent with pre/post script pipeline.
+# harness/code.yaml — code agent with post-script pipeline.
 #
-# Flow: pre_script → sandbox (agent) → post_script
-#   pre_script  : validates inputs on the runner BEFORE sandbox creation
+# Flow: (workflow: fullsend gate code) → sandbox (agent) → post_script
+#   gate        : validates inputs and checks for existing PRs (runs in workflow)
 #   agent       : reads the issue, implements, tests, scans, commits locally
 #   post_script : protected-path check, secret scan, push branch, create PR
 #
@@ -12,7 +12,6 @@ model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/code.yaml
 
-pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 
 host_files:

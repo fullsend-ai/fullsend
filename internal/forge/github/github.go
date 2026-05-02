@@ -1195,6 +1195,108 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 	return result, nil
 }
 
+// ListIssueTimeline returns cross-reference events linking PRs to an issue.
+// It paginates through the timeline API and filters for cross-referenced
+// events that have an associated pull request.
+func (c *LiveClient) ListIssueTimeline(ctx context.Context, owner, repo string, number int) ([]forge.TimelineEvent, error) {
+	var result []forge.TimelineEvent
+	seen := make(map[int]bool)
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100&page=%d", owner, repo, number, page)
+		resp, err := c.do(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, fmt.Errorf("list issue timeline page %d: %w", page, err)
+		}
+		if err := checkStatus(resp, http.StatusOK); err != nil {
+			return nil, fmt.Errorf("list issue timeline page %d: %w", page, err)
+		}
+
+		var events []struct {
+			Event  string `json:"event"`
+			Source struct {
+				Issue struct {
+					Number      int    `json:"number"`
+					State       string `json:"state"`
+					HTMLURL     string `json:"html_url"`
+					PullRequest *struct{}  `json:"pull_request"`
+					User        struct {
+						Login string `json:"login"`
+					} `json:"user"`
+				} `json:"issue"`
+			} `json:"source"`
+		}
+		if err := decodeJSON(resp, &events); err != nil {
+			return nil, fmt.Errorf("decode timeline page %d: %w", page, err)
+		}
+
+		for _, e := range events {
+			if e.Event != "cross-referenced" || e.Source.Issue.PullRequest == nil {
+				continue
+			}
+			prNum := e.Source.Issue.Number
+			if seen[prNum] {
+				continue
+			}
+			seen[prNum] = true
+			result = append(result, forge.TimelineEvent{
+				PRNumber: prNum,
+				PRState:  e.Source.Issue.State,
+				PRAuthor: e.Source.Issue.User.Login,
+				PRURL:    e.Source.Issue.HTMLURL,
+			})
+		}
+
+		if len(events) < 100 {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+// AddIssueComment posts a comment on an issue.
+func (c *LiveClient) AddIssueComment(ctx context.Context, owner, repo string, number int, body string) error {
+	payload := map[string]string{"body": body}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("add issue comment: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// EnsureLabel creates a label if it doesn't already exist. A 422 response
+// (label already exists) is treated as success.
+func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name, description, color string) error {
+	payload := map[string]string{
+		"name":        name,
+		"description": description,
+		"color":       color,
+	}
+	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/labels", owner, repo), payload)
+	if err != nil {
+		return fmt.Errorf("ensure label %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+	// 201 = created, 422 = already exists — both are fine.
+	if err := checkStatus(resp, http.StatusCreated, http.StatusUnprocessableEntity); err != nil {
+		return fmt.Errorf("ensure label %s: %w", name, err)
+	}
+	return nil
+}
+
+// AddIssueLabels adds labels to an issue.
+func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, number int, labels []string) error {
+	payload := map[string][]string{"labels": labels}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("add issue labels: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // MergeChangeProposal squash-merges a pull request by number.
 func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
 	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})

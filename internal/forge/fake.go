@@ -26,6 +26,20 @@ type FileRecord struct {
 	Content                            []byte
 }
 
+// CommentRecord records an AddIssueComment call.
+type CommentRecord struct {
+	Owner, Repo string
+	Number      int
+	Body        string
+}
+
+// LabelRecord records an EnsureLabel or AddIssueLabels call.
+type LabelRecord struct {
+	Owner, Repo string
+	Number      int // 0 for EnsureLabel
+	Labels      []string
+}
+
 // SecretRecord records a secret creation call.
 type SecretRecord struct {
 	Owner, Repo, Name, Value string
@@ -71,14 +85,18 @@ type FakeClient struct {
 
 	// Pre-populated data
 	Repos             []Repository
-	FileContents      map[string][]byte       // key: "owner/repo/path"
-	WorkflowRuns      map[string]*WorkflowRun // key: "owner/repo/workflow"
+	FileContents      map[string][]byte          // key: "owner/repo/path"
+	WorkflowRuns      map[string]*WorkflowRun    // key: "owner/repo/workflow"
 	AuthenticatedUser string
 	Installations     []Installation
 	Secrets           map[string]bool             // key: "owner/repo/name"
 	PullRequests      map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes       []string                    // scopes returned by GetTokenScopes
 	VariablesExist    map[string]bool             // key: "owner/repo/name"
+	IssueComments      map[string][]IssueComment      // key: "owner/repo/number"
+	TimelineEvents     map[string][]TimelineEvent     // key: "owner/repo/number"
+	PullRequestHeadSHA string
+	PRReviews          map[string][]PullRequestReview // key: "owner/repo/number"
 
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
@@ -89,15 +107,6 @@ type FakeClient struct {
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
-
-	// Issue comments for ListIssueComments / UpdateIssueComment.
-	IssueComments map[string][]IssueComment // key: "owner/repo/number"
-
-	// Pull request head SHA for GetPullRequestHeadSHA.
-	PullRequestHeadSHA string
-
-	// Pull request reviews for ListPullRequestReviews.
-	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
 	// Call recorders
 	CreatedRepos      []Repository
@@ -113,6 +122,9 @@ type FakeClient struct {
 	UpdatedComments   []UpdatedCommentRecord
 	MinimizedComments []MinimizedCommentRecord
 	CreatedReviews    []ReviewRecord
+	AddedComments     []CommentRecord
+	EnsuredLabels     []LabelRecord
+	AddedIssueLabels  []LabelRecord
 
 	// internal counters
 	proposalCounter int
@@ -681,6 +693,65 @@ func (f *FakeClient) ListPullRequestReviews(_ context.Context, owner, repo strin
 		}
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListIssueTimeline(_ context.Context, owner, repo string, number int) ([]TimelineEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueTimeline"); e != nil {
+		return nil, e
+	}
+	if f.TimelineEvents != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if events, ok := f.TimelineEvents[key]; ok {
+			return events, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) AddIssueComment(_ context.Context, owner, repo string, number int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueComment"); e != nil {
+		return e
+	}
+	f.AddedComments = append(f.AddedComments, CommentRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Number: number,
+		Body:   body,
+	})
+	return nil
+}
+
+func (f *FakeClient) EnsureLabel(_ context.Context, owner, repo, name, description, color string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("EnsureLabel"); e != nil {
+		return e
+	}
+	f.EnsuredLabels = append(f.EnsuredLabels, LabelRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Labels: []string{name},
+	})
+	return nil
+}
+
+func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, number int, labels []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueLabels"); e != nil {
+		return e
+	}
+	f.AddedIssueLabels = append(f.AddedIssueLabels, LabelRecord{
+		Owner:  owner,
+		Repo:   repo,
+		Number: number,
+		Labels: labels,
+	})
+	return nil
 }
 
 func (f *FakeClient) MergeChangeProposal(_ context.Context, _, _ string, _ int) error {

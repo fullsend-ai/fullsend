@@ -94,25 +94,38 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Install fullsend CLI
+        run: |
+          if [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+            chmod +x "${GITHUB_WORKSPACE}/bin/fullsend"
+            echo "${GITHUB_WORKSPACE}/bin" >> "${GITHUB_PATH}"
+          else
+            echo "::error::fullsend binary not found; run: fullsend admin install --vendor-fullsend-binary"
+            exit 1
+          fi
+
       - name: Validate inputs
+        id: gate
         env:
           ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
-        run: bash scripts/pre-code.sh
+          GH_TOKEN: ${{ steps.push-token.outputs.token }}
+        run: fullsend gate code
 
       - name: Pre-mask GCP credential file path
+        if: steps.gate.outputs.skip != 'true'
         run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"
 
       - name: Authenticate to Google Cloud (WIF)
-        if: vars.FULLSEND_GCP_AUTH_MODE == 'wif'
+        if: steps.gate.outputs.skip != 'true' && vars.FULLSEND_GCP_AUTH_MODE == 'wif'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.FULLSEND_GCP_WIF_SA_EMAIL }}
 
       - name: Authenticate to Google Cloud (SA key)
-        if: vars.FULLSEND_GCP_AUTH_MODE != 'wif'
+        if: steps.gate.outputs.skip != 'true' && vars.FULLSEND_GCP_AUTH_MODE != 'wif'
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
@@ -121,12 +134,13 @@ jobs:
       # WIF. For non-WIF (SA key), we set it to an empty file to avoid undefined
       # variable errors in downstream steps that may reference it.
       - name: Set GCP_OIDC_TOKEN_FILE for non-WIF
-        if: vars.FULLSEND_GCP_AUTH_MODE != 'wif'
+        if: steps.gate.outputs.skip != 'true' && vars.FULLSEND_GCP_AUTH_MODE != 'wif'
         run: |
           touch "$RUNNER_TEMP/empty-oidc-token"
           echo "GCP_OIDC_TOKEN_FILE=$RUNNER_TEMP/empty-oidc-token" >> "${GITHUB_ENV}"
 
       - name: Mask GCP credential file paths
+        if: steps.gate.outputs.skip != 'true'
         run: |
           for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
             val="${!var:-}"
@@ -136,9 +150,11 @@ jobs:
           done
 
       - name: Prepare sandbox credentials
+        if: steps.gate.outputs.skip != 'true'
         run: bash scripts/prepare-sandbox-credentials.sh
 
       - name: Setup agent environment
+        if: steps.gate.outputs.skip != 'true'
         env:
           AGENT_PREFIX: CODE_
           CODE_GH_TOKEN: ${{ steps.sandbox-token.outputs.token }}
@@ -149,6 +165,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
+        if: steps.gate.outputs.skip != 'true'
         uses: ./.github/actions/fullsend
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}

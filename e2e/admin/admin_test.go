@@ -417,7 +417,6 @@ func verifyInstalled(t *testing.T, env *e2eEnv, orgCfg *config.OrgConfig, enable
 		"env/code-agent.env",
 		"env/gcp-vertex.env",
 		"scripts/scan-secrets",
-		"scripts/pre-code.sh",
 		"scripts/post-code.sh",
 		"scripts/post-triage.sh",
 		"scripts/reconcile-repos.sh",

@@ -75,6 +75,15 @@ type PullRequestReview struct {
 	SubmittedAt string
 }
 
+// TimelineEvent represents a cross-reference event from the issue timeline,
+// linking an issue to a pull request.
+type TimelineEvent struct {
+	PRNumber int
+	PRState  string // "open", "closed"
+	PRAuthor string
+	PRURL    string
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID          int
@@ -157,6 +166,10 @@ type Client interface {
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
+	ListIssueTimeline(ctx context.Context, owner, repo string, number int) ([]TimelineEvent, error)
+	AddIssueComment(ctx context.Context, owner, repo string, number int, body string) error
+	EnsureLabel(ctx context.Context, owner, repo, name, description, color string) error
+	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels []string) error
 
 	// Pull request operations
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
