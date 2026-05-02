@@ -7,3 +7,4 @@ _site/
 bin/
 .playwright/
 .claude/settings.local.json
+session.json

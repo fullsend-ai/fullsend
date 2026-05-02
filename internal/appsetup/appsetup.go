@@ -44,6 +44,43 @@ type BrowserOpener interface {
 	Open(ctx context.Context, url string) error
 }
 
+// RoleAware is an optional interface that BrowserOpener implementations
+// can satisfy to receive the current agent role before Open is called.
+// This allows the opener to perform role-specific actions like uploading
+// the correct icon.
+type RoleAware interface {
+	SetRole(role string)
+}
+
+// LogoUploader is an optional interface that BrowserOpener implementations
+// can satisfy to upload a logo after app creation. The manifest confirmation
+// page has no file input, so logo upload must happen as a separate step on
+// the app's settings page.
+type LogoUploader interface {
+	UploadAppLogo(ctx context.Context, org, slug, role string) error
+}
+
+// AppDeleter is an optional interface that BrowserOpener implementations
+// can satisfy to delete a GitHub App via the web UI. Used in --auto mode
+// during uninstall.
+type AppDeleter interface {
+	DeleteApp(ctx context.Context, org, slug string) error
+}
+
+// PATCreator is an optional interface that BrowserOpener implementations
+// can satisfy to create a fine-grained PAT via the web UI. Used in --auto
+// mode during install.
+type PATCreator interface {
+	CreateDispatchPAT(ctx context.Context, org string) (string, error)
+}
+
+// PATDeleter is an optional interface that BrowserOpener implementations
+// can satisfy to delete dispatch PATs via the web UI. Used in --auto mode
+// during uninstall.
+type PATDeleter interface {
+	DeleteDispatchPAT(ctx context.Context, org string) error
+}
+
 // SecretExistsFunc checks if a secret exists for a given role.
 type SecretExistsFunc func(role string) (bool, error)
 
@@ -156,6 +193,13 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 	creds, err := s.runManifestFlow(ctx, org, role)
 	if err != nil {
 		return nil, fmt.Errorf("manifest flow: %w", err)
+	}
+
+	// Upload logo via the app settings page (manifest page has no file input).
+	if lu, ok := s.browser.(LogoUploader); ok {
+		if err := lu.UploadAppLogo(ctx, org, creds.Slug, role); err != nil {
+			return nil, fmt.Errorf("uploading logo: %w", err)
+		}
 	}
 
 	// Ensure the new app is installed on the org.
@@ -416,6 +460,12 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
+
+	// Inform the browser opener of the current role so it can perform
+	// role-specific actions (e.g., uploading the correct icon).
+	if ra, ok := s.browser.(RoleAware); ok {
+		ra.SetRole(role)
+	}
 
 	s.ui.StepInfo(fmt.Sprintf("Opening browser to create app at %s", formURL))
 	if err := s.browser.Open(ctx, formURL); err != nil {

@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/playwright-community/playwright-go"
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
@@ -31,6 +33,7 @@ func newAdminCmd() *cobra.Command {
 	cmd.AddCommand(newInstallCmd())
 	cmd.AddCommand(newUninstallCmd())
 	cmd.AddCommand(newAnalyzeCmd())
+	cmd.AddCommand(newExportSessionCmd())
 	return cmd
 }
 
@@ -92,6 +95,8 @@ func newInstallCmd() *cobra.Command {
 	var gcpCredentialsFile string
 	var gcpWIFProvider string
 	var gcpWIFSAEmail string
+	var autoMode bool
+	var sessionFile string
 
 	cmd := &cobra.Command{
 		Use:   "install <org>",
@@ -141,6 +146,19 @@ func newInstallCmd() *cobra.Command {
 				return fmt.Errorf("--gcp-wif-provider and --gcp-wif-sa-email must be provided together")
 			}
 
+			// Validate --auto flag dependencies.
+			if autoMode && sessionFile == "" {
+				return fmt.Errorf("--session-file is required when --auto is set")
+			}
+			if sessionFile != "" && !autoMode {
+				return fmt.Errorf("--session-file requires --auto")
+			}
+			if autoMode {
+				if _, err := os.Stat(sessionFile); err != nil {
+					return fmt.Errorf("session file %s: %w", sessionFile, err)
+				}
+			}
+
 			// Build inference provider from GCP flags.
 			var inferenceProvider inference.Provider
 			var inferenceProviderName string
@@ -186,17 +204,53 @@ func newInstallCmd() *cobra.Command {
 				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName)
 			}
 
+			// Set up browser opener (Playwright for --auto, default otherwise).
+			var installBrowser appsetup.BrowserOpener
+			if autoMode {
+				pw, pwErr := playwright.Run()
+				if pwErr != nil {
+					return fmt.Errorf("starting Playwright: %w", pwErr)
+				}
+				defer func() { _ = pw.Stop() }()
+
+				pwBrowser, pwErr := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+					Headless: playwright.Bool(false),
+				})
+				if pwErr != nil {
+					return fmt.Errorf("launching browser: %w", pwErr)
+				}
+				defer func() { _ = pwBrowser.Close() }()
+
+				browserCtx, pwErr := pwBrowser.NewContext(playwright.BrowserNewContextOptions{
+					StorageStatePath: playwright.String(sessionFile),
+				})
+				if pwErr != nil {
+					return fmt.Errorf("creating browser context: %w", pwErr)
+				}
+				defer func() { _ = browserCtx.Close() }()
+
+				page, pwErr := browserCtx.NewPage()
+				if pwErr != nil {
+					return fmt.Errorf("creating browser page: %w", pwErr)
+				}
+
+				installBrowser = appsetup.NewPlaywrightBrowserOpener(page, printer)
+				printer.StepDone("Playwright browser ready (auto mode)")
+			} else {
+				installBrowser = appsetup.DefaultBrowser{}
+			}
+
 			// Collect agent credentials via app setup.
 			var agentCreds []layers.AgentCredentials
 			if !skipAppSetup {
-				creds, err := runAppSetup(ctx, client, printer, org, roles)
+				creds, err := runAppSetup(ctx, client, printer, org, roles, installBrowser)
 				if err != nil {
 					return err
 				}
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, installBrowser)
 		},
 	}
 
@@ -211,6 +265,8 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gcpCredentialsFile, "gcp-credentials-file", "", "path to pre-made GCP service account key JSON (optional, used with --gcp-project)")
 	cmd.Flags().StringVar(&gcpWIFProvider, "gcp-wif-provider", "", "full Workload Identity Federation provider resource name (e.g. projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER)")
 	cmd.Flags().StringVar(&gcpWIFSAEmail, "gcp-wif-sa-email", "", "GCP service account email for WIF impersonation (required with --gcp-wif-provider)")
+	cmd.Flags().BoolVar(&autoMode, "auto", false, "fully automated install using Playwright browser automation (requires --session-file)")
+	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to Playwright session file for --auto mode")
 
 	return cmd
 }
@@ -258,6 +314,8 @@ func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.
 
 func newUninstallCmd() *cobra.Command {
 	var yolo bool
+	var autoMode bool
+	var sessionFile string
 
 	cmd := &cobra.Command{
 		Use:   "uninstall <org>",
@@ -268,6 +326,19 @@ func newUninstallCmd() *cobra.Command {
 			org := args[0]
 			if err := validateOrgName(org); err != nil {
 				return err
+			}
+
+			// Validate --auto flag dependencies.
+			if autoMode && sessionFile == "" {
+				return fmt.Errorf("--session-file is required when --auto is set")
+			}
+			if sessionFile != "" && !autoMode {
+				return fmt.Errorf("--session-file requires --auto")
+			}
+			if autoMode {
+				if _, err := os.Stat(sessionFile); err != nil {
+					return fmt.Errorf("session file %s: %w", sessionFile, err)
+				}
 			}
 
 			token, err := resolveToken()
@@ -284,7 +355,8 @@ func newUninstallCmd() *cobra.Command {
 			printer.Header("Uninstalling fullsend from " + org)
 			printer.Blank()
 
-			if !yolo {
+			// --auto implies --yolo (no confirmation prompt).
+			if !yolo && !autoMode {
 				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
 				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
 				var confirmation string
@@ -296,11 +368,48 @@ func newUninstallCmd() *cobra.Command {
 				}
 			}
 
-			return runUninstall(ctx, client, printer, org)
+			var browser appsetup.BrowserOpener
+			if autoMode {
+				pw, pwErr := playwright.Run()
+				if pwErr != nil {
+					return fmt.Errorf("starting Playwright: %w", pwErr)
+				}
+				defer func() { _ = pw.Stop() }()
+
+				pwBrowser, pwErr := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+					Headless: playwright.Bool(false),
+				})
+				if pwErr != nil {
+					return fmt.Errorf("launching browser: %w", pwErr)
+				}
+				defer func() { _ = pwBrowser.Close() }()
+
+				browserCtx, pwErr := pwBrowser.NewContext(playwright.BrowserNewContextOptions{
+					StorageStatePath: playwright.String(sessionFile),
+				})
+				if pwErr != nil {
+					return fmt.Errorf("creating browser context: %w", pwErr)
+				}
+				defer func() { _ = browserCtx.Close() }()
+
+				page, pwErr := browserCtx.NewPage()
+				if pwErr != nil {
+					return fmt.Errorf("creating browser page: %w", pwErr)
+				}
+
+				browser = appsetup.NewPlaywrightBrowserOpener(page, printer)
+				printer.StepDone("Playwright browser ready (auto mode)")
+			} else {
+				browser = appsetup.DefaultBrowser{}
+			}
+
+			return runUninstall(ctx, client, printer, org, browser)
 		},
 	}
 
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
+	cmd.Flags().BoolVar(&autoMode, "auto", false, "fully automated uninstall using Playwright browser automation (requires --session-file)")
+	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to Playwright session file for --auto mode")
 
 	return cmd
 }
@@ -334,6 +443,129 @@ func newAnalyzeCmd() *cobra.Command {
 			return runAnalyze(ctx, client, printer, org)
 		},
 	}
+
+	return cmd
+}
+
+func newExportSessionCmd() *cobra.Command {
+	var sessionFile string
+
+	cmd := &cobra.Command{
+		Use:   "export-session",
+		Short: "Export a GitHub browser session for --auto mode",
+		Long:  "Logs into GitHub via Playwright and exports the browser session as a storage state JSON file. Set GITHUB_USERNAME and GITHUB_PASSWORD environment variables.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			username := os.Getenv("GITHUB_USERNAME")
+			password := os.Getenv("GITHUB_PASSWORD")
+			if username == "" || password == "" {
+				return fmt.Errorf("set GITHUB_USERNAME and GITHUB_PASSWORD environment variables")
+			}
+
+			printer := ui.New(os.Stdout)
+			printer.Banner()
+			printer.Blank()
+			printer.Header("Exporting GitHub session")
+			printer.Blank()
+
+			if err := os.MkdirAll(filepath.Dir(sessionFile), 0o755); err != nil {
+				return fmt.Errorf("creating output directory: %w", err)
+			}
+
+			printer.StepStart("Starting Playwright")
+			pw, err := playwright.Run()
+			if err != nil {
+				return fmt.Errorf("starting Playwright: %w", err)
+			}
+			defer func() { _ = pw.Stop() }()
+
+			// Headed mode so the user can interact with 2FA prompts.
+			browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+				Headless: playwright.Bool(false),
+			})
+			if err != nil {
+				return fmt.Errorf("launching browser: %w", err)
+			}
+			defer func() { _ = browser.Close() }()
+
+			browserCtx, err := browser.NewContext()
+			if err != nil {
+				return fmt.Errorf("creating browser context: %w", err)
+			}
+			defer func() { _ = browserCtx.Close() }()
+
+			page, err := browserCtx.NewPage()
+			if err != nil {
+				return fmt.Errorf("creating page: %w", err)
+			}
+
+			printer.StepDone("Playwright ready")
+			printer.StepStart("Logging into GitHub")
+
+			if _, err := page.Goto("https://github.com/login", playwright.PageGotoOptions{
+				WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+			}); err != nil {
+				return fmt.Errorf("navigating to login: %w", err)
+			}
+
+			// Check if already logged in.
+			if !strings.Contains(page.URL(), "/login") && !strings.Contains(page.URL(), "/session") {
+				printer.StepDone("Already logged in")
+				if _, err := browserCtx.StorageState(sessionFile); err != nil {
+					return fmt.Errorf("exporting session: %w", err)
+				}
+				printer.StepDone(fmt.Sprintf("Session exported to %s", sessionFile))
+				return nil
+			}
+
+			if err := page.Locator("#login_field").Fill(username); err != nil {
+				return fmt.Errorf("filling username: %w", err)
+			}
+			if err := page.Locator("#password").Fill(password); err != nil {
+				return fmt.Errorf("filling password: %w", err)
+			}
+			if err := page.Locator("input[type='submit'], button[type='submit']").First().Click(); err != nil {
+				return fmt.Errorf("clicking submit: %w", err)
+			}
+
+			if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
+				Timeout: playwright.Float(15000),
+			}); err != nil {
+				return fmt.Errorf("post-login navigation: %w (url: %s)", err, page.URL())
+			}
+
+			// Handle 2FA — if we landed on a sessions/two-factor page,
+			// wait for the user to complete it in the headed browser.
+			currentURL := page.URL()
+			if strings.Contains(currentURL, "/sessions/") || strings.Contains(currentURL, "/two-factor") {
+				printer.StepInfo("2FA required — complete it in the browser window")
+				// Wait up to 2 minutes for the user to get past 2FA.
+				if err := page.WaitForURL("https://github.com/", playwright.PageWaitForURLOptions{
+					Timeout: playwright.Float(120000),
+				}); err != nil {
+					return fmt.Errorf("timed out waiting for 2FA (url: %s)", page.URL())
+				}
+			}
+
+			currentURL = page.URL()
+			if strings.Contains(currentURL, "/login") || strings.Contains(currentURL, "/session") {
+				return fmt.Errorf("login failed, still at: %s", currentURL)
+			}
+
+			printer.StepDone("Logged in")
+
+			if _, err := browserCtx.StorageState(sessionFile); err != nil {
+				return fmt.Errorf("exporting session: %w", err)
+			}
+
+			printer.StepDone(fmt.Sprintf("Session exported to %s", sessionFile))
+			printer.Blank()
+			printer.StepInfo("Use with: fullsend admin install <org> --auto --session-file " + sessionFile)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to write the session file (required)")
+	_ = cmd.MarkFlagRequired("session-file")
 
 	return cmd
 }
@@ -384,11 +616,11 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 }
 
 // runAppSetup creates or reuses GitHub Apps for each role.
-func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string) ([]layers.AgentCredentials, error) {
+func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, browser appsetup.BrowserOpener) ([]layers.AgentCredentials, error) {
 	printer.Header("Setting up GitHub Apps")
 	printer.Blank()
 
-	setup := appsetup.NewSetup(client, appsetup.StdinPrompter{}, appsetup.DefaultBrowser{}, printer)
+	setup := appsetup.NewSetup(client, appsetup.StdinPrompter{}, browser, printer)
 
 	// Try to load known slugs from existing config.
 	knownSlugs := loadKnownSlugs(ctx, client, org)
@@ -458,7 +690,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 }
 
 // runInstall performs the full installation.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, browser appsetup.BrowserOpener) error {
 	printer.Header("Discovering repositories")
 
 	allRepos, err := client.ListOrgRepos(ctx, org)
@@ -493,9 +725,18 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, vendorFullsendBinary, func(ctx context.Context) (string, error) {
-		return promptDispatchToken(ctx, client, printer, org)
-	})
+	var promptTokenFn layers.PromptTokenFunc
+	if pc, ok := browser.(appsetup.PATCreator); ok {
+		promptTokenFn = func(ctx context.Context) (string, error) {
+			return pc.CreateDispatchPAT(ctx, org)
+		}
+	} else {
+		promptTokenFn = func(ctx context.Context) (string, error) {
+			return promptDispatchToken(ctx, client, printer, org)
+		}
+	}
+
+	stack := buildLayerStack(org, client, cfg, printer, user, hasPrivate, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, vendorFullsendBinary, promptTokenFn)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -520,7 +761,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 }
 
 // runUninstall tears down the fullsend installation.
-func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, browser appsetup.BrowserOpener) error {
 	// Try to load agent slugs from existing config. If the .fullsend repo
 	// is already gone (e.g., previous partial uninstall), fall back to the
 	// default naming convention so we can still guide the user to delete
@@ -600,22 +841,39 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 		if len(existingSlugs) > 0 {
 			printer.Header("App cleanup")
-			printer.StepInfo("Opening browser for each app that needs to be deleted.")
-			printer.StepInfo("Click 'Delete GitHub App' on each page, then return here.")
-			printer.Blank()
 
-			browser := appsetup.DefaultBrowser{}
-			for _, slug := range existingSlugs {
-				deleteURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", org, slug)
-				printer.StepStart(fmt.Sprintf("Opening %s settings...", slug))
-				if err := browser.Open(ctx, deleteURL); err != nil {
-					printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
-					printer.StepInfo(fmt.Sprintf("  Delete manually at: %s", deleteURL))
-				} else {
-					printer.StepDone(fmt.Sprintf("Opened %s", slug))
+			if deleter, ok := browser.(appsetup.AppDeleter); ok {
+				// Auto mode — delete apps via Playwright.
+				for _, slug := range existingSlugs {
+					if err := deleter.DeleteApp(ctx, org, slug); err != nil {
+						printer.StepFail(fmt.Sprintf("Failed to delete %s: %v", slug, err))
+					}
+				}
+			} else {
+				// Manual mode — open browser for user to delete.
+				printer.StepInfo("Opening browser for each app that needs to be deleted.")
+				printer.StepInfo("Click 'Delete GitHub App' on each page, then return here.")
+				printer.Blank()
+
+				for _, slug := range existingSlugs {
+					deleteURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", org, slug)
+					printer.StepStart(fmt.Sprintf("Opening %s settings...", slug))
+					if err := browser.Open(ctx, deleteURL); err != nil {
+						printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
+						printer.StepInfo(fmt.Sprintf("  Delete manually at: %s", deleteURL))
+					} else {
+						printer.StepDone(fmt.Sprintf("Opened %s", slug))
+					}
 				}
 			}
 			printer.Blank()
+		}
+	}
+
+	// Delete dispatch PATs in auto mode.
+	if pd, ok := browser.(appsetup.PATDeleter); ok {
+		if err := pd.DeleteDispatchPAT(ctx, org); err != nil {
+			printer.StepFail(fmt.Sprintf("Failed to delete dispatch PAT: %v", err))
 		}
 	}
 
