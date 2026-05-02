@@ -232,6 +232,8 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "cancel-in-progress: true")
 	// Verify gate command replaced bash script
 	assert.Contains(t, s, "fullsend gate fix")
+	// Verify gate step has id for downstream skip checks
+	assert.Contains(t, s, "id: gate")
 }
 
 func TestCodeHarnessContent(t *testing.T) {
@@ -331,4 +333,14 @@ func TestHarnessesLoadAndValidate(t *testing.T) {
 func TestValidateTriageDeleted(t *testing.T) {
 	_, err := FullsendRepoFile("scripts/validate-triage.sh")
 	assert.Error(t, err, "validate-triage.sh should have been deleted")
+}
+
+func TestPreCodeShellScriptDeleted(t *testing.T) {
+	_, err := FullsendRepoFile("scripts/pre-code.sh")
+	assert.Error(t, err, "pre-code.sh should have been deleted — replaced by fullsend gate code")
+}
+
+func TestPreFixShellScriptDeleted(t *testing.T) {
+	_, err := FullsendRepoFile("scripts/pre-fix.sh")
+	assert.Error(t, err, "pre-fix.sh should have been deleted — replaced by fullsend gate fix")
 }

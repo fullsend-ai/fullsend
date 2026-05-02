@@ -272,6 +272,7 @@ jobs:
           fi
 
       - name: Validate inputs
+        id: gate
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}

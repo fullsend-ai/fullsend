@@ -60,7 +60,10 @@ Optional:
 				OutputFile:   os.Getenv("GITHUB_OUTPUT"),
 			}
 
-			token, _ := resolveToken()
+			token, err := resolveToken()
+			if err != nil {
+				printer.Raw(fmt.Sprintf("::warning::No GitHub token available: %v\n", err))
+			}
 			if token != "" {
 				cfg.Client = gh.New(token)
 			}
@@ -84,7 +87,7 @@ var (
 	issueNumberRe  = regexp.MustCompile(`^[1-9][0-9]*$`)
 	repoFullNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$`)
 	issueURLRe     = regexp.MustCompile(`^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$`)
-	botLoginRe     = regexp.MustCompile(`^[][a-zA-Z0-9._-]+$`)
+	botLoginRe     = regexp.MustCompile(`^[a-zA-Z0-9._-]+(\[bot\])?$`)
 )
 
 func validateGateCodeInputs(issueNumber, repoFullName, issueURL string) []string {
@@ -121,8 +124,6 @@ func validateGateCodeInputs(issueNumber, repoFullName, issueURL string) []string
 }
 
 func runGateCode(ctx context.Context, cfg gateCodeConfig, printer *ui.Printer) error {
-	printer.Raw(fmt.Sprintf("::notice::Code target: %s\n", cfg.IssueURL))
-
 	errs := validateGateCodeInputs(cfg.IssueNumber, cfg.RepoFullName, cfg.IssueURL)
 	if len(errs) > 0 {
 		for _, e := range errs {
@@ -131,6 +132,7 @@ func runGateCode(ctx context.Context, cfg gateCodeConfig, printer *ui.Printer) e
 		return fmt.Errorf("input validation failed with %d error(s)", len(errs))
 	}
 
+	printer.Raw(fmt.Sprintf("::notice::Code target: %s\n", cfg.IssueURL))
 	printer.StepDone("Input validation passed")
 	printer.KeyValue("ISSUE_NUMBER", cfg.IssueNumber)
 	printer.KeyValue("REPO_FULL_NAME", cfg.RepoFullName)
@@ -223,7 +225,9 @@ To override, comment `+"`/code --force`"+` on this issue.
 		printer.Raw(fmt.Sprintf("::notice::Skipping duplicate comment — bot already posted on issue #%d\n", issueNum))
 	}
 
-	writeGateOutput(cfg.OutputFile, "skip", "true")
+	if err := writeGateOutput(cfg.OutputFile, "skip", "true"); err != nil {
+		printer.Raw(fmt.Sprintf("::warning::Failed to write GITHUB_OUTPUT: %v\n", err))
+	}
 
 	printer.StepDone(fmt.Sprintf("Skipping code agent — existing PR(s) found for issue #%d", issueNum))
 	return nil
@@ -274,11 +278,30 @@ type gateFixConfig struct {
 	HumanInstruction string
 }
 
-const maxInstructionBytes = 10000
+const (
+	maxInstructionBytes    = 10000
+	maxBotInstructionBytes = 1048576 // 1 MB — matches review body cap in fix.yml
+)
 
 func isBotUser(username string) bool {
 	return strings.HasSuffix(username, "[bot]")
 }
+
+func parsePositiveIntOrDefault(envName, raw string, defaultVal int) (int, error) {
+	if raw == "" {
+		return defaultVal, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid integer, got: '%s'", envName, raw)
+	}
+	if v < 1 {
+		return 0, fmt.Errorf("%s must be positive, got: %d", envName, v)
+	}
+	return v, nil
+}
+
+var triggerSourceRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+(\[bot\])?$`)
 
 func validateGateFixInputs(prNumber, repoFullName, triggerSource string) []string {
 	var errs []string
@@ -291,6 +314,8 @@ func validateGateFixInputs(prNumber, repoFullName, triggerSource string) []strin
 	}
 	if triggerSource == "" {
 		errs = append(errs, "TRIGGER_SOURCE is required (GitHub username that triggered the fix)")
+	} else if !triggerSourceRe.MatchString(triggerSource) {
+		errs = append(errs, fmt.Sprintf("TRIGGER_SOURCE must be a valid GitHub username, got: '%s'", triggerSource))
 	}
 
 	return errs
@@ -305,33 +330,33 @@ func runGateFix(_ context.Context, cfg gateFixConfig, printer *ui.Printer) error
 		return fmt.Errorf("input validation failed with %d error(s)", len(errs))
 	}
 
-	// Human instruction length cap
-	if !isBotUser(cfg.TriggerSource) && len(cfg.HumanInstruction) > maxInstructionBytes {
+	// Instruction length cap — lower for humans, higher for bots.
+	instrCap := maxInstructionBytes
+	if isBotUser(cfg.TriggerSource) {
+		instrCap = maxBotInstructionBytes
+	}
+	if len(cfg.HumanInstruction) > instrCap {
 		printer.Raw(fmt.Sprintf("::error::HUMAN_INSTRUCTION is %d bytes (max: %d). Truncate the instruction.\n",
-			len(cfg.HumanInstruction), maxInstructionBytes))
-		return fmt.Errorf("HUMAN_INSTRUCTION is %d bytes (max: %d)", len(cfg.HumanInstruction), maxInstructionBytes)
+			len(cfg.HumanInstruction), instrCap))
+		return fmt.Errorf("HUMAN_INSTRUCTION is %d bytes (max: %d)", len(cfg.HumanInstruction), instrCap)
 	}
 
-	// Parse iteration and caps with defaults
-	iteration := 1
-	if cfg.Iteration != "" {
-		if v, err := strconv.Atoi(cfg.Iteration); err == nil {
-			iteration = v
-		}
+	iteration, err := parsePositiveIntOrDefault("FIX_ITERATION", cfg.Iteration, 1)
+	if err != nil {
+		printer.Raw(fmt.Sprintf("::error::%v\n", err))
+		return err
 	}
 
-	botCap := 5
-	if cfg.IterationCap != "" {
-		if v, err := strconv.Atoi(cfg.IterationCap); err == nil {
-			botCap = v
-		}
+	botCap, err := parsePositiveIntOrDefault("ITERATION_CAP", cfg.IterationCap, 5)
+	if err != nil {
+		printer.Raw(fmt.Sprintf("::error::%v\n", err))
+		return err
 	}
 
-	humanCap := 10
-	if cfg.IterationCapHuman != "" {
-		if v, err := strconv.Atoi(cfg.IterationCapHuman); err == nil {
-			humanCap = v
-		}
+	humanCap, err := parsePositiveIntOrDefault("ITERATION_CAP_HUMAN", cfg.IterationCapHuman, 10)
+	if err != nil {
+		printer.Raw(fmt.Sprintf("::error::%v\n", err))
+		return err
 	}
 
 	cap := humanCap
@@ -367,14 +392,20 @@ func runGateFix(_ context.Context, cfg gateFixConfig, printer *ui.Printer) error
 	return nil
 }
 
-func writeGateOutput(path, key, value string) {
+func writeGateOutput(path, key, value string) error {
 	if path == "" {
-		return
+		return nil
+	}
+	if strings.ContainsAny(key, "\n\r") || strings.ContainsAny(value, "\n\r") {
+		return fmt.Errorf("GITHUB_OUTPUT key/value must not contain newlines")
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return
+		return fmt.Errorf("opening GITHUB_OUTPUT: %w", err)
 	}
-	defer f.Close()
-	fmt.Fprintf(f, "%s=%s\n", key, value)
+	_, writeErr := fmt.Fprintf(f, "%s=%s\n", key, value)
+	if closeErr := f.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	return writeErr
 }

@@ -225,6 +225,15 @@ func TestRunGateCode_InvalidBotLogin(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid characters")
 }
 
+func TestRunGateCode_InvalidBotLoginLeadingBracket(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := validConfig(fc)
+	cfg.BotLogin = "]evil"
+	err := runGateCode(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
 func TestRunGateCode_ValidCustomBotLogin(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := validConfig(fc)
@@ -407,16 +416,30 @@ func TestRunGateFix_HumanInstructionAtLimit(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestRunGateFix_BotIgnoresInstructionLength(t *testing.T) {
-	longInstruction := strings.Repeat("x", 20000)
+func TestRunGateFix_BotHigherInstructionCap(t *testing.T) {
+	// Bot cap is 1 MB, human cap is 10 KB. 20 KB passes for bots.
+	instruction := strings.Repeat("x", 20000)
 	cfg := gateFixConfig{
 		PRNumber:         "42",
 		RepoFullName:     "test-org/test-repo",
 		TriggerSource:    "review-bot[bot]",
-		HumanInstruction: longInstruction,
+		HumanInstruction: instruction,
 	}
 	err := runGateFix(context.Background(), cfg, newTestPrinter())
 	assert.NoError(t, err)
+}
+
+func TestRunGateFix_BotInstructionCapExceeded(t *testing.T) {
+	instruction := strings.Repeat("x", 1048577) // 1 MB + 1
+	cfg := gateFixConfig{
+		PRNumber:         "42",
+		RepoFullName:     "test-org/test-repo",
+		TriggerSource:    "review-bot[bot]",
+		HumanInstruction: instruction,
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "HUMAN_INSTRUCTION")
 }
 
 func TestRunGateFix_DefaultIteration(t *testing.T) {
@@ -427,6 +450,65 @@ func TestRunGateFix_DefaultIteration(t *testing.T) {
 	}
 	err := runGateFix(context.Background(), cfg, newTestPrinter())
 	assert.NoError(t, err)
+}
+
+func TestRunGateFix_NegativeIteration(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "review-bot[bot]",
+		Iteration:     "-5",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must be positive")
+}
+
+func TestRunGateFix_NonNumericIteration(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "human-dev",
+		Iteration:     "abc",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "valid integer")
+}
+
+func TestRunGateFix_NonNumericCap(t *testing.T) {
+	cfg := gateFixConfig{
+		PRNumber:      "42",
+		RepoFullName:  "test-org/test-repo",
+		TriggerSource: "human-dev",
+		IterationCap:  "xyz",
+	}
+	err := runGateFix(context.Background(), cfg, newTestPrinter())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ITERATION_CAP")
+}
+
+func TestValidateGateFixInputs_InvalidTriggerSource(t *testing.T) {
+	errs := validateGateFixInputs("42", "test-org/test-repo", "evil$(whoami)")
+	assert.Len(t, errs, 1)
+	assert.Contains(t, errs[0], "TRIGGER_SOURCE")
+}
+
+func TestWriteGateOutput_Error(t *testing.T) {
+	err := writeGateOutput("/no-such-dir/no-such-file", "skip", "true")
+	assert.Error(t, err)
+}
+
+func TestWriteGateOutput_Empty(t *testing.T) {
+	err := writeGateOutput("", "skip", "true")
+	assert.NoError(t, err)
+}
+
+func TestWriteGateOutput_RejectsNewlines(t *testing.T) {
+	outFile := t.TempDir() + "/github-output"
+	err := writeGateOutput(outFile, "skip\ninjected=pwned", "true")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "newlines")
 }
 
 func TestIsBotUser(t *testing.T) {
