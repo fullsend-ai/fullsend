@@ -132,6 +132,22 @@ func (p *Printer) ErrorBox(title, detail string) {
 	fmt.Fprintln(p.w, box)
 }
 
+// InfoBox prints an info-styled bordered box with title and detail.
+func (p *Printer) InfoBox(title, detail string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	heading := lipgloss.NewStyle().Bold(true).Foreground(ColorBrand).Render(title)
+	body := heading + "\n" + detail
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBrand).
+		Padding(0, 1).
+		Render(body)
+
+	fmt.Fprintln(p.w, box)
+}
+
 // Heartbeat prints a periodic progress line in muted color.
 func (p *Printer) Heartbeat(text string) {
 	p.mu.Lock()

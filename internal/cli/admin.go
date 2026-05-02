@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/playwright-community/playwright-go"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -95,7 +97,8 @@ func newInstallCmd() *cobra.Command {
 	var gcpCredentialsFile string
 	var gcpWIFProvider string
 	var gcpWIFSAEmail string
-	var autoMode bool
+	var noPlaywright bool
+	var yolo bool
 	var sessionFile string
 
 	cmd := &cobra.Command{
@@ -146,17 +149,9 @@ func newInstallCmd() *cobra.Command {
 				return fmt.Errorf("--gcp-wif-provider and --gcp-wif-sa-email must be provided together")
 			}
 
-			// Validate --auto flag dependencies.
-			if autoMode && sessionFile == "" {
-				return fmt.Errorf("--session-file is required when --auto is set")
-			}
-			if sessionFile != "" && !autoMode {
-				return fmt.Errorf("--session-file requires --auto")
-			}
-			if autoMode {
-				if _, err := os.Stat(sessionFile); err != nil {
-					return fmt.Errorf("session file %s: %w", sessionFile, err)
-				}
+			// Validate flag interactions.
+			if noPlaywright && sessionFile != "" {
+				return fmt.Errorf("--no-playwright and --session-file are contradictory")
 			}
 
 			// Build inference provider from GCP flags.
@@ -204,9 +199,96 @@ func newInstallCmd() *cobra.Command {
 				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName)
 			}
 
-			// Set up browser opener (Playwright for --auto, default otherwise).
+			// Set up browser opener.
 			var installBrowser appsetup.BrowserOpener
-			if autoMode {
+			if noPlaywright {
+				installBrowser = appsetup.DefaultBrowser{}
+			} else {
+				// Briefing gate — show before asking for credentials.
+				if !yolo {
+					numApps := len(strings.Split(agents, ","))
+					printer.InfoBox(
+						"Playwright Browser Automation",
+						fmt.Sprintf(
+							"The installer will open a browser and act on your behalf to set up\n"+
+								"GitHub Apps for fullsend. Here's what it will do:\n\n"+
+								"  • Create %d GitHub Apps (one per agent role)\n"+
+								"  • Upload an icon for each app\n"+
+								"  • Install each app on %s\n"+
+								"  • Create a fine-grained PAT for workflow dispatch\n\n"+
+								"This is a one-time setup to lay down the app scaffolding. Unfortunately,\n"+
+								"GitHub doesn't offer APIs for app logo upload or PAT creation, so\n"+
+								"browser automation is the only way to do this without manual steps.\n\n"+
+								"If you'd prefer to do this manually, re-run with --no-playwright\n"+
+								"and follow the interactive prompts instead.\n\n"+
+								"Press Enter to continue, or Ctrl-C to abort.",
+							numApps, org,
+						),
+					)
+					fmt.Scanln()
+				}
+
+				// Determine session file: provided or ephemeral.
+				ephemeral := false
+				if sessionFile == "" {
+					// Prompt for GitHub credentials.
+					username := os.Getenv("GITHUB_USERNAME")
+					password := os.Getenv("GITHUB_PASSWORD")
+					if username == "" {
+						fmt.Print("GitHub username: ")
+						scanner := bufio.NewScanner(os.Stdin)
+						if scanner.Scan() {
+							username = scanner.Text()
+						}
+						if username == "" {
+							return fmt.Errorf("GitHub username is required")
+						}
+					}
+					if password == "" {
+						fmt.Print("GitHub password: ")
+						pwBytes, pwErr := term.ReadPassword(int(syscall.Stdin))
+						fmt.Println() // newline after hidden input
+						if pwErr != nil {
+							return fmt.Errorf("reading password: %w", pwErr)
+						}
+						password = string(pwBytes)
+						if password == "" {
+							return fmt.Errorf("GitHub password is required")
+						}
+					}
+
+					tmpFile, tmpErr := os.CreateTemp("", "fullsend-session-*.json")
+					if tmpErr != nil {
+						return fmt.Errorf("creating temp session file: %w", tmpErr)
+					}
+					sessionFile = tmpFile.Name()
+					tmpFile.Close()
+					ephemeral = true
+					defer func() {
+						if rmErr := os.Remove(sessionFile); rmErr == nil {
+							printer.StepDone("Ephemeral session file deleted: " + sessionFile)
+						} else if !os.IsNotExist(rmErr) {
+							printer.StepWarn("Could not delete ephemeral session file: " + sessionFile)
+						}
+					}()
+
+					printer.StepStart("Generating ephemeral browser session")
+					if err := generateSession(printer, username, password, sessionFile); err != nil {
+						return fmt.Errorf("generating session: %w", err)
+					}
+					printer.StepDone("Ephemeral session ready")
+				} else {
+					// Validate provided session file exists.
+					if _, err := os.Stat(sessionFile); err != nil {
+						return fmt.Errorf("session file %s: %w", sessionFile, err)
+					}
+					defer func() {
+						printer.StepWarn("Session file was NOT deleted: " + sessionFile)
+						printer.StepInfo("Delete it manually when no longer needed.")
+					}()
+				}
+
+				// Launch Playwright with session.
 				pw, pwErr := playwright.Run()
 				if pwErr != nil {
 					return fmt.Errorf("starting Playwright: %w", pwErr)
@@ -235,9 +317,11 @@ func newInstallCmd() *cobra.Command {
 				}
 
 				installBrowser = appsetup.NewPlaywrightBrowserOpener(page, printer)
-				printer.StepDone("Playwright browser ready (auto mode)")
-			} else {
-				installBrowser = appsetup.DefaultBrowser{}
+				if ephemeral {
+					printer.StepDone("Playwright browser ready (ephemeral session)")
+				} else {
+					printer.StepDone("Playwright browser ready (pre-existing session)")
+				}
 			}
 
 			// Collect agent credentials via app setup.
@@ -265,8 +349,9 @@ func newInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gcpCredentialsFile, "gcp-credentials-file", "", "path to pre-made GCP service account key JSON (optional, used with --gcp-project)")
 	cmd.Flags().StringVar(&gcpWIFProvider, "gcp-wif-provider", "", "full Workload Identity Federation provider resource name (e.g. projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER)")
 	cmd.Flags().StringVar(&gcpWIFSAEmail, "gcp-wif-sa-email", "", "GCP service account email for WIF impersonation (required with --gcp-wif-provider)")
-	cmd.Flags().BoolVar(&autoMode, "auto", false, "fully automated install using Playwright browser automation (requires --session-file)")
-	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to Playwright session file for --auto mode")
+	cmd.Flags().BoolVar(&noPlaywright, "no-playwright", false, "fall back to manual browser flow (no Playwright)")
+	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to pre-existing Playwright session file (skips login, not deleted afterward)")
+	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip the briefing and acknowledgment prompt")
 
 	return cmd
 }
@@ -314,7 +399,7 @@ func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.
 
 func newUninstallCmd() *cobra.Command {
 	var yolo bool
-	var autoMode bool
+	var noPlaywright bool
 	var sessionFile string
 
 	cmd := &cobra.Command{
@@ -328,17 +413,9 @@ func newUninstallCmd() *cobra.Command {
 				return err
 			}
 
-			// Validate --auto flag dependencies.
-			if autoMode && sessionFile == "" {
-				return fmt.Errorf("--session-file is required when --auto is set")
-			}
-			if sessionFile != "" && !autoMode {
-				return fmt.Errorf("--session-file requires --auto")
-			}
-			if autoMode {
-				if _, err := os.Stat(sessionFile); err != nil {
-					return fmt.Errorf("session file %s: %w", sessionFile, err)
-				}
+			// Validate flag interactions.
+			if noPlaywright && sessionFile != "" {
+				return fmt.Errorf("--no-playwright and --session-file are contradictory")
 			}
 
 			token, err := resolveToken()
@@ -355,21 +432,106 @@ func newUninstallCmd() *cobra.Command {
 			printer.Header("Uninstalling fullsend from " + org)
 			printer.Blank()
 
-			// --auto implies --yolo (no confirmation prompt).
-			if !yolo && !autoMode {
-				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
-				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
-				var confirmation string
-				if _, err := fmt.Scanln(&confirmation); err != nil {
-					return fmt.Errorf("reading confirmation: %w", err)
+			// Compute agent slugs before browser setup (needed for briefing).
+			var agentSlugs []string
+			cfgData, cfgErr := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
+			if cfgErr == nil {
+				if cfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
+					for _, agent := range cfg.Agents {
+						agentSlugs = append(agentSlugs, agent.Slug)
+					}
 				}
-				if confirmation != org {
-					return fmt.Errorf("confirmation did not match; aborting uninstall")
+			}
+			if len(agentSlugs) == 0 {
+				for _, role := range config.DefaultAgentRoles() {
+					agentSlugs = append(agentSlugs, appsetup.ExpectedAppSlug(org, role))
 				}
+				printer.StepInfo("Config repo unavailable; using default app names")
 			}
 
 			var browser appsetup.BrowserOpener
-			if autoMode {
+			if noPlaywright {
+				browser = appsetup.DefaultBrowser{}
+			} else {
+				// Briefing gate — show before asking for credentials.
+				if !yolo {
+					printer.InfoBox(
+						"Playwright Browser Automation",
+						fmt.Sprintf(
+							"The uninstaller will open a browser and act on your behalf to\n"+
+								"clean up GitHub Apps for fullsend. Here's what it will do:\n\n"+
+								"  • Delete %d GitHub Apps from %s\n"+
+								"  • Delete the dispatch PAT\n"+
+								"  • Delete the .fullsend config repo and secrets\n\n"+
+								"If you'd prefer to do this manually, re-run with --no-playwright.\n\n"+
+								"Press Enter to continue, or Ctrl-C to abort.",
+							len(agentSlugs), org,
+						),
+					)
+					fmt.Scanln()
+				}
+
+				// Determine session file: provided or ephemeral.
+				ephemeral := false
+				if sessionFile == "" {
+					// Prompt for GitHub credentials.
+					username := os.Getenv("GITHUB_USERNAME")
+					password := os.Getenv("GITHUB_PASSWORD")
+					if username == "" {
+						fmt.Print("GitHub username: ")
+						scanner := bufio.NewScanner(os.Stdin)
+						if scanner.Scan() {
+							username = scanner.Text()
+						}
+						if username == "" {
+							return fmt.Errorf("GitHub username is required")
+						}
+					}
+					if password == "" {
+						fmt.Print("GitHub password: ")
+						pwBytes, pwErr := term.ReadPassword(int(syscall.Stdin))
+						fmt.Println() // newline after hidden input
+						if pwErr != nil {
+							return fmt.Errorf("reading password: %w", pwErr)
+						}
+						password = string(pwBytes)
+						if password == "" {
+							return fmt.Errorf("GitHub password is required")
+						}
+					}
+
+					tmpFile, tmpErr := os.CreateTemp("", "fullsend-session-*.json")
+					if tmpErr != nil {
+						return fmt.Errorf("creating temp session file: %w", tmpErr)
+					}
+					sessionFile = tmpFile.Name()
+					tmpFile.Close()
+					ephemeral = true
+					defer func() {
+						if rmErr := os.Remove(sessionFile); rmErr == nil {
+							printer.StepDone("Ephemeral session file deleted: " + sessionFile)
+						} else if !os.IsNotExist(rmErr) {
+							printer.StepWarn("Could not delete ephemeral session file: " + sessionFile)
+						}
+					}()
+
+					printer.StepStart("Generating ephemeral browser session")
+					if err := generateSession(printer, username, password, sessionFile); err != nil {
+						return fmt.Errorf("generating session: %w", err)
+					}
+					printer.StepDone("Ephemeral session ready")
+				} else {
+					// Validate provided session file exists.
+					if _, err := os.Stat(sessionFile); err != nil {
+						return fmt.Errorf("session file %s: %w", sessionFile, err)
+					}
+					defer func() {
+						printer.StepWarn("Session file was NOT deleted: " + sessionFile)
+						printer.StepInfo("Delete it manually when no longer needed.")
+					}()
+				}
+
+				// Launch Playwright with session.
 				pw, pwErr := playwright.Run()
 				if pwErr != nil {
 					return fmt.Errorf("starting Playwright: %w", pwErr)
@@ -398,18 +560,33 @@ func newUninstallCmd() *cobra.Command {
 				}
 
 				browser = appsetup.NewPlaywrightBrowserOpener(page, printer)
-				printer.StepDone("Playwright browser ready (auto mode)")
-			} else {
-				browser = appsetup.DefaultBrowser{}
+				if ephemeral {
+					printer.StepDone("Playwright browser ready (ephemeral session)")
+				} else {
+					printer.StepDone("Playwright browser ready (pre-existing session)")
+				}
 			}
 
-			return runUninstall(ctx, client, printer, org, browser)
+			// Confirmation prompt (skipped with --yolo).
+			if !yolo {
+				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
+				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
+				var confirmation string
+				if _, err := fmt.Scanln(&confirmation); err != nil {
+					return fmt.Errorf("reading confirmation: %w", err)
+				}
+				if confirmation != org {
+					return fmt.Errorf("confirmation did not match; aborting uninstall")
+				}
+			}
+
+			return runUninstall(ctx, client, printer, org, browser, agentSlugs)
 		},
 	}
 
-	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
-	cmd.Flags().BoolVar(&autoMode, "auto", false, "fully automated uninstall using Playwright browser automation (requires --session-file)")
-	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to Playwright session file for --auto mode")
+	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip briefing, confirmation prompt")
+	cmd.Flags().BoolVar(&noPlaywright, "no-playwright", false, "fall back to manual browser flow (no Playwright)")
+	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to pre-existing Playwright session file (skips login, not deleted afterward)")
 
 	return cmd
 }
@@ -447,19 +624,111 @@ func newAnalyzeCmd() *cobra.Command {
 	return cmd
 }
 
+// generateSession launches a headed Playwright browser, logs into GitHub,
+// handles 2FA, and exports the storage state to outputPath.
+func generateSession(printer *ui.Printer, username, password, outputPath string) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("creating output directory: %w", err)
+	}
+
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("starting Playwright: %w", err)
+	}
+	defer func() { _ = pw.Stop() }()
+
+	// Headed mode so the user can interact with 2FA prompts.
+	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+		Headless: playwright.Bool(false),
+	})
+	if err != nil {
+		return fmt.Errorf("launching browser: %w", err)
+	}
+	defer func() { _ = browser.Close() }()
+
+	browserCtx, err := browser.NewContext()
+	if err != nil {
+		return fmt.Errorf("creating browser context: %w", err)
+	}
+	defer func() { _ = browserCtx.Close() }()
+
+	page, err := browserCtx.NewPage()
+	if err != nil {
+		return fmt.Errorf("creating page: %w", err)
+	}
+
+	printer.StepStart("Logging into GitHub")
+
+	if _, err := page.Goto("https://github.com/login", playwright.PageGotoOptions{
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+	}); err != nil {
+		return fmt.Errorf("navigating to login: %w", err)
+	}
+
+	// Check if already logged in.
+	if !strings.Contains(page.URL(), "/login") && !strings.Contains(page.URL(), "/session") {
+		printer.StepDone("Already logged in")
+		if _, err := browserCtx.StorageState(outputPath); err != nil {
+			return fmt.Errorf("exporting session: %w", err)
+		}
+		_ = os.Chmod(outputPath, 0600)
+		return nil
+	}
+
+	if err := page.Locator("#login_field").Fill(username); err != nil {
+		return fmt.Errorf("filling username: %w", err)
+	}
+	if err := page.Locator("#password").Fill(password); err != nil {
+		return fmt.Errorf("filling password: %w", err)
+	}
+	if err := page.Locator("input[type='submit'], button[type='submit']").First().Click(); err != nil {
+		return fmt.Errorf("clicking submit: %w", err)
+	}
+
+	if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
+		Timeout: playwright.Float(15000),
+	}); err != nil {
+		return fmt.Errorf("post-login navigation: %w (url: %s)", err, page.URL())
+	}
+
+	// Handle 2FA — if we landed on a sessions/two-factor page,
+	// wait for the user to complete it in the headed browser.
+	currentURL := page.URL()
+	if strings.Contains(currentURL, "/sessions/") || strings.Contains(currentURL, "/two-factor") {
+		printer.StepInfo("2FA required — complete it in the browser window")
+		// Wait up to 2 minutes for the user to get past 2FA.
+		if err := page.WaitForURL("https://github.com/", playwright.PageWaitForURLOptions{
+			Timeout: playwright.Float(120000),
+		}); err != nil {
+			return fmt.Errorf("timed out waiting for 2FA (url: %s)", page.URL())
+		}
+	}
+
+	currentURL = page.URL()
+	if strings.Contains(currentURL, "/login") || strings.Contains(currentURL, "/session") {
+		return fmt.Errorf("login failed, still at: %s", currentURL)
+	}
+
+	printer.StepDone("Logged in")
+
+	if _, err := browserCtx.StorageState(outputPath); err != nil {
+		return fmt.Errorf("exporting session: %w", err)
+	}
+	_ = os.Chmod(outputPath, 0600)
+
+	return nil
+}
+
 func newExportSessionCmd() *cobra.Command {
 	var sessionFile string
 
 	cmd := &cobra.Command{
 		Use:   "export-session",
-		Short: "Export a GitHub browser session for --auto mode",
-		Long:  "Logs into GitHub via Playwright and exports the browser session as a storage state JSON file. Set GITHUB_USERNAME and GITHUB_PASSWORD environment variables.",
+		Short: "Export a GitHub browser session for Playwright automation",
+		Long:  "Logs into GitHub via Playwright and exports the browser session as a storage state JSON file.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			username := os.Getenv("GITHUB_USERNAME")
 			password := os.Getenv("GITHUB_PASSWORD")
-			if username == "" || password == "" {
-				return fmt.Errorf("set GITHUB_USERNAME and GITHUB_PASSWORD environment variables")
-			}
 
 			printer := ui.New(os.Stdout)
 			printer.Banner()
@@ -467,105 +736,43 @@ func newExportSessionCmd() *cobra.Command {
 			printer.Header("Exporting GitHub session")
 			printer.Blank()
 
-			if err := os.MkdirAll(filepath.Dir(sessionFile), 0o755); err != nil {
-				return fmt.Errorf("creating output directory: %w", err)
-			}
-
-			printer.StepStart("Starting Playwright")
-			pw, err := playwright.Run()
-			if err != nil {
-				return fmt.Errorf("starting Playwright: %w", err)
-			}
-			defer func() { _ = pw.Stop() }()
-
-			// Headed mode so the user can interact with 2FA prompts.
-			browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-				Headless: playwright.Bool(false),
-			})
-			if err != nil {
-				return fmt.Errorf("launching browser: %w", err)
-			}
-			defer func() { _ = browser.Close() }()
-
-			browserCtx, err := browser.NewContext()
-			if err != nil {
-				return fmt.Errorf("creating browser context: %w", err)
-			}
-			defer func() { _ = browserCtx.Close() }()
-
-			page, err := browserCtx.NewPage()
-			if err != nil {
-				return fmt.Errorf("creating page: %w", err)
-			}
-
-			printer.StepDone("Playwright ready")
-			printer.StepStart("Logging into GitHub")
-
-			if _, err := page.Goto("https://github.com/login", playwright.PageGotoOptions{
-				WaitUntil: playwright.WaitUntilStateDomcontentloaded,
-			}); err != nil {
-				return fmt.Errorf("navigating to login: %w", err)
-			}
-
-			// Check if already logged in.
-			if !strings.Contains(page.URL(), "/login") && !strings.Contains(page.URL(), "/session") {
-				printer.StepDone("Already logged in")
-				if _, err := browserCtx.StorageState(sessionFile); err != nil {
-					return fmt.Errorf("exporting session: %w", err)
+			if username == "" {
+				fmt.Print("GitHub username: ")
+				scanner := bufio.NewScanner(os.Stdin)
+				if scanner.Scan() {
+					username = scanner.Text()
 				}
-				printer.StepDone(fmt.Sprintf("Session exported to %s", sessionFile))
-				return nil
+				if username == "" {
+					return fmt.Errorf("GitHub username is required")
+				}
 			}
-
-			if err := page.Locator("#login_field").Fill(username); err != nil {
-				return fmt.Errorf("filling username: %w", err)
-			}
-			if err := page.Locator("#password").Fill(password); err != nil {
-				return fmt.Errorf("filling password: %w", err)
-			}
-			if err := page.Locator("input[type='submit'], button[type='submit']").First().Click(); err != nil {
-				return fmt.Errorf("clicking submit: %w", err)
-			}
-
-			if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
-				Timeout: playwright.Float(15000),
-			}); err != nil {
-				return fmt.Errorf("post-login navigation: %w (url: %s)", err, page.URL())
-			}
-
-			// Handle 2FA — if we landed on a sessions/two-factor page,
-			// wait for the user to complete it in the headed browser.
-			currentURL := page.URL()
-			if strings.Contains(currentURL, "/sessions/") || strings.Contains(currentURL, "/two-factor") {
-				printer.StepInfo("2FA required — complete it in the browser window")
-				// Wait up to 2 minutes for the user to get past 2FA.
-				if err := page.WaitForURL("https://github.com/", playwright.PageWaitForURLOptions{
-					Timeout: playwright.Float(120000),
-				}); err != nil {
-					return fmt.Errorf("timed out waiting for 2FA (url: %s)", page.URL())
+			if password == "" {
+				fmt.Print("GitHub password: ")
+				pwBytes, pwErr := term.ReadPassword(int(syscall.Stdin))
+				fmt.Println() // newline after hidden input
+				if pwErr != nil {
+					return fmt.Errorf("reading password: %w", pwErr)
+				}
+				password = string(pwBytes)
+				if password == "" {
+					return fmt.Errorf("GitHub password is required")
 				}
 			}
 
-			currentURL = page.URL()
-			if strings.Contains(currentURL, "/login") || strings.Contains(currentURL, "/session") {
-				return fmt.Errorf("login failed, still at: %s", currentURL)
-			}
-
-			printer.StepDone("Logged in")
-
-			if _, err := browserCtx.StorageState(sessionFile); err != nil {
-				return fmt.Errorf("exporting session: %w", err)
+			if err := generateSession(printer, username, password, sessionFile); err != nil {
+				return err
 			}
 
 			printer.StepDone(fmt.Sprintf("Session exported to %s", sessionFile))
 			printer.Blank()
-			printer.StepInfo("Use with: fullsend admin install <org> --auto --session-file " + sessionFile)
+			printer.StepWarn("Session file contains GitHub credentials — delete when no longer needed.")
+			printer.StepInfo("Use with: fullsend admin install <org> --session-file " + sessionFile)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&sessionFile, "session-file", "", "path to write the session file (required)")
-	_ = cmd.MarkFlagRequired("session-file")
+	defaultSessionFile := filepath.Join(os.Getenv("HOME"), ".config", "fullsend", "session.json")
+	cmd.Flags().StringVar(&sessionFile, "session-file", defaultSessionFile, "path to write the session file")
 
 	return cmd
 }
@@ -761,29 +968,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 }
 
 // runUninstall tears down the fullsend installation.
-func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, browser appsetup.BrowserOpener) error {
-	// Try to load agent slugs from existing config. If the .fullsend repo
-	// is already gone (e.g., previous partial uninstall), fall back to the
-	// default naming convention so we can still guide the user to delete
-	// the apps. Without this fallback, a partial uninstall leaves orphaned
-	// apps that block reinstallation (PEM keys are one-shot).
-	var agentSlugs []string
-	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
-	if err == nil {
-		if cfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			for _, agent := range cfg.Agents {
-				agentSlugs = append(agentSlugs, agent.Slug)
-			}
-		}
-	}
-	if len(agentSlugs) == 0 {
-		// Config unavailable — assume default app naming convention.
-		for _, role := range config.DefaultAgentRoles() {
-			agentSlugs = append(agentSlugs, appsetup.ExpectedAppSlug(org, role))
-		}
-		printer.StepInfo("Config repo unavailable; using default app names")
-	}
-
+func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, browser appsetup.BrowserOpener, agentSlugs []string) error {
 	// Build a minimal stack for uninstall.
 	// Only ConfigRepoLayer matters for uninstall since other layers are no-ops.
 	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "")
