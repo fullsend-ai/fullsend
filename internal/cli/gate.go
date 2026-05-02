@@ -206,6 +206,7 @@ To override, comment `+"`/code --force`"+` on this issue.
 
 	comments, err := cfg.Client.ListIssueComments(ctx, owner, repo, issueNum)
 	if err != nil {
+		printer.Raw(fmt.Sprintf("::warning::Failed to check existing comments on issue #%d: %v\n", issueNum, err))
 		comments = nil
 	}
 
