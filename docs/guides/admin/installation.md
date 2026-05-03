@@ -2,9 +2,12 @@
 
 This guide walks through installing fullsend in a GitHub organization and enrolling your first repository.
 
+The installer uses [Playwright browser automation](../../ADRs/0026-playwright-default-installer.md) by default to create GitHub Apps, upload logos, and generate a dispatch token — all in a single command. If you prefer to perform these steps manually, pass `--no-playwright` (see [Manual mode](#manual-mode-no-playwright)).
+
 ## Prerequisites
 
 - **GitHub organization** with admin access
+- **GitHub account credentials** — the Playwright installer prompts for your GitHub username and password (or reads `GITHUB_USERNAME` / `GITHUB_PASSWORD` env vars) to create an ephemeral browser session. The session is deleted automatically when the installer exits.
 - **GitHub CLI** (`gh`) authenticated — no special scopes are needed upfront. The installer runs a preflight check and tells you exactly which scopes are missing before making any changes. When prompted, run the `gh auth refresh -s <scopes>` command it suggests.
 
   > **Note on scope breadth:** `gh auth` scopes apply to *every* organization your account belongs to — GitHub does not support per-org scoping for classic OAuth tokens. If that is a concern, create a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) scoped to the target organization and export it as `GH_TOKEN` before running the installer.
@@ -13,6 +16,7 @@ This guide walks through installing fullsend in a GitHub organization and enroll
 
   *Note*: If running from a local clone of the repository use `go run ./cmd/fullsend/main.go <command>`
 
+- **Playwright browsers** — the installer installs Chromium automatically on first run. On headless systems without a display, use `--no-playwright` instead.
 - **GCP project** with the [Vertex AI API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled
 
 ### OAuth scope reference
@@ -128,9 +132,9 @@ gcloud iam service-accounts keys create sa-key.json \
 
 ## 2. Run the installer
 
-The installer is interactive. It will open multiple browser windows to create and install a GitHub App for each agent role. Follow the prompts in each window to complete the app setup.
+The installer creates GitHub Apps (one per agent role), uploads icons, installs each app on the organization, and creates a fine-grained PAT for workflow dispatch — all automatically via Playwright.
 
-Near the end, the installer opens a browser to create a fine-grained personal access token (dispatch token). When creating it, make sure to grant **Actions: Read and write** permission scoped to the `.fullsend` repository — otherwise the verification step will fail with a 404.
+Before starting, the installer displays a briefing showing exactly what it will do and waits for confirmation. Pass `--yolo` to skip this prompt.
 
 If the installer fails partway through, run `fullsend admin uninstall "$ORG_NAME"` to clean up before retrying. The uninstall preflight will prompt you to add the `delete_repo` scope if it is missing.
 
@@ -159,6 +163,54 @@ fullsend admin install "$ORG_NAME" \
   --gcp-credentials-file sa-key.json
 rm sa-key.json
 ```
+
+### Session reuse
+
+By default the installer creates an ephemeral browser session that is deleted on exit. To reuse a session across multiple runs (useful when iterating on a partial install):
+
+1. Export a session once:
+
+   ```bash
+   fullsend admin export-session
+   ```
+
+   This writes `~/.config/fullsend/session.json` by default (override with `--session-file <path>`).
+
+2. Pass it to the installer:
+
+   ```bash
+   fullsend admin install "$ORG_NAME" \
+     --session-file ~/.config/fullsend/session.json \
+     --repo "$REPO_NAME" \
+     --gcp-project "$GCP_PROJECT" \
+     --gcp-region global \
+     --gcp-wif-provider "$WIF_PROVIDER" \
+     --gcp-wif-sa-email "$WIF_SA_EMAIL"
+   ```
+
+The installer does **not** delete a session file provided via `--session-file`. Delete it manually when no longer needed — it contains active GitHub credentials.
+
+### Manual mode (`--no-playwright`)
+
+Pass `--no-playwright` to skip browser automation entirely. The installer opens your system browser for each GitHub App and prompts you to complete each step manually, including PAT creation. When creating the PAT, grant **Actions: Read and write** permission scoped to the `.fullsend` repository — otherwise the verification step will fail with a 404.
+
+### Installer flag reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--repo` | *(none)* | Repositories to enroll (repeatable) |
+| `--agents` | `fullsend,triage,coder,review` | Comma-separated agent roles |
+| `--gcp-project` | *(none)* | GCP project for Vertex AI |
+| `--gcp-region` | *(none)* | GCP region (required with `--gcp-project`) |
+| `--gcp-wif-provider` | *(none)* | WIF provider resource name |
+| `--gcp-wif-sa-email` | *(none)* | Service account email for WIF |
+| `--gcp-credentials-file` | *(none)* | Path to SA key JSON (mutually exclusive with WIF) |
+| `--session-file` | *(none)* | Pre-existing Playwright session (skips login) |
+| `--no-playwright` | `false` | Fall back to manual browser flow |
+| `--skip-app-setup` | `false` | Skip GitHub App creation (reuse existing apps) |
+| `--yolo` | `false` | Skip the briefing confirmation prompt |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--vendor-fullsend-binary` | `false` | Cross-compile and upload the CLI binary into `.fullsend/bin/` |
 
 ### Migrating from SA key to WIF
 
