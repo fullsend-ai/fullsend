@@ -31,6 +31,10 @@ The e2e tests require GitHub credentials. There are three ways to provide them:
 
 If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
 
+## Frontend (web/admin)
+
+When generating or modifying UI components under `web/admin/`, always read and follow `web/admin/DESIGN.md` for design tokens, component patterns, and accessibility requirements.
+
 ## Key design decisions made
 
 - **Autonomy model:** Binary per-repo, with CODEOWNERS enforcing human approval on specific paths
