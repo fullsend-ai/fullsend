@@ -14,12 +14,12 @@
     "preview": "vite preview",
     "test": "vitest run --config vite.config.ts && vitest run --config cloudflare_site/worker/vitest.config.mts",
     "check": "svelte-check --tsconfig web/admin/tsconfig.json && svelte-check --tsconfig web/docs/tsconfig.json",
-    "lint": "eslint web/admin/src/",
-    "lint:fix": "eslint web/admin/src/ --fix",
-    "format": "prettier --write 'web/admin/src/**/*.{svelte,ts,js,css}'",
-    "format:check": "prettier --check 'web/admin/src/**/*.{svelte,ts,js,css}'",
-    "stylelint": "stylelint 'web/admin/src/**/*.{svelte,css}'",
-    "stylelint:fix": "stylelint 'web/admin/src/**/*.{svelte,css}' --fix"
+    "lint": "eslint web/admin/src/ web/docs/src/",
+    "lint:fix": "eslint web/admin/src/ web/docs/src/ --fix",
+    "format": "prettier --write 'web/{admin,docs}/src/**/*.{svelte,ts,js,css}'",
+    "format:check": "prettier --check 'web/{admin,docs}/src/**/*.{svelte,ts,js,css}'",
+    "stylelint": "stylelint 'web/{admin,docs}/src/**/*.{svelte,css}'",
+    "stylelint:fix": "stylelint 'web/{admin,docs}/src/**/*.{svelte,css}' --fix"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.14.7",
@@ -36,6 +36,7 @@
     "eslint-plugin-svelte": "^3.17.1",
     "globals": "^17.6.0",
     "jsdom": "^25.0.0",
+    "lint-staged": "^16.4.0",
     "postcss-html": "^1.8.1",
     "prettier": "^3.8.3",
     "prettier-plugin-svelte": "~3.5.1",
@@ -50,6 +51,21 @@
     "vite": "^6.0.0",
     "vitest": "^4.1.4",
     "wrangler": "^4.36.0"
+  },
+  "lint-staged": {
+    "web/{admin,docs}/src/**/*.{ts,js}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "web/{admin,docs}/src/**/*.svelte": [
+      "eslint --fix",
+      "stylelint --fix",
+      "prettier --write"
+    ],
+    "web/{admin,docs}/src/**/*.css": [
+      "stylelint --fix",
+      "prettier --write"
+    ]
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",

@@ -155,3 +155,10 @@ repos:
         language: script
         files: ^(internal/scaffold/fullsend-repo/harness/|docs/agents/)
         pass_filenames: false
+
+      - id: lint-staged
+        name: lint-staged (web)
+        entry: npx lint-staged --allow-empty
+        language: system
+        files: ^web/(admin|docs)/src/
+        pass_filenames: false
