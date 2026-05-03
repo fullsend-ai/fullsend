@@ -8,7 +8,7 @@ colors:
   fg-muted: "#444444"
   fg-on-emphasis: "#ffffff"
   fg-accent: "#0969da"
-  fg-danger: "#cf222e"
+  fg-danger: "#a40000"
   fg-warning: "#9a6700"
   fg-success: "#1a7f37"
   bg-default: "#ffffff"
@@ -19,7 +19,7 @@ colors:
   bg-success-subtle: "#dafbe1"
   border-default: "#d0d7de"
   border-muted: "#cccccc"
-  border-danger: "#cf222e"
+  border-danger: "#a40000"
   border-warning: "#d4a72c"
   border-accent: "{colors.primary}"
   btn-hover: "#e8e8e8"
@@ -108,35 +108,46 @@ The Fullsend Admin SPA is an internal operations tool for managing GitHub App in
 
 This is a tool for engineers managing CI/CD infrastructure. Every pixel should serve information density or interaction clarity.
 
+**Source files referenced:** The tokens in this design system were derived from two existing component files — `App.svelte` and `routes/Home.svelte` — supplemented with additional tokens from GitHub's Primer palette for coverage of warning, success, and semantic border states not yet present in the codebase. See the Colors section for per-token provenance.
+
 ## Colors
 
 The palette is GitHub Primer-derived. Use semantic token names, never raw hex values.
 
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `--fg-default` | `#24292f` | Primary text, headings, emphasis borders |
-| `--fg-muted` | `#444444` | Secondary text, status labels, timestamps |
-| `--fg-on-emphasis` | `#ffffff` | Text on dark/emphasis backgrounds |
-| `--fg-accent` | `#0969da` | Links, interactive text, focus rings |
-| `--fg-danger` | `#cf222e` | Error text, destructive action labels |
-| `--fg-warning` | `#9a6700` | Warning text, caution indicators |
-| `--fg-success` | `#1a7f37` | Success text, healthy status |
-| `--bg-default` | `#ffffff` | Page background |
-| `--bg-subtle` | `#f4f4f4` | Secondary buttons, subtle card backgrounds |
-| `--bg-emphasis` | `#24292f` | Primary buttons, header backgrounds |
-| `--bg-danger-subtle` | `#fff0f0` | Error banners, danger backgrounds |
-| `--bg-warning-subtle` | `#fff8e1` | Warning banners |
-| `--bg-success-subtle` | `#dafbe1` | Success banners |
-| `--border-default` | `#d0d7de` | Card borders, dividers, table borders |
-| `--border-muted` | `#cccccc` | Subtle separators, input borders |
-| `--border-danger` | `#cf222e` | Error state borders |
-| `--border-accent` | `#0969da` | Focus rings, active state borders |
+> **Token provenance:** Tokens marked *(existing)* are extracted from current source files (App.svelte, Home.svelte). Tokens marked *(new)* are newly introduced from the Primer palette and do not yet appear in the codebase. When adopting new tokens, update the component's hardcoded value to reference the CSS custom property.
+
+| Token | Hex | Usage | Source |
+|-------|-----|-------|--------|
+| `--fg-default` | `#24292f` | Primary text, headings, emphasis borders | *(existing — App.svelte spinner)* |
+| `--fg-muted` | `#444444` | Secondary text, status labels, timestamps | *(existing — App.svelte `.auth-wait`)* |
+| `--fg-on-emphasis` | `#ffffff` | Text on dark/emphasis backgrounds | *(existing — App.svelte `.btn.primary`)* |
+| `--fg-accent` | `#0969da` | Links, interactive text, focus rings | *(existing — App.svelte `.link-btn`)* |
+| `--fg-danger` | `#a40000` | Error text, destructive action labels | *(existing — App.svelte `.oauth-err`)* |
+| `--fg-warning` | `#9a6700` | Warning text, caution indicators | *(new — Primer palette)* |
+| `--fg-success` | `#1a7f37` | Success text, healthy status | *(new — Primer palette)* |
+| `--bg-default` | `#ffffff` | Page background | *(existing — implicit)* |
+| `--bg-subtle` | `#f4f4f4` | Secondary buttons, subtle card backgrounds | *(existing — App.svelte `.btn`)* |
+| `--bg-emphasis` | `#24292f` | Primary buttons, header backgrounds | *(existing — App.svelte `.btn.primary`)* |
+| `--bg-danger-subtle` | `#fff0f0` | Error banners, danger backgrounds | *(new — Primer palette)* |
+| `--bg-warning-subtle` | `#fff8e1` | Warning banners | *(new — Primer palette)* |
+| `--bg-success-subtle` | `#dafbe1` | Success banners | *(new — Primer palette)* |
+| `--border-default` | `#d0d7de` | Card borders, dividers, table borders | *(new — Primer palette; replaces `#ddd` in Home.svelte)* |
+| `--border-muted` | `#cccccc` | Subtle separators, input borders | *(existing — App.svelte header border, spinner)* |
+| `--border-danger` | `#a40000` | Error state borders | *(new — matches `--fg-danger`; replaces `#ecc` in App.svelte)* |
+| `--border-accent` | `#0969da` | Focus rings, active state borders | *(new — Primer palette)* |
+
+### Implementation status
+
+The color tokens above are **not yet declared as CSS custom properties** in `app.css`. Existing components (App.svelte, Home.svelte) use hardcoded hex values. When you create or modify a component:
+
+1. If the token is already declared as a `--var` in `app.css`, reference it.
+2. If not, use the hex value from the table above. A follow-up PR will add all tokens as CSS custom properties in `:root` and migrate existing components.
 
 ### Do's and Don'ts
 
 - **Do** use `--fg-danger` for error text and `--bg-danger-subtle` for error banners together.
 - **Do** use `--border-accent` with `outline-offset: 2px` for all focus-visible states.
-- **Don't** use raw hex values. Always reference CSS custom properties.
+- **Don't** use raw hex values once the CSS custom properties are declared — reference the variables instead.
 - **Don't** introduce new colors outside this palette without updating this file.
 
 ## Typography
@@ -495,17 +506,20 @@ This is the frontend equivalent of Go's convention to split functions over 50 li
 
 ## File Organization
 
+> **Note:** This is the target directory structure. Directories marked *(exists)* are already in the codebase; those marked *(planned)* will be created as components are extracted. Migration is incremental — do not reorganize existing files solely to match this layout.
+
 ```
 web/admin/src/
   lib/
-    components/      ← shared UI components (Button.svelte, Spinner.svelte, Banner.svelte)
-    auth/            ← authentication logic
-    github/          ← GitHub API client
-    layers/          ← layer analysis
-    orgs/            ← org data fetching
-  routes/            ← page-level components (one per route)
-  app.css            ← CSS custom properties (design tokens) + minimal reset
-  App.svelte         ← shell, auth gate, nav
+    components/      ← shared UI components (Button.svelte, Spinner.svelte, Banner.svelte)  (planned)
+    auth/            ← authentication logic  (exists)
+    github/          ← GitHub API client  (exists)
+    layers/          ← layer analysis  (planned)
+    orgs/            ← org data fetching  (planned)
+    status/          ← status types  (exists)
+  routes/            ← page-level components (one per route)  (exists)
+  app.css            ← minimal reset (design token custom properties to be added)  (exists)
+  App.svelte         ← shell, auth gate, nav  (exists)
 ```
 
 ## Anti-Patterns
@@ -515,4 +529,4 @@ web/admin/src/
 - **No duplicate `.btn` definitions.** Use the shared Button component or import shared styles.
 - **No raw hex colors.** Every color value must reference a CSS custom property from `app.css`.
 - **No inline `style` attributes.** Use classes and CSS custom properties.
-- **No magic spacing values.** Use the spacing scale tokens (`--space-xs` through `--space-xl`).
+- **No magic spacing values.** Use the spacing scale tokens (`xs` through `xl` defined in the YAML front matter: `0.25rem`, `0.5rem`, `0.75rem`, `1rem`, `1.5rem`). These tokens are not yet declared as CSS custom properties in `app.css` — until they are, use the literal rem values from the scale above rather than inventing new ones.
