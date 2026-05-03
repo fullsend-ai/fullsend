@@ -8,7 +8,7 @@ colors:
   fg-muted: "#444444"
   fg-on-emphasis: "#ffffff"
   fg-accent: "#0969da"
-  fg-danger: "#a40000"
+  fg-danger: "#cf222e"
   fg-warning: "#9a6700"
   fg-success: "#1a7f37"
   bg-default: "#ffffff"
@@ -19,7 +19,7 @@ colors:
   bg-success-subtle: "#dafbe1"
   border-default: "#d0d7de"
   border-muted: "#cccccc"
-  border-danger: "#a40000"
+  border-danger: "#cf222e"
   border-warning: "#d4a72c"
   border-accent: "{colors.primary}"
   btn-hover: "#e8e8e8"
@@ -122,7 +122,7 @@ The palette is GitHub Primer-derived. Use semantic token names, never raw hex va
 | `--fg-muted` | `#444444` | Secondary text, status labels, timestamps | *(existing — App.svelte `.auth-wait`)* |
 | `--fg-on-emphasis` | `#ffffff` | Text on dark/emphasis backgrounds | *(existing — App.svelte `.btn.primary`)* |
 | `--fg-accent` | `#0969da` | Links, interactive text, focus rings | *(existing — App.svelte `.link-btn`)* |
-| `--fg-danger` | `#a40000` | Error text, destructive action labels | *(existing — App.svelte `.oauth-err`)* |
+| `--fg-danger` | `#cf222e` | Error text, destructive action labels | *(new — Primer palette; replaces `#a40000` in App.svelte)* |
 | `--fg-warning` | `#9a6700` | Warning text, caution indicators | *(new — Primer palette)* |
 | `--fg-success` | `#1a7f37` | Success text, healthy status | *(new — Primer palette)* |
 | `--bg-default` | `#ffffff` | Page background | *(existing — implicit)* |
@@ -133,7 +133,7 @@ The palette is GitHub Primer-derived. Use semantic token names, never raw hex va
 | `--bg-success-subtle` | `#dafbe1` | Success banners | *(new — Primer palette)* |
 | `--border-default` | `#d0d7de` | Card borders, dividers, table borders | *(new — Primer palette; replaces `#ddd` in Home.svelte)* |
 | `--border-muted` | `#cccccc` | Subtle separators, input borders | *(existing — App.svelte header border, spinner)* |
-| `--border-danger` | `#a40000` | Error state borders | *(new — matches `--fg-danger`; replaces `#ecc` in App.svelte)* |
+| `--border-danger` | `#cf222e` | Error state borders | *(new — Primer palette; replaces `#ecc` in App.svelte)* |
 | `--border-accent` | `#0969da` | Focus rings, active state borders | *(new — Primer palette)* |
 
 ### Implementation status
