@@ -70,7 +70,7 @@ components:
     textColor: "{colors.fg-default}"
     typography: "{typography.secondary}"
     rounded: "{rounded.md}"
-    padding: "0.4rem 0.75rem"
+    padding: "0.35rem 0.75rem"
   button-hover:
     backgroundColor: "{colors.btn-hover}"
   button-active:
@@ -132,7 +132,7 @@ The palette is GitHub Primer-derived. Use semantic token names, never raw hex va
 | `--bg-warning-subtle` | `#fff8e1` | Warning banners | *(new — Primer palette)* |
 | `--bg-success-subtle` | `#dafbe1` | Success banners | *(new — Primer palette)* |
 | `--border-default` | `#d0d7de` | Card borders, dividers, table borders | *(new — Primer palette; replaces `#ddd` in Home.svelte)* |
-| `--border-muted` | `#cccccc` | Subtle separators, input borders | *(existing — App.svelte header border, spinner)* |
+| `--border-muted` | `#cccccc` | Subtle separators, input borders | *(existing — App.svelte header border, spinner; also supersedes `#888` button border)* |
 | `--border-danger` | `#cf222e` | Error state borders | *(new — Primer palette; replaces `#ecc` in App.svelte)* |
 | `--border-warning` | `#d4a72c` | Warning state borders | *(new — Primer palette)* |
 | `--border-accent` | `#0969da` | Focus rings, active state borders | *(new — Primer palette)* |
@@ -292,7 +292,7 @@ Two variants: default (secondary) and primary.
 /* Default button */
 .btn {
   cursor: pointer;
-  padding: 0.4rem 0.75rem;
+  padding: 0.35rem 0.75rem;
   border: 1px solid var(--border-muted);
   border-radius: 6px;
   background: var(--bg-subtle);
