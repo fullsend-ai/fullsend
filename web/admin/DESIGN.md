@@ -134,6 +134,7 @@ The palette is GitHub Primer-derived. Use semantic token names, never raw hex va
 | `--border-default` | `#d0d7de` | Card borders, dividers, table borders | *(new — Primer palette; replaces `#ddd` in Home.svelte)* |
 | `--border-muted` | `#cccccc` | Subtle separators, input borders | *(existing — App.svelte header border, spinner)* |
 | `--border-danger` | `#cf222e` | Error state borders | *(new — Primer palette; replaces `#ecc` in App.svelte)* |
+| `--border-warning` | `#d4a72c` | Warning state borders | *(new — Primer palette)* |
 | `--border-accent` | `#0969da` | Focus rings, active state borders | *(new — Primer palette)* |
 
 ### Implementation status
