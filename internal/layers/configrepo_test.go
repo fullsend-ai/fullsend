@@ -48,21 +48,12 @@ func TestConfigRepoLayer_Install_CreatesRepo(t *testing.T) {
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// Verify repo was created
 	require.Len(t, client.CreatedRepos, 1)
 	assert.Equal(t, ".fullsend", client.CreatedRepos[0].Name)
 	assert.Equal(t, "test-org/.fullsend", client.CreatedRepos[0].FullName)
 
-	// Verify config.yaml was written
-	require.NotEmpty(t, client.CreatedFiles)
-	var foundConfig bool
-	for _, f := range client.CreatedFiles {
-		if f.Path == "config.yaml" && f.Repo == ".fullsend" {
-			foundConfig = true
-			break
-		}
-	}
-	assert.True(t, foundConfig, "config.yaml should have been written")
+	// config.yaml is now written by WorkflowsLayer via the scaffold sync PR.
+	assert.Empty(t, client.CreatedFiles, "config.yaml should not be written directly")
 }
 
 func TestConfigRepoLayer_Install_AlreadyExists(t *testing.T) {
@@ -76,19 +67,8 @@ func TestConfigRepoLayer_Install_AlreadyExists(t *testing.T) {
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// Verify no repo was created (already exists)
 	assert.Empty(t, client.CreatedRepos)
-
-	// Verify config.yaml was still written
-	require.NotEmpty(t, client.CreatedFiles)
-	var foundConfig bool
-	for _, f := range client.CreatedFiles {
-		if f.Path == "config.yaml" && f.Repo == ".fullsend" {
-			foundConfig = true
-			break
-		}
-	}
-	assert.True(t, foundConfig, "config.yaml should have been written even when repo exists")
+	assert.Empty(t, client.CreatedFiles, "config.yaml should not be written directly")
 }
 
 func TestConfigRepoLayer_Install_PrivateOrg(t *testing.T) {

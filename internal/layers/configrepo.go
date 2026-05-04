@@ -61,14 +61,10 @@ func (l *ConfigRepoLayer) RequiredScopes(op Operation) []string {
 	}
 }
 
-// Install creates the .fullsend config repo (if it doesn't exist) and
-// writes config.yaml into it.
-//
-// Timing note: after CreateRepo with auto_init, the default branch may not
-// be fully materialized yet. The Contents API call to write config.yaml can
-// get transient 404s. The GitHub client's retry-with-backoff in do() handles
-// this, but callers should be aware that the first file write to a newly
-// created repo may take several seconds to succeed.
+// Install creates the .fullsend config repo if it doesn't exist.
+// config.yaml is written via the scaffold sync PR (WorkflowsLayer) so that
+// all files land atomically when the PR is merged, which triggers the
+// repo-maintenance workflow for enrollment.
 func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 	exists, err := l.repoExists(ctx)
 	if err != nil {
@@ -80,8 +76,6 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 		desc := fmt.Sprintf("fullsend configuration for %s", l.org)
 		_, err := l.client.CreateRepo(ctx, l.org, forge.ConfigRepoName, desc, l.hasPrivate)
 		if err != nil {
-			// Idempotent: if the repo was created between our check and this
-			// call (race), or if we got an "already exists" error, proceed.
 			recheck, recheckErr := l.repoExists(ctx)
 			if recheckErr == nil && recheck {
 				l.ui.StepInfo(forge.ConfigRepoName + " repository already exists")
@@ -95,20 +89,6 @@ func (l *ConfigRepoLayer) Install(ctx context.Context) error {
 	} else {
 		l.ui.StepInfo(forge.ConfigRepoName + " repository already exists")
 	}
-
-	l.ui.StepStart("Writing " + configFilePath)
-	data, err := l.config.Marshal()
-	if err != nil {
-		l.ui.StepFail("Failed to marshal config")
-		return fmt.Errorf("marshaling config: %w", err)
-	}
-
-	err = l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, configFilePath, "chore: update fullsend configuration", data)
-	if err != nil {
-		l.ui.StepFail("Failed to write " + configFilePath)
-		return fmt.Errorf("writing config file: %w", err)
-	}
-	l.ui.StepDone("Wrote " + configFilePath)
 
 	return nil
 }

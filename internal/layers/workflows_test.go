@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -19,7 +20,7 @@ func newWorkflowsLayer(t *testing.T, client forge.Client) (*WorkflowsLayer, *byt
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
+	layer := NewWorkflowsLayer("test-org", client, nil, printer, "admin-user")
 	return layer, &buf
 }
 
@@ -66,6 +67,40 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/repo-maintenance.yml")
 	assert.Contains(t, paths, "CODEOWNERS")
 	assert.Contains(t, paths["CODEOWNERS"], "admin-user")
+}
+
+func TestWorkflowsLayer_Install_IncludesConfigYAML(t *testing.T) {
+	client := newFakeClientWithRepo()
+	cfg := config.NewOrgConfig(
+		[]string{"repo-a"}, []string{"repo-a"},
+		[]string{"coder"}, []config.AgentEntry{{Role: "coder", Name: "Bot", Slug: "bot"}}, "",
+	)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewWorkflowsLayer("test-org", client, cfg, printer, "admin-user")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	paths := make(map[string]string)
+	for _, f := range client.CreatedFiles {
+		paths[f.Path] = string(f.Content)
+	}
+
+	assert.Contains(t, paths, "config.yaml", "config.yaml should be included in sync files")
+	assert.Contains(t, paths["config.yaml"], "repo-a", "config.yaml should contain repo config")
+}
+
+func TestWorkflowsLayer_Install_NoConfigWhenNil(t *testing.T) {
+	client := newFakeClientWithRepo()
+	layer, _ := newWorkflowsLayer(t, client)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	for _, f := range client.CreatedFiles {
+		assert.NotEqual(t, "config.yaml", f.Path, "config.yaml should not be included when config is nil")
+	}
 }
 
 func TestWorkflowsLayer_Install_CreatesBranchAndPR(t *testing.T) {

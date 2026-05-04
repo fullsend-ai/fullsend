@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -33,13 +34,14 @@ func init() {
 	managedFiles = append(managedFiles, codeownersPath)
 }
 
-// WorkflowsLayer manages workflow files and CODEOWNERS in the .fullsend
-// config repo. It writes the reusable agent dispatch workflow, the repo
-// onboarding workflow, and a CODEOWNERS file that grants the installing
-// user ownership of all config-repo contents.
+// WorkflowsLayer manages workflow files, CODEOWNERS, and config.yaml in the
+// .fullsend config repo. All files are committed atomically to a sync branch,
+// then a PR is created. Merging the PR lands config.yaml on the default branch,
+// which triggers the repo-maintenance workflow for enrollment.
 type WorkflowsLayer struct {
 	org               string
 	client            forge.Client
+	config            *config.OrgConfig
 	ui                *ui.Printer
 	authenticatedUser string
 }
@@ -49,10 +51,13 @@ var _ Layer = (*WorkflowsLayer)(nil)
 
 // NewWorkflowsLayer creates a new WorkflowsLayer.
 // user is the authenticated user who will own CODEOWNERS entries.
-func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, user string) *WorkflowsLayer {
+// cfg is the org config to include as config.yaml in the sync PR (may be nil
+// for uninstall/analyze where no config write is needed).
+func NewWorkflowsLayer(org string, client forge.Client, cfg *config.OrgConfig, printer *ui.Printer, user string) *WorkflowsLayer {
 	return &WorkflowsLayer{
 		org:               org,
 		client:            client,
+		config:            cfg,
 		ui:                printer,
 		authenticatedUser: user,
 	}
@@ -92,6 +97,18 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 		Content: []byte(l.codeownersContent()),
 		Mode:    "100644",
 	})
+
+	if l.config != nil {
+		data, err := l.config.Marshal()
+		if err != nil {
+			return fmt.Errorf("marshaling config: %w", err)
+		}
+		files = append(files, forge.TreeFile{
+			Path:    configFilePath,
+			Content: data,
+			Mode:    "100644",
+		})
+	}
 
 	if err := l.client.CreateBranch(ctx, l.org, forge.ConfigRepoName, syncBranch); err != nil && !forge.IsAlreadyExists(err) {
 		return fmt.Errorf("creating sync branch: %w", err)
