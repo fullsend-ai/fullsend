@@ -31,13 +31,13 @@ func (c Config) maxSize() int {
 
 // Post implements the sticky comment lifecycle: find an existing comment
 // bearing the marker, collapse old content into history, and create or
-// update in-place.
-func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) error {
+// update in-place. Returns the HTML URL of the comment (empty on dry run).
+func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
-		return fmt.Errorf("comment body is empty")
+		return "", fmt.Errorf("comment body is empty")
 	}
 	if strings.TrimSpace(cfg.Marker) == "" {
-		return fmt.Errorf("marker is empty")
+		return "", fmt.Errorf("marker is empty")
 	}
 
 	botUser, err := client.GetAuthenticatedUser(ctx)
@@ -47,7 +47,7 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 
 	comments, err := client.ListIssueComments(ctx, owner, repo, number)
 	if err != nil {
-		return fmt.Errorf("listing comments: %w", err)
+		return "", fmt.Errorf("listing comments: %w", err)
 	}
 
 	existing := FindMarkedComment(comments, cfg.Marker, botUser)
@@ -61,29 +61,30 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + strconv.Itoa(existing.ID))
 			printer.StepInfo("Body length: " + strconv.Itoa(len(newBody)))
-			return nil
+			return "", nil
 		}
 
 		if err := client.UpdateIssueComment(ctx, owner, repo, existing.ID, newBody); err != nil {
-			return fmt.Errorf("updating comment: %w", err)
+			return "", fmt.Errorf("updating comment: %w", err)
 		}
 		printer.StepDone("Comment updated")
-	} else {
-		printer.StepStart("No existing comment found, creating new one")
-
-		if cfg.DryRun {
-			printer.StepInfo("Dry run — would create new comment")
-			printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
-			return nil
-		}
-
-		if _, err := client.CreateIssueComment(ctx, owner, repo, number, markedBody); err != nil {
-			return fmt.Errorf("creating comment: %w", err)
-		}
-		printer.StepDone("Comment created")
+		return existing.HTMLURL, nil
 	}
 
-	return nil
+	printer.StepStart("No existing comment found, creating new one")
+
+	if cfg.DryRun {
+		printer.StepInfo("Dry run — would create new comment")
+		printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
+		return "", nil
+	}
+
+	created, err := client.CreateIssueComment(ctx, owner, repo, number, markedBody)
+	if err != nil {
+		return "", fmt.Errorf("creating comment: %w", err)
+	}
+	printer.StepDone("Comment created")
+	return created.HTMLURL, nil
 }
 
 // FindMarkedComment returns the first comment whose body contains the

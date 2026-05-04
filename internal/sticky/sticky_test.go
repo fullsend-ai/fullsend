@@ -211,8 +211,9 @@ func TestPost_CreateNew(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->"}
-	err := Post(context.Background(), client, "o", "r", 1, "Body.", cfg, printer)
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "Body.", cfg, printer)
 	require.NoError(t, err)
+	assert.Contains(t, commentURL, "issuecomment-")
 
 	comments := client.IssueComments["o/r/1"]
 	require.Len(t, comments, 1)
@@ -224,13 +225,14 @@ func TestPost_UpdateExisting(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "bot"
 	client.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
+		"o/r/1": {{ID: 100, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-100", Body: "<!-- test -->\nOld.", Author: "bot"}},
 	}
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->"}
-	err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
 	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/o/r/issues/1#issuecomment-100", commentURL)
 
 	require.Len(t, client.UpdatedComments, 1)
 	assert.Equal(t, 100, client.UpdatedComments[0].CommentID)
@@ -244,8 +246,9 @@ func TestPost_DryRun(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->", DryRun: true}
-	err := Post(context.Background(), client, "o", "r", 1, "Body.", cfg, printer)
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "Body.", cfg, printer)
 	require.NoError(t, err)
+	assert.Empty(t, commentURL)
 
 	assert.Empty(t, client.IssueComments)
 	assert.Empty(t, client.UpdatedComments)
@@ -256,7 +259,7 @@ func TestPost_EmptyBody(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->"}
-	err := Post(context.Background(), client, "o", "r", 1, "", cfg, printer)
+	_, err := Post(context.Background(), client, "o", "r", 1, "", cfg, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
 }
@@ -266,7 +269,7 @@ func TestPost_WhitespaceBody(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->"}
-	err := Post(context.Background(), client, "o", "r", 1, "  \n\t  ", cfg, printer)
+	_, err := Post(context.Background(), client, "o", "r", 1, "  \n\t  ", cfg, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
 }
@@ -276,9 +279,26 @@ func TestPost_EmptyMarker(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: ""}
-	err := Post(context.Background(), client, "o", "r", 1, "Body.", cfg, printer)
+	_, err := Post(context.Background(), client, "o", "r", 1, "Body.", cfg, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marker")
+}
+
+func TestPost_UpdateExisting_EmptyHTMLURL(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->"}
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	require.NoError(t, err)
+	assert.Empty(t, commentURL, "should return empty URL when existing comment has no HTMLURL")
+
+	require.Len(t, client.UpdatedComments, 1)
+	assert.Contains(t, client.UpdatedComments[0].Body, "New.")
 }
 
 func TestPost_DryRunExisting(t *testing.T) {
@@ -289,8 +309,9 @@ func TestPost_DryRunExisting(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->", DryRun: true}
-	err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
 	require.NoError(t, err)
+	assert.Empty(t, commentURL)
 
 	assert.Empty(t, client.UpdatedComments)
 }

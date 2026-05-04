@@ -22,6 +22,7 @@ func newRunCmd() *cobra.Command {
 	var fullsendDir string
 	var outputBase string
 	var targetRepo string
+	var fullsendBinary string
 
 	cmd := &cobra.Command{
 		Use:   "run <agent-name>",
@@ -31,20 +32,21 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(agentName, fullsendDir, outputBase, targetRepo, printer)
+			return runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, printer)
 		},
 	}
 
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
 	cmd.Flags().StringVar(&outputBase, "output-dir", "", "base directory for run output (default: /tmp/fullsend)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "path to the target repository")
+	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
 }
 
-func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui.Printer) (runErr error) {
+func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, printer *ui.Printer) (runErr error) {
 	printer.Banner()
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -280,7 +282,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 	// 7. Bootstrap sandbox.
 	bootstrapStart := time.Now()
 	printer.StepStart("Bootstrapping sandbox")
-	if err := bootstrapSandbox(sshConfigPath, sandboxName, repoDir, h); err != nil {
+	if err := bootstrapSandbox(sshConfigPath, sandboxName, repoDir, fullsendBinary, h); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -548,7 +550,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo string, printer *ui
 	return nil
 }
 
-func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Harness) error {
+func bootstrapSandbox(sshConfigPath, sandboxName, repoDir, fullsendBinary string, h *harness.Harness) error {
 	// Create workspace structure and Claude config dir for transcripts.
 	// Agent and skill definitions go in CLAUDE_CONFIG_DIR so `claude --agent`
 	// finds them regardless of the repo's own .claude/ directory. When
@@ -562,12 +564,16 @@ func bootstrapSandbox(sshConfigPath, sandboxName, repoDir string, h *harness.Har
 	// Copy fullsend binary into sandbox so `fullsend scan context` works.
 	// The pre-agent security scan runs inside the sandbox and needs the
 	// fullsend CLI to scan context files.
-	fullsendBinary, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("finding fullsend executable: %w", err)
+	localBinary := fullsendBinary
+	if localBinary == "" {
+		var err error
+		localBinary, err = os.Executable()
+		if err != nil {
+			return fmt.Errorf("finding fullsend executable: %w", err)
+		}
 	}
 	remoteBinary := fmt.Sprintf("%s/bin/fullsend", sandbox.SandboxWorkspace)
-	if err := sandbox.SCP(sshConfigPath, sandboxName, fullsendBinary, remoteBinary); err != nil {
+	if err := sandbox.SCP(sshConfigPath, sandboxName, localBinary, remoteBinary); err != nil {
 		return fmt.Errorf("copying fullsend binary to sandbox: %w", err)
 	}
 	chmodCmd := fmt.Sprintf("chmod +x %s", remoteBinary)

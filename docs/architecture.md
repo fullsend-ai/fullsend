@@ -238,7 +238,7 @@ ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#7-test-artifac
 
 ### 8. code agent runtime
 
-Implements changes, runs local/CI-equivalent tests, handles check failures, and advances handoff to **Review** (`ready-for-review`).
+Implements changes, runs local/CI-equivalent tests, handles check failures, and opens or updates a PR. Review dispatch is triggered automatically by `pull_request_target` events.
 ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#8-implementation-agent-runtime).
 
 ### 9. PR sandbox / CI mirror

@@ -191,10 +191,7 @@ def suppress_go_build(output: str) -> str | None:
 def suppress_linter(name: str, output: str) -> str | None:
     if not output.strip():
         return f"{name}: clean"
-    lower = output.lower()
-    if "error" in lower or "fail" in lower or "warning" in lower:
-        return None
-    return f"{name}: passed"
+    return None
 
 
 def suppress_gitlint(output: str) -> str | None:

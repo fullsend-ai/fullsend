@@ -1,0 +1,159 @@
+# Dispatcher workflow that fans out to agent workflows based on stage
+name: Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Stage name (triage, code, review, fix)'
+        required: true
+        type: string
+      event_type:
+        description: 'Original GitHub event type'
+        required: true
+        type: string
+      source_repo:
+        description: 'Source repository (owner/repo)'
+        required: true
+        type: string
+      event_payload:
+        description: 'GitHub event payload as JSON'
+        required: true
+        type: string
+      trigger_source:
+        description: 'Trigger source username (for fix stage audit trail)'
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Generate token for triggering workflows
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_FULLSEND_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: .fullsend
+
+      - name: Validate inputs
+        env:
+          STAGE: ${{ inputs.stage }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+        run: |
+          set -euo pipefail
+
+          # Validate source_repo format (defense-in-depth before fan-out)
+          if [[ ! "$SOURCE_REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+            echo "::error::Invalid source_repo format: must be owner/repo"
+            exit 1
+          fi
+
+          # Validate stage name format (alphanumeric, underscore, hyphen only)
+          if [[ ! "$STAGE" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+            echo "::error::Invalid stage name: must start with lowercase letter and contain only [a-z0-9_-]"
+            exit 1
+          fi
+
+          # Validate trigger_source format if provided (GitHub username with optional [bot] suffix)
+          if [[ -n "${TRIGGER_SOURCE:-}" ]]; then
+            if [[ ! "$TRIGGER_SOURCE" =~ ^[a-zA-Z0-9_-]+(\[bot\])?$ ]]; then
+              echo "::error::Invalid trigger_source format: must be alphanumeric with optional [bot] suffix"
+              exit 1
+            fi
+          fi
+
+      - name: Find and trigger agent workflows for stage
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STAGE: ${{ inputs.stage }}
+          EVENT_TYPE: ${{ inputs.event_type }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+        run: |
+          set -euo pipefail
+
+          echo "Scanning for workflows with stage: $STAGE"
+
+          dispatched=0
+          dispatched_workflows=()
+          scanned=0
+          skipped=0
+
+          for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+            # Skip if file doesn't exist (glob expansion when no matches)
+            [[ -f "$workflow" ]] || continue
+
+            scanned=$((scanned + 1))
+            workflow_name=$(basename "$workflow")
+
+            # Never dispatch ourselves (guard against accidental stage marker)
+            if [[ "$workflow_name" == "dispatch.yml" || "$workflow_name" == "dispatch.yaml" ]]; then
+              echo "Skipped $workflow_name (self-dispatch guard)"
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            # Extract stage from comment (first line with # fullsend-stage:)
+            # Format: # fullsend-stage: <stage-name>
+            # Stage names: lowercase letter + [a-z0-9_-]*
+            # || true prevents pipefail abort when grep finds no match
+            workflow_stage=$(grep -E '^# fullsend-stage:' "$workflow" | head -1 | sed -n 's/^# fullsend-stage: *\([a-z][a-z0-9_-]*\).*/\1/p' || true)
+
+            # Skip if no stage marker
+            if [[ -z "$workflow_stage" ]]; then
+              echo "Skipped $workflow_name (no stage marker)"
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            # Skip if stage doesn't match
+            if [[ "$workflow_stage" != "$STAGE" ]]; then
+              echo "Skipped $workflow_name (stage=$workflow_stage, wanted=$STAGE)"
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            echo "Triggering $workflow_name for stage $STAGE"
+
+            # Build gh workflow run arguments
+            DISPATCH_ARGS=(
+              --repo "$GITHUB_REPOSITORY"
+              -f event_type="$EVENT_TYPE"
+              -f source_repo="$SOURCE_REPO"
+              -f event_payload="$EVENT_PAYLOAD"
+            )
+
+            # Forward trigger_source if provided (fix stage only)
+            if [[ -n "${TRIGGER_SOURCE:-}" ]] && [[ "$STAGE" == "fix" ]]; then
+              DISPATCH_ARGS+=(-f trigger_source="$TRIGGER_SOURCE")
+            fi
+
+            if ! output=$(gh workflow run "$workflow_name" "${DISPATCH_ARGS[@]}" 2>&1); then
+              echo "::error::Failed to dispatch $workflow_name: $output"
+              exit 1
+            fi
+            dispatched=$((dispatched + 1))
+            dispatched_workflows+=("$workflow_name")
+          done
+
+          echo "Scanned $scanned workflow(s), skipped $skipped, dispatched $dispatched"
+
+          if [[ $dispatched -eq 0 ]]; then
+            echo "::error::No workflows found for stage: $STAGE"
+            exit 1
+          fi
+
+          echo "Successfully dispatched $dispatched workflow(s) for stage $STAGE: ${dispatched_workflows[*]}"

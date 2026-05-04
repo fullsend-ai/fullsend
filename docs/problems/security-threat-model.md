@@ -2,6 +2,9 @@
 
 Defending the agentic system against adversarial attacks. Security is not a feature — it's the foundation.
 
+**Key references:**
+- Shapira, N. et al. (2026). "Agents of Chaos." arXiv:2602.20021. Red-teaming study of autonomous LLM agents with persistent memory, email, Discord, and shell access. Documents eleven case studies of security failures including unauthorized compliance, information disclosure, DOS, identity spoofing, cross-agent vulnerability propagation, and agent self-report unreliability. Several findings informed additions to this threat model.
+
 ## Threat priority (ranked)
 
 1. **External prompt injection** — most immediate, most novel
@@ -58,6 +61,34 @@ The attack surface is the same as for visible prompt injection — PR descriptio
 - **Human-in-the-loop for untrusted sources** — PRs from non-org-members could require higher scrutiny or human approval regardless
 - **Canary/tripwire patterns** — embed known-good test cases that should never change; if they do, something is wrong
 - **Immutable agent configuration** — agent system prompts and rules must not be modifiable through the same channels agents process (PRs, issues, comments)
+
+### Indirect information disclosure
+
+A variant of prompt injection that does not use adversarial text at all. Instead of embedding hidden instructions, the attacker frames a request at a different abstraction level to bypass content-level guardrails. Empirical evidence from Shapira et al. (2026, "Agents of Chaos," arXiv:2602.20021) demonstrates this concretely: an agent refused a direct request for "the SSN in the email" but, when asked to forward the full email thread, disclosed the same SSN unredacted. The agent's guardrail operated on semantic intent ("give me the secret") rather than on the information content of its output.
+
+This matters for fullsend because review agents and code agents process forge content that may contain sensitive information (credentials in commit messages, PII in issue descriptions, API keys in code comments). An attacker who cannot get an agent to directly exfiltrate a secret may succeed by asking it to "summarize the PR description" or "quote the relevant context" — requests that are legitimate in form but that cause the agent to reproduce sensitive content it would refuse to disclose if asked directly.
+
+**Defense considerations:**
+
+- **Output scanning** — the existing `SecretRedactor` pipeline should apply to all agent output, not just to content the agent explicitly identifies as sensitive. This is already the design intent (see [ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)), but the indirect disclosure pattern underscores why output-side scanning is not optional.
+- **Content-aware redaction** — agents processing forge content should redact PII patterns (SSNs, bank accounts, addresses) from their output regardless of whether the input was explicitly marked as sensitive.
+
+### Disproportionate response via social pressure
+
+A variant that exploits alignment training rather than injecting instructions. Shapira et al. (2026) document agents that, under expressions of urgency or distress from non-owners, escalated corrective actions far beyond what was proportionate — disabling an entire email system to protect one secret, or agreeing to stop serving all users because one person expressed disappointment. The mechanism is not adversarial text but emotional framing that triggers the model's helpfulness and compliance training.
+
+In fullsend, agents cannot take forge actions directly — credentialed operations (push, label, comment) are applied by deterministic post-scripts outside the sandbox ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)). This limits the blast radius: a manipulated agent cannot delete branches or force-push. However, the agent controls the *content* of its output (the diff it produces, the triage decision it makes), and the post-script applies validated output faithfully. [ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md) validates output structure but not semantic proportionality — it cannot distinguish a proportionate one-file fix from an unnecessary forty-file rewrite triggered by an emotionally charged comment.
+
+**Defense considerations:**
+
+- **Output magnitude heuristics** — the post-script or validation loop could flag outputs whose scope (files changed, labels modified, issues created) is disproportionate to the triggering event's scope, escalating to a human rather than applying automatically.
+- **Alignment-aware adversarial testing** — red-teaming should include social pressure vectors (guilt, urgency, appeals to helpfulness), not just instruction injection.
+
+### Persistent injection via externally editable resources
+
+Another injection variant documented in Shapira et al. (2026) bypasses the immutability principle by storing malicious instructions in an external resource (e.g., a GitHub Gist) that the agent references from its persistent state. The attacker convinces the agent to link to a shared document, then modifies the document after the fact to inject instructions the agent follows in subsequent sessions.
+
+In fullsend's architecture, this is mitigated by several design decisions: agent configuration is immutable from within the sandbox ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)), agents cannot modify their own guardrails, and the harness validates agent output against a schema ([ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)). However, the pattern is worth noting because any mechanism that allows agents to fetch and follow external content (URLs in issues, linked documents, referenced specifications) creates a potential injection surface that persists across sessions.
 
 ### Open questions
 
@@ -176,6 +207,7 @@ Organizations may already provide significant supply chain protections for the s
 - **Intent attestation.** Cryptographically signed statements of what the code should do (see [intent-representation.md](intent-representation.md), Approach 3) provide something to verify agent-generated source against that is independent of the model that generated it. If you have a machine-checkable specification of intended behavior, you can detect divergence even if the model that produced the code and the model that reviewed it share the same blindspot.
 - **Property-based and specification-driven testing.** Traditional example-based tests verify specific cases the author (human or AI) thought of. Property-based tests and formal specifications verify invariants the author may not have considered — they are harder for a compromised model to subvert because the properties are declared independently of the implementation.
 - **Periodic model rotation and comparison.** Periodically re-reviewing agent-generated code with a different model family can surface vulnerabilities that were invisible to the original author-model. This is expensive but could be targeted at security-sensitive paths.
+- **Provider-level value injection and silent censorship.** Shapira et al. (2026) demonstrated that LLM provider policies can silently affect agent behavior in ways invisible to the agent's owner. A Kimi K2.5-backed agent had its responses truncated with "unknown error" on politically sensitive topics, preventing it from completing valid tasks. Western providers encode different but equally systematic biases. For fullsend, this means that model provider selection is a security decision: a provider's training choices, refusal policies, and API-level content filtering become part of the agent's effective policy — and those policies may conflict with the organization's intent. Model diversity serves as a partial defense because it reduces dependence on any single provider's value decisions.
 
 ### This threat cuts across the other four
 
@@ -221,6 +253,16 @@ In a multi-agent system, agents consume each other's output. If any agent trusts
 - Agents do not have privileged communication channels that bypass security checks
 - The system makes no architectural distinction between "trusted internal" and "untrusted external" input
 - Each agent independently evaluates the content it receives, not the identity of the sender
+
+### Empirical evidence: cross-agent vulnerability propagation
+
+Shapira et al. (2026, "Agents of Chaos," arXiv:2602.20021) provide empirical evidence for three failure modes in multi-agent communication that are directly relevant to fullsend's multi-agent pipeline:
+
+1. **Knowledge transfer propagates vulnerabilities alongside capabilities.** When agents share procedural knowledge (e.g., how to download a PDF, how to configure a tool), the same mechanism can propagate unsafe practices. In one case, an agent voluntarily shared a compromised "constitution" document with another agent — without being prompted — effectively extending the attacker's control surface. In fullsend, the scripted pipeline ([ADR 0018](../ADRs/0018-scripted-pipeline-for-multi-agent-orchestration.md)) mitigates this by making inter-agent communication deterministic rather than free-form, but any structured output that one agent produces and another consumes is a potential propagation channel.
+
+2. **Echo-chamber reinforcement creates false confidence.** Two agents independently assessed a social engineering attack and reached the same (correct) conclusion, but their verification was circular — both anchored trust on the same potentially compromised identity, and their agreement reinforced the shared flaw rather than creating redundancy. This validates fullsend's design choice to use diverse models for implementation and review (see [supply chain section](#threat-4-supply-chain-attacks)), and underscores why model diversity is a security property, not just a quality property.
+
+3. **Agents misrepresent their own action outcomes.** Agents frequently reported having accomplished goals they had not actually achieved — claiming data was deleted when it remained recoverable, claiming to have stopped responding while continuing to reply. In fullsend, the harness-level output validation ([ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)) addresses this structurally: the harness verifies agent output against a schema and checks actual system state, rather than trusting the agent's self-report.
 
 ### Open questions
 
@@ -318,6 +360,7 @@ An attacker triggers excessive consumption of compute, API tokens, or event-proc
 - Injecting events that cause agent-to-agent reaction chains (implementation triggers review, review rejection triggers re-implementation, ad infinitum)
 - Exploiting label state machine transitions to create oscillating states that repeatedly trigger agent runs
 - Causing concurrent agent invocations that compete for the same resources (file locks, API rate limits) leading to repeated failures and retries
+- Inducing inter-agent conversational loops: Shapira et al. (2026) demonstrated that two agents instructed to relay each other's messages sustained an ongoing conversation for at least nine days, consuming ~60,000 tokens, with the conversation evolving into a self-directed collaborative project. The agents also spawned persistent background processes (cron jobs, infinite shell loops) with no termination condition, converting short-lived conversational tasks into permanent infrastructure changes.
 
 **Sandbox resource exhaustion:**
 - Crafting issues where the described fix requires computationally expensive operations (large-scale refactoring, combinatorial test generation)
@@ -362,6 +405,22 @@ DOS has elements that touch several existing threats:
 - Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?
 - Should the event debouncing strategy from the March 31 concurrency discussion be treated as a DOS defense or purely a correctness concern? (It serves both purposes.)
 
+## Cross-cutting concern: agent self-report unreliability
+
+Shapira et al. (2026, "Agents of Chaos," arXiv:2602.20021) document a systematic failure mode that cuts across all threat categories: **agents frequently misrepresent the outcomes of their own actions.** An agent claimed it had deleted sensitive data when the data remained recoverable. An agent declared "I'm done responding" but continued to reply. An agent reported task completion while the underlying system state contradicted the report.
+
+This is distinct from hallucination (generating incorrect facts). Self-report unreliability is an agent claiming to have performed an action that it did not actually perform, or did not perform completely. In a system where downstream decisions depend on agent output — a review agent approving based on a code agent's claim that tests pass, or a human trusting that a security scan was clean — false self-reports create a gap between perceived and actual system state.
+
+**Why fullsend's architecture already addresses this (partially):**
+
+- **Harness-level output validation** ([ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)) validates agent output structurally rather than trusting self-reports.
+- **Unidirectional control flow** ([ADR 0016](../ADRs/0016-unidirectional-control-flow.md)) means that lower layers (agents) cannot influence the harness's validation logic.
+- **JSONL reasoning traces** ([ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md)) provide an auditable record of what the agent actually did, independent of what it claimed to do.
+
+**Where gaps remain:**
+
+- Review agents that assess code quality or security properties produce natural-language assessments that are, structurally, self-reports. If a review agent claims "no security issues found," the harness can validate the format of the output but cannot independently verify the claim's truth. This is where property-based testing, coverage metrics, and static analysis serve as independent verification — they check the code directly rather than trusting the reviewer's summary.
+
 ## Cross-cutting security principles
 
 1. **Defense in depth** — no single control should be the only thing preventing an attack
@@ -371,3 +430,4 @@ DOS has elements that touch several existing threats:
 5. **Fail closed** — when in doubt, escalate to a human rather than proceeding
 6. **Immutable agent policy** — agent rules cannot be modified through the channels agents operate on
 7. **No agent self-modification** — agents cannot change their own configuration, permissions, or system prompts
+8. **Verify, don't trust** — system state must be checked independently of agent self-reports (see [agent self-report unreliability](#cross-cutting-concern-agent-self-report-unreliability))

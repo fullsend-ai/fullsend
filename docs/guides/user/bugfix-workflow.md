@@ -13,9 +13,9 @@ When someone files a bug, fullsend's agent pipeline processes it through three s
 Each stage is triggered by labels and can be restarted with slash commands. The pipeline uses GitHub's native primitives (issues, PRs, labels, branch protection) as its coordination layer — there is no central orchestrator. See [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) for the full design.
 
 ```
-Issue filed → Triage → ready-to-code → Code Agent → ready-for-review → Review → ready-for-merge → Merge
-                │                          ↑                              │
-                │                          └── changes requested (planned) ┘
+Issue filed → Triage → ready-to-code → Code Agent → PR opened → Review → ready-for-merge → Merge
+                │                          ↑                                │
+                │                          └── changes requested (planned) ─┘
                 ├── duplicate → closed
                 ├── not-ready → waiting for info
                 └── not-reproducible → human intervention
@@ -27,11 +27,12 @@ Issue filed → Triage → ready-to-code → Code Agent → ready-for-review →
 
 ### Writing good bug reports
 
-The triage agent reads **only** the issue title, body, and GitHub-native attachments. It does not read comments. This means:
+The triage agent reads the issue title, body, comments, and GitHub-native attachments. This means:
 
-- Put all relevant information in the issue body — expected behavior, actual behavior, steps to reproduce, version/environment.
+- Put key information in the issue body — expected behavior, actual behavior, steps to reproduce, version/environment.
 - Use GitHub's native file attachments for logs, screenshots, or reproduction scripts.
-- If you need to update the report, **edit the issue body**, don't add a comment. Edits to the title or body trigger triage automatically.
+- You can add details via comments — the triage agent reads those too. Other users can also comment with additional context (e.g., confirming the bug on a different platform).
+- Editing the issue title or body triggers triage automatically. You can also use `/triage` to force a fresh run.
 
 ### Labels are the state machine
 
@@ -40,10 +41,10 @@ These labels track where an issue is in the pipeline:
 | Label | Meaning | What happens next |
 |-------|---------|-------------------|
 | `duplicate` | Same issue already tracked elsewhere | Issue closed, link to canonical issue |
-| `not-ready` | Missing information | Triage comment explains what's needed; edit the issue body to fix |
+| `not-ready` | Missing information | Triage comment explains what's needed; add a comment or edit the issue body to fix |
 | `not-reproducible` | Bug couldn't be reproduced in the sandbox | Human intervention required; triage comment documents what was tried |
 | `ready-to-code` | Triage passed | Code agent picks it up |
-| `ready-for-review` | PR with passing CI ready for review | Review agents evaluate the PR |
+| `ready-for-review` | PR ready for review (manual trigger) | Review agents evaluate the PR |
 | `ready-for-merge` | All reviewers unanimously approved | PR can be merged per governance policy |
 | `requires-manual-review` | Reviewers disagreed or flagged security concerns | Human must decide |
 
@@ -67,7 +68,7 @@ When the code agent opens a PR:
 - The PR description summarizes what was changed and why.
 - The code agent has already run the test suite in its sandbox and iterated until tests pass.
 - After pushing, GitHub's required checks run. If checks fail, the code agent fetches logs, fixes the issue, and pushes again (up to a configurable retry cap).
-- Once checks are green, the PR is labeled `ready-for-review` and the review agents take over.
+- Once checks are green, the review agents take over automatically (triggered by the PR creation or push event).
 
 ### Reviewing agent output
 
@@ -103,7 +104,7 @@ The triage agent:
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
 
-**If triage gets it wrong:** Edit the issue body with better information and triage re-runs automatically. Or use `/triage` to force a fresh run — this clears all previous labels and starts from scratch.
+**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/triage` to force a fresh run — this clears all previous labels and starts from scratch.
 
 ### Stage 2: Code
 
@@ -116,11 +117,11 @@ The code agent:
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
 5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a configurable cap, default defined in `config.yaml` as `defaults.max_implementation_retries`).
-6. **Hands off to review.** Labels `ready-for-review`.
+6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
 
 ### Stage 3: Review
 
-**Triggered by:** `ready-for-review` label, `/review` command, or push to the PR branch.
+**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/review` command, or `ready-for-review` label.
 
 The review swarm:
 
@@ -140,7 +141,7 @@ Once the PR is merged (by human, merge queue, or automation per org governance),
 
 ### Stopping automation
 
-- Remove the triggering label. Without `ready-to-code` or `ready-for-review`, the next stage won't fire.
+- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request_target`), so closing the PR is the way to stop review dispatch.
 - Close the issue. Agents don't act on closed issues (except `/triage` which explicitly reopens).
 
 ### Restarting a stage

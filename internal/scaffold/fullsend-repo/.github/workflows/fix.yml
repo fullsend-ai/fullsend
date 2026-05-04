@@ -1,3 +1,4 @@
+# fullsend-stage: fix
 name: Fix
 
 on:
@@ -15,7 +16,7 @@ on:
       trigger_source:
         required: true
         type: string
-        description: '"bot" (review agent) or "human" (/fix command)'
+        description: 'GitHub username that triggered the fix; bot accounts end with [bot]'
       pr_number:
         required: false
         type: string
@@ -169,7 +170,7 @@ jobs:
           # binary rejects empty runner_env values). The agent checks
           # TRIGGER_SOURCE before reading this value.
           INSTRUCTION="none"
-          if [[ "${TRIGGER_SOURCE}" == "human" ]]; then
+          if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
             if [[ -n "${COMMENT_BODY}" ]]; then
               # Strip the /fix prefix to get the instruction.
@@ -254,7 +255,7 @@ jobs:
             echo "::error::Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
             exit 1
           fi
-          if [[ "${TRIGGER_SOURCE}" == "bot" && "${BYTE_COUNT}" -le 1 ]]; then
+          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ && "${BYTE_COUNT}" -le 1 ]]; then
             echo "::error::Bot-triggered run but review body is empty — nothing to fix"
             exit 1
           fi
@@ -269,6 +270,9 @@ jobs:
           HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
         run: bash scripts/pre-fix.sh
 
+      - name: Pre-mask GCP credential file path
+        run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"
+
       - name: Authenticate to Google Cloud (WIF)
         if: vars.FULLSEND_GCP_AUTH_MODE == 'wif'
         uses: google-github-actions/auth@v3
@@ -281,6 +285,15 @@ jobs:
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
+
+      # GCP_OIDC_TOKEN_FILE is expected by google-github-actions/auth when using
+      # WIF. For non-WIF (SA key), we set it to an empty file to avoid undefined
+      # variable errors in downstream steps that may reference it.
+      - name: Set GCP_OIDC_TOKEN_FILE for non-WIF
+        if: vars.FULLSEND_GCP_AUTH_MODE != 'wif'
+        run: |
+          touch "$RUNNER_TEMP/empty-oidc-token"
+          echo "GCP_OIDC_TOKEN_FILE=$RUNNER_TEMP/empty-oidc-token" >> "${GITHUB_ENV}"
 
       - name: Mask GCP credential file paths
         run: |

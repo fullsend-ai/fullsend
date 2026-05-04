@@ -21,7 +21,7 @@
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
 #   REPO_DIR          — path to extracted repo (default: current directory)
-#   TRIGGER_SOURCE    — "bot" or "human"
+#   TRIGGER_SOURCE    — GitHub username that triggered the fix (usernames ending in [bot] are bot triggers)
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
@@ -32,6 +32,13 @@
 #   0  — branch pushed, PR updated
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Helper: Bot user detection
+# ---------------------------------------------------------------------------
+is_bot_user() {
+  [[ "${1:-}" =~ \[bot\]$ ]]
+}
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -249,7 +256,7 @@ WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 # The needs-human label is based on the bot cap — it signals that the
 # autonomous review→fix loop needs human direction. Human-triggered /fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
-if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && [ "${TRIGGER_SOURCE:-bot}" != "human" ]; then
+if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
   echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
   gh label create "needs-human" --repo "${REPO_FULL_NAME}" \
     --description "Agent loop needs human intervention" --color "D93F0B" \
@@ -267,8 +274,8 @@ echo "  Branch: ${BRANCH:-none}"
 echo "  PR: #${PR_NUMBER}"
 if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
-if [ "${TRIGGER_SOURCE:-bot}" = "human" ]; then
-  echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"
-else
+if is_bot_user "${TRIGGER_SOURCE}"; then
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
+else
+  echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"
 fi

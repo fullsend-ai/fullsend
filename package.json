@@ -1,0 +1,38 @@
+{
+  "name": "fullsend-web",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n worker,vite -c blue,green \"npm run dev:worker\" \"vite\"",
+    "dev:worker": "cross-env CLOUDFLARE_INCLUDE_PROCESS_ENV=true wrangler dev --config cloudflare_site/wrangler.toml --port 8787 --ip 127.0.0.1",
+    "dev:debug": "concurrently -k -n worker,vite -c blue,green \"cross-env CLOUDFLARE_INCLUDE_PROCESS_ENV=true wrangler dev --config cloudflare_site/wrangler.toml --port 8787 --ip 127.0.0.1 --log-level debug --var DEBUG_LOG:1\" \"cross-env ADMIN_DEBUG_PROXY=1 vite -d --clearScreen false\"",
+    "dev:vite": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run --config vite.config.ts && vitest run --config cloudflare_site/worker/vitest.config.mts",
+    "check": "svelte-check --tsconfig web/admin/tsconfig.json"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.14.7",
+    "@cloudflare/workers-types": "^4.20250420.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tsconfig/svelte": "^5.0.0",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "jsdom": "^25.0.0",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.0.0",
+    "toml-eslint-parser": "^1.0.3",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.4",
+    "wrangler": "^4.36.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.1.1",
+    "svelte-spa-router": "^4.0.1"
+  }
+}

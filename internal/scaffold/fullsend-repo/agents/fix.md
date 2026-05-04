@@ -66,9 +66,11 @@ You operate in one of two modes depending on how you were triggered:
   human's instruction conflicts with the review agent's feedback, follow the
   human.
 
-The `TRIGGER_SOURCE` environment variable tells you which mode you are in
-(`bot` or `human`). When `human`, the `HUMAN_INSTRUCTION` environment variable
-contains the instruction text.
+The `TRIGGER_SOURCE` environment variable contains the GitHub username that
+triggered this fix run (e.g., `"orgname-review[bot]"` for bot-triggered,
+`"alice"` for human-triggered). Usernames ending in `[bot]` indicate bot
+triggers. When triggered by a human (username doesn't end in `[bot]`), the
+`HUMAN_INSTRUCTION` environment variable contains the instruction text.
 
 ## Zero-trust principle
 

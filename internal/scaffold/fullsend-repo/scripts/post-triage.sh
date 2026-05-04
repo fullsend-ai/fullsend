@@ -113,8 +113,18 @@ case "${ACTION}" in
     echo "Posting triage summary..."
     printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
 
-    echo "Applying label..."
-    add_label "ready-to-code"
+    # Only bugs get the ready-to-code label (which triggers the code agent).
+    # Non-bug sufficient results (enhancement, performance, documentation, etc.)
+    # receive the triaged label instead and wait for human prioritization.
+    CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
+    echo "Category: ${CATEGORY}"
+    if [[ "${CATEGORY}" == "bug" ]]; then
+      echo "Applying ready-to-code label (bug)..."
+      add_label "ready-to-code"
+    else
+      echo "Applying triaged label (non-bug: ${CATEGORY})..."
+      add_label "triaged"
+    fi
     ;;
 
   feature-request)

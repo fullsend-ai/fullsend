@@ -14,9 +14,11 @@ import (
 
 func TestFullsendRepoFilesExist(t *testing.T) {
 	expected := []string{
+		".github/workflows/dispatch.yml",
 		".github/workflows/triage.yml",
 		".github/workflows/code.yml",
 		".github/workflows/review.yml",
+		".github/workflows/fix.yml",
 		".github/workflows/repo-maintenance.yml",
 		".github/actions/fullsend/action.yml",
 		".github/scripts/setup-agent-env.sh",
@@ -56,8 +58,54 @@ func TestShimTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "dispatch-triage")
 	assert.Contains(t, s, "dispatch-code")
 	assert.Contains(t, s, "dispatch-review")
+	assert.Contains(t, s, "dispatch-fix")
 	assert.Contains(t, s, "permissions:")
 	assert.Contains(t, s, "contents: read")
+	assert.Contains(t, s, "FULLSEND_DISPATCH_TOKEN")
+	assert.Contains(t, s, "gh workflow run dispatch.yml")
+	assert.Contains(t, s, "stage=triage")
+	assert.Contains(t, s, "stage=code")
+	assert.Contains(t, s, "stage=review")
+	assert.Contains(t, s, "stage=fix")
+}
+
+func TestDispatchWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/dispatch.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "stage:")
+	assert.Contains(t, s, "event_type:")
+	assert.Contains(t, s, "source_repo:")
+	assert.Contains(t, s, "event_payload:")
+	assert.Contains(t, s, "# fullsend-stage:")
+	assert.Contains(t, s, "gh workflow run")
+	assert.Contains(t, s, "FULLSEND_FULLSEND_CLIENT_ID")
+	assert.Contains(t, s, "FULLSEND_FULLSEND_APP_PRIVATE_KEY")
+	assert.Contains(t, s, "permissions:")
+	assert.Contains(t, s, "actions: write")
+	assert.Contains(t, s, "contents: read")
+	assert.Contains(t, s, "set -euo pipefail")
+	assert.Contains(t, s, "dispatched=0")
+	assert.Contains(t, s, "No workflows found for stage")
+	assert.Contains(t, s, "|| true")
+	assert.Contains(t, s, "permissions: {}")
+	assert.Contains(t, s, "Validate inputs")
+	assert.Contains(t, s, "Invalid source_repo format")
+	assert.Contains(t, s, "Invalid stage name")
+	// Verify the sed pattern restricts stage names to [a-z][a-z0-9_-]*
+	assert.Contains(t, s, `\([a-z][a-z0-9_-]*\)`)
+	// Verify stage name validation uses the same pattern
+	assert.Contains(t, s, `^[a-z][a-z0-9_-]*$`)
+	// Verify trigger_source optional input
+	assert.Contains(t, s, "trigger_source:")
+	assert.Contains(t, s, "required: false")
+	// Verify self-dispatch guard
+	assert.Contains(t, s, "dispatch.yml")
+	assert.Contains(t, s, "self-dispatch guard")
+	// Verify workflow scanning log
+	assert.Contains(t, s, "Scanned")
+	assert.Contains(t, s, "skipped")
 }
 
 func TestShimDispatchCodeExcludesPRContext(t *testing.T) {
@@ -89,19 +137,24 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 28, "expected at least 28 files, got %d", len(paths))
+	assert.True(t, len(paths) >= 29, "expected at least 29 files, got %d", len(paths))
 }
 
 func TestTriageWorkflowContent(t *testing.T) {
 	content, err := FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
 	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: triage")
 	assert.Contains(t, s, "workflow_dispatch")
 	assert.Contains(t, s, "event_type")
 	assert.Contains(t, s, "source_repo")
 	assert.Contains(t, s, "event_payload")
 	assert.Contains(t, s, "setup-agent-env.sh")
 	assert.Contains(t, s, "fullsend")
+	// Verify concurrency group prevents overlapping runs for same issue
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-triage-")
+	assert.Contains(t, s, "cancel-in-progress: true")
 }
 
 func TestCompositeActionContent(t *testing.T) {
@@ -133,6 +186,48 @@ func TestCodeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "sandbox-token")
 	assert.Contains(t, s, "push-token")
 	assert.Contains(t, s, "permission-contents: read")
+	// Verify concurrency group prevents overlapping runs for same issue
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-code-")
+	assert.Contains(t, s, "cancel-in-progress: true")
+}
+
+func TestReviewWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/review.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: review")
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "event_type")
+	assert.Contains(t, s, "source_repo")
+	assert.Contains(t, s, "event_payload")
+	assert.Contains(t, s, "FULLSEND_REVIEW_CLIENT_ID")
+	assert.Contains(t, s, "sandbox-token")
+	assert.Contains(t, s, "review-token")
+	// Verify concurrency group prevents overlapping runs
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-review-")
+	assert.Contains(t, s, "cancel-in-progress: true")
+}
+
+func TestFixWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/fix.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: fix")
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "event_type")
+	assert.Contains(t, s, "source_repo")
+	assert.Contains(t, s, "event_payload")
+	assert.Contains(t, s, "trigger_source")
+	assert.Contains(t, s, "FULLSEND_CODER_CLIENT_ID")
+	assert.Contains(t, s, "sandbox-token")
+	assert.Contains(t, s, "push-token")
+	assert.Contains(t, s, "RUNNER_TEMP/empty-oidc-token")
+	// Verify concurrency group prevents overlapping runs
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-fix-")
+	assert.Contains(t, s, "cancel-in-progress: true")
 }
 
 func TestCodeHarnessContent(t *testing.T) {

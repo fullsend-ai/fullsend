@@ -161,19 +161,12 @@ git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
-PR_LABEL="ready-for-review"
-gh label create "${PR_LABEL}" --repo "${REPO_FULL_NAME}" \
-  --description "Agent PR ready for human review" --color "0E8A16" \
-  --force 2>/dev/null || true
-
 EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
   --json number --jq '.[0].number' 2>/dev/null || true)"
 
 if [ -n "${EXISTING_PR_NUM}" ]; then
   EXISTING_PR_URL="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
     --json url --jq '.[0].url' 2>/dev/null || true)"
-  gh pr edit "${EXISTING_PR_NUM}" --repo "${REPO_FULL_NAME}" \
-    --add-label "${PR_LABEL}" 2>/dev/null || true
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
@@ -237,7 +230,7 @@ PR_URL="$(gh pr create \
   --base "${TARGET_BRANCH}" \
   --title "${PR_TITLE}" \
   --body "${PR_BODY}" \
-  --label "${PR_LABEL}" 2>&1)"
+  2>&1)"
 
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"

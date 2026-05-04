@@ -293,9 +293,10 @@ func (s *Setup) checkPermissions(inst *forge.Installation, org, role string) {
 		return
 	}
 	s.ui.StepWarn(fmt.Sprintf("app %s missing permissions: %s", inst.AppSlug, strings.Join(missing, ", ")))
+	permURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/permissions", org, inst.AppSlug)
 	s.permErrors = append(s.permErrors, fmt.Sprintf(
-		"%s — update at https://github.com/organizations/%s/settings/apps/%s/permissions",
-		inst.AppSlug, org, inst.AppSlug,
+		"%s — update at %s",
+		inst.AppSlug, permURL,
 	))
 }
 

@@ -1061,3 +1061,138 @@ func TestListOrgRepos_Pagination(t *testing.T) {
 	assert.Len(t, repos, 101)
 	assert.Equal(t, 2, page) // Should have made exactly 2 requests
 }
+
+func TestCreateOrUpdateFile_RetriesOn504(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch {
+		case callNum == 1:
+			// First GET for existing file — return 404 (file doesn't exist)
+			assert.Equal(t, "GET", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		case callNum == 2:
+			// First PUT — return 504 Gateway Timeout
+			assert.Equal(t, "PUT", r.Method)
+			w.WriteHeader(http.StatusGatewayTimeout)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Gateway Timeout"})
+		case callNum == 3:
+			// Retry: GET for existing file — return 404
+			assert.Equal(t, "GET", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		case callNum == 4:
+			// Retry: PUT — succeeds
+			assert.Equal(t, "PUT", r.Method)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected call %d", callNum)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add file", []byte("content"))
+	require.NoError(t, err)
+	assert.Equal(t, 4, callNum, "expected exactly 4 calls (GET+PUT fail, GET+PUT succeed)")
+}
+
+func TestCreateOrUpdateFile_RetriesOnAll5xxCodes(t *testing.T) {
+	for _, statusCode := range []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			callNum := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				callNum++
+				switch {
+				case callNum == 1:
+					// GET existing file — 404
+					w.WriteHeader(http.StatusNotFound)
+					json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+				case callNum == 2:
+					// PUT — return 5xx
+					w.WriteHeader(statusCode)
+					json.NewEncoder(w).Encode(map[string]any{"message": http.StatusText(statusCode)})
+				case callNum == 3:
+					// Retry GET — 404
+					w.WriteHeader(http.StatusNotFound)
+					json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+				case callNum == 4:
+					// Retry PUT — succeeds
+					w.WriteHeader(http.StatusCreated)
+					json.NewEncoder(w).Encode(map[string]any{})
+				}
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add", []byte("data"))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, callNum, 4, "should have retried after %d", statusCode)
+		})
+	}
+}
+
+func TestCreateOrUpdateFile_NoRetryOnNonTransient(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch {
+		case callNum == 1:
+			// GET existing file — 404
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		case callNum == 2:
+			// PUT — return 400 Bad Request (not retryable)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Bad Request"})
+		default:
+			t.Errorf("unexpected call %d — should not have retried", callNum)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add", []byte("data"))
+	require.Error(t, err)
+	assert.Equal(t, 2, callNum, "should not retry on 400")
+}
+
+func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		if r.Method == "GET" {
+			// Always return 404 for the GET (file doesn't exist)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+			return
+		}
+		// PUT always returns 504
+		w.WriteHeader(http.StatusGatewayTimeout)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Gateway Timeout"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add", []byte("data"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after 5 attempts")
+}
+
+func TestIsTransientStatus(t *testing.T) {
+	transient := []int{404, 409, 422, 502, 503, 504}
+	for _, code := range transient {
+		assert.True(t, isTransientStatus(code), "expected %d to be transient", code)
+	}
+
+	nonTransient := []int{200, 201, 400, 401, 403, 500}
+	for _, code := range nonTransient {
+		assert.False(t, isTransientStatus(code), "expected %d to not be transient", code)
+	}
+}

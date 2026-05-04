@@ -69,6 +69,7 @@ type Issue struct {
 type IssueComment struct {
 	ID        int
 	NodeID    string
+	HTMLURL   string
 	Body      string
 	Author    string
 	CreatedAt string

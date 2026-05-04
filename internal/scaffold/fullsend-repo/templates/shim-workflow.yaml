@@ -1,8 +1,12 @@
 # fullsend shim workflow
-# Routes events to per-role agent dispatch workflows in .fullsend.
+# Routes events to agent workflows in .fullsend via the dispatch.yml workflow.
+#
+# Credentials: uses secrets.FULLSEND_DISPATCH_TOKEN to trigger dispatch.yml
+# in owner/.fullsend via workflow_dispatch. The dispatcher (running in .fullsend)
+# generates its own GitHub App tokens and scans for agent workflows to trigger.
 #
 # Security: pull_request_target runs the BASE branch version of this workflow,
-# preventing PRs from modifying it to exfiltrate the dispatch token.
+# preventing PRs from modifying it to exfiltrate credentials.
 # This shim never checks out PR code, so it is not vulnerable to "pwn request"
 # attacks (see: Trivy CVE-2026-33634, hackerbot-claw campaign).
 #
@@ -59,7 +63,7 @@ jobs:
             --arg iu "${ISSUE_HTML_URL:-}" \
             '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end)}}')
           echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch triage
+      - name: Dispatch triage stage
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
@@ -67,11 +71,12 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run triage.yml \
+          gh workflow run dispatch.yml \
             --repo "$DISPATCH_REPO" \
-            --field event_type="$EVENT_TYPE" \
-            --field source_repo="$SOURCE_REPO" \
-            --field event_payload="$EVENT_PAYLOAD"
+            -f stage=triage \
+            -f event_type="$EVENT_TYPE" \
+            -f source_repo="$SOURCE_REPO" \
+            -f event_payload="$EVENT_PAYLOAD"
 
   dispatch-code:
     runs-on: ubuntu-latest
@@ -97,7 +102,7 @@ jobs:
             --arg iu "${ISSUE_HTML_URL:-}" \
             '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end)}}')
           echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch code
+      - name: Dispatch code stage
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
@@ -105,11 +110,12 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run code.yml \
+          gh workflow run dispatch.yml \
             --repo "$DISPATCH_REPO" \
-            --field event_type="$EVENT_TYPE" \
-            --field source_repo="$SOURCE_REPO" \
-            --field event_payload="$EVENT_PAYLOAD"
+            -f stage=code \
+            -f event_type="$EVENT_TYPE" \
+            -f source_repo="$SOURCE_REPO" \
+            -f event_payload="$EVENT_PAYLOAD"
 
   dispatch-review:
     runs-on: ubuntu-latest
@@ -143,7 +149,7 @@ jobs:
             '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end)},
               pull_request: {number: (if $pn != "" then ($pn | tonumber) else null end), html_url: (if $pu != "" then $pu else null end)}}')
           echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch review
+      - name: Dispatch review stage
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
@@ -151,11 +157,12 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
         run: |
-          gh workflow run review.yml \
+          gh workflow run dispatch.yml \
             --repo "$DISPATCH_REPO" \
-            --field event_type="$EVENT_TYPE" \
-            --field source_repo="$SOURCE_REPO" \
-            --field event_payload="$EVENT_PAYLOAD"
+            -f stage=review \
+            -f event_type="$EVENT_TYPE" \
+            -f source_repo="$SOURCE_REPO" \
+            -f event_payload="$EVENT_PAYLOAD"
 
   dispatch-fix-bot:
     runs-on: ubuntu-latest
@@ -186,20 +193,22 @@ jobs:
             --arg brepo "${BASE_REPO}" \
             '{pull_request: {number: ($pn | tonumber), head: {ref: $hr, repo: {full_name: $hrepo}}, base: {ref: $br, repo: {full_name: $brepo}}}}')
           echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch fix (bot-triggered)
+      - name: Dispatch fix stage (bot-triggered)
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
           EVENT_TYPE: ${{ github.event_name }}
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+          TRIGGER_USER: ${{ github.event.review.user.login }}
         run: |
-          gh workflow run fix.yml \
+          gh workflow run dispatch.yml \
             --repo "$DISPATCH_REPO" \
-            --field event_type="$EVENT_TYPE" \
-            --field source_repo="$SOURCE_REPO" \
-            --field event_payload="$EVENT_PAYLOAD" \
-            --field trigger_source="bot"
+            -f stage=fix \
+            -f event_type="$EVENT_TYPE" \
+            -f source_repo="$SOURCE_REPO" \
+            -f event_payload="$EVENT_PAYLOAD" \
+            -f trigger_source="$TRIGGER_USER"
 
   dispatch-fix-human:
     runs-on: ubuntu-latest
@@ -243,17 +252,19 @@ jobs:
             --arg cb "${COMMENT_BODY:-}" \
             '{issue: {number: ($in | tonumber)}, comment: {body: $cb}}')
           echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch fix (human-triggered)
+      - name: Dispatch fix stage (human-triggered)
         env:
           GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
           EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
           EVENT_TYPE: ${{ github.event_name }}
           SOURCE_REPO: ${{ github.repository }}
           DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+          TRIGGER_USER: ${{ github.event.comment.user.login }}
         run: |
-          gh workflow run fix.yml \
+          gh workflow run dispatch.yml \
             --repo "$DISPATCH_REPO" \
-            --field event_type="$EVENT_TYPE" \
-            --field source_repo="$SOURCE_REPO" \
-            --field event_payload="$EVENT_PAYLOAD" \
-            --field trigger_source="human"
+            -f stage=fix \
+            -f event_type="$EVENT_TYPE" \
+            -f source_repo="$SOURCE_REPO" \
+            -f event_payload="$EVENT_PAYLOAD" \
+            -f trigger_source="$TRIGGER_USER"

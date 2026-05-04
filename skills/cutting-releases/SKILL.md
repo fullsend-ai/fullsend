@@ -60,8 +60,9 @@ Use `AskUserQuestion` to ask:
 > Any special title for this release? (e.g. "MVP Release Candidate 1")
 > Leave blank to use just the version tag.
 
-The answer becomes the tag subject line. If blank, the tag message is just the
-version number.
+The answer becomes the tag subject line. If blank, do **not** use the version
+as the subject — leave the subject empty so that GoReleaser's `name_template`
+renders just the tag without duplication.
 
 ### 5. Gather changes since last tag
 
@@ -77,7 +78,10 @@ these from the changelog anyway.
 
 Build the tag message:
 
-- **Line 1 (subject):** The tag subject from step 4, or just the version.
+- **Line 1 (subject):** The custom title from step 4, if one was given.
+  If no custom title, **omit the subject line** — start the annotation
+  body directly with the highlights. This avoids duplicating the version
+  in the release title.
 - **Lines 3+:** Summary of highlights organized by category.
 
 ```
@@ -85,7 +89,7 @@ git tag -a v0.X.0 -m "<message>"
 ```
 
 The first line of the annotation flows into the GitHub release title via
-GoReleaser's `name_template: "{{ .Tag }}{{ if .TagSubject }}: {{ .TagSubject }}{{ end }}"`.
+GoReleaser's `name_template: "{{ .Tag }}{{ if and .TagSubject (ne .TagSubject .Tag) }}: {{ .TagSubject }}{{ end }}"`.
 
 ### 7. Push the tag
 

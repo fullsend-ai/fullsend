@@ -299,9 +299,13 @@ class TestLinters:
         assert "ruff-format: clean" in out["tool_result"]
 
     def test_make_lint_clean(self):
-        out = run_hook(make_input("make lint", "all checks passed\n"))
+        out = run_hook(make_input("make lint", ""))
         assert out is not None
-        assert "lint: passed" in out["tool_result"]
+        assert "lint: clean" in out["tool_result"]
+
+    def test_make_lint_nonempty_passthrough(self):
+        out = run_hook(make_input("make lint", "all checks passed\n"))
+        assert out is None
 
     def test_make_lint_failure(self):
         out = run_hook(make_input("make lint", "golangci-lint: error in foo.go\n"))

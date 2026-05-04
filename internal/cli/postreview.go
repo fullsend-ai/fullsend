@@ -114,11 +114,12 @@ has moved, a stale-head failure is posted instead.`,
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
 
-			if err := sticky.Post(cmd.Context(), client, owner, repoName, pr, parsed.Body, cfg, printer); err != nil {
+			commentURL, err := sticky.Post(cmd.Context(), client, owner, repoName, pr, parsed.Body, cfg, printer)
+			if err != nil {
 				return err
 			}
 
-			return submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, dryRun, printer)
+			return submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, dryRun, printer)
 		},
 	}
 
@@ -192,7 +193,7 @@ func postStaleHeadNotice(ctx context.Context, client forge.Client, owner, repo s
 
 The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. This review was discarded to avoid approving unreviewed code.`, reviewedSHA, currentSHA)
 
-	if err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
+	if _, err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
 		return fmt.Errorf("posting stale-head notice: %w", err)
 	}
 	return fmt.Errorf("review stale: reviewed %s but HEAD is now %s", reviewedSHA, currentSHA)
@@ -221,7 +222,7 @@ func postFailureNotice(ctx context.Context, client forge.Client, owner, repo str
 This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	}
 
-	if err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
+	if _, err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
 		return fmt.Errorf("posting failure notice: %w", err)
 	}
 	printer.StepDone("Failure notice posted")
@@ -232,7 +233,9 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // submits a new GitHub PR review. When commitSHA is non-empty, the
 // review is pinned to that commit via the commit_id field, closing
 // the TOCTOU gap between the stale-head check and review submission.
-func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA string, dryRun bool, printer *ui.Printer) error {
+// When commentURL is non-empty, it is included in the review body
+// so reviewers can navigate directly to the full review comment.
+func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, dryRun bool, printer *ui.Printer) error {
 	event, ok := reviewActionToEvent(action)
 	if !ok {
 		printer.StepInfo(fmt.Sprintf("Unknown review action %q, skipping formal review", action))
@@ -250,6 +253,9 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 
 	printer.StepStart(fmt.Sprintf("Submitting %s review", event))
 	reviewBody := "See the review comment above for full details."
+	if commentURL != "" {
+		reviewBody = fmt.Sprintf("See the [review comment](%s) for full details.", commentURL)
+	}
 	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA); err != nil {
 		return fmt.Errorf("submitting review: %w", err)
 	}

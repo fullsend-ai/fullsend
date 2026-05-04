@@ -95,8 +95,8 @@ echo "FIX_ITERATION=${FIX_ITERATION:-1}"
 ```
 
 - `PR_NUMBER` — which PR to fix (required)
-- `TRIGGER_SOURCE` — `bot` (review agent) or `human` (`/fix` command)
-- `HUMAN_INSTRUCTION` — the human's instruction text (only when `TRIGGER_SOURCE=human`)
+- `TRIGGER_SOURCE` — GitHub username that triggered the fix (e.g., `"orgname-review[bot]"` or `"alice"`)
+- `HUMAN_INSTRUCTION` — the human's instruction text (only when `TRIGGER_SOURCE` doesn't end in `[bot]`)
 - `FIX_ITERATION` — which iteration of the review→fix loop this is
 
 If `PR_NUMBER` is not set, stop.
@@ -121,7 +121,7 @@ First, fetch the current PR diff so you know exactly what code is on the branch:
 gh pr diff "${PR_NUMBER}"
 ```
 
-**If TRIGGER_SOURCE is `bot`:**
+**If TRIGGER_SOURCE ends in `[bot]` (bot-triggered):**
 
 **Step 2a — Read the pre-fetched review body:**
 
@@ -172,7 +172,7 @@ summaries from previous iterations and have already been addressed.
 Inline comments are not part of the review agent's output. If humans need to
 direct the fix agent, they use the `/fix` command.
 
-**If TRIGGER_SOURCE is `human`:**
+**If TRIGGER_SOURCE doesn't end in `[bot]` (human-triggered):**
 
 The human instruction is in `HUMAN_INSTRUCTION`. This is your primary directive.
 The PR diff you already fetched provides context. The human instruction

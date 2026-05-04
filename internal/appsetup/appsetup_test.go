@@ -360,6 +360,7 @@ func TestSetup_CorrectPermissions_NoError(t *testing.T) {
 			{
 				ID: 100, AppID: 10, AppSlug: "myorg-fullsend",
 				Permissions: map[string]string{
+					"actions":        "write",
 					"contents":       "write",
 					"workflows":      "write",
 					"issues":         "read",

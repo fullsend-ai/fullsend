@@ -67,7 +67,8 @@ The --result flag accepts a file path or "-" for stdin.`,
 				Marker: marker,
 				DryRun: dryRun,
 			}
-			return sticky.Post(cmd.Context(), client, owner, repoName, number, body, cfg, printer)
+			_, err = sticky.Post(cmd.Context(), client, owner, repoName, number, body, cfg, printer)
+			return err
 		},
 	}
 
