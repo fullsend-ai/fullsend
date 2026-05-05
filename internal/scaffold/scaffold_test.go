@@ -61,6 +61,7 @@ func TestShimTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "FULLSEND_DISPATCH_TOKEN")
 	assert.Contains(t, s, "pull_request_target")
 	assert.Contains(t, s, "actions/checkout@v6")
+	assert.Contains(t, s, "ref: main")
 	assert.Contains(t, s, ".fullsend-action")
 	assert.Contains(t, s, "sparse-checkout: .github/actions/dispatch")
 	assert.Contains(t, s, "uses: ./.fullsend-action/.github/actions/dispatch")

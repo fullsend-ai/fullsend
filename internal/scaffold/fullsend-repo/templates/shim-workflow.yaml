@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: ${{ github.repository_owner }}/.fullsend
+          ref: main
           path: .fullsend-action
           sparse-checkout: .github/actions/dispatch
           token: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
