@@ -173,8 +173,8 @@ jobs:
           if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
             if [[ -n "${COMMENT_BODY}" ]]; then
-              # Strip the /fix prefix to get the instruction.
-              INSTRUCTION="$(echo "${COMMENT_BODY}" | sed 's|^/fix[[:space:]]*||')"
+              # Strip the /fix or /fullsend fix prefix to get the instruction.
+              INSTRUCTION="$(echo "${COMMENT_BODY}" | sed 's|^/fullsend fix[[:space:]]*||; s|^/fix[[:space:]]*||')"
             fi
             if [[ -z "${INSTRUCTION}" && -n "${INPUT_INSTRUCTION}" ]]; then
               INSTRUCTION="${INPUT_INSTRUCTION}"

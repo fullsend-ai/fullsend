@@ -33,7 +33,7 @@ The triage agent reads the issue title, body, comments, and GitHub-native attach
 - Put key information in the issue body — expected behavior, actual behavior, steps to reproduce, version/environment.
 - Use GitHub's native file attachments for logs, screenshots, or reproduction scripts.
 - You can add details via comments — the triage agent reads those too. Other users can also comment with additional context (e.g., confirming the bug on a different platform).
-- Editing the issue title or body triggers triage automatically. You can also use `/triage` to force a fresh run.
+- Editing the issue title or body triggers triage automatically. You can also use `/fullsend triage` (or `/triage`) to force a fresh run.
 
 ### Labels are the state machine
 
@@ -58,9 +58,12 @@ You can control the pipeline from issue or PR comments:
 
 | Command | Where | Effect |
 |---------|-------|--------|
-| `/triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
-| `/code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
-| `/review` | PR comment | Enqueues a new review round for the current PR head |
+| `/fullsend triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
+| `/fullsend code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
+| `/fullsend review` | PR comment | Enqueues a new review round for the current PR head |
+| `/fullsend fix` | PR comment | Requests the fix agent to address review feedback (OWNER/MEMBER/COLLABORATOR only) |
+
+> **Aliases:** The bare forms `/triage`, `/code`, `/review`, and `/fix` also work. The namespaced `/fullsend <command>` form is recommended to avoid collisions with other AI tools that respond to generic command names.
 
 ### What to expect from agent PRs
 
@@ -96,7 +99,7 @@ Every push to a PR in the review stage triggers a new review round. This means `
 
 ### Stage 1: Triage
 
-**Triggered by:** issue creation, issue title/body edit, or `/triage` command.
+**Triggered by:** issue creation, issue title/body edit, or `/fullsend triage` command.
 
 The triage agent:
 
@@ -107,11 +110,11 @@ The triage agent:
 5. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 6. **Hands off.** Labels `ready-to-code` with a summary comment.
 
-**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/triage` to force a fresh run — this clears all previous labels and starts from scratch.
+**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fullsend triage` to force a fresh run — this clears all previous labels and starts from scratch.
 
 ### Stage 2: Code
 
-**Triggered by:** `ready-to-code` label or `/code` command.
+**Triggered by:** `ready-to-code` label or `/fullsend code` command.
 
 The code agent:
 
@@ -124,7 +127,7 @@ The code agent:
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/review` command, or `ready-for-review` label.
+**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fullsend review` command, or `ready-for-review` label.
 
 The review swarm:
 
@@ -149,9 +152,10 @@ Once the PR is merged (by human, merge queue, or automation per org governance),
 
 ### Restarting a stage
 
-- `/triage` — wipes all labels, reopens the issue, runs triage fresh.
-- `/code` — restarts the code agent from the current issue state.
-- `/review` — enqueues a new review round.
+- `/fullsend triage` — wipes all labels, reopens the issue, runs triage fresh.
+- `/fullsend code` — restarts the code agent from the current issue state.
+- `/fullsend review` — enqueues a new review round.
+- `/fullsend fix` — requests the fix agent to address review feedback.
 
 ### Taking over manually
 
