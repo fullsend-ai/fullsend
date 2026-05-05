@@ -20,6 +20,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		".github/workflows/review.yml",
 		".github/workflows/fix.yml",
 		".github/workflows/repo-maintenance.yml",
+		".github/actions/dispatch/action.yml",
 		".github/actions/fullsend/action.yml",
 		".github/scripts/setup-agent-env.sh",
 		"agents/triage.md",
@@ -55,18 +56,16 @@ func TestShimTemplateContent(t *testing.T) {
 	content, err := FullsendRepoFile("templates/shim-workflow.yaml")
 	require.NoError(t, err)
 	s := string(content)
-	assert.Contains(t, s, "dispatch-triage")
-	assert.Contains(t, s, "dispatch-code")
-	assert.Contains(t, s, "dispatch-review")
-	assert.Contains(t, s, "dispatch-fix")
 	assert.Contains(t, s, "permissions:")
 	assert.Contains(t, s, "contents: read")
 	assert.Contains(t, s, "FULLSEND_DISPATCH_TOKEN")
-	assert.Contains(t, s, "gh workflow run dispatch.yml")
-	assert.Contains(t, s, "stage=triage")
-	assert.Contains(t, s, "stage=code")
-	assert.Contains(t, s, "stage=review")
-	assert.Contains(t, s, "stage=fix")
+	assert.Contains(t, s, "pull_request_target")
+	assert.Contains(t, s, "actions/checkout@v6")
+	assert.Contains(t, s, ".fullsend-action")
+	assert.Contains(t, s, "sparse-checkout: .github/actions/dispatch")
+	assert.Contains(t, s, "uses: ./.fullsend-action/.github/actions/dispatch")
+	assert.Contains(t, s, "dispatch_token:")
+	assert.NotContains(t, s, "gh workflow run", "shim should delegate dispatch to action")
 }
 
 func TestDispatchWorkflowContent(t *testing.T) {
@@ -108,26 +107,40 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "skipped")
 }
 
-func TestShimDispatchCodeExcludesPRContext(t *testing.T) {
-	content, err := FullsendRepoFile("templates/shim-workflow.yaml")
+func TestDispatchActionExcludesPRContextForCode(t *testing.T) {
+	content, err := FullsendRepoFile(".github/actions/dispatch/action.yml")
 	require.NoError(t, err)
 	s := string(content)
+	// The code stage must only dispatch for issues, not PR comments. See #533.
+	assert.Contains(t, s, "ISSUE_IS_PR",
+		"dispatch action must check ISSUE_IS_PR to exclude PR contexts from code stage")
+}
 
-	// The guard must appear between "dispatch-code:" and the next job
-	// definition, not just anywhere in the file. See #533.
-	codeIdx := strings.Index(s, "dispatch-code:")
-	require.NotEqual(t, -1, codeIdx, "dispatch-code job must exist")
-
-	// Find the next job after dispatch-code (next top-level "  dispatch-" or end of file).
-	rest := s[codeIdx+len("dispatch-code:"):]
-	nextJob := strings.Index(rest, "\n  dispatch-")
-	if nextJob == -1 {
-		nextJob = len(rest)
-	}
-	codeBlock := rest[:nextJob]
-
-	assert.Contains(t, codeBlock, "!github.event.issue.pull_request",
-		"dispatch-code job must exclude PR contexts with !github.event.issue.pull_request guard")
+func TestDispatchActionContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/actions/dispatch/action.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "dispatch_token:")
+	assert.Contains(t, s, "composite")
+	assert.Contains(t, s, "gh workflow run dispatch.yml")
+	// Stage routing
+	assert.Contains(t, s, "STAGE=triage")
+	assert.Contains(t, s, "STAGE=code")
+	assert.Contains(t, s, "STAGE=review")
+	assert.Contains(t, s, "STAGE=fix")
+	// Env var injection pattern (script injection prevention)
+	assert.Contains(t, s, "EVENT_NAME:")
+	assert.Contains(t, s, "COMMENT_BODY:")
+	assert.Contains(t, s, "SOURCE_REPO:")
+	assert.Contains(t, s, "DISPATCH_REPO:")
+	// Fork PR blocking
+	assert.Contains(t, s, "Fix agent cannot run on fork PRs")
+	// Trigger source forwarding
+	assert.Contains(t, s, "trigger_source")
+	assert.Contains(t, s, "TRIGGER_USER")
+	// Payload building
+	assert.Contains(t, s, "jq -cn")
+	assert.Contains(t, s, "set -euo pipefail")
 }
 
 func TestWalkFullsendRepo(t *testing.T) {

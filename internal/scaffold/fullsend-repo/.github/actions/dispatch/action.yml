@@ -1,0 +1,183 @@
+# Fullsend dispatch action — routes repository events to agent workflows
+# in the org's .fullsend config repo via workflow_dispatch.
+#
+# All github.event fields are received through environment variables,
+# not inline shell, to prevent script injection from attacker-controlled
+# fields (issue titles, comment bodies, PR descriptions).
+#
+# Security: this action never checks out code. The calling workflow must
+# use pull_request_target so that the base branch version runs, preventing
+# PR authors from modifying the uses: reference to exfiltrate credentials.
+name: 'Fullsend Dispatch'
+description: 'Routes repository events to the fullsend agent dispatch pipeline'
+
+inputs:
+  dispatch_token:
+    description: 'Token for dispatching workflows to .fullsend (FULLSEND_DISPATCH_TOKEN)'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Route event and dispatch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.dispatch_token }}
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_ACTION: ${{ github.event.action }}
+        SOURCE_REPO: ${{ github.repository }}
+        DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
+        OWNER: ${{ github.repository_owner }}
+        ISSUE_NUMBER: ${{ github.event.issue.number }}
+        ISSUE_HTML_URL: ${{ github.event.issue.html_url }}
+        ISSUE_LABELS_JSON: ${{ toJSON(github.event.issue.labels.*.name) }}
+        ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || '' }}
+        ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+        ISSUE_USER_LOGIN: ${{ github.event.issue.user.login }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
+        COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
+        COMMENT_AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HTML_URL: ${{ github.event.pull_request.html_url }}
+        PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+        REVIEW_STATE: ${{ github.event.review.state }}
+        REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
+        LABEL_NAME: ${{ github.event.label.name }}
+      run: |
+        set -euo pipefail
+
+        STAGE=""
+        TRIGGER_USER=""
+
+        # --- Stage routing ---
+
+        # Triage: /triage command OR needs-info label reply from issue participant
+        if [[ "$EVENT_NAME" == "issue_comment" ]]; then
+          if [[ "$COMMENT_BODY" == "/triage" || "$COMMENT_BODY" == "/triage "* ]]; then
+            STAGE=triage
+          elif [[ "$COMMENT_AUTHOR_ASSOC" != "NONE" || "$COMMENT_USER_LOGIN" == "$ISSUE_USER_LOGIN" ]] \
+            && [[ ! "$COMMENT_USER_LOGIN" == *"[bot]" ]] \
+            && echo "$ISSUE_LABELS_JSON" | jq -e 'index("needs-info")' >/dev/null 2>&1 \
+            && ! echo "$ISSUE_LABELS_JSON" | jq -e 'index("type/feature")' >/dev/null 2>&1; then
+            STAGE=triage
+          fi
+        fi
+
+        # Code: ready-to-code label OR /code command on issues (not PRs)
+        if [[ -z "$STAGE" ]]; then
+          if [[ "$EVENT_NAME" == "issues" && "$EVENT_ACTION" == "labeled" && "$LABEL_NAME" == "ready-to-code" ]]; then
+            STAGE=code
+          elif [[ "$EVENT_NAME" == "issue_comment" && -z "$ISSUE_IS_PR" ]]; then
+            if [[ "$COMMENT_BODY" == "/code" || "$COMMENT_BODY" == "/code "* ]]; then
+              STAGE=code
+            fi
+          fi
+        fi
+
+        # Review: ready-for-review label, /review command, or PR events
+        if [[ -z "$STAGE" ]]; then
+          if [[ "$EVENT_NAME" == "issues" && "$EVENT_ACTION" == "labeled" && "$LABEL_NAME" == "ready-for-review" ]]; then
+            STAGE=review
+          elif [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            if [[ "$COMMENT_BODY" == "/review" || "$COMMENT_BODY" == "/review "* ]]; then
+              STAGE=review
+            fi
+          elif [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+            STAGE=review
+          fi
+        fi
+
+        # Fix (bot): bot changes_requested review on same-repo PR
+        if [[ -z "$STAGE" ]]; then
+          if [[ "$EVENT_NAME" == "pull_request_review" \
+            && "$REVIEW_STATE" == "changes_requested" \
+            && "$REVIEW_USER_LOGIN" == "${OWNER}-review[bot]" \
+            && "$PR_HEAD_REPO" == "$PR_BASE_REPO" ]]; then
+            STAGE=fix
+            TRIGGER_USER="$REVIEW_USER_LOGIN"
+          fi
+        fi
+
+        # Fix (human): /fix command from repo member on a PR
+        if [[ -z "$STAGE" ]]; then
+          if [[ "$EVENT_NAME" == "issue_comment" \
+            && -n "$ISSUE_IS_PR" \
+            && "$COMMENT_USER_TYPE" != "Bot" \
+            && ( "$COMMENT_BODY" == "/fix" || "$COMMENT_BODY" == "/fix "* ) \
+            && ( "$COMMENT_AUTHOR_ASSOC" == "OWNER" \
+              || "$COMMENT_AUTHOR_ASSOC" == "MEMBER" \
+              || "$COMMENT_AUTHOR_ASSOC" == "COLLABORATOR" ) ]]; then
+            HEAD_REPO="$(gh api "${ISSUE_PR_URL}" --jq '.head.repo.full_name')"
+            BASE_REPO="$(gh api "${ISSUE_PR_URL}" --jq '.base.repo.full_name')"
+            if [[ "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+              echo "::error::Fix agent cannot run on fork PRs (${HEAD_REPO} != ${BASE_REPO})"
+              exit 1
+            fi
+            STAGE=fix
+            TRIGGER_USER="$COMMENT_USER_LOGIN"
+          fi
+        fi
+
+        if [[ -z "$STAGE" ]]; then
+          echo "No dispatch rule matched for event=$EVENT_NAME action=$EVENT_ACTION"
+          exit 0
+        fi
+
+        echo "Matched stage: $STAGE"
+
+        # --- Build minimal payload ---
+
+        case "$STAGE" in
+          triage|code)
+            PAYLOAD=$(jq -cn \
+              --arg in "${ISSUE_NUMBER:-}" \
+              --arg iu "${ISSUE_HTML_URL:-}" \
+              '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end)}}')
+            ;;
+          review)
+            PAYLOAD=$(jq -cn \
+              --arg in "${ISSUE_NUMBER:-}" \
+              --arg iu "${ISSUE_HTML_URL:-}" \
+              --arg pn "${PR_NUMBER:-}" \
+              --arg pu "${PR_HTML_URL:-}" \
+              '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end)},
+                pull_request: {number: (if $pn != "" then ($pn | tonumber) else null end), html_url: (if $pu != "" then $pu else null end)}}')
+            ;;
+          fix)
+            if [[ "$EVENT_NAME" == "pull_request_review" ]]; then
+              PAYLOAD=$(jq -cn \
+                --arg pn "${PR_NUMBER}" \
+                --arg hr "${PR_HEAD_REF}" \
+                --arg br "${PR_BASE_REF}" \
+                --arg hrepo "${PR_HEAD_REPO}" \
+                --arg brepo "${PR_BASE_REPO}" \
+                '{pull_request: {number: ($pn | tonumber), head: {ref: $hr, repo: {full_name: $hrepo}}, base: {ref: $br, repo: {full_name: $brepo}}}}')
+            else
+              PAYLOAD=$(jq -cn \
+                --arg in "${ISSUE_NUMBER}" \
+                --arg cb "${COMMENT_BODY:-}" \
+                '{issue: {number: ($in | tonumber)}, comment: {body: $cb}}')
+            fi
+            ;;
+        esac
+
+        # --- Dispatch ---
+
+        DISPATCH_ARGS=(
+          --repo "$DISPATCH_REPO"
+          -f stage="$STAGE"
+          -f event_type="$EVENT_NAME"
+          -f source_repo="$SOURCE_REPO"
+          -f event_payload="$PAYLOAD"
+        )
+
+        if [[ -n "$TRIGGER_USER" ]]; then
+          DISPATCH_ARGS+=(-f trigger_source="$TRIGGER_USER")
+        fi
+
+        gh workflow run dispatch.yml "${DISPATCH_ARGS[@]}"
+        echo "Dispatched stage=$STAGE to $DISPATCH_REPO"
