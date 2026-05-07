@@ -145,6 +145,8 @@ case "${ACTION}" in
     echo "Posting triage summary..."
     printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
 
+    remove_label "blocked"
+
     # Only bugs get the ready-to-code label (which triggers the code agent).
     # Non-bug sufficient results (enhancement, performance, documentation, etc.)
     # receive the triaged label instead and wait for human prioritization.
