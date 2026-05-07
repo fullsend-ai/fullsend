@@ -435,6 +435,7 @@ jobs:
   post-run-link:
     permissions:
       issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     if: always() && !cancelled()
     needs:
