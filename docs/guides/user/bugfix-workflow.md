@@ -63,6 +63,7 @@ You can control the pipeline from issue or PR comments:
 | `/fs-review` | PR comment | Enqueues a new review round for the current PR head |
 | `/fs-fix` | PR comment | Requests the fix agent to address review feedback (OWNER/MEMBER/COLLABORATOR only) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
+| `/fs-stop-fix` | PR comment | Disables bot-triggered fix agent runs on this PR |
 
 ### What to expect from agent PRs
 

@@ -15,13 +15,13 @@ The retro agent is an analyst, not a fixer. It produces well-contextualized prop
 
 When a PR is closed (merged or rejected), the dispatch shim (`fullsend.yaml`) triggers a `dispatch-retro` job via the `pull_request_target` event with `closed` action. This dispatches to the `.fullsend` repo's `retro.yml` workflow, passing the PR URL as input.
 
-### On-demand: `/retro` command
+### On-demand: `/fs-retro` command
 
-A human posts `/retro` as a comment on an issue or PR, optionally with additional context explaining what they think is wrong and why. The shim handles this as an `issue_comment` event and dispatches to `retro.yml`, passing the originating URL and the full comment text.
+A human posts `/fs-retro` as a comment on an issue or PR, optionally with additional context explaining what they think is wrong and why. The shim handles this as an `issue_comment` event and dispatches to `retro.yml`, passing the originating URL and the full comment text.
 
 The human's comment is high-signal context. For example:
 
-> `/retro` this triage output is wrong — I would never prioritize a cosmetic label change over a broken test. Go figure out why and propose a fix.
+> `/fs-retro` this triage output is wrong — I would never prioritize a cosmetic label change over a broken test. Go figure out why and propose a fix.
 
 The retro agent treats this as a starting point for its investigation.
 
@@ -59,7 +59,7 @@ Write credentials are held only by the post-script, outside the sandbox, consist
 The pre-script collects only the trigger context and writes it to the `agent_input` directory:
 
 - **Originating URL:** The PR or issue that triggered the retro
-- **Comment text:** The `/retro` comment, if on-demand (empty for automatic triggers)
+- **Comment text:** The `/fs-retro` comment, if on-demand (empty for automatic triggers)
 - **Repo metadata:** Org name, repo name, `.fullsend` repo location
 
 The pre-script does not attempt to gather logs, traces, or workflow history. That is the agent's job.
@@ -97,7 +97,7 @@ These goals are the lens through which the agent evaluates what it finds. Custom
 - Start from the originating PR/issue
 - Use `finding-agent-runs` skill to trace the workflow graph
 - Dispatch subagents for all read-heavy operations to protect the main context window
-- If triggered by `/retro` with a human comment, treat that comment as the primary signal — the human is telling you where to look
+- If triggered by `/fs-retro` with a human comment, treat that comment as the primary signal — the human is telling you where to look
 - Go deep: follow threads, check related PRs, look for recurring patterns
 
 **Analysis instructions:**
@@ -167,7 +167,7 @@ dispatch-retro:
   # dispatch to .fullsend repo's retro.yml
 ```
 
-**`/retro` command:**
+**`/fs-retro` command:**
 ```yaml
 dispatch-retro:
   if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '/retro')
@@ -183,7 +183,7 @@ A standard dispatch workflow that runs `fullsend run retro` with the provided in
 - **Read-only sandbox:** The retro agent cannot modify code, push branches, or alter harness configs. It only proposes changes via issues.
 - **Credential isolation (ADR 0017):** Write credentials (`gh` token with issue-create and comment permissions) are held only by the post-script, outside the sandbox.
 - **Unidirectional control flow (ADR 0016):** The retro agent proposes changes via issues. Changes go through standard review (CODEOWNERS, human approval) and take effect in future invocations, never the current one.
-- **Adversarial feedback risk:** A malicious reviewer could post `/retro` with misleading context to bias the retro agent's proposals. The mitigation is the same human approval gate on the resulting issues — a proposal only takes effect if a maintainer approves and merges the change.
+- **Adversarial feedback risk:** A malicious reviewer could post `/fs-retro` with misleading context to bias the retro agent's proposals. The mitigation is the same human approval gate on the resulting issues — a proposal only takes effect if a maintainer approves and merges the change.
 - **Per-role GitHub App (ADR 0007):** The retro agent gets its own GitHub App with scoped permissions: read access to repos, issues, PRs, workflow runs, and artifacts; write access limited to creating issues and posting comments.
 
 ## Architectural Constraints
