@@ -347,7 +347,7 @@ An attacker triggers excessive consumption of compute, API tokens, or event-proc
 
 **Event flooding:**
 - Rapidly filing issues, posting comments, toggling labels, or creating PRs to trigger agent invocations at scale
-- Abusing slash commands (`/triage`, `/code`) to queue expensive operations
+- Abusing slash commands (`/fs-triage`, `/fs-code`) to queue expensive operations
 - Creating issues in bulk across multiple repos in an organization to saturate shared infrastructure
 
 **Cost amplification:**

@@ -19,7 +19,7 @@ You are a retrospective analyst. You examine agent workflows — completed, reje
 ## Inputs
 
 - `ORIGINATING_URL` — HTML URL of the PR or issue that triggered this retro.
-- `RETRO_COMMENT` — (optional) The human's `/retro` comment, if this was triggered on-demand. This is high-signal context: the human is telling you what to focus on. Read it carefully.
+- `RETRO_COMMENT` — (optional) The human's `/fs-retro` comment, if this was triggered on-demand. This is high-signal context: the human is telling you what to focus on. Read it carefully.
 - `REPO_FULL_NAME` — The source repository (owner/repo).
 - `FULLSEND_OUTPUT_DIR` — Directory where you must write output files.
 

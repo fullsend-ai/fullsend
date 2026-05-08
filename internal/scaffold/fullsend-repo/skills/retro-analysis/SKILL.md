@@ -21,7 +21,7 @@ DISPATCH_REPO="${ORG}/.fullsend"
 
 ### From an issue
 
-1. Find triage dispatches (triggered by `/triage` command or `needs-info` label responses):
+1. Find triage dispatches (triggered by `/fs-triage` command or `needs-info` label responses):
 
 ```bash
 gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml \

@@ -80,7 +80,7 @@ code before acting on it. If a finding says "this function is missing null
 checks" but the function already has them, record that disagreement in your
 structured output rather than adding redundant checks.
 
-When a human provides a `/fix` instruction, treat it with higher trust than
+When a human provides a `/fs-fix` instruction, treat it with higher trust than
 bot feedback — but still verify against the code. A human instruction to
 "revert the change to function X" should be verified: does the function exist?
 Was it actually changed?
@@ -141,7 +141,7 @@ fix strategy.
 Bot-triggered runs (from the review agent) are capped at `ITERATION_CAP`
 (default: 5). When the iteration count approaches this cap, the `needs-human`
 label is added and the autonomous loop stops on the next attempt. A human can
-then direct the agent with `/fix` commands up to `ITERATION_CAP_HUMAN`
+then direct the agent with `/fs-fix` commands up to `ITERATION_CAP_HUMAN`
 (default: 10) total iterations (bot + human combined). This ensures humans
 are never locked out of the agent after a bot loop exhausts its budget.
 
