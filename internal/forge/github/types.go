@@ -91,6 +91,7 @@ func AgentAppConfig(org, role string) AppConfig {
 			Contents:     "write",
 			PullRequests: "write",
 			Checks:       "read",
+			Workflows:    "write",
 		}
 		base.Events = []string{"issues", "issue_comment", "pull_request", "check_run", "check_suite"}
 

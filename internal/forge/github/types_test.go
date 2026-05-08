@@ -41,6 +41,7 @@ func TestAgentAppConfig_Triage(t *testing.T) {
 	assert.Equal(t, "myorg-triage", cfg.Name)
 	assert.Equal(t, "write", cfg.Permissions.Issues)
 	assert.Empty(t, cfg.Permissions.Contents)
+	assert.Empty(t, cfg.Permissions.Workflows)
 
 	assert.Contains(t, cfg.Events, "issues")
 	assert.Contains(t, cfg.Events, "issue_comment")
@@ -54,6 +55,7 @@ func TestAgentAppConfig_Coder(t *testing.T) {
 	assert.Equal(t, "write", cfg.Permissions.Contents)
 	assert.Equal(t, "write", cfg.Permissions.PullRequests)
 	assert.Equal(t, "read", cfg.Permissions.Checks)
+	assert.Equal(t, "write", cfg.Permissions.Workflows)
 
 	assert.Contains(t, cfg.Events, "issues")
 	assert.Contains(t, cfg.Events, "issue_comment")
@@ -70,6 +72,7 @@ func TestAgentAppConfig_Review(t *testing.T) {
 	assert.Equal(t, "read", cfg.Permissions.Contents)
 	assert.Equal(t, "read", cfg.Permissions.Checks)
 	assert.Equal(t, "read", cfg.Permissions.Issues)
+	assert.Empty(t, cfg.Permissions.Workflows)
 
 	assert.Contains(t, cfg.Events, "pull_request")
 }
