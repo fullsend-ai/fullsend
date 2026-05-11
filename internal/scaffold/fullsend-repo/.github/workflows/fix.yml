@@ -27,7 +27,7 @@ on:
         type: string
         description: "Human instruction (workflow_dispatch manual fallback)"
 
-# Single concurrency group per PR. A human /fix cancels any running fix
+# Single concurrency group per PR. A human /fs-fix cancels any running fix
 # (bot or human) so the human's instruction takes immediate effect.
 # Bot-triggered runs also cancel previous bot runs on the same PR.
 concurrency:
@@ -123,7 +123,7 @@ jobs:
           echo "pr_number=${PR_NUM}" >> "${GITHUB_OUTPUT}"
 
           # Resolve the PR head branch. For pull_request_review events the
-          # payload has .pull_request.head.ref. For /fix comment events
+          # payload has .pull_request.head.ref. For /fs-fix comment events
           # (issue_comment) it does not — query the GitHub API instead.
           HEAD_REF="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.ref // empty')"
           BASE_REF="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.ref // empty')"
@@ -141,7 +141,7 @@ jobs:
           echo "base_ref=${BASE_REF}" >> "${GITHUB_OUTPUT}"
           echo "PR #${PR_NUM}: ${HEAD_REF} → ${BASE_REF}"
 
-          # Extract human instruction (from /fix comment or workflow_dispatch).
+          # Extract human instruction (from /fs-fix comment or workflow_dispatch).
           # Default to "none" so the env var is always non-empty (the fullsend
           # binary rejects empty runner_env values). The agent checks
           # TRIGGER_SOURCE before reading this value.
@@ -159,7 +159,7 @@ jobs:
               INSTRUCTION="none"
             fi
           fi
-          # Use a random heredoc delimiter so a /fix comment containing
+          # Use a random heredoc delimiter so a /fs-fix comment containing
           # the literal delimiter string cannot inject GITHUB_OUTPUT values.
           DELIM="INSTRUCTION_$(openssl rand -hex 8)"
           {

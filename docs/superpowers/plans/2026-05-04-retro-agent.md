@@ -226,7 +226,7 @@ Minimal — validates inputs and writes trigger context. Follows the same `set -
 #   GH_TOKEN        — GitHub token with read scope
 #
 # Optional env vars:
-#   RETRO_COMMENT   — The /retro comment text (empty for automatic triggers)
+#   RETRO_COMMENT   — The /fs-retro comment text (empty for automatic triggers)
 
 set -euo pipefail
 

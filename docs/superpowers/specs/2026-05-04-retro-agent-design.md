@@ -170,7 +170,7 @@ dispatch-retro:
 **`/fs-retro` command:**
 ```yaml
 dispatch-retro:
-  if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '/retro')
+  if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '/fs-retro')
   # dispatch to .fullsend repo's retro.yml with comment text
 ```
 
