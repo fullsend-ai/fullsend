@@ -36,13 +36,17 @@ Fullsend supports two methods for authenticating to Vertex AI. **Workload Identi
 
 WIF lets GitHub Actions exchange short-lived OIDC tokens for GCP access tokens. No service account keys are stored.
 
+> **Re-running these commands is safe.** Each `create` command is guarded by a `describe` check so it skips creation if the resource already exists. You can re-run the entire setup when upgrading or reinstalling.
+
 **1a. Create a service account**
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
 export ORG_NAME="<org-name>"
 
-gcloud iam service-accounts create fullsend-agent \
+gcloud iam service-accounts describe "fullsend-agent@$GCP_PROJECT.iam.gserviceaccount.com" \
+  --project="$GCP_PROJECT" 2>/dev/null \
+|| gcloud iam service-accounts create fullsend-agent \
   --display-name="Fullsend agent inference" \
   --project="$GCP_PROJECT"
 
@@ -55,12 +59,19 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
 **1b. Create a Workload Identity Pool and OIDC Provider**
 
 ```bash
-gcloud iam workload-identity-pools create github-actions \
+gcloud iam workload-identity-pools describe github-actions \
+  --location=global \
+  --project="$GCP_PROJECT" 2>/dev/null \
+|| gcloud iam workload-identity-pools create github-actions \
   --location=global \
   --display-name="GitHub Actions" \
   --project="$GCP_PROJECT"
 
-gcloud iam workload-identity-pools providers create-oidc github \
+gcloud iam workload-identity-pools providers describe github \
+  --location=global \
+  --workload-identity-pool=github-actions \
+  --project="$GCP_PROJECT" 2>/dev/null \
+|| gcloud iam workload-identity-pools providers create-oidc github \
   --location=global \
   --workload-identity-pool=github-actions \
   --issuer-uri="https://token.actions.githubusercontent.com" \
@@ -113,7 +124,9 @@ Create a service account with the `Vertex AI User` role and download its key:
 export GCP_PROJECT="<gcp-project>"
 export ORG_NAME="<org-name>"
 
-gcloud iam service-accounts create "$ORG_NAME" \
+gcloud iam service-accounts describe "$ORG_NAME@$GCP_PROJECT.iam.gserviceaccount.com" \
+  --project="$GCP_PROJECT" 2>/dev/null \
+|| gcloud iam service-accounts create "$ORG_NAME" \
   --display-name="Fullsend for $ORG_NAME" \
   --project="$GCP_PROJECT"
 
