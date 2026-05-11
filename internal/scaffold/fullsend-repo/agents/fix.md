@@ -4,7 +4,7 @@ description: >-
   Review-feedback specialist for open PRs. Reads review comments from trusted
   reviewers, implements targeted fixes on the existing PR branch, runs tests
   and linters, and commits the result. Use when the review agent requests
-  changes or a human issues a /fix command on a PR.
+  changes or a human issues a /fs-fix command on a PR.
 disallowedTools: >-
   Bash(sed *), Bash(sed),
   Bash(awk *), Bash(awk),
