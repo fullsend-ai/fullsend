@@ -953,8 +953,8 @@ Append after the `dispatch-fix-human` job:
     if: >-
       github.event_name == 'issue_comment'
         && (
-          github.event.comment.body == '/retro'
-          || startsWith(github.event.comment.body, '/retro ')
+          github.event.comment.body == '/fs-retro'
+          || startsWith(github.event.comment.body, '/fs-retro ')
         )
         && (
           github.event.comment.author_association == 'OWNER'

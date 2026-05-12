@@ -28,7 +28,7 @@ permissions:
 
 on:
   issues:
-    types: [labeled, opened, edited]
+    types: [labeled, opened]
   issue_comment:
     types: [created]
   pull_request_target:
@@ -45,12 +45,10 @@ jobs:
       group: triage-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
     if: >-
-      (github.event_name == 'issues'
-        && (github.event.action == 'opened' || github.event.action == 'edited')) ||
-      (github.event_name == 'issue_comment' && (
-        github.event.comment.body == '/fs-triage' ||
-        startsWith(github.event.comment.body, '/fs-triage ') ||
-        startsWith(github.event.comment.body, format('{0}{1}', '/fs-triage', fromJSON('"\n"'))) ||
+      github.event_name == 'issue_comment' && (
+        github.event.comment.body == '/triage' ||
+        startsWith(github.event.comment.body, '/triage ') ||
+        startsWith(github.event.comment.body, format('{0}{1}', '/triage', fromJSON('"\n"'))) ||
         (
           (github.event.comment.author_association != 'NONE' ||
             github.event.comment.user.login == github.event.issue.user.login) &&
@@ -58,7 +56,7 @@ jobs:
           contains(toJSON(github.event.issue.labels.*.name), 'needs-info') &&
           !contains(toJSON(github.event.issue.labels.*.name), 'type/feature')
         )
-      ))
+      )
     steps:
       - name: Build minimal payload
         id: payload
@@ -100,9 +98,9 @@ jobs:
       (github.event_name == 'issue_comment'
         && !github.event.issue.pull_request
         && (
-          github.event.comment.body == '/fs-code' ||
-          startsWith(github.event.comment.body, '/fs-code ') ||
-          startsWith(github.event.comment.body, format('{0}{1}', '/fs-code', fromJSON('"\n"')))
+          github.event.comment.body == '/code' ||
+          startsWith(github.event.comment.body, '/code ') ||
+          startsWith(github.event.comment.body, format('{0}{1}', '/code', fromJSON('"\n"')))
         ))
     steps:
       - name: Build minimal payload
@@ -147,9 +145,9 @@ jobs:
       (github.event_name == 'issues' && github.event.action == 'labeled'
         && github.event.label.name == 'ready-for-review') ||
       (github.event_name == 'issue_comment' && (
-        github.event.comment.body == '/fs-review' ||
-        startsWith(github.event.comment.body, '/fs-review ') ||
-        startsWith(github.event.comment.body, format('{0}{1}', '/fs-review', fromJSON('"\n"')))
+        github.event.comment.body == '/review' ||
+        startsWith(github.event.comment.body, '/review ') ||
+        startsWith(github.event.comment.body, format('{0}{1}', '/review', fromJSON('"\n"')))
       )) ||
       (github.event_name == 'pull_request_target'
         && github.event.action != 'closed')
@@ -253,9 +251,9 @@ jobs:
         && github.event.issue.pull_request
         && github.event.comment.user.type != 'Bot'
         && (
-          github.event.comment.body == '/fs-fix'
-          || startsWith(github.event.comment.body, '/fs-fix ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/fs-fix', fromJSON('"\n"')))
+          github.event.comment.body == '/fix'
+          || startsWith(github.event.comment.body, '/fix ')
+          || startsWith(github.event.comment.body, format('{0}{1}', '/fix', fromJSON('"\n"')))
         )
         && (
           github.event.comment.author_association == 'OWNER'
@@ -353,9 +351,12 @@ jobs:
       github.event_name == 'issue_comment'
         && github.event.comment.user.type != 'Bot'
         && (
-          github.event.comment.body == '/fs-retro'
-          || startsWith(github.event.comment.body, '/fs-retro ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/fs-retro', fromJSON('"\n"')))
+          github.event.comment.body == '/retro'
+          || startsWith(github.event.comment.body, '/retro ')
+          || startsWith(github.event.comment.body, format('{0}{1}', '/retro', fromJSON('"\n"')))
+          || github.event.comment.body == '/fullsend retro'
+          || startsWith(github.event.comment.body, '/fullsend retro ')
+          || startsWith(github.event.comment.body, format('{0}{1}', '/fullsend retro', fromJSON('"\n"')))
         )
         && (
           github.event.comment.author_association == 'OWNER'
@@ -397,61 +398,6 @@ jobs:
             -f event_type="$EVENT_TYPE" \
             -f source_repo="$SOURCE_REPO" \
             -f event_payload="$EVENT_PAYLOAD"
-
-  dispatch-prioritize:
-    runs-on: ubuntu-latest
-    outputs:
-      agent: ${{ steps.dispatch.outputs.agent }}
-    concurrency:
-      group: prioritize-${{ github.event.issue.number }}
-      cancel-in-progress: true
-    if: >-
-      github.event_name == 'issue_comment'
-        && !github.event.issue.pull_request
-        && github.event.comment.user.type != 'Bot'
-        && (
-          github.event.comment.body == '/prioritize'
-          || startsWith(github.event.comment.body, '/prioritize ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/prioritize', fromJSON('"\n"')))
-        )
-        && (
-          github.event.comment.author_association == 'OWNER'
-          || github.event.comment.author_association == 'MEMBER'
-          || github.event.comment.author_association == 'COLLABORATOR'
-        )
-    steps:
-      - name: Build minimal payload
-        id: payload
-        env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_HTML_URL: ${{ github.event.issue.html_url }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-        run: |
-          set -euo pipefail
-          PAYLOAD=$(jq -cn \
-            --arg in "${ISSUE_NUMBER}" \
-            --arg iu "${ISSUE_HTML_URL}" \
-            --arg cb "${COMMENT_BODY:-}" \
-            '{issue: {number: ($in | tonumber), html_url: $iu},
-              comment: {body: $cb}}')
-          echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch prioritize stage
-        id: dispatch
-        env:
-          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
-          EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
-          EVENT_TYPE: ${{ github.event_name }}
-          SOURCE_REPO: ${{ github.repository }}
-          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
-        run: |
-          DISPATCH_URL=$(gh workflow run dispatch.yml \
-            --repo "$DISPATCH_REPO" \
-            -f stage=prioritize \
-            -f event_type="$EVENT_TYPE" \
-            -f source_repo="$SOURCE_REPO" \
-            -f event_payload="$EVENT_PAYLOAD")
-          echo "::notice::Dispatched prioritize → ${DISPATCH_URL}"
-          echo "agent=prioritize" >> "$GITHUB_OUTPUT"
 
   dispatch-gh-classify:
     runs-on: ubuntu-latest
@@ -496,7 +442,7 @@ jobs:
       github.event_name == 'issue_comment'
         && github.event.issue.pull_request
         && github.event.comment.user.type != 'Bot'
-        && github.event.comment.body == '/fs-stop-fix'
+        && github.event.comment.body == '/stop-fix'
         && (
           github.event.comment.author_association == 'OWNER'
           || github.event.comment.author_association == 'MEMBER'
@@ -521,7 +467,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "$REPO" \
             --add-label "fullsend-no-fix"
           gh pr comment "$PR_NUMBER" --repo "$REPO" \
-            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fs-fix\` to re-engage."
+            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fix\` to re-engage."
 
   post-run-link:
     permissions:
@@ -536,7 +482,6 @@ jobs:
         dispatch-review,
         dispatch-fix-bot,
         dispatch-fix-human,
-        dispatch-prioritize,
       ]
     env:
       GH_TOKEN: ${{ github.token }}
@@ -548,8 +493,7 @@ jobs:
              || needs.dispatch-code.outputs.agent
              || needs.dispatch-review.outputs.agent
              || needs.dispatch-fix-bot.outputs.agent
-             || needs.dispatch-fix-human.outputs.agent
-             || needs.dispatch-prioritize.outputs.agent }}
+             || needs.dispatch-fix-human.outputs.agent }}
           SHIM_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
