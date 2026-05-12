@@ -684,7 +684,7 @@ var rolePermissions = map[string]map[string]string{
 	"coder":    {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"review":   {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"fix":      {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
-	"retro":       {"contents": "read", "pull_requests": "read", "issues": "write", "metadata": "read"},
+	"retro":       {"actions": "read", "contents": "read", "pull_requests": "read", "issues": "write", "metadata": "read"},
 	"prioritize":  {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
 	"fullsend":    {"actions": "write", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
 }
