@@ -1,3 +1,4 @@
+# lint-workflow-size: max-lines=535
 # fullsend shim workflow
 # Routes events to agent workflows in .fullsend via the dispatch.yml workflow.
 #
@@ -455,43 +456,6 @@ jobs:
             -f event_payload="$EVENT_PAYLOAD")
           echo "::notice::Dispatched prioritize → ${DISPATCH_URL}"
           echo "agent=prioritize" >> "$GITHUB_OUTPUT"
-
-  dispatch-gh-classify:
-    runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'issues' && github.event.action == 'opened'
-    steps:
-      - name: Build minimal payload
-        id: payload
-        env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_HTML_URL: ${{ github.event.issue.html_url }}
-          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-        run: |
-          set -euo pipefail
-          PAYLOAD=$(jq -cn \
-            --arg in "${ISSUE_NUMBER:-}" \
-            --arg iu "${ISSUE_HTML_URL:-}" \
-            --arg au "${ISSUE_AUTHOR:-}" \
-            --arg repo "${{ github.repository }}" \
-            '{issue: {number: (if $in != "" then ($in | tonumber) else null end), html_url: (if $iu != "" then $iu else null end), author: $au}, repository: $repo}')
-          echo "json=$PAYLOAD" >> "$GITHUB_OUTPUT"
-      - name: Dispatch gh-classify
-        env:
-          GH_TOKEN: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
-          EVENT_PAYLOAD: ${{ steps.payload.outputs.json }}
-          EVENT_TYPE: issues
-          SOURCE_REPO: ${{ github.repository }}
-          DISPATCH_REPO: ${{ github.repository_owner }}/.fullsend
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          gh workflow run gh-classify.yml \
-            --repo "$DISPATCH_REPO" \
-            --field event_type="$EVENT_TYPE" \
-            --field source_repo="$SOURCE_REPO" \
-            --field event_payload="$EVENT_PAYLOAD" \
-            --field classify_mode="single" \
-            --field issue_number="$ISSUE_NUMBER"
 
   dispatch-stop-fix:
     runs-on: ubuntu-latest
