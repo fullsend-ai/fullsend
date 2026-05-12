@@ -17,10 +17,34 @@ import json
 import subprocess
 import sys
 
+# Schema-defined maxLength constraints for LLM-generated fields.
+# These match fix-result.schema.json and provide defense-in-depth
+# truncation at the rendering layer, independent of JSON schema validation.
+FIELD_MAX_LENGTHS = {
+    "finding": 256,
+    "path": 512,
+    "description": 2048,
+    "reason": 2048,
+    "strategy_change": 2048,
+    "summary": 4096,
+    "dp_description": 2048,
+    "dp_rationale": 2048,
+    "dp_alternative": 256,
+}
+
+TRUNCATION_INDICATOR = " [truncated]"
+
+
+def _truncate(value, max_length):
+    """Truncate a string to max_length, appending an indicator if shortened."""
+    if not isinstance(value, str) or len(value) <= max_length:
+        return value
+    return value[: max_length - len(TRUNCATION_INDICATOR)] + TRUNCATION_INDICATOR
+
 
 def build_summary_body(data):
     """Build the markdown summary comment body."""
-    summary = data.get("summary", "Fix agent completed.")
+    summary = _truncate(data.get("summary", "Fix agent completed."), FIELD_MAX_LENGTHS["summary"])
     decision_points = data.get("decision_points", [])
     tests_passed = data.get("tests_passed", False)
     trigger = data.get("trigger_source", "unknown")
@@ -34,9 +58,9 @@ def build_summary_body(data):
     if fixed:
         items = []
         for i, a in enumerate(fixed, 1):
-            finding = a.get("finding", "unknown")
-            desc = a.get("description", "")
-            path = a.get("path", "")
+            finding = _truncate(a.get("finding", "unknown"), FIELD_MAX_LENGTHS["finding"])
+            desc = _truncate(a.get("description", ""), FIELD_MAX_LENGTHS["description"])
+            path = _truncate(a.get("path", ""), FIELD_MAX_LENGTHS["path"])
             path_suffix = f" (`{path}`)" if path else ""
             items.append(f"{i}. **{finding}**{path_suffix}: {desc}")
         fixes_text = "\n".join(items)
@@ -45,8 +69,8 @@ def build_summary_body(data):
     if disagreed:
         items = []
         for i, a in enumerate(disagreed, 1):
-            finding = a.get("finding", "unknown")
-            reason = a.get("reason", "No reason provided.")
+            finding = _truncate(a.get("finding", "unknown"), FIELD_MAX_LENGTHS["finding"])
+            reason = _truncate(a.get("reason", "No reason provided."), FIELD_MAX_LENGTHS["reason"])
             items.append(f"{i}. **{finding}**: {reason}")
         disagree_text = "\n".join(items)
 
@@ -54,9 +78,10 @@ def build_summary_body(data):
     if decision_points:
         dp_items = []
         for dp in decision_points:
-            desc = dp.get("description", "")
-            rationale = dp.get("rationale", "")
+            desc = _truncate(dp.get("description", ""), FIELD_MAX_LENGTHS["dp_description"])
+            rationale = _truncate(dp.get("rationale", ""), FIELD_MAX_LENGTHS["dp_rationale"])
             alts = dp.get("alternatives", [])
+            alts = [_truncate(a, FIELD_MAX_LENGTHS["dp_alternative"]) for a in alts]
             alt_text = ", ".join(alts) if alts else "none considered"
             dp_items.append(f"- {desc} (alternatives: {alt_text}; rationale: {rationale})")
         dp_text = (
@@ -78,7 +103,9 @@ def build_summary_body(data):
 
     sections.append(f"**Tests:** {tests_str}")
 
-    strategy_change = data.get("strategy_change", "")
+    strategy_change = _truncate(
+        data.get("strategy_change", ""), FIELD_MAX_LENGTHS["strategy_change"]
+    )
     if strategy_change:
         sections.append(f"\n> **Strategy change:** {strategy_change}")
 

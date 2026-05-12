@@ -166,6 +166,120 @@ class TestBuildSummaryBody(unittest.TestCase):
         self.assertNotIn("(`", body)
 
 
+_truncate = mod._truncate
+FIELD_MAX_LENGTHS = mod.FIELD_MAX_LENGTHS
+TRUNCATION_INDICATOR = mod.TRUNCATION_INDICATOR
+
+
+class TestFieldTruncation(unittest.TestCase):
+    """Verify that fields exceeding schema maxLength are truncated."""
+
+    def test_truncate_short_string_unchanged(self):
+        self.assertEqual(_truncate("hello", 256), "hello")
+
+    def test_truncate_at_boundary_unchanged(self):
+        s = "a" * 256
+        self.assertEqual(_truncate(s, 256), s)
+
+    def test_truncate_over_limit(self):
+        s = "a" * 300
+        result = _truncate(s, 256)
+        self.assertLessEqual(len(result), 256)
+        self.assertTrue(result.endswith(TRUNCATION_INDICATOR))
+
+    def test_truncate_non_string_unchanged(self):
+        self.assertIsNone(_truncate(None, 256))
+        self.assertEqual(_truncate(42, 256), 42)
+
+    def test_build_summary_body_truncates_oversized_fields(self):
+        """Verify that fields exceeding schema maxLength are truncated."""
+        data = {
+            "summary": "x" * 5000,  # exceeds 4096
+            "actions": [
+                {
+                    "type": "fix",
+                    "finding": "A" * 500,  # exceeds 256
+                    "description": "B" * 3000,  # exceeds 2048
+                    "path": "C" * 600,  # exceeds 512
+                },
+            ],
+            "tests_passed": True,
+        }
+        body = build_summary_body(data)
+        # Oversized fields must be truncated
+        self.assertNotIn("A" * 257, body)
+        self.assertNotIn("B" * 2049, body)
+        self.assertNotIn("C" * 513, body)
+        self.assertNotIn("x" * 4097, body)
+        self.assertIn(TRUNCATION_INDICATOR, body)
+
+    def test_within_limit_fields_not_truncated(self):
+        """Verify that fields within limits are not modified."""
+        data = {
+            "summary": "short summary",
+            "actions": [
+                {
+                    "type": "fix",
+                    "finding": "small",
+                    "description": "ok",
+                    "path": "f.py",
+                },
+            ],
+            "tests_passed": True,
+        }
+        body = build_summary_body(data)
+        self.assertNotIn(TRUNCATION_INDICATOR, body)
+        self.assertIn("small", body)
+        self.assertIn("short summary", body)
+
+    def test_disagree_reason_truncated(self):
+        data = {
+            "summary": "Done.",
+            "tests_passed": True,
+            "actions": [
+                {
+                    "type": "disagree",
+                    "finding": "F" * 500,
+                    "reason": "R" * 3000,
+                },
+            ],
+        }
+        body = build_summary_body(data)
+        self.assertNotIn("F" * 257, body)
+        self.assertNotIn("R" * 2049, body)
+        self.assertIn(TRUNCATION_INDICATOR, body)
+
+    def test_strategy_change_truncated(self):
+        data = {
+            "summary": "Done.",
+            "tests_passed": True,
+            "actions": [],
+            "strategy_change": "S" * 3000,
+        }
+        body = build_summary_body(data)
+        self.assertNotIn("S" * 2049, body)
+        self.assertIn(TRUNCATION_INDICATOR, body)
+
+    def test_decision_point_fields_truncated(self):
+        data = {
+            "summary": "Done.",
+            "tests_passed": True,
+            "actions": [],
+            "decision_points": [
+                {
+                    "description": "D" * 3000,
+                    "rationale": "R" * 3000,
+                    "alternatives": ["A" * 500],
+                },
+            ],
+        }
+        body = build_summary_body(data)
+        self.assertNotIn("D" * 2049, body)
+        self.assertNotIn("R" * 2049, body)
+        self.assertNotIn("A" * 257, body)
+        self.assertIn(TRUNCATION_INDICATOR, body)
+
+
 post_summary = mod.post_summary
 MAX_COMMENT_LENGTH = mod.MAX_COMMENT_LENGTH
 
