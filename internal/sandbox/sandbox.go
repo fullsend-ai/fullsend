@@ -135,19 +135,13 @@ func EnsureAvailable() error {
 	return nil
 }
 
-// EnsureGateway starts a local gateway if none is active. It is idempotent —
-// if a gateway is already running the command is a no-op.
+// EnsureGateway verifies that an openshell gateway is already running.
+// The gateway must be started externally (e.g. in CI via the action.yml steps)
+// before invoking fullsend run.
 func EnsureGateway() error {
-	// Check if a gateway is already active.
-	check := exec.Command("openshell", "gateway", "info")
-	if err := check.Run(); err == nil {
-		return nil
-	}
-
-	cmd := exec.Command("openshell", "gateway", "start")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gateway start failed: %s", string(out))
+	check := exec.Command("openshell", "gateway", "list")
+	if err := check.Run(); err != nil {
+		return fmt.Errorf("no openshell gateway running — start openshell-gateway before running fullsend")
 	}
 	return nil
 }

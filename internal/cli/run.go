@@ -197,7 +197,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	gatewayStart := time.Now()
 	printer.StepStart("Ensuring gateway")
 	if err := sandbox.EnsureGateway(); err != nil {
-		printer.StepFail("Failed to start gateway")
+		printer.StepFail("Gateway not running")
 		return fmt.Errorf("starting gateway: %w", err)
 	}
 	printer.StepDone(fmt.Sprintf("Gateway ready (%.1fs)", time.Since(gatewayStart).Seconds()))

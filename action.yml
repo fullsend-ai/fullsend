@@ -129,27 +129,69 @@ runs:
       shell: bash
       run: fullsend --version
 
-    - name: Install OpenShell
+    - uses: astral-sh/setup-uv@v6
+
+    - name: Install OpenShell CLI
+      shell: bash
+      run: |
+        uv tool install openshell==0.0.38
+        openshell --version
+
+    - name: Download openshell-gateway
       shell: bash
       run: |
         set -euo pipefail
-        max_attempts=3
-        attempt=1
-        delay=5
-        while true; do
-          if curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.0.36/install.sh | OPENSHELL_VERSION=v0.0.36 sh; then
-            break
-          fi
-          if (( attempt >= max_attempts )); then
-            echo "::error::OpenShell install failed after ${max_attempts} attempts"
-            exit 1
-          fi
-          echo "::warning::OpenShell install attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
-          sleep "${delay}"
-          (( attempt++ ))
-          (( delay *= 3 ))
+        GATEWAY_ASSET="openshell-gateway-x86_64-unknown-linux-gnu.tar.gz"
+        GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v0.0.38/${GATEWAY_ASSET}"
+        curl -fsSL "${GATEWAY_URL}" -o "/tmp/${GATEWAY_ASSET}"
+        tar xzf "/tmp/${GATEWAY_ASSET}" -C "${RUNNER_TEMP}/fullsend"
+        rm -f "/tmp/${GATEWAY_ASSET}"
+
+    - name: Pull sandbox images
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "${SANDBOX_TOKEN}" | docker login ghcr.io -u x-access-token --password-stdin
+        docker pull ghcr.io/nvidia/openshell/supervisor:latest
+      env:
+        SANDBOX_TOKEN: ${{ inputs.sandbox-token || github.token }}
+
+    - name: Start openshell-gateway
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        "${RUNNER_TEMP}/fullsend/openshell-gateway" \
+          --bind-address 0.0.0.0 \
+          --port 8080 \
+          --health-port 8081 \
+          --ssh-gateway-port 8080 \
+          --drivers docker \
+          --grpc-endpoint http://host.docker.internal:8080 \
+          --disable-tls \
+          --db-url "sqlite:/tmp/gateway.db?mode=rwc" \
+          --sandbox-image-pull-policy IfNotPresent \
+          --docker-supervisor-image "ghcr.io/nvidia/openshell/supervisor:latest" \
+          --log-level info &
+
+        for i in $(seq 1 30); do
+          curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 && break
+          sleep 2
         done
-        openshell --version
+        curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 || { echo "::error::Gateway health check failed"; exit 1; }
+
+        CONFIG_DIR="${HOME}/.config/openshell"
+        mkdir -p "${CONFIG_DIR}/gateways/ci-gateway"
+        cat > "${CONFIG_DIR}/gateways/ci-gateway/metadata.json" <<'GWEOF'
+        {
+          "name": "ci-gateway",
+          "gateway_endpoint": "http://127.0.0.1:8080",
+          "is_remote": false,
+          "gateway_port": 8080,
+          "auth_mode": "plaintext"
+        }
+        GWEOF
+        printf 'ci-gateway' > "${CONFIG_DIR}/active_gateway"
 
     - name: Install validation dependencies
       shell: bash
