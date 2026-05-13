@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "git-submodules": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track OpenShell version pin in composite action",
+      "fileMatch": [
+        "internal/scaffold/fullsend-repo/\\.github/actions/fullsend/action\\.yml$"
+      ],
+      "matchStrings": [
+        "OPENSHELL_VERSION=v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "NVIDIA/OpenShell",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ]
+}
