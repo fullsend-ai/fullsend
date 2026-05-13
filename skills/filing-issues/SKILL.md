@@ -74,7 +74,23 @@ reader would need. Then ask your clarifying questions:
 
 Wait for the user's answers before proceeding.
 
-### 4. Write the issue
+### 4. Assess issue structure
+
+Determine whether the user's request requires a single issue or multiple linked
+issues. Signals that indicate multiple issues:
+
+- Multiple distinct deliverables (e.g. an ADR, a feature implementation, and an
+  experiment).
+- Work spanning multiple repositories.
+- A natural parent that decomposes into independent sub-tasks.
+
+If any of these apply, ask the user whether they want a parent issue with
+sub-issues. If they confirm, proceed to **"Multi-issue hierarchies"** below
+instead of steps 5–6.
+
+If the request is a single issue, continue with step 5.
+
+### 5. Write the issue
 
 Draft the issue title and body.
 
@@ -104,7 +120,7 @@ that convention. Avoid vague words like "issue with" or "problem in."
 
 Present the draft to the user. Wait for approval or edits before filing.
 
-### 5. File the issue
+### 6. File the issue
 
 After the user approves the draft:
 
@@ -119,37 +135,90 @@ EOF
 
 Return the issue URL to the user.
 
-#### Sub-issues (parent / child in GitHub)
+## Multi-issue hierarchies
 
-When the user wants a **child issue under a parent** (epic, breakdown, hierarchy),
-GitHub’s **sub-issue relationship is not created by the issue body**. Text like
-“Part of #N” or cross-links is optional for readers only; the graph stays flat
-without an API call.
+When step 4 determines the request needs multiple linked issues, use GitHub
+sub-issues to create a parent/child hierarchy.
 
-After creating the parent and child (parent first, then child), link them with
-the **REST sub-issues API**:
+### Plan the hierarchy
 
-1. Resolve the child’s **database `id`** (integer), which is **not** the issue
-   `number`, and assign it (example: `CHILD_ID=$(gh api ... --jq .id)`):
-   ```bash
-   CHILD_ID=$(gh api repos/<owner>/<name>/issues/<child_number> --jq .id)
-   ```
-2. Attach the child to the parent:
-   ```bash
-   echo "{\"sub_issue_id\": $CHILD_ID}" | gh api repos/<owner>/<name>/issues/<parent_number>/sub_issues \
-     --method POST --input -
-   ```
-   Use `"replace_parent": true` in the JSON body only when moving a child that
-   already has a parent.
-3. Confirm:
-   ```bash
-   gh api repos/<owner>/<name>/issues/<child_number>/parent
-   ```
+Before filing anything, present the full structure to the user:
 
-**GraphQL (alternative):** `addSubIssue` with parent and child node IDs, or
-`createIssue` with `parentIssueId` when the child is created in the same step.
+- Which issue is the parent (tracking issue).
+- Each sub-issue: its target repo, title, and a one-line description.
 
-Do this **after** each `gh issue create` succeeds; then return all issue URLs.
+GitHub allows a maximum of 100 sub-issues per parent and 8 levels of nesting.
+
+Wait for the user to approve the hierarchy before filing.
+
+### File in order
+
+1. **Create the parent issue first.** It has no dependencies. Its body should
+   describe the overall goal — the sub-issues provide the breakdown.
+
+2. **Get the parent's node ID:**
+
+```bash
+gh api graphql -H "GraphQL-Features: sub_issues" -f query='
+  query {
+    repository(owner: "<owner>", name: "<repo>") {
+      issue(number: <N>) { id }
+    }
+  }
+' --jq '.data.repository.issue.id'
+```
+
+3. **For each sub-issue**, create it and immediately link it to the parent:
+
+```bash
+# Create the sub-issue (may target a different repo)
+gh issue create --repo <owner/name> \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+Tracking issue: <owner/repo>#<parent-number>
+
+<body>
+EOF
+)"
+
+# Get the sub-issue's node ID
+CHILD_ID=$(gh api graphql -H "GraphQL-Features: sub_issues" -f query='
+  query {
+    repository(owner: "<owner>", name: "<repo>") {
+      issue(number: <N>) { id }
+    }
+  }
+' --jq '.data.repository.issue.id')
+
+# Link as sub-issue (use GraphQL variables to avoid shell quoting issues)
+gh api graphql -H "GraphQL-Features: sub_issues" \
+  -f parentId="<parent-node-id>" \
+  -f childId="$CHILD_ID" \
+  -f query='mutation($parentId: ID!, $childId: ID!) {
+    addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) {
+      issue { title }
+      subIssue { title }
+    }
+  }'
+```
+
+If the `addSubIssue` mutation fails (permissions, feature not enabled, rate
+limit), report the error and the URLs of all issues created so far to the user.
+
+### Cross-repo sub-issues
+
+GitHub sub-issues support cross-repo linking within the same organization (or
+user account). Cross-organization linking is not supported. When a sub-issue
+targets a different repository:
+
+- Use `--repo <owner/name>` on the `gh issue create` call to target the correct
+  repo.
+- Include `Tracking issue: <owner/repo>#<number>` in the sub-issue body so the
+  relationship is visible even outside the GitHub sub-issues UI.
+
+### Report
+
+Return all issue URLs to the user, grouped by parent and sub-issues.
 
 ## Constraints
 
@@ -159,5 +228,6 @@ Do this **after** each `gh issue create` succeeds; then return all issue URLs.
   numbers, error messages, or reproduction steps.
 - **Respect the repo's conventions.** If existing issues use a template or
   follow a pattern, match it. Check `.github/ISSUE_TEMPLATE/` if it exists.
-- **Sub-issues:** If there is a parent/child hierarchy, use GitHub’s sub-issue
-  API after creation; do not rely on body mentions alone.
+- **Use sub-issues for hierarchies.** When filing multiple linked issues, create
+  the parent first and link sub-issues via the GraphQL API. Do not rely on
+  markdown task lists as the tracking mechanism.
