@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -891,4 +892,94 @@ func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
 	data, err := os.ReadFile(destPath)
 	require.NoError(t, err)
 	assert.Equal(t, "good binary", string(data))
+}
+
+func TestNotifyValidationFailure_SkipsWhenNoPRNumber(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{
+			"REPO_FULL_NAME": "owner/repo",
+			"PUSH_TOKEN":     "test-token",
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	// Should not panic or attempt to post — just log and return.
+	notifyValidationFailure(h, 2, printer)
+
+	output := buf.String()
+	assert.Contains(t, output, "PR_NUMBER or REPO_FULL_NAME not set")
+}
+
+func TestNotifyValidationFailure_SkipsWhenNoRepoFullName(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{
+			"PR_NUMBER":  "123",
+			"PUSH_TOKEN": "test-token",
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	notifyValidationFailure(h, 2, printer)
+
+	output := buf.String()
+	assert.Contains(t, output, "PR_NUMBER or REPO_FULL_NAME not set")
+}
+
+func TestNotifyValidationFailure_SkipsWhenNoToken(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{
+			"PR_NUMBER":      "123",
+			"REPO_FULL_NAME": "owner/repo",
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	notifyValidationFailure(h, 2, printer)
+
+	output := buf.String()
+	assert.Contains(t, output, "no API token available")
+}
+
+func TestNotifyValidationFailure_UsesReviewTokenFallback(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{
+			"PR_NUMBER":      "123",
+			"REPO_FULL_NAME": "owner/repo",
+			"REVIEW_TOKEN":   "review-token",
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	// gh CLI won't be available in test, so this will warn about the failure.
+	// The important thing is it attempts the post (doesn't skip due to missing token).
+	notifyValidationFailure(h, 2, printer)
+
+	output := buf.String()
+	assert.NotContains(t, output, "no API token available")
+}
+
+func TestNotifyValidationFailure_UsesGitHubTokenFallback(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "gh-token")
+
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{
+			"PR_NUMBER":      "123",
+			"REPO_FULL_NAME": "owner/repo",
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	notifyValidationFailure(h, 2, printer)
+
+	output := buf.String()
+	assert.NotContains(t, output, "no API token available")
 }

@@ -611,6 +611,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	printer.Blank()
 
 	if h.ValidationLoop != nil && !validationPassed {
+		notifyValidationFailure(h, runCount, printer)
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
 	}
 
@@ -1589,6 +1590,60 @@ func injectTraceID(sandboxName, traceID string) error {
 	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
 	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	return err
+}
+
+// notifyValidationFailure posts a minimal failure comment on the PR when
+// validation fails. This does NOT process agent output (respecting ADR 0022's
+// zero-trust model) — it only reports that validation failed, with the
+// iteration count and a link to the Actions run.
+//
+// Best-effort: failures to post are logged as warnings but never block the run.
+func notifyValidationFailure(h *harness.Harness, runCount int, printer *ui.Printer) {
+	prNumber := h.RunnerEnv["PR_NUMBER"]
+	repoFullName := h.RunnerEnv["REPO_FULL_NAME"]
+	if prNumber == "" || repoFullName == "" {
+		printer.StepInfo("Skipping validation failure notification: PR_NUMBER or REPO_FULL_NAME not set")
+		return
+	}
+
+	// Resolve a token for the gh CLI. Agents use different token names
+	// (PUSH_TOKEN for fix/code, REVIEW_TOKEN for review).
+	token := h.RunnerEnv["PUSH_TOKEN"]
+	if token == "" {
+		token = h.RunnerEnv["REVIEW_TOKEN"]
+	}
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	if token == "" {
+		printer.StepInfo("Skipping validation failure notification: no API token available")
+		return
+	}
+
+	// Build Actions run URL from standard GitHub Actions env vars.
+	var runURL string
+	if serverURL, repo, runID := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY"), os.Getenv("GITHUB_RUN_ID"); serverURL != "" && repo != "" && runID != "" {
+		runURL = fmt.Sprintf("%s/%s/actions/runs/%s", serverURL, repo, runID)
+	}
+
+	body := fmt.Sprintf("⚠️ Agent validation failed after %d iteration(s) without producing valid output.", runCount)
+	if runURL != "" {
+		body += fmt.Sprintf(" [View run](%s).", runURL)
+	}
+	body += "\n\nYou may need to apply changes manually or re-run."
+
+	cmd := exec.Command("gh", "pr", "comment", prNumber,
+		"--repo", repoFullName,
+		"--body", body)
+	cmd.Env = append(os.Environ(), "GH_TOKEN="+token)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to post validation failure comment: %s (%s)",
+			err, strings.TrimSpace(string(output))))
+		return
+	}
+	printer.StepDone("Posted validation failure notification to PR #" + prNumber)
 }
 
 // applySandboxImageOverride replaces image with the FULLSEND_SANDBOX_IMAGE env
