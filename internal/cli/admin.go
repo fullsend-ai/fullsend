@@ -435,7 +435,7 @@ func runPerRepoInstall(ctx context.Context, repoFullName, agents, mintURL, infer
 
 	var files []forge.TreeFile
 	files = append(files, forge.TreeFile{
-		Path:    ".github/workflows/fullsend.yml",
+		Path:    ".github/workflows/fullsend.yaml",
 		Content: shimContent,
 		Mode:    "100644",
 	})
