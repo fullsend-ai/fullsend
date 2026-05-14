@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# lint-commit-message — validate that a message follows Conventional Commits.
+# Uses gitlint with the repo's .gitlint config.
+#
+# Usage:
+#   echo "feat: add thing" | ./hack/lint-commit-message
+#   ./hack/lint-commit-message "feat: add thing"
+
+set -euo pipefail
+
+TMPFILE=$(mktemp)
+trap 'rm -f "${TMPFILE}"' EXIT
+
+if [ $# -ge 1 ]; then
+  echo "$1" > "${TMPFILE}"
+else
+  cat > "${TMPFILE}"
+fi
+
+uvx --from gitlint gitlint --config .gitlint --msg-filename "${TMPFILE}"

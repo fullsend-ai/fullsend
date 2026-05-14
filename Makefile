@@ -62,6 +62,7 @@ bootstrap:
 	tar xzf /tmp/lychee.tar.gz -C "$(BOOTSTRAP_BIN_DIR)" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
 	@echo "==> Installing pre-commit hooks..."
 	PATH="$(BOOTSTRAP_BIN_DIR):$(PATH)" pre-commit install
+	PATH="$(BOOTSTRAP_BIN_DIR):$(PATH)" pre-commit install --hook-type commit-msg
 	@echo ""
 	@echo "==> Bootstrap complete!"
 	@echo "    Make sure $(BOOTSTRAP_BIN_DIR) is on your PATH."
