@@ -109,6 +109,10 @@ When **no** pending comment text remains, **delete `comments.md`** so the topic 
 
 Commit only if the user or automation **explicitly** asked to commit. Otherwise leave changes in the working tree and report paths.
 
+For **GitHub PR round-trips** (ingest PR review comments, commit `spec.md` / `qna.md` to the PR branch, optional push and thread replies), use **`spec-refine-github`** instead of relying on this skill alone—it owns `gh`, PR-scoped eligibility, and harness vs local writes.
+
 ## Aftercare (message to user)
 
 In the final reply, list the **topic directory path**, summarize **what changed** in `spec.md`, `qna.md`, and `comments.md` (including deletion), and surface the **top** remaining `## Q-NN` items that still need human decisions (**Kind:** `open`, or high blast-radius assumptions).
+
+If the work was driven from a **spec PR** and you need push/thread-reply automation, point the user at **`spec-refine-github`** for the next step.
