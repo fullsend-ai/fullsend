@@ -1,0 +1,162 @@
+name: Auto Release
+
+# Cut a release every 4 hours if there are releasable changes on main.
+# Can also be triggered manually via workflow_dispatch.
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  auto-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          # A fine-grained PAT with contents:write on this repo.
+          # The default GITHUB_TOKEN cannot be used here because tags
+          # pushed by it do not trigger other workflows (GitHub's
+          # anti-cascade rule), so release.yml would never fire.
+          token: ${{ secrets.AUTO_RELEASE_TOKEN }}
+
+      - name: Determine release
+        id: release
+        run: |
+          set -euo pipefail
+
+          # --- Find the latest semver tag ---
+          LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [ -z "${LATEST_TAG}" ]; then
+            echo "No existing semver tag found — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Latest tag: ${LATEST_TAG}"
+
+          # --- Collect non-merge commit subjects since the last tag ---
+          SUBJECTS=$(git log --no-merges --format='%s' "${LATEST_TAG}..HEAD")
+          if [ -z "${SUBJECTS}" ]; then
+            echo "No new commits since ${LATEST_TAG} — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # --- Classify commits by conventional commit type ---
+          HAS_FEAT=false
+          HAS_FIX=false
+          HAS_BREAKING=false
+
+          while IFS= read -r subject; do
+            # Check for breaking change marker (! after type/scope)
+            if echo "${subject}" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+              HAS_BREAKING=true
+            fi
+
+            type=$(echo "${subject}" | sed -n 's/^\([a-z]*\)\(([^)]*)\)\?!*:.*/\1/p')
+            case "${type}" in
+              feat) HAS_FEAT=true ;;
+              fix)  HAS_FIX=true ;;
+            esac
+          done <<< "${SUBJECTS}"
+
+          # --- Only release if there are feat or fix commits ---
+          if ! ${HAS_FEAT} && ! ${HAS_FIX}; then
+            echo "No feat or fix commits since ${LATEST_TAG} — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # --- Determine version bump ---
+          # Parse current version components
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "${VERSION}" | cut -d. -f1)
+          MINOR=$(echo "${VERSION}" | cut -d. -f2)
+          PATCH=$(echo "${VERSION}" | cut -d. -f3 | sed 's/-.*//')
+
+          # ============================================================
+          # PRE-1.0 VERSIONING
+          #
+          # While we are pre-1.0, breaking changes bump MINOR (not
+          # MAJOR). This matches the common convention that 0.x.y
+          # releases treat minor as the breaking-change slot.
+          #
+          # When we are ready to cut 1.0:
+          #   1. Change the HAS_BREAKING block below to bump MAJOR
+          #   2. Remove this comment block
+          #   3. Update the cutting-releases skill if needed
+          # ============================================================
+          if ${HAS_BREAKING}; then
+            # Pre-1.0: breaking changes bump minor
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          elif ${HAS_FEAT}; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            # fix only
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEXT_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Next tag: ${NEXT_TAG}"
+          {
+            echo "skip=false"
+            echo "next_tag=${NEXT_TAG}"
+            echo "latest_tag=${LATEST_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build tag annotation
+        if: steps.release.outputs.skip != 'true'
+        id: annotation
+        env:
+          LATEST_TAG: ${{ steps.release.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+
+          BODY=""
+          FEATS=$(git log --no-merges --format='%s' "${LATEST_TAG}..HEAD" | grep -E '^feat(\([^)]*\))?!?:' || true)
+          FIXES=$(git log --no-merges --format='%s' "${LATEST_TAG}..HEAD" | grep -E '^fix(\([^)]*\))?!?:' || true)
+
+          if [ -n "${FEATS}" ]; then
+            BODY+="Features:"$'\n'
+            while IFS= read -r line; do
+              # Strip the type prefix to get just the description
+              desc="${line#*: }"
+              BODY+="- ${desc}"$'\n'
+            done <<< "${FEATS}"
+            BODY+=$'\n'
+          fi
+
+          if [ -n "${FIXES}" ]; then
+            BODY+="Bug Fixes:"$'\n'
+            while IFS= read -r line; do
+              desc="${line#*: }"
+              BODY+="- ${desc}"$'\n'
+            done <<< "${FIXES}"
+          fi
+
+          # Write to a file to avoid quoting issues
+          echo "${BODY}" > /tmp/tag-body.txt
+          echo "body_file=/tmp/tag-body.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Push tag
+        if: steps.release.outputs.skip != 'true'
+        env:
+          NEXT_TAG: ${{ steps.release.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # No subject line — GoReleaser's name_template will use just
+          # the tag as the release title.
+          git tag -a "${NEXT_TAG}" -F /tmp/tag-body.txt
+          git push origin "${NEXT_TAG}"
+
+          echo "Pushed ${NEXT_TAG} — release.yml will take it from here."
