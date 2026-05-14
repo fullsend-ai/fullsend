@@ -12,7 +12,7 @@ disable-model-invocation: true
 
 # spec-refine-github (PR comments into spec and Q&A, push updates)
 
-Use this skill **together with `spec-refine`** (and **`spec-start`** for `qna.md` / `spec.md` grammar). This document adds **GitHub + git + PR** mechanics only. **Do not** duplicate the Phase 1–3 procedure in [`skills/spec-refine/SKILL.md`](skills/spec-refine/SKILL.md)—after you prepare `comments.md` / `qna.md` from GitHub data, run that file’s phases **in order** on the resolved topic directory.
+Use this skill **together with `spec-refine`** (and **`spec-start`** for `qna.md` / `spec.md` grammar). This document adds **GitHub + git + PR** mechanics only. **Do not** duplicate the Phase 1–3 procedure in [`spec-refine/SKILL.md`](../spec-refine/SKILL.md)—after you prepare `comments.md` / `qna.md` from GitHub data, run that file’s phases **in order** on the resolved topic directory.
 
 When a session only needs local planning files without GitHub, use **`spec-refine`** alone.
 
@@ -120,7 +120,7 @@ When multiple GitHub threads map to the same `## Q-NN`, preserve **thread order*
 
 ## Step 5 — Run `spec-refine`
 
-Execute **Phase 1 → Phase 2 → Phase 3** from [`skills/spec-refine/SKILL.md`](skills/spec-refine/SKILL.md) on the single topic directory you locked in Step 2.
+Execute **Phase 1 → Phase 2 → Phase 3** from [`spec-refine/SKILL.md`](../spec-refine/SKILL.md) on the single topic directory you locked in Step 2.
 
 ## Step 6 — Commit (never `comments.md`)
 
