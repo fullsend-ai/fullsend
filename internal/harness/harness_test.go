@@ -531,6 +531,59 @@ func TestValidateFilesExist_SkipsVarPaths(t *testing.T) {
 	require.NoError(t, h.ValidateFilesExist())
 }
 
+func TestValidate_PluginNameValid(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Plugins: []string{"plugins/gopls-lsp", "plugins/my_plugin-2"},
+	}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_PluginNameInvalid(t *testing.T) {
+	for _, name := range []string{"my plugin", "foo;bar", "bad@name"} {
+		h := &Harness{
+			Agent:   "agents/test.md",
+			Plugins: []string{"plugins/" + name},
+		}
+		err := h.Validate()
+		require.Error(t, err, "expected error for plugin name %q", name)
+		assert.Contains(t, err.Error(), "contains invalid characters")
+	}
+}
+
+func TestResolveRelativeTo_Plugins(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Plugins: []string{"plugins/gopls-lsp"},
+	}
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+	assert.Equal(t, []string{"/base/dir/plugins/gopls-lsp"}, h.Plugins)
+}
+
+func TestResolveRelativeTo_PluginTraversalRejected(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Plugins: []string{"../../etc/evil"},
+	}
+	err := h.ResolveRelativeTo("/base/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
+}
+
+func TestValidateFilesExist_MissingPlugin(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+
+	h := &Harness{
+		Agent:   agentFile,
+		Plugins: []string{"/nonexistent/plugin"},
+	}
+	err := h.ValidateFilesExist()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0]")
+}
+
 func TestValidateFilesExist_SkipsOptionalPaths(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")

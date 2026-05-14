@@ -150,6 +150,9 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	if len(h.Skills) > 0 {
 		printer.KeyValue("Skills", strings.Join(h.Skills, ", "))
 	}
+	if len(h.Plugins) > 0 {
+		printer.KeyValue("Plugins", strings.Join(h.Plugins, ", "))
+	}
 	if h.AgentInput != "" {
 		printer.KeyValue("Agent input", h.AgentInput)
 	}
@@ -414,7 +417,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 9c. Run agent with validation loop.
 	agentBaseName := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
-	claudeCmd := buildClaudeCommand(agentBaseName, h.Model, repoDir)
+	var pluginDirs []string
+	for _, p := range h.Plugins {
+		pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", sandbox.SandboxClaudeConfig, filepath.Base(p)))
+	}
+	claudeCmd := buildClaudeCommand(agentBaseName, h.Model, repoDir, pluginDirs)
 
 	timeout := time.Duration(h.TimeoutMinutes) * time.Minute
 	if timeout == 0 {
@@ -615,8 +622,8 @@ func bootstrapSandbox(sandboxName, repoDir, fullsendBinary string, h *harness.Ha
 	// Agent and skill definitions go in CLAUDE_CONFIG_DIR so `claude --agent`
 	// finds them regardless of the repo's own .claude/ directory. When
 	// CLAUDE_CONFIG_DIR is set, Claude uses it instead of ~/.claude/.
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/hooks %s/bin %s/.env.d %s/.security %s %s/.claude/hooks",
-		sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/hooks %s/plugins %s/bin %s/.env.d %s/.security %s %s/.claude/hooks",
+		sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig, sandbox.SandboxWorkspace)
 	if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
 		return fmt.Errorf("creating workspace dirs: %w", err)
 	}
@@ -739,6 +746,35 @@ func bootstrapSandbox(sandboxName, repoDir, fullsendBinary string, h *harness.Ha
 		}
 	}
 
+	// Scan plugin definitions for injection before copying into sandbox.
+	if scanPipeline != nil {
+		for _, pluginPath := range h.Plugins {
+			for _, name := range []string{"plugin.json", ".lsp.json"} {
+				content, err := os.ReadFile(filepath.Join(pluginPath, name))
+				if err != nil {
+					continue
+				}
+				result := scanPipeline.Scan(string(content))
+				if security.HasCriticalFindings(result.Findings) {
+					if h.FailModeClosed() {
+						return fmt.Errorf("plugin %q blocked: critical injection findings in %s", pluginPath, name)
+					}
+					fmt.Fprintf(os.Stderr, "WARNING: plugin %q has critical injection findings in %s (fail_mode: open)\n", pluginPath, name)
+				} else if len(result.Findings) > 0 {
+					fmt.Fprintf(os.Stderr, "WARNING: plugin %q has %d injection finding(s) in %s\n", pluginPath, len(result.Findings), name)
+				}
+			}
+		}
+	}
+
+	// Install plugins as marketplace-cached plugins so Claude Code registers
+	// the LSP tool.
+	if len(h.Plugins) > 0 {
+		if err := bootstrapPlugins(sandboxName, h.Plugins); err != nil {
+			return fmt.Errorf("bootstrapping plugins: %w", err)
+		}
+	}
+
 	// Write .env file (infrastructure vars) and copy host files.
 	if err := bootstrapEnv(sandboxName, repoDir, h); err != nil {
 		return fmt.Errorf("bootstrapping environment: %w", err)
@@ -772,7 +808,12 @@ func bootstrapEnv(sandboxName, repoDir string, h *harness.Harness) error {
 	var lines []string
 
 	// Infrastructure vars.
-	lines = append(lines, fmt.Sprintf("export PATH=%s/bin:$PATH", sandbox.SandboxWorkspace))
+	pathExport := fmt.Sprintf("export PATH=%s/bin", sandbox.SandboxWorkspace)
+	if len(h.Plugins) > 0 {
+		pathExport += ":/usr/local/go/bin"
+	}
+	pathExport += ":$PATH"
+	lines = append(lines, pathExport)
 	lines = append(lines, fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s", sandbox.SandboxClaudeConfig))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_TARGET_REPO_DIR=%s", repoDir))
@@ -1014,7 +1055,7 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 	return nil
 }
 
-func buildClaudeCommand(agentName, model, repoDir string) string {
+func buildClaudeCommand(agentName, model, repoDir string, pluginDirs []string) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 
 	// Defense-in-depth: escape single quotes even though Validate() rejects them.
@@ -1025,12 +1066,21 @@ func buildClaudeCommand(agentName, model, repoDir string) string {
 		modelFlag = fmt.Sprintf("--model '%s' ", strings.ReplaceAll(model, "'", "'\\''"))
 	}
 
+	var pluginDirParts []string
+	for _, pd := range pluginDirs {
+		pluginDirParts = append(pluginDirParts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
+	}
+	pluginDirFlags := ""
+	if len(pluginDirParts) > 0 {
+		pluginDirFlags = strings.Join(pluginDirParts, " ") + " "
+	}
+
 	return fmt.Sprintf(
 		// --verbose increases log output in the job log. If artifact upload is
 		// added to this workflow, consider whether verbose output should be
 		// redacted or made conditional via an env var.
-		"cd %s && . %s && claude --print --verbose --output-format stream-json %s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
-		repoDir, envFile, modelFlag, safe,
+		"cd %s && . %s && claude --print --verbose --output-format stream-json %s%s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
+		repoDir, envFile, modelFlag, pluginDirFlags, safe,
 	)
 }
 
@@ -1390,6 +1440,144 @@ func bootstrapSecurityHooks(sandboxName string, h *harness.Harness) error {
 	}
 
 	return nil
+}
+
+// bootstrapPlugins installs Claude Code plugins as marketplace-cached plugins.
+// Claude Code's LSP tool only registers when lspServers config comes from a
+// marketplace plugin definition. This function replicates the file structure
+// from https://github.com/anthropics/claude-plugins-official (public repo).
+// Schema: https://json.schemastore.org/claude-code-marketplace.json
+// When Claude Code adds SEED_DIR support in --print mode, this can be replaced
+// with: CLAUDE_CODE_PLUGIN_SEED_DIR pointed at a pre-built plugin directory.
+func bootstrapPlugins(sandboxName string, plugins []string) error {
+	const marketplace = "claude-plugins-official"
+	const version = "1.0.0"
+	pluginsBase := sandbox.SandboxClaudeConfig + "/plugins"
+	mktBase := pluginsBase + "/marketplaces/" + marketplace
+
+	// Create all directories and README stubs in a single batched command.
+	var mkdirParts, echoParts []string
+	mkdirParts = append(mkdirParts, mktBase+"/.claude-plugin")
+	for _, p := range plugins {
+		name := filepath.Base(p)
+		cacheDir := fmt.Sprintf("%s/cache/%s/%s/%s", pluginsBase, marketplace, name, version)
+		mkdirParts = append(mkdirParts, mktBase+"/plugins/"+name, cacheDir)
+		echoParts = append(echoParts,
+			fmt.Sprintf("echo '# %s' > %s/README.md", name, cacheDir),
+			fmt.Sprintf("echo '# %s' > %s/plugins/%s/README.md", name, mktBase, name),
+		)
+	}
+	batchCmd := "mkdir -p " + strings.Join(mkdirParts, " ")
+	if len(echoParts) > 0 {
+		batchCmd += " && " + strings.Join(echoParts, " && ")
+	}
+	if _, _, _, err := sandbox.Exec(sandboxName, batchCmd, 10*time.Second); err != nil {
+		return fmt.Errorf("creating marketplace dirs: %w", err)
+	}
+
+	// Upload plugin directories into sandbox.
+	for _, pluginPath := range plugins {
+		if err := sandbox.Upload(sandboxName, pluginPath,
+			fmt.Sprintf("%s/plugins/", sandbox.SandboxClaudeConfig)); err != nil {
+			return fmt.Errorf("copying plugin %q: %w", pluginPath, err)
+		}
+	}
+
+	// Build and upload marketplace config files.
+	configs, err := buildPluginConfigs(plugins, pluginsBase, mktBase, marketplace, version)
+	if err != nil {
+		return fmt.Errorf("building plugin configs: %w", err)
+	}
+	for _, entry := range configs {
+		tmp, err := os.CreateTemp("", "fullsend-plugin-*.json")
+		if err != nil {
+			return fmt.Errorf("creating temp file for %s: %w", filepath.Base(entry.path), err)
+		}
+		if _, err := tmp.Write(entry.data); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return fmt.Errorf("writing %s: %w", filepath.Base(entry.path), err)
+		}
+		tmp.Close()
+		uploadErr := sandbox.Upload(sandboxName, tmp.Name(), entry.path)
+		os.Remove(tmp.Name())
+		if uploadErr != nil {
+			return fmt.Errorf("uploading %s: %w", filepath.Base(entry.path), uploadErr)
+		}
+	}
+	return nil
+}
+
+type pluginConfigEntry struct {
+	path string
+	data []byte
+}
+
+// buildPluginConfigs builds the marketplace JSON config files for the given plugins.
+// Returns entries for marketplace.json, known_marketplaces.json, installed_plugins.json,
+// and settings.json.
+func buildPluginConfigs(plugins []string, pluginsBase, mktBase, marketplace, version string) ([]pluginConfigEntry, error) {
+	var mktPlugins []any
+	installedPlugins := map[string]any{}
+	enabledPlugins := map[string]bool{}
+	ts := "2026-01-01T00:00:00.000Z"
+
+	for _, pluginPath := range plugins {
+		name := filepath.Base(pluginPath)
+		qualifiedName := name + "@" + marketplace
+		cacheDir := fmt.Sprintf("%s/cache/%s/%s/%s", pluginsBase, marketplace, name, version)
+
+		mp := map[string]any{
+			"name": name, "version": version,
+			"source": "./plugins/" + name, "category": "development",
+		}
+		if data, err := os.ReadFile(filepath.Join(pluginPath, ".lsp.json")); err == nil {
+			var servers map[string]any
+			if json.Unmarshal(data, &servers) == nil {
+				mp["lspServers"] = servers
+			}
+		}
+		mktPlugins = append(mktPlugins, mp)
+		installedPlugins[qualifiedName] = []map[string]string{{
+			"scope": "user", "installPath": cacheDir, "version": version,
+			"installedAt": ts, "lastUpdated": ts,
+		}}
+		enabledPlugins[qualifiedName] = true
+	}
+
+	entries := []struct {
+		path string
+		data any
+	}{
+		{mktBase + "/.claude-plugin/marketplace.json", map[string]any{
+			"$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+			"name":    marketplace,
+			"owner":   map[string]string{"name": "Anthropic", "email": "support@anthropic.com"},
+			"plugins": mktPlugins,
+		}},
+		{pluginsBase + "/known_marketplaces.json", map[string]any{
+			marketplace: map[string]any{
+				"source":          map[string]string{"source": "github", "repo": "anthropics/claude-plugins-official"},
+				"installLocation": mktBase, "lastUpdated": ts,
+			},
+		}},
+		{pluginsBase + "/installed_plugins.json", map[string]any{
+			"version": 2, "plugins": installedPlugins,
+		}},
+		{sandbox.SandboxClaudeConfig + "/settings.json", map[string]any{
+			"enabledPlugins": enabledPlugins,
+		}},
+	}
+
+	var result []pluginConfigEntry
+	for _, entry := range entries {
+		data, err := json.Marshal(entry.data)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling %s: %w", filepath.Base(entry.path), err)
+		}
+		result = append(result, pluginConfigEntry{path: entry.path, data: data})
+	}
+	return result, nil
 }
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.

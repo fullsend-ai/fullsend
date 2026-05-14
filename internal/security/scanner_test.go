@@ -243,6 +243,9 @@ func TestShouldScan(t *testing.T) {
 	assert.True(t, ShouldScan(".cursorrules"))
 	assert.True(t, ShouldScan("SKILL.md"))
 	assert.True(t, ShouldScan("skill.md"))
+	assert.True(t, ShouldScan("plugin.json"))
+	assert.True(t, ShouldScan("Plugin.json"))
+	assert.True(t, ShouldScan(".lsp.json"))
 	assert.False(t, ShouldScan("README.md"))
 	assert.False(t, ShouldScan("main.go"))
 }

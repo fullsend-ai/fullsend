@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	validAgentName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	validModelName = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
+	validAgentName  = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validModelName  = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
+	validPluginName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	envVarRef      = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
@@ -192,6 +193,7 @@ type Harness struct {
 	Image          string            `yaml:"image,omitempty"`
 	Policy         string            `yaml:"policy,omitempty"`
 	Skills         []string          `yaml:"skills,omitempty"`
+	Plugins        []string          `yaml:"plugins,omitempty"`
 	Providers      []string          `yaml:"providers,omitempty"`
 	HostFiles      []HostFile        `yaml:"host_files,omitempty"`
 	APIServers     []APIServer       `yaml:"api_servers,omitempty"`
@@ -236,6 +238,12 @@ func (h *Harness) Validate() error {
 	}
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
+	}
+	for i, p := range h.Plugins {
+		pluginBase := filepath.Base(p)
+		if !validPluginName.MatchString(pluginBase) {
+			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
+		}
 	}
 	if h.TimeoutMinutes < 0 {
 		return fmt.Errorf("timeout_minutes must be non-negative, got %d", h.TimeoutMinutes)
@@ -340,6 +348,11 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 			return err
 		}
 	}
+	for i := range h.Plugins {
+		if h.Plugins[i], err = resolve(fmt.Sprintf("plugins[%d]", i), h.Plugins[i]); err != nil {
+			return err
+		}
+	}
 	for i, hf := range h.HostFiles {
 		if !strings.Contains(hf.Src, "${") {
 			if h.HostFiles[i].Src, err = resolve(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
@@ -426,6 +439,11 @@ func (h *Harness) ValidateFilesExist() error {
 	}
 	for i, s := range h.Skills {
 		if err := check(fmt.Sprintf("skills[%d]", i), s); err != nil {
+			return err
+		}
+	}
+	for i, p := range h.Plugins {
+		if err := check(fmt.Sprintf("plugins[%d]", i), p); err != nil {
 			return err
 		}
 	}

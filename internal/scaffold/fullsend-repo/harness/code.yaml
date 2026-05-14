@@ -31,6 +31,9 @@ host_files:
 skills:
   - skills/code-implementation
 
+plugins:
+  - plugins/gopls-lsp
+
 # Environment variables available to post_script on the runner.
 # These are expanded from the runner environment and NEVER enter the sandbox.
 runner_env:

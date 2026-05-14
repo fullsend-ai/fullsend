@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -80,22 +81,225 @@ func TestRunCommand_HasTargetRepoFlag(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_Basic(t *testing.T) {
-	cmd := buildClaudeCommand("hello-world", "", "/tmp/workspace/repo")
+	cmd := buildClaudeCommand("hello-world", "", "/tmp/workspace/repo", nil)
 	assert.Contains(t, cmd, "cd /tmp/workspace/repo")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 	assert.NotContains(t, cmd, "--model")
+	assert.NotContains(t, cmd, "--plugin-dir")
 }
 
 func TestBuildClaudeCommand_WithModel(t *testing.T) {
-	cmd := buildClaudeCommand("hello-world", "sonnet", "/tmp/workspace/repo")
+	cmd := buildClaudeCommand("hello-world", "sonnet", "/tmp/workspace/repo", nil)
 	assert.Contains(t, cmd, "--model 'sonnet'")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 }
 
 func TestBuildClaudeCommand_EscapesQuotes(t *testing.T) {
-	cmd := buildClaudeCommand("test'name", "", "/tmp/workspace/repo")
+	cmd := buildClaudeCommand("test'name", "", "/tmp/workspace/repo", nil)
 	assert.NotContains(t, cmd, "'test'name'")
 	assert.Contains(t, cmd, "'test'\\''name'")
+}
+
+func TestBuildClaudeCommand_WithPluginDirs(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/claude-config/plugins/gopls-lsp"})
+	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
+}
+
+func TestBuildClaudeCommand_MultiplePluginDirs(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{
+		"/tmp/claude-config/plugins/gopls-lsp",
+		"/tmp/claude-config/plugins/other-lsp",
+	})
+	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
+	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/other-lsp'")
+}
+
+func TestBuildClaudeCommand_PluginDirEscapesQuotes(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/path'with'quotes"})
+	assert.Contains(t, cmd, "--plugin-dir '/tmp/path'\\''with'\\''quotes'")
+}
+
+func TestBuildClaudeCommand_NoPlugins(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil)
+	assert.NotContains(t, cmd, "--plugin-dir")
+}
+
+func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "gopls-lsp")
+	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "plugin.json"),
+		[]byte(`{"name":"gopls-lsp"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, ".lsp.json"),
+		[]byte(`{"go":{"command":"gopls","args":["serve"]}}`), 0o644))
+
+	entries, err := buildPluginConfigs(
+		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+	require.Len(t, entries, 4)
+
+	// marketplace.json: has lspServers, owner, correct plugin fields.
+	var mkt map[string]any
+	require.NoError(t, json.Unmarshal(entries[0].data, &mkt))
+	assert.NotNil(t, mkt["owner"])
+	plugins := mkt["plugins"].([]any)
+	require.Len(t, plugins, 1)
+	p := plugins[0].(map[string]any)
+	assert.Equal(t, "gopls-lsp", p["name"])
+	assert.Equal(t, "1.0.0", p["version"])
+	assert.Equal(t, "./plugins/gopls-lsp", p["source"])
+	assert.Equal(t, "development", p["category"])
+	assert.NotNil(t, p["lspServers"])
+	lsp := p["lspServers"].(map[string]any)
+	goEntry := lsp["go"].(map[string]any)
+	assert.Equal(t, "gopls", goEntry["command"])
+
+	// installed_plugins.json: has qualified name.
+	var installed map[string]any
+	require.NoError(t, json.Unmarshal(entries[2].data, &installed))
+	pluginsMap := installed["plugins"].(map[string]any)
+	assert.Contains(t, pluginsMap, "gopls-lsp@claude-plugins-official")
+
+	// settings.json: enabledPlugins.
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(entries[3].data, &settings))
+	enabled := settings["enabledPlugins"].(map[string]any)
+	assert.Equal(t, true, enabled["gopls-lsp@claude-plugins-official"])
+}
+
+func TestBuildPluginConfigs_MultiplePlugins(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"plugin-a", "plugin-b"} {
+		pd := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(pd, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(pd, "plugin.json"),
+			[]byte(fmt.Sprintf(`{"name":%q}`, name)), 0o644))
+	}
+
+	entries, err := buildPluginConfigs(
+		[]string{filepath.Join(dir, "plugin-a"), filepath.Join(dir, "plugin-b")},
+		"/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+	require.Len(t, entries, 4)
+
+	var mkt map[string]any
+	require.NoError(t, json.Unmarshal(entries[0].data, &mkt))
+	plugins := mkt["plugins"].([]any)
+	assert.Len(t, plugins, 2)
+
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(entries[3].data, &settings))
+	enabled := settings["enabledPlugins"].(map[string]any)
+	assert.Len(t, enabled, 2)
+}
+
+func TestBuildPluginConfigs_NoLspJSON(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "simple-plugin")
+	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "plugin.json"),
+		[]byte(`{"name":"simple-plugin"}`), 0o644))
+
+	entries, err := buildPluginConfigs(
+		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+	require.Len(t, entries, 4)
+
+	var mkt map[string]any
+	require.NoError(t, json.Unmarshal(entries[0].data, &mkt))
+	plugins := mkt["plugins"].([]any)
+	p := plugins[0].(map[string]any)
+	assert.Nil(t, p["lspServers"])
+}
+
+func TestBuildPluginConfigs_InvalidLspJSON(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "bad-lsp")
+	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "plugin.json"),
+		[]byte(`{"name":"bad-lsp"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, ".lsp.json"),
+		[]byte(`{broken`), 0o644))
+
+	entries, err := buildPluginConfigs(
+		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+
+	var mkt map[string]any
+	require.NoError(t, json.Unmarshal(entries[0].data, &mkt))
+	plugins := mkt["plugins"].([]any)
+	p := plugins[0].(map[string]any)
+	assert.Nil(t, p["lspServers"])
+}
+
+func TestBuildPluginConfigs_EmptyLspJSON(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "empty-lsp")
+	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "plugin.json"),
+		[]byte(`{"name":"empty-lsp"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, ".lsp.json"),
+		[]byte(``), 0o644))
+
+	entries, err := buildPluginConfigs(
+		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+
+	var mkt map[string]any
+	require.NoError(t, json.Unmarshal(entries[0].data, &mkt))
+	plugins := mkt["plugins"].([]any)
+	p := plugins[0].(map[string]any)
+	assert.Nil(t, p["lspServers"])
+}
+
+func TestBuildPluginConfigs_ConfigStructure(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "test-plugin")
+	require.NoError(t, os.MkdirAll(pluginDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "plugin.json"),
+		[]byte(`{"name":"test-plugin"}`), 0o644))
+
+	entries, err := buildPluginConfigs(
+		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+	require.Len(t, entries, 4)
+
+	assert.True(t, strings.HasSuffix(entries[0].path, "/marketplace.json"))
+	assert.True(t, strings.HasSuffix(entries[1].path, "/known_marketplaces.json"))
+	assert.True(t, strings.HasSuffix(entries[2].path, "/installed_plugins.json"))
+	assert.True(t, strings.HasSuffix(entries[3].path, "/settings.json"))
+
+	// known_marketplaces.json has source repo.
+	var km map[string]any
+	require.NoError(t, json.Unmarshal(entries[1].data, &km))
+	mktEntry := km["claude-plugins-official"].(map[string]any)
+	source := mktEntry["source"].(map[string]any)
+	assert.Equal(t, "anthropics/claude-plugins-official", source["repo"])
+}
+
+func TestBuildPluginConfigs_EmptyPluginList(t *testing.T) {
+	entries, err := buildPluginConfigs(
+		nil, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official", "claude-plugins-official", "1.0.0",
+	)
+	require.NoError(t, err)
+	require.Len(t, entries, 4)
+
+	// marketplace.json has empty plugins array.
+	var mkt map[string]any
+	require.NoError(t, json.Unmarshal(entries[0].data, &mkt))
+	assert.Nil(t, mkt["plugins"])
+
+	// settings.json has empty enabledPlugins.
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(entries[3].data, &settings))
+	enabled := settings["enabledPlugins"].(map[string]any)
+	assert.Len(t, enabled, 0)
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
