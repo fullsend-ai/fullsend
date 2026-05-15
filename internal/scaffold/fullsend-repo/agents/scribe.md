@@ -11,14 +11,25 @@ You are a scribe agent. Your job is to read pre-processed meeting notes and prod
 ## Inputs
 
 - `SCRIBE_NOTES_DIR` — directory containing cleaned meeting note files (plain text, PII already scrubbed by pre-script). Default: `/tmp/workspace/notes`
-- `SCRIBE_BACKLOG_FILE` — JSON file containing open issues with truncated bodies (`[{"number": 42, "title": "...", "body": "...", "labels": [...], "milestone": ..., "url": "..."}]`). Default: `/tmp/workspace/backlog.json`
-- `SCRIBE_META_FILE` — JSON file with runtime metadata from the pre-script. Default: `/tmp/workspace/scribe-meta.json`
-- `SCRIBE_REPO` — target GitHub repository (`owner/name`).
+- `SCRIBE_BACKLOG_FILE` — JSON file containing open issues with truncated bodies. Each issue includes a `repo` field identifying which repository it belongs to (`[{"number": 42, "title": "...", "body": "...", "labels": [...], "milestone": ..., "url": "...", "repo": "owner/name"}]`). Default: `/tmp/workspace/backlog.json`
+- `SCRIBE_META_FILE` — JSON file with runtime metadata from the pre-script. Contains `target_repos` (array of allowed target repositories) and `repo` (primary/default repo). Default: `/tmp/workspace/scribe-meta.json`
+- `SCRIBE_REPO` — primary target GitHub repository (`owner/name`).
 
 Additional context files (all in `/tmp/workspace/`):
-- `closed-issues.json` — recently closed issues (`[{"number": N, "title": "...", "labels": [...], "url": "..."}]`). Use to avoid proposing issues that are already resolved and to reference completed work.
-- `open-prs.json` — open pull requests (`[{"number": N, "title": "...", "labels": [...], "url": "...", "headRefName": "..."}]`). Use to link meeting discussions about in-flight work to actual PRs.
-- `repo-docs-index.json` — array of markdown file paths in the repo's `docs/` tree (ADRs, problem docs, guides). Use to reference relevant docs in new issue bodies.
+- `closed-issues.json` — recently closed issues (`[{"number": N, "title": "...", "labels": [...], "url": "...", "repo": "owner/name"}]`). Each issue includes a `repo` field. Use to avoid proposing issues that are already resolved and to reference completed work.
+- `open-prs.json` — open pull requests (`[{"number": N, "title": "...", "labels": [...], "url": "...", "headRefName": "...", "repo": "owner/name"}]`). Each PR includes a `repo` field. Use to link meeting discussions about in-flight work to actual PRs.
+- `repo-docs-index.json` — array of objects with `path` and `repo` fields (`[{"path": "docs/...", "repo": "owner/name"}]`). Use to reference relevant docs in new issue bodies.
+
+## Multi-repo routing
+
+When `target_repos` in the metadata contains multiple repositories, you MUST include a `target_repo` field on every topic and new issue. The `target_repo` value must be one of the repositories listed in `target_repos`.
+
+**Routing rules:**
+- For topics matching an existing issue, set `target_repo` to the issue's `repo` field.
+- For new issues, pick the best-fit repository based on which repo's existing issues are most related to the topic. If no clear match, use the primary repo (first entry in `target_repos`).
+- The post-script validates `target_repo` against the configured allowlist. Values not in the list are rejected.
+
+When `target_repos` contains only a single repository, `target_repo` is optional (the post-script defaults to `SCRIBE_REPO`).
 
 ## Step 1: Read metadata and meeting notes
 
@@ -106,6 +117,7 @@ The post-script applies a configurable minimum confidence threshold (default 0.6
 - One entry per existing issue — merge discussion points if the same issue was discussed in multiple agenda items.
 - Check closed issues before proposing a new issue. If a closed issue already covers the topic, do NOT create a duplicate — instead note it in the comment on a related open issue.
 - For new issues, provide a brief 2–3 sentence summary (NOT a full issue body).
+- When matching across multiple repos, use the `repo` field on each issue/PR to determine which repository a topic belongs to. Issue numbers are only unique within a repo — always pair issue numbers with the correct `target_repo`.
 
 ### COMMENT FORMAT FOR EXISTING ISSUES
 
@@ -132,6 +144,7 @@ Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` containing a singl
       "topic": "Short topic title",
       "summary": "**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** ...\n\n- Decision point 1\n- Decision point 2\n\n**Next steps:** ...\n\n[Meeting notes](URL)",
       "existing_issue": 42,
+      "target_repo": "owner/repo-name",
       "new_issue_title": null,
       "confidence": 0.85,
       "public_safe": true,
@@ -144,6 +157,7 @@ Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` containing a singl
       "title": "Problem-focused issue title",
       "summary": "Brief problem description (2-3 sentences)",
       "body": "Full markdown issue body — see format below",
+      "target_repo": "owner/repo-name",
       "confidence": 0.85,
       "public_safe": true,
       "public_safe_category": null,

@@ -6,12 +6,15 @@
 # strips sensitive content, and prepares input files the agent will read.
 #
 # Required env vars:
-#   SCRIBE_REPO           — GitHub repository (owner/name)
+#   SCRIBE_REPO           — Primary GitHub repository (owner/name)
 #   SCRIBE_SEARCH_QUERY   — Drive doc name search (e.g. "team sync")
 #   GH_TOKEN              — GitHub token for backlog fetch
 #   GOOGLE_APPLICATION_CREDENTIALS — path to GCP SA credentials
 #
 # Optional env vars:
+#   SCRIBE_TARGET_REPOS   — Comma-separated list of target repos
+#                           (e.g. "org/repo-a,org/repo-b"). Falls back
+#                           to SCRIBE_REPO if unset.
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
 #   SCRIBE_LOOKBACK_HOURS — how far back to search (default: 3)
 
@@ -32,48 +35,97 @@ CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/nu
 echo "Scribe pre-script: searching Drive for docs matching '${SCRIBE_SEARCH_QUERY}' since ${CUTOFF_DATE}"
 
 # ============================================================
-# Repo context — issues, PRs, and doc index
+# Resolve target repos — multi-repo or single-repo fallback
+# ============================================================
+TARGET_REPOS_LIST=()
+if [[ -n "${SCRIBE_TARGET_REPOS:-}" ]]; then
+  IFS=',' read -ra TARGET_REPOS_LIST <<< "${SCRIBE_TARGET_REPOS}"
+  # Trim whitespace from each entry
+  for idx in "${!TARGET_REPOS_LIST[@]}"; do
+    TARGET_REPOS_LIST[$idx]=$(echo "${TARGET_REPOS_LIST[$idx]}" | xargs)
+  done
+else
+  TARGET_REPOS_LIST=("${SCRIBE_REPO}")
+fi
+echo "Target repositories (${#TARGET_REPOS_LIST[@]}): ${TARGET_REPOS_LIST[*]}"
+
+# ============================================================
+# Repo context — issues, PRs, and doc index (across all repos)
 # ============================================================
 
 CLOSED_ISSUES_FILE="${WORK_DIR}/closed-issues.json"
 OPEN_PRS_FILE="${WORK_DIR}/open-prs.json"
 REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 
-# Open issues with bodies (truncated to 500 chars to keep context lean)
-echo "Fetching open issues from ${SCRIBE_REPO}..."
-gh issue list --repo "${SCRIBE_REPO}" --state open \
-  --json number,title,body,labels,milestone,url --limit 500 \
-  | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
-  > "${BACKLOG_FILE}"
-ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
-echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
+# Initialize empty arrays for aggregation
+echo '[]' > "${BACKLOG_FILE}"
+echo '[]' > "${CLOSED_ISSUES_FILE}"
+echo '[]' > "${OPEN_PRS_FILE}"
+echo '[]' > "${REPO_DOCS_FILE}"
 
-# Recently closed issues (last 50) — helps avoid duplicates and enables
-# "this was resolved in #N" references
-echo "Fetching recently closed issues..."
-gh issue list --repo "${SCRIBE_REPO}" --state closed \
-  --json number,title,labels,url --limit 50 \
-  > "${CLOSED_ISSUES_FILE}"
-CLOSED_COUNT=$(jq 'length' "${CLOSED_ISSUES_FILE}")
-echo "Fetched ${CLOSED_COUNT} recently closed issues."
+ISSUE_COUNT=0
+CLOSED_COUNT=0
+PR_COUNT=0
+DOC_PATH_COUNT=0
 
-# Open PRs — gives awareness of in-flight work so the agent can link
-# meeting topics about "the caching PR" to actual PR numbers
-echo "Fetching open pull requests..."
-gh pr list --repo "${SCRIBE_REPO}" --state open \
-  --json number,title,labels,url,headRefName --limit 100 \
-  > "${OPEN_PRS_FILE}"
-PR_COUNT=$(jq 'length' "${OPEN_PRS_FILE}")
-echo "Fetched ${PR_COUNT} open pull requests."
+for TARGET_REPO in "${TARGET_REPOS_LIST[@]}"; do
+  echo ""
+  echo "--- Fetching context from ${TARGET_REPO} ---"
 
-# Repo doc index — ADRs, problem docs, guides. One API call using the
-# git tree (recursive) so the agent can reference docs by path.
-echo "Fetching repo doc index..."
-gh api "repos/${SCRIBE_REPO}/git/trees/main?recursive=1" \
-  --jq '[.tree[] | select(.path | startswith("docs/") and (.path | endswith(".md"))) | .path]' \
-  > "${REPO_DOCS_FILE}" 2>/dev/null || echo '[]' > "${REPO_DOCS_FILE}"
-DOC_PATH_COUNT=$(jq 'length' "${REPO_DOCS_FILE}")
-echo "Indexed ${DOC_PATH_COUNT} doc paths from repo tree."
+  # Open issues with bodies (truncated to 500 chars to keep context lean)
+  # Tag each issue with its source repo so the agent can route correctly.
+  echo "Fetching open issues from ${TARGET_REPO}..."
+  REPO_ISSUES=$(gh issue list --repo "${TARGET_REPO}" --state open \
+    --json number,title,body,labels,milestone,url --limit 500 \
+    | jq --arg repo "${TARGET_REPO}" \
+      '[.[] | .repo = $repo | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]')
+  REPO_ISSUE_COUNT=$(echo "${REPO_ISSUES}" | jq 'length')
+  echo "Fetched ${REPO_ISSUE_COUNT} open issues from ${TARGET_REPO}."
+  ISSUE_COUNT=$((ISSUE_COUNT + REPO_ISSUE_COUNT))
+
+  # Merge into aggregate backlog
+  jq -s '.[0] + .[1]' "${BACKLOG_FILE}" <(echo "${REPO_ISSUES}") > "${BACKLOG_FILE}.tmp"
+  mv "${BACKLOG_FILE}.tmp" "${BACKLOG_FILE}"
+
+  # Recently closed issues (last 50 per repo) — helps avoid duplicates
+  echo "Fetching recently closed issues from ${TARGET_REPO}..."
+  REPO_CLOSED=$(gh issue list --repo "${TARGET_REPO}" --state closed \
+    --json number,title,labels,url --limit 50 \
+    | jq --arg repo "${TARGET_REPO}" '[.[] | .repo = $repo]')
+  REPO_CLOSED_COUNT=$(echo "${REPO_CLOSED}" | jq 'length')
+  echo "Fetched ${REPO_CLOSED_COUNT} recently closed issues from ${TARGET_REPO}."
+  CLOSED_COUNT=$((CLOSED_COUNT + REPO_CLOSED_COUNT))
+
+  jq -s '.[0] + .[1]' "${CLOSED_ISSUES_FILE}" <(echo "${REPO_CLOSED}") > "${CLOSED_ISSUES_FILE}.tmp"
+  mv "${CLOSED_ISSUES_FILE}.tmp" "${CLOSED_ISSUES_FILE}"
+
+  # Open PRs
+  echo "Fetching open pull requests from ${TARGET_REPO}..."
+  REPO_PRS=$(gh pr list --repo "${TARGET_REPO}" --state open \
+    --json number,title,labels,url,headRefName --limit 100 \
+    | jq --arg repo "${TARGET_REPO}" '[.[] | .repo = $repo]')
+  REPO_PR_COUNT=$(echo "${REPO_PRS}" | jq 'length')
+  echo "Fetched ${REPO_PR_COUNT} open pull requests from ${TARGET_REPO}."
+  PR_COUNT=$((PR_COUNT + REPO_PR_COUNT))
+
+  jq -s '.[0] + .[1]' "${OPEN_PRS_FILE}" <(echo "${REPO_PRS}") > "${OPEN_PRS_FILE}.tmp"
+  mv "${OPEN_PRS_FILE}.tmp" "${OPEN_PRS_FILE}"
+
+  # Repo doc index
+  echo "Fetching repo doc index from ${TARGET_REPO}..."
+  REPO_DOCS=$(gh api "repos/${TARGET_REPO}/git/trees/main?recursive=1" \
+    --jq "[.tree[] | select(.path | startswith(\"docs/\") and (.path | endswith(\".md\"))) | {path: .path, repo: \"${TARGET_REPO}\"}]" \
+    2>/dev/null || echo '[]')
+  REPO_DOC_COUNT=$(echo "${REPO_DOCS}" | jq 'length')
+  echo "Indexed ${REPO_DOC_COUNT} doc paths from ${TARGET_REPO}."
+  DOC_PATH_COUNT=$((DOC_PATH_COUNT + REPO_DOC_COUNT))
+
+  jq -s '.[0] + .[1]' "${REPO_DOCS_FILE}" <(echo "${REPO_DOCS}") > "${REPO_DOCS_FILE}.tmp"
+  mv "${REPO_DOCS_FILE}.tmp" "${REPO_DOCS_FILE}"
+done
+
+echo ""
+echo "Aggregate context: ${ISSUE_COUNT} open issues, ${CLOSED_COUNT} closed, ${PR_COUNT} PRs, ${DOC_PATH_COUNT} doc paths across ${#TARGET_REPOS_LIST[@]} repo(s)."
 
 # --- Obtain Drive-scoped access token ---
 # The Drive API is a Workspace API that requires its own OAuth scope
@@ -157,6 +209,8 @@ if [[ "${DOC_COUNT}" -gt 0 ]]; then
   jq -r '.files[] | "  \(.name) (created: \(.createdTime))"' "${WORK_DIR}/drive-response.json"
 fi
 
+TARGET_REPOS_JSON=$(printf '%s\n' "${TARGET_REPOS_LIST[@]}" | jq -R . | jq -s .)
+
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
   echo "No documents found — agent will produce empty result."
   rm -f "${WORK_DIR}/drive-response.json"
@@ -164,12 +218,13 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
   jq -n \
     --arg cutoff "${CUTOFF_DATE}" \
     --arg repo "${SCRIBE_REPO}" \
+    --argjson target_repos "${TARGET_REPOS_JSON}" \
     --argjson doc_count 0 \
     --argjson issue_count "${ISSUE_COUNT}" \
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, target_repos: $target_repos, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -289,6 +344,7 @@ jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
   --arg notes_url "${NOTES_URL}" \
   --arg repo "${SCRIBE_REPO}" \
+  --argjson target_repos "${TARGET_REPOS_JSON}" \
   --argjson doc_count "${DOC_COUNT}" \
   --argjson issue_count "${ISSUE_COUNT}" \
   --argjson closed_count "${CLOSED_COUNT}" \
@@ -298,6 +354,7 @@ jq -n \
     cutoff_date: $cutoff,
     notes_url: $notes_url,
     repo: $repo,
+    target_repos: $target_repos,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
     closed_issues: $closed_count,

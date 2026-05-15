@@ -5,11 +5,13 @@
 # Runs on the host after sandbox cleanup.
 #
 # Required env vars:
-#   SCRIBE_REPO    — GitHub repository (owner/name)
+#   SCRIBE_REPO    — Primary GitHub repository (owner/name)
 #   GH_TOKEN       — GitHub token with issues read/write scope
 #   SCRIBE_DRY_RUN — "true" to preview without writing (ALWAYS true during dev)
 #
 # Optional env vars:
+#   SCRIBE_TARGET_REPOS      — Comma-separated allowlist of target repos.
+#                               Falls back to SCRIBE_REPO if unset.
 #   SCRIBE_MODE              — "all" (default), "comments_only", "new_issues_only"
 #   SCRIBE_SLACK_WEBHOOK_URL — Slack incoming webhook for notification (skip if unset)
 #
@@ -48,6 +50,49 @@ case "${SCRIBE_MODE}" in
     ;;
 esac
 echo "Mode: ${SCRIBE_MODE}"
+
+# ============================================================
+# Build target repo allowlist for routing validation
+# ============================================================
+ALLOWED_REPOS=()
+if [[ -n "${SCRIBE_TARGET_REPOS:-}" ]]; then
+  IFS=',' read -ra ALLOWED_REPOS <<< "${SCRIBE_TARGET_REPOS}"
+  for idx in "${!ALLOWED_REPOS[@]}"; do
+    ALLOWED_REPOS[$idx]=$(echo "${ALLOWED_REPOS[$idx]}" | xargs)
+  done
+else
+  ALLOWED_REPOS=("${SCRIBE_REPO}")
+fi
+echo "Allowed target repos (${#ALLOWED_REPOS[@]}): ${ALLOWED_REPOS[*]}"
+
+is_allowed_repo() {
+  local repo="$1"
+  for allowed in "${ALLOWED_REPOS[@]}"; do
+    if [[ "${repo}" == "${allowed}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Resolve the effective target repo for a topic/issue.
+# Uses the agent-provided target_repo if valid, otherwise falls back to
+# SCRIBE_REPO. Returns the repo via stdout.
+resolve_target_repo() {
+  local agent_repo="$1"
+  if [[ -n "${agent_repo}" && "${agent_repo}" != "null" ]]; then
+    if is_allowed_repo "${agent_repo}"; then
+      echo "${agent_repo}"
+      return 0
+    else
+      echo ""  # signal rejection
+      return 1
+    fi
+  fi
+  # Default to primary repo when target_repo is absent
+  echo "${SCRIBE_REPO}"
+  return 0
+}
 
 # Find the agent result JSON
 RESULT_FILE=""
@@ -212,6 +257,7 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   SUMMARY=$(jq -r ".topics[${i}].summary" "${RESULT_FILE}")
   CONFIDENCE=$(jq -r ".topics[${i}].confidence" "${RESULT_FILE}")
   ISSUE_NUM=$(jq -r ".topics[${i}].existing_issue // empty" "${RESULT_FILE}")
+  AGENT_TARGET_REPO=$(jq -r ".topics[${i}].target_repo // empty" "${RESULT_FILE}")
   OMIT=$(jq -r ".topics[${i}].omit_reason // empty" "${RESULT_FILE}")
 
   if [[ -n "${OMIT}" ]]; then
@@ -220,6 +266,13 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   fi
 
   if [[ -z "${ISSUE_NUM}" || "${ISSUE_NUM}" == "null" ]]; then
+    continue
+  fi
+
+  # Resolve target repo for this topic
+  EFFECTIVE_REPO=$(resolve_target_repo "${AGENT_TARGET_REPO}") || true
+  if [[ -z "${EFFECTIVE_REPO}" ]]; then
+    gate_reject "${TOPIC}" "target_repo '${AGENT_TARGET_REPO}' not in allowed list"
     continue
   fi
 
@@ -254,17 +307,17 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     continue
   fi
 
-  echo "  PASS: [${TOPIC}] → comment on #${ISSUE_NUM} (confidence: ${CONFIDENCE})"
+  echo "  PASS: [${TOPIC}] → comment on ${EFFECTIVE_REPO}#${ISSUE_NUM} (confidence: ${CONFIDENCE})"
   COMMENT_TOPICS+=("${TOPIC}")
-  COMMENT_ISSUES+=("${ISSUE_NUM}")
+  COMMENT_ISSUES+=("${EFFECTIVE_REPO}#${ISSUE_NUM}")
 
   if [[ "${DRY_RUN}" == "true" ]]; then
-    echo "    [DRY RUN] Would post comment to ${SCRIBE_REPO}#${ISSUE_NUM}"
+    echo "    [DRY RUN] Would post comment to ${EFFECTIVE_REPO}#${ISSUE_NUM}"
   else
     # Idempotency: check if we already commented with this notes URL
     NOTES_URL=$(jq -r ".topics[${i}].summary" "${RESULT_FILE}" | grep -oP '\[Meeting notes\]\(\K[^)]+' || echo "")
     if [[ -n "${NOTES_URL}" ]]; then
-      EXISTING=$(gh api "repos/${SCRIBE_REPO}/issues/${ISSUE_NUM}/comments" \
+      EXISTING=$(gh api "repos/${EFFECTIVE_REPO}/issues/${ISSUE_NUM}/comments" \
         --jq "[.[] | select(.body | contains(\"${NOTES_URL}\"))] | length" 2>/dev/null || echo "0")
       if [[ "${EXISTING}" -gt 0 ]]; then
         echo "    SKIP: duplicate comment (notes URL already posted)"
@@ -272,7 +325,7 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
       fi
     fi
 
-    printf '%s' "${SUMMARY}" | gh issue comment "${ISSUE_NUM}" --repo "${SCRIBE_REPO}" --body-file -
+    printf '%s' "${SUMMARY}" | gh issue comment "${ISSUE_NUM}" --repo "${EFFECTIVE_REPO}" --body-file -
     POSTED=$((POSTED + 1))
   fi
 done
@@ -306,7 +359,15 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   TITLE=$(jq -r ".new_issues[${i}].title" "${RESULT_FILE}")
   BODY=$(jq -r ".new_issues[${i}].body" "${RESULT_FILE}")
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
+  AGENT_TARGET_REPO=$(jq -r ".new_issues[${i}].target_repo // empty" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
+
+  # Resolve target repo for this new issue
+  EFFECTIVE_REPO=$(resolve_target_repo "${AGENT_TARGET_REPO}") || true
+  if [[ -z "${EFFECTIVE_REPO}" ]]; then
+    gate_reject "${TITLE}" "target_repo '${AGENT_TARGET_REPO}' not in allowed list"
+    continue
+  fi
 
   # Gate: confidence
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
@@ -338,7 +399,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     continue
   fi
 
-  echo "  PASS: [${TITLE}] → new issue (confidence: ${CONFIDENCE})"
+  echo "  PASS: [${TITLE}] → new issue in ${EFFECTIVE_REPO} (confidence: ${CONFIDENCE})"
   NEW_ISSUE_TITLES+=("${TITLE}")
 
   # Prepend auto-generated banner so reviewers know this was machine-created
@@ -350,19 +411,19 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   FULL_BODY="${BANNER}${BODY}"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
-    echo "    [DRY RUN] Would create issue: ${TITLE}"
+    echo "    [DRY RUN] Would create issue in ${EFFECTIVE_REPO}: ${TITLE}"
     echo "    [DRY RUN] Labels: ${LABELS}"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
   else
     # Label fallback: if labels don't exist in the target repo, retry without
     ISSUE_URL=$(printf '%s' "${FULL_BODY}" | gh issue create \
-        --repo "${SCRIBE_REPO}" \
+        --repo "${EFFECTIVE_REPO}" \
         --title "${TITLE}" \
         --label "${LABELS}" \
         --body-file - 2>/dev/null) || \
     ISSUE_URL=$(printf '%s' "${FULL_BODY}" | gh issue create \
-        --repo "${SCRIBE_REPO}" \
+        --repo "${EFFECTIVE_REPO}" \
         --title "${TITLE}" \
         --body-file -)
     echo "    Created: ${ISSUE_URL}"
@@ -381,6 +442,7 @@ echo ""
 echo "=== Scribe Post-Script Summary ==="
 echo "  Run mode: ${RUN_MODE_LABEL}"
 echo "  Agent mode: ${SCRIBE_MODE}"
+echo "  Target repos: ${#ALLOWED_REPOS[@]} (${ALLOWED_REPOS[*]})"
 echo "  Topics processed: ${TOPIC_COUNT}"
 echo "  Comments ${DRY_RUN:+would be }posted: ${#COMMENT_TOPICS[@]}"
 echo "  New issues ${DRY_RUN:+would be }created: ${#NEW_ISSUE_TITLES[@]}"
@@ -393,13 +455,13 @@ echo "=================================="
 # ============================================================
 # GITHUB_STEP_SUMMARY — markdown report for Actions job page
 # ============================================================
-ISSUE_BASE="https://github.com/${SCRIBE_REPO}/issues"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 {
   echo "### Scribe agent report (${RUN_MODE_LABEL})"
   echo ""
   echo "| Metric | Count |"
   echo "|--------|------:|"
+  echo "| Target repos | ${#ALLOWED_REPOS[@]} |"
   echo "| Topics processed | ${TOPIC_COUNT} |"
   echo "| Comments ${DRY_RUN:+would be }posted | ${#COMMENT_TOPICS[@]} |"
   echo "| New issues ${DRY_RUN:+would be }created | ${#NEW_ISSUE_TITLES[@]} |"
@@ -413,7 +475,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
     echo "**Comments ${DRY_RUN:+would be }posted:** ${#COMMENT_TOPICS[@]}"
     for idx in "${!COMMENT_TOPICS[@]}"; do
-      echo "- [#${COMMENT_ISSUES[$idx]} — ${COMMENT_TOPICS[$idx]}](${ISSUE_BASE}/${COMMENT_ISSUES[$idx]})"
+      # COMMENT_ISSUES entries are "owner/repo#num" — split for URL
+      COMMENT_REF="${COMMENT_ISSUES[$idx]}"
+      COMMENT_REPO="${COMMENT_REF%%#*}"
+      COMMENT_NUM="${COMMENT_REF##*#}"
+      echo "- [${COMMENT_REF} — ${COMMENT_TOPICS[$idx]}](https://github.com/${COMMENT_REPO}/issues/${COMMENT_NUM})"
     done
     echo ""
   fi
@@ -467,7 +533,10 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
     SLACK_TEXT+="\n\n*Comments:*"
     for idx in "${!COMMENT_TOPICS[@]}"; do
-      SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${COMMENT_TOPICS[$idx]}>"
+      COMMENT_REF="${COMMENT_ISSUES[$idx]}"
+      COMMENT_REPO="${COMMENT_REF%%#*}"
+      COMMENT_NUM="${COMMENT_REF##*#}"
+      SLACK_TEXT+="\n  • <https://github.com/${COMMENT_REPO}/issues/${COMMENT_NUM}|${COMMENT_REF} — ${COMMENT_TOPICS[$idx]}>"
     done
   fi
 
