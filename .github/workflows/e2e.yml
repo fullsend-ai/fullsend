@@ -9,6 +9,7 @@ on:
     paths: ['**/*.go', 'go.mod', 'go.sum', 'e2e/**']
   pull_request:
     paths: ['**/*.go', 'go.mod', 'go.sum', 'e2e/**']
+  merge_group:
   workflow_dispatch:
 
 concurrency:
