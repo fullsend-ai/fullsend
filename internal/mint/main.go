@@ -746,7 +746,7 @@ var rolePermissions = map[string]map[string]string{
 	"fix":      {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
 	"retro":       {"actions": "read", "contents": "read", "pull_requests": "read", "issues": "write", "metadata": "read"},
 	"prioritize":  {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
-	"fullsend":    {"actions": "write", "contents": "write", "pull_requests": "write", "variables": "read", "workflows": "write", "metadata": "read"},
+	"fullsend":    {"actions": "write", "contents": "write", "pull_requests": "write", "actions_variables": "read", "workflows": "write", "metadata": "read"},
 }
 
 // createInstallationToken exchanges a JWT for an installation access token,

@@ -9,7 +9,7 @@ type AppPermissions struct {
 	PullRequests         string `json:"pull_requests,omitempty"`
 	Checks               string `json:"checks,omitempty"`
 	Contents             string `json:"contents,omitempty"`
-	Variables            string `json:"variables,omitempty"`
+	Variables            string `json:"actions_variables,omitempty"`
 	Workflows            string `json:"workflows,omitempty"`
 	Administration       string `json:"administration,omitempty"`
 	Members              string `json:"members,omitempty"`

@@ -1326,3 +1326,16 @@ func TestServeHTTP_DotFullsendProvider(t *testing.T) {
 		t.Fatalf("expected provider %q for .fullsend repo, got %q", "github-oidc", tv.lastProvider)
 	}
 }
+
+func TestRolePermissions_FullsendActionsVariables(t *testing.T) {
+	perms, ok := rolePermissions["fullsend"]
+	if !ok {
+		t.Fatal("fullsend role not found in rolePermissions")
+	}
+	if v, ok := perms["actions_variables"]; !ok || v != "read" {
+		t.Errorf("fullsend role missing actions_variables:read, got: %v", perms)
+	}
+	if _, ok := perms["variables"]; ok {
+		t.Errorf("fullsend role should not have bare 'variables' key, got: %v", perms)
+	}
+}

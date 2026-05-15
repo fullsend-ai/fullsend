@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,17 @@ func TestAgentAppConfig_UnknownRole(t *testing.T) {
 	assert.Empty(t, cfg.Permissions.PullRequests)
 
 	assert.Contains(t, cfg.Events, "issues")
+}
+
+func TestAppPermissions_ActionsVariablesKey(t *testing.T) {
+	p := AppPermissions{Variables: "read"}
+	b, err := json.Marshal(p)
+	require.NoError(t, err)
+
+	assert.True(t, strings.Contains(string(b), `"actions_variables"`),
+		"expected actions_variables key, got: %s", b)
+	assert.False(t, strings.Contains(string(b), `"variables"`),
+		"should not contain bare 'variables' key: %s", b)
 }
 
 func TestAppConfig_RedirectURL_InJSON(t *testing.T) {
