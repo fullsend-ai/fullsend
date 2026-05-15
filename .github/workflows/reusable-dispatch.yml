@@ -322,7 +322,7 @@ jobs:
     name: Triage
     needs: route
     if: needs.route.outputs.stage == 'triage'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@feat/migrate-to-openshell-0.0.38
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -341,7 +341,7 @@ jobs:
     name: Code
     needs: route
     if: needs.route.outputs.stage == 'code'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@feat/migrate-to-openshell-0.0.38
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -360,7 +360,7 @@ jobs:
     name: Review
     needs: route
     if: needs.route.outputs.stage == 'review'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@feat/migrate-to-openshell-0.0.38
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -379,7 +379,7 @@ jobs:
     name: Fix
     needs: route
     if: needs.route.outputs.stage == 'fix'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@feat/migrate-to-openshell-0.0.38
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -399,7 +399,7 @@ jobs:
     name: Retro
     needs: route
     if: needs.route.outputs.stage == 'retro'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@feat/migrate-to-openshell-0.0.38
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}

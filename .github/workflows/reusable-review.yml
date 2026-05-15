@@ -95,14 +95,14 @@ jobs:
 
       - name: Validate enrollment and extract repo metadata
         id: repo-parts
-        uses: fullsend-ai/fullsend/.github/actions/validate-enrollment@v0
+        uses: fullsend-ai/fullsend/.github/actions/validate-enrollment@feat/migrate-to-openshell-0.0.38
         with:
           source_repo: ${{ inputs.source_repo }}
           install_mode: ${{ inputs.install_mode }}
 
       - name: Mint review token
         id: app-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@v0
+        uses: fullsend-ai/fullsend/.github/actions/mint-token@feat/migrate-to-openshell-0.0.38
         with:
           role: review
           repos: ${{ steps.repo-parts.outputs.name }}
@@ -130,7 +130,7 @@ jobs:
         run: bash scripts/pre-fetch-prior-review.sh
 
       - name: Setup GCP and prepare credentials
-        uses: fullsend-ai/fullsend/.github/actions/setup-gcp@v0
+        uses: fullsend-ai/fullsend/.github/actions/setup-gcp@feat/migrate-to-openshell-0.0.38
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -145,7 +145,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run review agent
-        uses: fullsend-ai/fullsend@v0
+        uses: fullsend-ai/fullsend@feat/migrate-to-openshell-0.0.38
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           GITHUB_PR_URL: ${{ fromJSON(inputs.event_payload).pull_request.html_url || fromJSON(inputs.event_payload).issue.html_url }}
