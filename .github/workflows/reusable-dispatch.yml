@@ -139,7 +139,7 @@ jobs:
                   fi
                   ;;
                 *)
-                  if has_label "needs-info" && ! has_label "type/feature"; then
+                  if has_label "needs-info" && ! has_label "feature"; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
                         STAGE="triage"

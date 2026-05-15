@@ -197,7 +197,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "pull_request_review")
 	assert.Contains(t, s, "changes_requested")
 	assert.Contains(t, s, "needs-info")
-	assert.Contains(t, s, "type/feature")
+	assert.Contains(t, s, `! has_label "feature"`)
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
