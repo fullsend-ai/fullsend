@@ -36,7 +36,7 @@ Extend the token mint with a `cross-org-propose` role that can mint installation
 
 1. **Downstream declares intent.** `send_issues_to` in the downstream's `config.yaml` lists target repos (e.g., `fullsend-ai/fullsend`). The post-script checks this before using any cross-org token. The mint does not read this.
 
-2. **Upstream grants permission.** `accept_issues_from` in the upstream's `config.yaml` lists org names authorized to send proposals. The mint reads this via the App JWT when processing a `cross-org-propose` request and refuses if the requesting org is not listed.
+2. **Upstream grants permission.** `accept_issues_from` in the upstream's `config.yaml` lists org names authorized to send proposals. The mint uses the App JWT to fetch and read this when processing a `cross-org-propose` request and refuses if the requesting org is not listed.
 
 3. **Config lookup order.** For both keys, check `{repo}/.fullsend/config.yaml` (per-repo) first, then `{org}/.fullsend/config.yaml` (per-org). If neither exists, treat the key as absent.
 
