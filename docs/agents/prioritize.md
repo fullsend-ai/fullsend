@@ -14,7 +14,7 @@ The agent runs in a read-only sandbox. It cannot modify issues or push code — 
 
 - Issues are ranked consistently using the same framework, reducing bias from whoever happens to see them first.
 - Scoring reasoning is transparent and auditable — anyone can read why an issue was ranked the way it was.
-- Project boards stay sorted by value, so the [code agent](code.md) picks up the highest-impact work first.
+- Project boards stay sorted by value, so humans can focus on the highest-impact work first.
 
 ## Commands
 
