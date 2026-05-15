@@ -133,16 +133,20 @@ runs:
 
     - name: Install OpenShell CLI
       shell: bash
+      env:
+        OPENSHELL_VERSION: "0.0.38"
       run: |
-        uv tool install openshell==0.0.38
+        uv tool install openshell==${OPENSHELL_VERSION}
         openshell --version
 
     - name: Download openshell-gateway
       shell: bash
+      env:
+        OPENSHELL_VERSION: "0.0.38"
       run: |
         set -euo pipefail
         GATEWAY_ASSET="openshell-gateway-x86_64-unknown-linux-gnu.tar.gz"
-        GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v0.0.38/${GATEWAY_ASSET}"
+        GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/${GATEWAY_ASSET}"
         curl -fsSL "${GATEWAY_URL}" -o "/tmp/${GATEWAY_ASSET}"
         tar xzf "/tmp/${GATEWAY_ASSET}" -C "${RUNNER_TEMP}/fullsend"
         rm -f "/tmp/${GATEWAY_ASSET}"
@@ -187,8 +191,9 @@ runs:
         mkdir -p "${GITHUB_WORKSPACE}/output"
 
         export OPENSHELL_SSH_HANDSHAKE_SECRET="ci-$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
-        # TODO: check if a --podman-supervisor-image flag exists in newer gateway releases
-        export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dev"
+        # Version-tagged images start at 0.0.41; for 0.0.38 use the release commit SHA.
+        # TODO: pass via --podman-supervisor-image flag when one exists (Docker driver has --docker-supervisor-image).
+        export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dfd47683e7da4f1a4a8fa5d77f92d3696e6a41f9"
 
         "${RUNNER_TEMP}/fullsend/openshell-gateway" \
           --bind-address 0.0.0.0 \
@@ -196,7 +201,6 @@ runs:
           --drivers podman \
           --disable-tls \
           --db-url "sqlite:/tmp/gateway.db?mode=rwc" \
-          --sandbox-image-pull-policy IfNotPresent \
           >"${GATEWAY_LOG}" 2>&1 &
 
         for i in $(seq 1 30); do
