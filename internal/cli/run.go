@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/envfile"
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -611,7 +614,21 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	printer.Blank()
 
 	if h.ValidationLoop != nil && !validationPassed {
-		notifyValidationFailure(h, runCount, printer)
+		// Resolve a token for the forge client. Agents use different token names
+		// (PUSH_TOKEN for fix/code, REVIEW_TOKEN for review).
+		token := h.RunnerEnv["PUSH_TOKEN"]
+		if token == "" {
+			token = h.RunnerEnv["REVIEW_TOKEN"]
+		}
+		if token == "" {
+			token = os.Getenv("GITHUB_TOKEN")
+		}
+		if token != "" {
+			forgeClient := gh.New(token)
+			notifyValidationFailure(context.Background(), forgeClient, h, runCount, printer)
+		} else {
+			printer.StepInfo("Skipping validation failure notification: no API token available")
+		}
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
 	}
 
@@ -1598,7 +1615,7 @@ func injectTraceID(sandboxName, traceID string) error {
 // iteration count and a link to the Actions run.
 //
 // Best-effort: failures to post are logged as warnings but never block the run.
-func notifyValidationFailure(h *harness.Harness, runCount int, printer *ui.Printer) {
+func notifyValidationFailure(ctx context.Context, client forge.Client, h *harness.Harness, runCount int, printer *ui.Printer) {
 	prNumber := h.RunnerEnv["PR_NUMBER"]
 	repoFullName := h.RunnerEnv["REPO_FULL_NAME"]
 	if prNumber == "" || repoFullName == "" {
@@ -1606,24 +1623,23 @@ func notifyValidationFailure(h *harness.Harness, runCount int, printer *ui.Print
 		return
 	}
 
-	// Resolve a token for the gh CLI. Agents use different token names
-	// (PUSH_TOKEN for fix/code, REVIEW_TOKEN for review).
-	token := h.RunnerEnv["PUSH_TOKEN"]
-	if token == "" {
-		token = h.RunnerEnv["REVIEW_TOKEN"]
+	parts := strings.SplitN(repoFullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		printer.StepWarn(fmt.Sprintf("Skipping validation failure notification: invalid REPO_FULL_NAME %q", repoFullName))
+		return
 	}
-	if token == "" {
-		token = os.Getenv("GITHUB_TOKEN")
-	}
-	if token == "" {
-		printer.StepInfo("Skipping validation failure notification: no API token available")
+	owner, repo := parts[0], parts[1]
+
+	prNum, err := strconv.Atoi(prNumber)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Skipping validation failure notification: invalid PR_NUMBER %q", prNumber))
 		return
 	}
 
 	// Build Actions run URL from standard GitHub Actions env vars.
 	var runURL string
-	if serverURL, repo, runID := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY"), os.Getenv("GITHUB_RUN_ID"); serverURL != "" && repo != "" && runID != "" {
-		runURL = fmt.Sprintf("%s/%s/actions/runs/%s", serverURL, repo, runID)
+	if serverURL, ghRepo, runID := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY"), os.Getenv("GITHUB_RUN_ID"); serverURL != "" && ghRepo != "" && runID != "" {
+		runURL = fmt.Sprintf("%s/%s/actions/runs/%s", serverURL, ghRepo, runID)
 	}
 
 	body := fmt.Sprintf("⚠️ Agent validation failed after %d iteration(s) without producing valid output.", runCount)
@@ -1632,15 +1648,8 @@ func notifyValidationFailure(h *harness.Harness, runCount int, printer *ui.Print
 	}
 	body += "\n\nYou may need to apply changes manually or re-run."
 
-	cmd := exec.Command("gh", "pr", "comment", prNumber,
-		"--repo", repoFullName,
-		"--body", body)
-	cmd.Env = append(os.Environ(), "GH_TOKEN="+token)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Failed to post validation failure comment: %s (%s)",
-			err, strings.TrimSpace(string(output))))
+	if _, err := client.CreateIssueComment(ctx, owner, repo, prNum, body); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to post validation failure comment: %s", err))
 		return
 	}
 	printer.StepDone("Posted validation failure notification to PR #" + prNumber)

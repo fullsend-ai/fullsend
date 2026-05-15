@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -898,88 +899,90 @@ func TestNotifyValidationFailure_SkipsWhenNoPRNumber(t *testing.T) {
 	h := &harness.Harness{
 		RunnerEnv: map[string]string{
 			"REPO_FULL_NAME": "owner/repo",
-			"PUSH_TOKEN":     "test-token",
 		},
 	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
+	client := forge.NewFakeClient()
 
-	// Should not panic or attempt to post — just log and return.
-	notifyValidationFailure(h, 2, printer)
+	notifyValidationFailure(context.Background(), client, h, 2, printer)
 
 	output := buf.String()
 	assert.Contains(t, output, "PR_NUMBER or REPO_FULL_NAME not set")
+	assert.Empty(t, client.IssueComments, "should not post a comment")
 }
 
 func TestNotifyValidationFailure_SkipsWhenNoRepoFullName(t *testing.T) {
 	h := &harness.Harness{
 		RunnerEnv: map[string]string{
-			"PR_NUMBER":  "123",
-			"PUSH_TOKEN": "test-token",
+			"PR_NUMBER": "123",
 		},
 	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
+	client := forge.NewFakeClient()
 
-	notifyValidationFailure(h, 2, printer)
+	notifyValidationFailure(context.Background(), client, h, 2, printer)
 
 	output := buf.String()
 	assert.Contains(t, output, "PR_NUMBER or REPO_FULL_NAME not set")
+	assert.Empty(t, client.IssueComments, "should not post a comment")
 }
 
-func TestNotifyValidationFailure_SkipsWhenNoToken(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-
+func TestNotifyValidationFailure_PostsComment(t *testing.T) {
 	h := &harness.Harness{
 		RunnerEnv: map[string]string{
-			"PR_NUMBER":      "123",
+			"PR_NUMBER":      "42",
 			"REPO_FULL_NAME": "owner/repo",
 		},
 	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
+	client := forge.NewFakeClient()
 
-	notifyValidationFailure(h, 2, printer)
-
-	output := buf.String()
-	assert.Contains(t, output, "no API token available")
-}
-
-func TestNotifyValidationFailure_UsesReviewTokenFallback(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-
-	h := &harness.Harness{
-		RunnerEnv: map[string]string{
-			"PR_NUMBER":      "123",
-			"REPO_FULL_NAME": "owner/repo",
-			"REVIEW_TOKEN":   "review-token",
-		},
-	}
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-
-	// gh CLI won't be available in test, so this will warn about the failure.
-	// The important thing is it attempts the post (doesn't skip due to missing token).
-	notifyValidationFailure(h, 2, printer)
+	notifyValidationFailure(context.Background(), client, h, 3, printer)
 
 	output := buf.String()
-	assert.NotContains(t, output, "no API token available")
+	assert.Contains(t, output, "Posted validation failure notification to PR #42")
+
+	comments := client.IssueComments["owner/repo/42"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "3 iteration(s)")
 }
 
-func TestNotifyValidationFailure_UsesGitHubTokenFallback(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "gh-token")
-
+func TestNotifyValidationFailure_HandlesAPIError(t *testing.T) {
 	h := &harness.Harness{
 		RunnerEnv: map[string]string{
-			"PR_NUMBER":      "123",
+			"PR_NUMBER":      "42",
 			"REPO_FULL_NAME": "owner/repo",
 		},
 	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
+	client := forge.NewFakeClient()
+	client.Errors["CreateIssueComment"] = fmt.Errorf("API rate limit exceeded")
 
-	notifyValidationFailure(h, 2, printer)
+	notifyValidationFailure(context.Background(), client, h, 2, printer)
 
 	output := buf.String()
-	assert.NotContains(t, output, "no API token available")
+	assert.Contains(t, output, "Failed to post validation failure comment")
+	assert.Contains(t, output, "API rate limit exceeded")
+}
+
+func TestNotifyValidationFailure_InvalidPRNumber(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{
+			"PR_NUMBER":      "not-a-number",
+			"REPO_FULL_NAME": "owner/repo",
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	client := forge.NewFakeClient()
+
+	notifyValidationFailure(context.Background(), client, h, 2, printer)
+
+	output := buf.String()
+	assert.Contains(t, output, "invalid PR_NUMBER")
+	assert.Empty(t, client.IssueComments, "should not post a comment")
 }
