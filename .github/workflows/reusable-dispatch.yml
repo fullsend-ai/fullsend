@@ -115,18 +115,18 @@ jobs:
           case "${EVENT_NAME}" in
             issue_comment)
               case "${COMMAND}" in
-                /triage)
+                /fs-triage)
                   STAGE="triage"
                   ;;
-                /code)
+                /fs-code)
                   if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
                     STAGE="code"
                   fi
                   ;;
-                /review)
+                /fs-review)
                   STAGE="review"
                   ;;
-                /fix)
+                /fs-fix)
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="fix"
@@ -134,7 +134,7 @@ jobs:
                     fi
                   fi
                   ;;
-                /retro|/fullsend)
+                /fs-retro|/fullsend)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     if [[ "${COMMAND}" == "/fullsend" ]]; then
                       SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | awk '{print $2}')"
