@@ -1,11 +1,11 @@
 ---
 name: spec-refine-github
 description: >-
-  Binds spec-refine to GitHub: given a PR that touches one docs/plans topic,
-  ingest review and PR comments (with edit detection and qna.md placement rules),
-  run the spec-refine phases, commit spec.md and qna.md (never comments.md),
-  then optionally git push and post review-thread replies—or defer those writes
-  to harness post-automation. Pair with spec-refine and spec-start for formats.
+  Use when a GitHub spec PR needs review and PR comments ingested into spec.md
+  and qna.md: prepare comments.md from GitHub (with edit detection and qna.md
+  placement rules), run spec-refine phases, commit spec.md and qna.md only (never
+  comments.md), then push and reply on threads—or defer those writes to harness
+  post-automation. Pair with spec-refine and spec-start for formats.
 # Cursor Agent Skills: prefer explicit @-style invocation; other tooling may ignore.
 disable-model-invocation: true
 ---

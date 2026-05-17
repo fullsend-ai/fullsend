@@ -1,11 +1,11 @@
 ---
 name: spec-refine
 description: >-
-  Updates an existing planning topic directory (from spec-start): folds optional
-  comments.md into qna.md as ### answers, merges resolved discussion into spec.md,
-  and re-runs the same self-review bar as spec-start. Documentation only inside
-  the topic directory. Use after reviewers add comments or answer threads in
-  qna.md; requires spec.md and qna.md already present.
+  Use when an existing docs/plans topic from spec-start needs review feedback
+  folded back in: optional comments.md into qna.md ### answers, resolved threads
+  into spec.md, and the same self-review bar as spec-start. Documentation only
+  inside the topic directory; requires spec.md and qna.md already present. Pair
+  with spec-refine-github for PR round-trips.
 # Cursor Agent Skills: prefer explicit @-style invocation; other tooling may ignore.
 disable-model-invocation: true
 ---
