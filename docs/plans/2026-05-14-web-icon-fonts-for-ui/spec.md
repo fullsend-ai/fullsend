@@ -1,120 +1,125 @@
 # Web UIs: adopt icon fonts instead of embedded SVGs
 
-**Status:** Speculative (spec-start; headless)
+**Status:** Speculative (spec-refine; PR #907)
 
 ## Context
 
-- **Issue:** [fullsend-ai/fullsend#818](https://github.com/fullsend-ai/fullsend/issues/818) — *Change "icons" in web UIs to use an icon font rather then embed raw SVGs*
+- **Issue:** [fullsend-ai/fullsend#818](https://github.com/fullsend-ai/fullsend/issues/818) — *Change "icons" in web UIs to use an icon font rather than embed raw SVGs* [sic on “than” in issue title]
 - **Issue body:** Moving to an icon font should improve styling control and reduce bytes on the wire compared to repeating inline SVG markup.
-- **Labels / triage:** The issue is marked **needs-info**. Triage notes (GitHub comment, 2026-05-12) describe current inline SVG usage across the docs site (for example close / hamburger controls), tree navigation folder/document glyphs, the GitHub mark in the admin dashboard, and dynamically generated SVG in graph visualization. This spec treats that inventory as the **expected baseline** for the upstream product even if a given checkout has a smaller Svelte surface at the moment.
-- **Human comment:** A maintainer signaled openness to Font Awesome but did not pick a standard; library choice remains open.
+- **PR:** [fullsend-ai/fullsend#907](https://github.com/fullsend-ai/fullsend/pull/907) — spec-only follow-up to issue #818.
+- **Scope (confirmed in review):** **UI chrome icons only**—not Mermaid diagram output, not Cytoscape/graph node shapes, not other data-driven SVG.
 
 ## Goals
 
-- Replace **decorative / UI chrome** icons that today ship as inline SVG in Svelte (or equivalent) with **icon-font–based rendering** so color, size, and weight track typography and CSS with minimal duplicated markup.
+- Replace **decorative / UI chrome** icons that today ship as inline SVG in Svelte with **icon-font–based rendering** so color, size, and weight track typography and CSS with minimal duplicated markup.
 - Cut **wire and DOM weight** for repeated icons (one font + short ligature/PUA markup vs many duplicated `<path>` trees), subject to font subsetting and caching strategy.
-- Establish a **single house style** for icon usage across `web/docs`, `web/admin`, and any other first-party web surfaces, including accessibility conventions (exposed name, decorative vs informative).
+- Establish a **single house style** across `web/docs`, `web/admin`, and related surfaces, including accessibility conventions (decorative vs informative).
 
 ## Non-goals
 
-- Rewriting **data-driven** or **bespoke** visuals (for example graph layout edges/nodes, charts, or illustrations) as icon fonts when SVG remains the correct model—those may stay SVG or move to a different abstraction, but are not required to become font glyphs.
+- **Graph / visualization SVG** (`web/public/index.html` document graph: node shapes, edge decorations, layout helpers)—remain SVG or canvas.
+- **Mermaid** (and similar) content rendered inside doc articles—out of scope; not UI chrome.
 - Choosing **npm package names and exact import paths** in this spec (implementation PR picks versions and pins licenses).
-- Internationalizing **third-party** brand marks beyond what license and trademark policy already require.
+- Forcing **third-party brand marks** into a font when guidelines prefer official artwork.
 
-## Architectural approach (options)
+## Canonical icon font (decision)
 
-### Option A — Variable icon font (Material Symbols–style)
+**Primary:** **Material Symbols** (variable font, self-hosted WOFF2 subset)—see [Q-01 comparison](./qna.md#q-01--which-icon-font-family-should-be-canonical).
 
-**Idea:** Load one variable font (WOFF2), map icons via ligatures or codepoints, style with `font-variation-settings` / axes (weight, fill, optical size).
+**Fallback:** **Font Awesome 6 Free** webfont subset if Material licensing or hosting is blocked.
 
-**Pros:** Large catalog; strong alignment with “icon font” wording; one network artifact after first load; very flexible styling.
+**Rejected for primary use:** Lucide/Heroicons-as-font (non-standard distribution); SVG sprite sheet as the main approach (does not satisfy issue #818).
 
-**Cons:** Heavier than a tight subset until subsetting is configured; Google-fonts vs self-host trade-offs; brand icons may still be exceptions.
+## Icon migration inventory
 
-### Option B — Classic webfont pack (Font Awesome–style)
+Audit date: 2026-05-14 (`web/**` on `main`). Logical names are the proposed `UiIcon` manifest keys; **Material Symbols** names are the recommended glyph IDs (adjust during implementation if ligature names differ).
 
-**Idea:** Use a familiar webfont with documented Unicode / class conventions; subset to used glyphs in the build.
+| Surface | File (approx.) | UI element | Current inline SVG | `UiIcon` name | Material glyph (recommended) | Action |
+|---------|----------------|------------|-------------------|---------------|------------------------------|--------|
+| Docs | `web/docs/src/App.svelte` | Sidebar “close outline” (desktop) | 24×24 “X” | `close` | `close` | **Replace** with font |
+| Docs | `web/docs/src/App.svelte` | Sidebar “close outline” (mobile) | Same X (duplicate) | `close` | `close` | **Replace** (dedupe markup via shared component) |
+| Docs | `web/docs/src/App.svelte` | Top bar hamburger / outline toggle | 24×24 three-line menu | `menu` | `menu` | **Replace** |
+| Docs | `web/docs/src/lib/DocTreeNav.svelte` | Folder row expand chevron | 12×12 stroke chevron | `chevron-right` | `chevron_right` | **Replace** (rotate when open via CSS) |
+| Docs | `web/docs/src/lib/DocTreeNav.svelte` | Folder open state | 16×16 open-folder path | `folder-open` | `folder_open` | **Replace** |
+| Docs | `web/docs/src/lib/DocTreeNav.svelte` | Folder closed state | 16×16 closed-folder path | `folder` | `folder` | **Replace** |
+| Docs | `web/docs/src/lib/DocTreeNav.svelte` | File row | 16×16 document path | `file` | `description` | **Replace** |
+| Admin | `web/admin/src/App.svelte` | “Sign in with GitHub” button mark | GitHub Octocat path | — | — | **Keep SVG** (brand; pragmatic exception) |
+| Site graph | `web/public/index.html` | Node markers (circle/rect/triangle) | JS-built SVG strings | — | — | **Keep SVG** (data-driven viz) |
+| Site graph | `web/public/index.html` | Resize handle texture | data-URI SVG line | — | — | **Keep** or replace with pure CSS (optional) |
+| Site graph | `web/public/index.html` | Small legend/connector SVG | inline in template | — | — | **Keep SVG** (viz chrome tied to graph) |
+| Docs content | `web/docs/src/App.svelte` (`runMermaid`) | Diagram output in article | Mermaid-generated SVG | — | — | **Out of scope** (not UI chrome) |
 
-**Pros:** Well-understood ergonomics; predictable licensing tiers; tooling for subsetting.
+## Architectural approach
 
-**Cons:** Less expressive than variable-font axes unless using newer FA variable builds; bundle/licensing choices need explicit approval.
+### Delivery
 
-### Option C — SVG sprite sheet + currentcolor (not an icon font)
+- Self-hosted **Material Symbols** WOFF2 subset driven by a manifest of logical icon names (see inventory).
+- Thin Svelte wrapper (`<UiIcon name="close" />`) mapping logical names → glyph/ligature; forwards `class`, `style`, and ARIA.
+- CSS: size via `font-size`, color via `currentColor`, optional variable axes (`FILL`, `wght`) for outline vs filled states.
 
-**Idea:** Centralize SVGs as `<symbol>` defs or external sprite, reference via `<use>`.
+### Pragmatic SVG exceptions (documented)
 
-**Pros:** Crisp at all sizes; easy for one-off brand paths.
+1. **GitHub mark** on admin sign-in (brand).
+2. **Document graph** dynamic shapes and related helpers in `web/public/index.html`.
+3. Any future mark where trademark guidance forbids font substitution.
 
-**Cons:** Does **not** satisfy the issue’s request for an **icon font**; keeps more DOM for repeated icons than a font + single codepoint per icon.
+All other **static chrome** icons in the table above should migrate off inline SVG.
 
-### Recommendation
-
-**Lead with Option A (variable icon font)** for the majority of UI chrome, paired with a **narrow exception list** for glyphs that are poor font fits (for example the GitHub mark if trademark guidance prefers the official SVG, and graph primitives). Where Option A’s licensing or operational constraints bite, **Option B** is the fallback without changing the overall “font for chrome icons” direction.
-
-**Explicitly deferred:** swapping every bespoke graph SVG for font glyphs (likely infeasible); any broad redesign of the graph renderer.
+```mermaid
+flowchart LR
+  subgraph build [Build]
+    Names[Icon manifest from inventory] --> Subset[Subset Material Symbols WOFF2]
+    Subset --> Assets[WOFF2 + CSS]
+  end
+  subgraph runtime [Runtime]
+    Assets --> Shell[App shell]
+    Shell --> Cmp[UiIcon]
+    Cmp --> DOM[Span / ligature]
+  end
+```
 
 ## Components and responsibilities
 
 | Area | Responsibility |
 |------|------------------|
-| **Font delivery** | Self-hosted WOFF2 in-repo or via locked CDN URL per security/CSP posture; cache headers and preload hints as appropriate for Vite builds. |
-| **Svelte integration** | Thin wrapper component (for example `<UiIcon name="close" />`) that renders the correct element (`<span>` with text / ligature or PUA) and forwards `class` / `style` / ARIA. |
-| **CSS contract** | Document how consumers set size (`font-size`), color (`color` / `currentColor`), and weight/fill axes for variable fonts. |
-| **A11y** | Decorative icons: `aria-hidden="true"`; informative icons: `aria-label` or visually hidden text—mirror whatever patterns exist today for SVG titles. |
-| **Build / subsetting** | CI or build step lists allowed icon names → shrinks font payload; fail closed when requesting unknown names in dev. |
+| **Font delivery** | Self-hosted WOFF2; preload in Vite builds; CSP-aligned `@font-face`. |
+| **Svelte integration** | Shared `UiIcon` in a small shared module consumed by docs (and admin where applicable). |
+| **CSS contract** | Document size/color/axis usage for contributors. |
+| **A11y** | Decorative: `aria-hidden="true"`; informative: `aria-label` or visible text. |
+| **Build / subsetting** | Manifest = inventory logical names; CI fails on unknown `name` in dev/build. |
 
-## Data flow (runtime)
+## Error handling
 
-1. App shell loads icon stylesheet + font once per navigation session (or per deploy hash).
-2. Components request icons by **stable logical name** (not raw codepoint) through the wrapper.
-3. CSS maps logical name → glyph (ligature table or `::before { content }` with escaped codepoint).
-
-```mermaid
-flowchart LR
-  subgraph build [Build]
-    Names[Icon name manifest] --> Subset[Subset / pick font]
-    Subset --> Assets[WOFF2 + CSS]
-  end
-  subgraph runtime [Runtime]
-    Assets --> Shell[App shell]
-    Shell --> Cmp[Svelte UiIcon]
-    Cmp --> DOM[Span / pseudo-element]
-  end
-```
-
-## Error handling and edge cases
-
-- **Missing glyph:** Dev-time console warning + visible placeholder; production build should fail CI if manifest references unknown name.
-- **CSP:** Font and stylesheet hosts must match documented CSP allowlist; avoid inline `@font-face` if policy forbids.
-- **Dark mode / themes:** Icons inherit `color`; verify contrast for outline vs filled variants when using variable axes.
+- **Missing glyph:** Dev warning + CI failure on unknown manifest keys.
+- **CSP:** Font hosts allowed in policy.
+- **Themes:** Icons inherit `color`; verify contrast for outline vs filled axes.
 
 ## Security / licensing
 
-- Confirm **font license** allows redistribution/self-hosting for the chosen pack.
-- **Third-party logos** (GitHub): comply with brand guidelines; prefer retaining SVG where required rather than forcing a font glyph.
+- **Material Symbols:** Apache 2.0; confirm self-hosting steps match Google Fonts attribution requirements.
+- **GitHub logo:** Keep SVG per brand guidelines.
 
 ## Testing strategy
 
-- **Visual smoke:** Representative pages in docs and admin with icons at default and large `font-size`.
-- **Accessibility:** Quick axe or manual screen-reader pass on nav toggles and inline “icon only” buttons.
-- **Bundle:** Compare hashed font + CSS size vs previous inline SVG aggregate for a few hot routes (rough budget, not a hard gate unless maintainers want one).
+- Visual smoke on docs sidebar/topbar and tree nav; admin login button (SVG exception unchanged).
+- Accessibility on icon-only buttons (close, menu, folder toggle).
+- Bundle: compare subset font + CSS vs aggregate inline SVG weight on docs routes.
 
 ## Rollout
 
-1. Land font + wrapper + CSS behind no flag if risk is low; otherwise a short-lived feature flag only if parallel maintenance is otherwise unavoidable (prefer direct migration for small surfaces).
-2. Migrate high-repeat icons first (nav toggles, tree chevrons), then long tail.
-3. Document contributor guidance in `web/README.md` or adjacent developer docs: when to use `UiIcon`, when to keep SVG.
+1. Land `UiIcon`, font assets, and CSS.
+2. Migrate docs chrome per inventory (highest repetition first: close/menu, tree glyphs).
+3. Document exceptions and manifest rules in `web/README.md` (or adjacent dev doc).
 
 ## References
 
 - Issue: https://github.com/fullsend-ai/fullsend/issues/818
-- Triage comment on the issue (2026-05-12) summarizing SVG call sites.
-- `package.json` / Vite workspace for current web build layout.
+- PR: https://github.com/fullsend-ai/fullsend/pull/907
+- `web/docs/src/App.svelte`, `web/docs/src/lib/DocTreeNav.svelte`, `web/admin/src/App.svelte`, `web/public/index.html`
 
 ## Q&A index
 
-- [Q-01 — Which icon font family should be canonical?](./qna.md#q-01--which-icon-font-family-should-be-canonical)
-- [Q-02 — What stays SVG on purpose?](./qna.md#q-02--what-stays-svg-on-purpose)
-- [Q-03 — How strict is “no inline SVG” for admin/docs chrome?](./qna.md#q-03--how-strict-is-no-inline-svg-for-admindocs-chrome)
-- [Q-04 — Subsetting and build-time manifest ownership](./qna.md#q-04--subsetting-and-build-time-manifest-ownership)
-- [Q-05 — Fork / sparse web tree vs upstream triage inventory](./qna.md#q-05--fork--sparse-web-tree-vs-upstream-triage-inventory)
+- [Q-01 — Which icon font family should be canonical?](./qna.md#q-01--which-icon-font-family-should-be-canonical) — comparison + **Material Symbols** recommended
+- [Q-02 — What stays SVG on purpose?](./qna.md#q-02--what-stays-svg-on-purpose) — **resolved:** icons-only scope
+- [Q-03 — How strict is “no inline SVG”?](./qna.md#q-03--how-strict-is-no-inline-svg-for-admindocs-chrome) — **resolved:** pragmatic boundary
+- [Q-04 — Subsetting and manifest ownership](./qna.md#q-04--subsetting-and-build-time-manifest-ownership) — still needs owner
