@@ -6,6 +6,7 @@ policy: policies/review.yaml
 skills:
   - skills/pr-review
   - skills/code-review
+  - skills/docs-review
 
 pre_script: scripts/pre-review.sh
 
@@ -21,6 +22,9 @@ host_files:
   - src: env/review.env
     dest: /tmp/workspace/.env.d/review.env
     expand: true
+  - src: ${PRIOR_REVIEW_FILE}
+    dest: /tmp/workspace/prior-review.txt
+    optional: true
 
 validation_loop:
   script: scripts/validate-output-schema.sh

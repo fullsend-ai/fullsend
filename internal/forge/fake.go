@@ -16,6 +16,7 @@ func NewFakeClient() *FakeClient {
 		WorkflowRuns:   make(map[string]*WorkflowRun),
 		Secrets:        make(map[string]bool),
 		VariablesExist: make(map[string]bool),
+		VariableValues: make(map[string]string),
 		Errors:         make(map[string]error),
 	}
 }
@@ -75,6 +76,7 @@ type ReviewRecord struct {
 	Number      int
 	Event, Body string
 	CommitSHA   string
+	Comments    []ReviewComment
 }
 
 // DismissedReviewRecord records a review dismissal call.
@@ -108,6 +110,7 @@ type FakeClient struct {
 	PullRequests      map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes       []string                    // scopes returned by GetTokenScopes
 	VariablesExist    map[string]bool             // key: "owner/repo/name"
+	VariableValues    map[string]string           // key: "owner/repo/name"
 
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
@@ -532,6 +535,10 @@ func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, valu
 		Name:  name,
 		Value: value,
 	})
+	if f.Secrets == nil {
+		f.Secrets = make(map[string]bool)
+	}
+	f.Secrets[owner+"/"+repo+"/"+name] = true
 	return nil
 }
 
@@ -578,6 +585,22 @@ func (f *FakeClient) RepoVariableExists(_ context.Context, owner, repo, name str
 		return false, nil
 	}
 	return f.VariablesExist[owner+"/"+repo+"/"+name], nil
+}
+
+func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRepoVariable"); e != nil {
+		return "", false, e
+	}
+
+	if f.VariableValues != nil {
+		if val, ok := f.VariableValues[owner+"/"+repo+"/"+name]; ok {
+			return val, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func (f *FakeClient) GetLatestWorkflowRun(_ context.Context, owner, repo, workflowFile string) (*WorkflowRun, error) {
@@ -777,7 +800,7 @@ func (f *FakeClient) GetPullRequestHeadSHA(_ context.Context, _, _ string, _ int
 	return f.PullRequestHeadSHA, nil
 }
 
-func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string) error {
+func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e := f.err("CreatePullRequestReview"); e != nil {
@@ -790,6 +813,7 @@ func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo stri
 		Event:     event,
 		Body:      body,
 		CommitSHA: commitSHA,
+		Comments:  comments,
 	})
 
 	review := PullRequestReview{

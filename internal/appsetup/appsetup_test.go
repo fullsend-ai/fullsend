@@ -66,10 +66,71 @@ func (f *fakeBrowser) Open(_ context.Context, url string) error {
 // --- tests ---
 
 func TestAppSlug(t *testing.T) {
-	assert.Equal(t, "fullsend-fullsend", AppSlug("fullsend"))
-	assert.Equal(t, "fullsend-triage", AppSlug("triage"))
-	assert.Equal(t, "fullsend-coder", AppSlug("coder"))
-	assert.Equal(t, "fullsend-review", AppSlug("review"))
+	assert.Equal(t, "fullsend-ai-fullsend", AppSlug("fullsend-ai", "fullsend"))
+	assert.Equal(t, "fullsend-ai-triage", AppSlug("fullsend-ai", "triage"))
+	assert.Equal(t, "custom-coder", AppSlug("custom", "coder"))
+	assert.Equal(t, "fullsend-review", AppSlug("fullsend", "review"))
+}
+
+func TestValidateAppSet(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"valid simple", "fullsend", false},
+		{"valid with hyphen", "fullsend-ai", false},
+		{"valid multi hyphen", "my-custom-app", false},
+		{"valid numeric", "app2", false},
+		{"valid starts with number", "42apps", false},
+		{"empty", "", true},
+		{"uppercase", "FullSend", true},
+		{"leading hyphen", "-fullsend", true},
+		{"trailing hyphen", "fullsend-", true},
+		{"consecutive hyphens", "full--send", true},
+		{"underscore", "full_send", true},
+		{"space", "full send", true},
+		{"special chars", "special!chars", true},
+		{"too long", "a2345678901234567890123x", true},
+		{"max length ok", "a234567890123456789012x", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateAppSet(tc.input)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSetup_NonDefaultAppSet_FlowsThrough(t *testing.T) {
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 200, AppID: 20, AppSlug: "custom-prefix-fullsend"},
+		},
+		AppClientIDs: map[string]string{
+			"custom-prefix-fullsend": "Iv1.custom123",
+		},
+	}
+	prompter := &fakePrompter{}
+	browser := newFakeBrowser()
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("custom-prefix").
+		WithSecretExists(func(_ string) (bool, error) {
+			return true, nil
+		})
+
+	creds, err := s.Run(context.Background(), "myorg", "fullsend")
+	require.NoError(t, err)
+
+	assert.Equal(t, 20, creds.AppID)
+	assert.Equal(t, "custom-prefix-fullsend", creds.Slug)
+	assert.Equal(t, "Iv1.custom123", creds.ClientID)
 }
 
 func TestSetup_ExistingApp_SecretExists_AutoReuse(t *testing.T) {
@@ -86,6 +147,7 @@ func TestSetup_ExistingApp_SecretExists_AutoReuse(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) {
 			return true, nil
 		})
@@ -115,6 +177,7 @@ func TestSetup_ExistingApp_Reuse_StoreSecretNotCalled(t *testing.T) {
 
 	storeCalled := false
 	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
 		WithStoreSecret(func(_ context.Context, _, _ string) error {
 			storeCalled = true
@@ -136,6 +199,7 @@ func TestSetup_RecoverCreatedApp_PEMExists(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil })
 
 	creds, err := s.recoverCreatedApp(context.Background(), "myorg", "coder", "fullsend-coder")
@@ -155,6 +219,7 @@ func TestSetup_RecoverCreatedApp_KnownSlug(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithKnownSlugs(map[string]string{"coder": "custom-coder-app"}).
 		WithSecretExists(func(_ string) (bool, error) { return true, nil })
 
@@ -170,6 +235,7 @@ func TestSetup_RecoverCreatedApp_NoPEM(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return false, nil })
 
 	creds, err := s.recoverCreatedApp(context.Background(), "myorg", "coder", "fullsend-coder")
@@ -181,7 +247,8 @@ func TestSetup_RecoverCreatedApp_NoSecretExistsFunc(t *testing.T) {
 	client := &forge.FakeClient{}
 	printer := ui.New(&discardWriter{})
 
-	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer)
+	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend")
 
 	creds, err := s.recoverCreatedApp(context.Background(), "myorg", "coder", "fullsend-coder")
 	require.NoError(t, err)
@@ -202,6 +269,7 @@ func TestSetup_ExistingApp_NoSecret(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) {
 			return false, nil
 		})
@@ -223,6 +291,7 @@ func TestSetup_ExistingApp_ClientIDLookupFails(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) {
 			return true, nil
 		})
@@ -246,6 +315,7 @@ func TestSetup_KnownSlug_Match(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend").
 		WithKnownSlugs(map[string]string{"coder": "custom-slug-name"}).
 		WithSecretExists(func(_ string) (bool, error) {
 			return true, nil
@@ -269,7 +339,8 @@ func TestSetup_NoExistingApp(t *testing.T) {
 	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
-	s := NewSetup(client, prompter, browser, printer)
+	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend")
 
 	// No existing app → manifest flow is started. Use a short context
 	// timeout so the test doesn't hang waiting for a GitHub callback.
@@ -297,7 +368,8 @@ func TestManifestFlow_HTMLForm(t *testing.T) {
 	browser := newFakeBrowser()
 	printer := ui.New(&discardWriter{})
 
-	s := NewSetup(client, &fakePrompter{}, browser, printer)
+	s := NewSetup(client, &fakePrompter{}, browser, printer).
+		WithAppSet("fullsend")
 
 	// Use a short timeout — we only need the server to start and serve the
 	// HTML page, not complete the full manifest flow.
@@ -403,6 +475,7 @@ func TestSetup_StalePermissions_AllRolesChecked(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	setup := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil })
 
 	// Run both roles — each should succeed individually.
@@ -439,6 +512,7 @@ func TestSetup_StalePermissions_IncludesInstallationURL(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	setup := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil })
 
 	_, err := setup.Run(context.Background(), "myorg", "fullsend")
@@ -466,6 +540,7 @@ func TestSetup_CorrectPermissions_NoError(t *testing.T) {
 				Permissions: map[string]string{
 					"actions":               "write",
 					"contents":              "write",
+					"actions_variables":     "read",
 					"workflows":             "write",
 					"issues":                "read",
 					"pull_requests":         "write",
@@ -480,12 +555,33 @@ func TestSetup_CorrectPermissions_NoError(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	setup := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil })
 
 	_, err := setup.Run(context.Background(), "myorg", "fullsend")
 	require.NoError(t, err)
 
 	assert.NoError(t, setup.PermissionErrors())
+}
+
+func TestSetup_DefaultAppSet(t *testing.T) {
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-coder"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-coder": "Iv1.default123",
+		},
+	}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithSecretExists(func(_ string) (bool, error) { return true, nil })
+
+	creds, err := s.Run(context.Background(), "myorg", "coder")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-coder", creds.Slug)
+	assert.Equal(t, "Iv1.default123", creds.ClientID)
 }
 
 // --- PEM recovery tests ---
@@ -520,6 +616,7 @@ func existingAppSetup(t *testing.T, prompter *fakePrompter) (*Setup, *forge.Fake
 	}
 	printer := ui.New(&discardWriter{})
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return false, nil })
 	return s, client
 }
@@ -577,6 +674,136 @@ func TestSetup_ExistingApp_PEMRecovery_FileNotFound(t *testing.T) {
 	_, err := s.Run(context.Background(), "myorg", "triage")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking PEM file")
+}
+
+func TestSetup_ExistingApp_StaleAppID_TriggersRecovery(t *testing.T) {
+	pemData := generateTestPEM(t)
+	pemPath := writeTempPEM(t, pemData)
+
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 20, AppSlug: "fullsend-fullsend"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-fullsend": "Iv1.fullsend123",
+		},
+	}
+	prompter := &fakePrompter{confirmResult: true, readLineResult: pemPath}
+	printer := ui.New(&discardWriter{})
+
+	var storedPEM string
+	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
+		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"}).
+		WithStoreSecret(func(_ context.Context, _, p string) error {
+			storedPEM = p
+			return nil
+		})
+
+	creds, err := s.Run(context.Background(), "myorg", "fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, 20, creds.AppID)
+	assert.NotEmpty(t, creds.PEM, "should have new PEM from recovery")
+	assert.NotEmpty(t, storedPEM, "should have stored new PEM")
+	assert.True(t, prompter.confirmCalled, "should prompt for PEM recovery")
+}
+
+func TestSetup_ExistingApp_MatchingAppID_Reuses(t *testing.T) {
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-fullsend"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-fullsend": "Iv1.fullsend123",
+		},
+	}
+	prompter := &fakePrompter{}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
+		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"})
+
+	creds, err := s.Run(context.Background(), "myorg", "fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, 10, creds.AppID)
+	assert.Empty(t, creds.PEM, "PEM should be empty to signal reuse")
+	assert.False(t, prompter.confirmCalled, "should not prompt — IDs match")
+}
+
+func TestSetup_ExistingApp_NoStoredIDs_Reuses(t *testing.T) {
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-fullsend"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-fullsend": "Iv1.fullsend123",
+		},
+	}
+	prompter := &fakePrompter{}
+	printer := ui.New(&discardWriter{})
+
+	// No WithStoredAppIDs — backwards compatible behavior.
+	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) { return true, nil })
+
+	creds, err := s.Run(context.Background(), "myorg", "fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, 10, creds.AppID)
+	assert.Empty(t, creds.PEM, "PEM should be empty to signal reuse")
+	assert.False(t, prompter.confirmCalled, "should not prompt — no stored IDs to compare")
+}
+
+func TestIsAppIDStale(t *testing.T) {
+	s := &Setup{}
+
+	t.Run("nil map returns false", func(t *testing.T) {
+		assert.False(t, s.isAppIDStale("org", "role", 10))
+	})
+
+	s.storedAppIDs = map[string]string{
+		"myorg/fullsend":   "10",
+		"myorg/prioritize": "20",
+	}
+
+	t.Run("matching ID returns false", func(t *testing.T) {
+		assert.False(t, s.isAppIDStale("myorg", "fullsend", 10))
+	})
+
+	t.Run("mismatched ID returns true", func(t *testing.T) {
+		assert.True(t, s.isAppIDStale("myorg", "fullsend", 99))
+	})
+
+	t.Run("unknown key returns false", func(t *testing.T) {
+		assert.False(t, s.isAppIDStale("otherog", "fullsend", 10))
+	})
+}
+
+func TestSetup_ExistingApp_StaleAppID_UserDeclines(t *testing.T) {
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 20, AppSlug: "fullsend-fullsend"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-fullsend": "Iv1.fullsend123",
+		},
+	}
+	prompter := &fakePrompter{confirmResult: false}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
+		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"})
+
+	_, err := s.Run(context.Background(), "myorg", "fullsend")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "was recreated")
+	assert.True(t, prompter.confirmCalled, "should prompt for PEM recovery")
+	assert.False(t, prompter.readLineCalled, "should not ask for file path after decline")
 }
 
 func TestValidateRSAPEM_Valid(t *testing.T) {

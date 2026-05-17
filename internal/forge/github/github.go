@@ -1061,6 +1061,31 @@ func (c *LiveClient) RepoVariableExists(ctx context.Context, owner, repo, name s
 	return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking variable"}
 }
 
+// GetRepoVariable returns the value of a repository Actions variable.
+// Returns ("", false, nil) if the variable does not exist.
+func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), nil)
+	if err != nil {
+		return "", false, fmt.Errorf("get variable %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status getting variable"}
+	}
+
+	var result struct {
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", false, fmt.Errorf("decode variable %s: %w", name, err)
+	}
+	return result.Value, true, nil
+}
+
 // GetLatestWorkflowRun returns the most recent workflow run for a workflow file.
 func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*forge.WorkflowRun, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=1", owner, repo, workflowFile))
@@ -1419,20 +1444,41 @@ func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo stri
 // review to that commit. GitHub rejects the request if the commit is
 // not the PR's current HEAD, closing the TOCTOU gap between the
 // stale-head check and review submission.
-func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string) error {
+// When comments is non-nil, inline diff comments are attached to the
+// review via the GitHub "comments" field.
+func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []forge.ReviewComment) error {
 	switch event {
 	case "APPROVE", "REQUEST_CHANGES", "COMMENT":
 	default:
 		return fmt.Errorf("create review on #%d: invalid event %q", number, event)
 	}
 
-	payload := map[string]string{
-		"event": event,
-		"body":  body,
+	type reviewComment struct {
+		Path string `json:"path"`
+		Line int    `json:"line,omitempty"`
+		Body string `json:"body"`
 	}
-	if commitSHA != "" {
-		payload["commit_id"] = commitSHA
+
+	type reviewPayload struct {
+		Event    string          `json:"event"`
+		Body     string          `json:"body"`
+		CommitID string          `json:"commit_id,omitempty"`
+		Comments []reviewComment `json:"comments,omitempty"`
 	}
+
+	payload := reviewPayload{
+		Event:    event,
+		Body:     body,
+		CommitID: commitSHA,
+	}
+	for _, rc := range comments {
+		payload.Comments = append(payload.Comments, reviewComment{
+			Path: rc.Path,
+			Line: rc.Line,
+			Body: rc.Body,
+		})
+	}
+
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number), payload)
 	if err != nil {
 		return fmt.Errorf("create pull request review on #%d: %w", number, err)

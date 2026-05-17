@@ -53,6 +53,7 @@ fi
 echo "Using result: ${RESULT_FILE}"
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
+# ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
 
 # ---------------------------------------------------------------------------
 # Protected-path check: the review agent must not approve PRs that touch
@@ -73,6 +74,7 @@ REVIEW_PROTECTED_PATHS=(
   ".gitattributes"
 )
 
+DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
   if [ -z "${PR_FILES}" ]; then
@@ -113,6 +115,7 @@ if [ "${ACTION}" = "approve" ]; then
       '.action = "comment" | .body = (.body + $notice)' \
       "${RESULT_FILE}" > "${MODIFIED_RESULT}"
     RESULT_FILE="${MODIFIED_RESULT}"
+    DOWNGRADED=true
   fi
 fi
 
@@ -122,14 +125,49 @@ fullsend post-review \
   --token "${REVIEW_TOKEN}" \
   --result "${RESULT_FILE}"
 
-if [ "${ACTION}" = "reject" ]; then
+# ---------------------------------------------------------------------------
+# Outcome labels: apply labels based on the review action.
+# Labels are created if missing, matching the needs-human pattern in
+# post-fix.sh.
+# Label logic is mirrored in post-review-test.sh — update both.
+# ---------------------------------------------------------------------------
+
+# Remove stale outcome labels from prior runs before applying the new one.
+# 2>/dev/null is intentional: unlike --add-label (where we want to see failures),
+# removal of a non-existent label is the common case and not worth logging.
+for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --remove-label "${stale_label}" 2>/dev/null || true
+done
+
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ]; then
+  echo "Approve disposition — applying ready-for-merge label"
+  gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
+    --description "All reviewers approved — ready to merge" --color "0E8A16" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "ready-for-merge" || true
+elif { [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ]; } || \
+     [ "${ACTION}" = "comment" ]; then
+  echo "Review requires human judgment — applying requires-manual-review label"
+  gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
+    --description "Review requires human judgment" --color "FBCA04" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "requires-manual-review" || true
+elif [ "${ACTION}" = "reject" ]; then
   echo "Reject disposition — closing PR and applying label"
+  gh label create "rejected" --repo "${REPO_FULL_NAME}" \
+    --description "Approach rejected by review agent" --color "B60205" \
+    2>/dev/null || true
   gh pr close "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --comment "Closed by review agent: approach rejected." || true
   gh pr edit "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --add-label "rejected" || true
+elif [ "${ACTION}" = "request_changes" ]; then
+  echo "Request-changes disposition — no outcome label (fix agent triggers on event)"
 fi
 
 echo "Review posted on ${REPO_FULL_NAME}#${PR_NUMBER}"

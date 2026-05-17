@@ -12,6 +12,10 @@ import (
 // configuration repository. See ADR-0003.
 const ConfigRepoName = ".fullsend"
 
+// PerRepoGuardVar is the repo variable set by per-repo install to prevent
+// per-org enrollment from overriding a per-repo installation.
+const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
+
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
@@ -75,6 +79,15 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+}
+
+// ReviewComment represents an inline comment on a specific line of a
+// pull request diff. These are submitted as part of a formal PR review
+// via the GitHub "Create a review" API.
+type ReviewComment struct {
+	Path string // relative file path in the repository
+	Line int    // line number in the diff (right side)
+	Body string // comment body (Markdown)
 }
 
 // Installation represents an app installation on an org.
@@ -166,6 +179,7 @@ type Client interface {
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
+	GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error)
 
 	// Org-level secrets (for cross-repo dispatch tokens)
 	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
@@ -201,7 +215,8 @@ type Client interface {
 	// Pull request review operations.
 	// commitSHA, when non-empty, pins the review to a specific commit.
 	// GitHub rejects the request if the commit is not the PR's current HEAD.
-	CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string) error
+	// comments, when non-nil, attaches inline diff comments to the review.
+	CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error
 	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]PullRequestReview, error)
 	DismissPullRequestReview(ctx context.Context, owner, repo string, number, reviewID int, message string) error
 

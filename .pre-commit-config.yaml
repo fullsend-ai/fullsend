@@ -47,6 +47,7 @@ repos:
     rev: v1.7.11
     hooks:
       - id: actionlint
+        args: ["-ignore", "unexpected key \"queue\" for \"concurrency\""]
 
   - repo: local
     hooks:

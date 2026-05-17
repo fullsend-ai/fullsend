@@ -12,6 +12,7 @@ import (
 
 	"github.com/playwright-community/playwright-go"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -51,11 +52,19 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 			t.Logf("[cleanup] App %s not found or could not delete: %v", slug, delErr)
 		}
 
-		newSlug := "fullsend-" + role // OIDC convention: fullsend-triage, etc.
+		newSlug := appsetup.AppSlug(appsetup.DefaultAppSet, role) // current convention: fullsend-triage, etc.
 		if newSlug != slug {
 			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", newSlug)
 			if delErr := deleteAppViaPlaywright(page, newSlug, t.Logf, screenshotDir); delErr != nil {
 				t.Logf("[cleanup] App %s not found or could not delete: %v", newSlug, delErr)
+			}
+		}
+
+		legacySlug := "fullsend-" + role // legacy convention: fullsend-triage, etc.
+		if legacySlug != slug && legacySlug != newSlug {
+			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", legacySlug)
+			if delErr := deleteAppViaPlaywright(page, legacySlug, t.Logf, screenshotDir); delErr != nil {
+				t.Logf("[cleanup] App %s not found or could not delete: %v", legacySlug, delErr)
 			}
 		}
 	}
@@ -68,7 +77,8 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		for _, inst := range installations {
 			// Safe: testOrg is a dedicated E2E org with no production apps.
 			isStale := strings.HasPrefix(inst.AppSlug, testOrg+"-") || // v6: halfsend-*
-				strings.HasPrefix(inst.AppSlug, "fullsend-") // OIDC + old: fullsend-triage, fullsend-halfsend-*, etc.
+				strings.HasPrefix(inst.AppSlug, appsetup.DefaultAppSet+"-") || // current: fullsend-*
+				strings.HasPrefix(inst.AppSlug, "fullsend-") // legacy: fullsend-triage, fullsend-halfsend-*, etc.
 			if isStale {
 				t.Logf("[cleanup] Deleting stale installed app: %s", inst.AppSlug)
 				if delErr := deleteAppViaPlaywright(page, inst.AppSlug, t.Logf, screenshotDir); delErr != nil {

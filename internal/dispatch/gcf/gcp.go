@@ -86,6 +86,7 @@ type GCFClient interface {
 	UploadFunctionSource(ctx context.Context, projectID, region string, sourceZip []byte) (storageSource json.RawMessage, err error)
 	CreateFunction(ctx context.Context, projectID, region, functionName string, cfg FunctionConfig) (string, error)
 	UpdateFunction(ctx context.Context, projectID, region, functionName string, cfg FunctionConfig) (string, error)
+	UpdateFunctionEnvVars(ctx context.Context, projectID, region, functionName string, envVars map[string]string) (string, error)
 	WaitForOperation(ctx context.Context, operationName string) error
 
 	// Project number lookup
@@ -864,6 +865,49 @@ func (c *LiveGCFClient) UpdateFunction(ctx context.Context, projectID, region, f
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decoding update function response: %w", err)
+	}
+
+	return result.Name, nil
+}
+
+// UpdateFunctionEnvVars updates only the environment variables of a Cloud
+// Function v2, leaving build config and other service config untouched.
+func (c *LiveGCFClient) UpdateFunctionEnvVars(ctx context.Context, projectID, region, functionName string, envVars map[string]string) (string, error) {
+	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions/%s?updateMask=%s",
+		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(functionName),
+		url.QueryEscape("serviceConfig.environmentVariables"))
+
+	resourceName := fmt.Sprintf("projects/%s/locations/%s/functions/%s",
+		projectID, region, functionName)
+
+	payloadObj := map[string]interface{}{
+		"name": resourceName,
+		"serviceConfig": map[string]interface{}{
+			"environmentVariables": envVars,
+		},
+	}
+
+	payloadBytes, err := json.Marshal(payloadObj)
+	if err != nil {
+		return "", fmt.Errorf("marshaling env vars update payload: %w", err)
+	}
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, reqURL, string(payloadBytes))
+	if err != nil {
+		return "", fmt.Errorf("updating function env vars: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return "", fmt.Errorf("unexpected status %d updating function env vars: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding env vars update response: %w", err)
 	}
 
 	return result.Name, nil

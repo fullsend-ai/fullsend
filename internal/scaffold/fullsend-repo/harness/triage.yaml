@@ -16,7 +16,8 @@ host_files:
     dest: /tmp/workspace/.env.d/triage.env
     expand: true
 
-skills: []
+skills:
+  - skills/issue-labels
 
 pre_script: scripts/pre-triage.sh
 

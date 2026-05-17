@@ -12,6 +12,14 @@ allowed-tools: Bash(bash skills/merge-queue/scripts/enqueue-pr.sh:*)
 Run `bash skills/merge-queue/scripts/enqueue-pr.sh [PR_NUMBER_OR_URL]` to enqueue a PR.
 Omit the argument to enqueue the current branch's PR.
 
+## Accepted input formats
+
+- **PR number:** `652` (uses the current repo context from `gh`)
+- **PR URL:** `https://github.com/owner/repo/pull/652`
+- **Omitted:** uses the current branch's PR
+
+The `owner/repo#number` format is **not supported** — use a URL or number instead.
+
 ## Prerequisites
 
 - `gh` CLI authenticated with write access to the target repository

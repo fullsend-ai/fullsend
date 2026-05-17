@@ -33,7 +33,7 @@ The triage agent reads the issue title, body, comments, and GitHub-native attach
 - Put key information in the issue body — expected behavior, actual behavior, steps to reproduce, version/environment.
 - Use GitHub's native file attachments for logs, screenshots, or reproduction scripts.
 - You can add details via comments — the triage agent reads those too. Other users can also comment with additional context (e.g., confirming the bug on a different platform).
-- Editing the issue title or body triggers triage automatically. You can also use `/triage` to force a fresh run.
+- Editing the issue title or body triggers triage automatically. You can also use `/fs-triage` to force a fresh run.
 
 ### Labels are the state machine
 
@@ -58,10 +58,10 @@ You can control the pipeline from issue or PR comments:
 
 | Command | Where | Effect |
 |---------|-------|--------|
-| `/triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
-| `/code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
-| `/review` | PR comment | Enqueues a new review round for the current PR head |
-| `/retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
+| `/fs-triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
+| `/fs-code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
+| `/fs-review` | PR comment | Enqueues a new review round for the current PR head |
+| `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
 ### What to expect from agent PRs
 
@@ -91,13 +91,13 @@ The review stage runs N independent review agents in parallel. One is randomly s
 
 Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
 
-> **Planned:** The **fix agent** ([#197](https://github.com/fullsend-ai/fullsend/issues/197)) will handle the rework loop automatically. When a review agent requests changes or a human posts `/fix-agent [instruction]`, the fix agent reads the review feedback and pushes fixes to the existing PR — no manual coding required. The fix agent is a separate workflow from the code agent, with its own prompt scoped to "read review feedback, fix existing PR."
+> **Planned:** The **fix agent** ([#197](https://github.com/fullsend-ai/fullsend/issues/197)) will handle the rework loop automatically. When a review agent requests changes or a human posts `/fs-fix [instruction]`, the fix agent reads the review feedback and pushes fixes to the existing PR — no manual coding required. The fix agent is a separate workflow from the code agent, with its own prompt scoped to "read review feedback, fix existing PR."
 
 ## The stages in detail
 
 ### Stage 1: Triage
 
-**Triggered by:** issue creation, issue title/body edit, or `/triage` command.
+**Triggered by:** issue creation, issue title/body edit, or `/fs-triage` command.
 
 The triage agent:
 
@@ -108,11 +108,11 @@ The triage agent:
 5. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 6. **Hands off.** Labels `ready-to-code` with a summary comment.
 
-**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/triage` to force a fresh run — this clears all previous labels and starts from scratch.
+**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears all previous labels and starts from scratch.
 
 ### Stage 2: Code
 
-**Triggered by:** `ready-to-code` label or `/code` command.
+**Triggered by:** `ready-to-code` label or `/fs-code` command.
 
 The code agent:
 
@@ -125,7 +125,7 @@ The code agent:
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/review` command, or `ready-for-review` label.
+**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` command, or `ready-for-review` label.
 
 The review swarm:
 
@@ -139,20 +139,20 @@ Re-review happens automatically on every push to the PR. The `ready-for-merge` l
 
 Once the PR is merged (by human, merge queue, or automation per org governance), the automated pipeline for this issue is complete.
 
-The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131)) runs automatically when a PR is closed (merged or rejected) and can also be triggered on-demand via `/retro` on any issue or PR comment. It analyzes the full workflow graph — triage, code, review, and fix agent interactions plus any human interventions — to identify improvement opportunities. Proposals are filed as GitHub issues in the appropriate repo, and a summary comment is posted on the originating PR/issue linking to all proposals.
+The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131)) runs automatically when a PR is closed (merged or rejected) and can also be triggered on-demand via `/fs-retro` on any issue or PR comment. It analyzes the full workflow graph — triage, code, review, and fix agent interactions plus any human interventions — to identify improvement opportunities. Proposals are filed as GitHub issues in the appropriate repo, and a summary comment is posted on the originating PR/issue linking to all proposals.
 
 ## Intervening in the pipeline
 
 ### Stopping automation
 
 - Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request_target`), so closing the PR is the way to stop review dispatch.
-- Close the issue. Agents don't act on closed issues (except `/triage` which explicitly reopens).
+- Close the issue. Agents don't act on closed issues (except `/fs-triage` which explicitly reopens).
 
 ### Restarting a stage
 
-- `/triage` — wipes all labels, reopens the issue, runs triage fresh.
-- `/code` — restarts the code agent from the current issue state.
-- `/review` — enqueues a new review round.
+- `/fs-triage` — wipes all labels, reopens the issue, runs triage fresh.
+- `/fs-code` — restarts the code agent from the current issue state.
+- `/fs-review` — enqueues a new review round.
 
 ### Taking over manually
 

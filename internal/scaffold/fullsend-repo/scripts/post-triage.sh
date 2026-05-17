@@ -67,8 +67,27 @@ add_label() {
 
 # remove_label silently removes a label (no error if absent).
 remove_label() {
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/$1" -X DELETE --silent 2>/dev/null || true
+  local encoded
+  encoded=$(printf '%s' "$1" | jq -sRr @uri)
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
+
+# Control labels managed by the triage pipeline. The post script refuses to
+# add or remove these via label_actions (same set that pre-triage.sh resets,
+# plus blocked and triaged).
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "not-ready" "not-reproducible" "type/feature" "blocked" "triaged")
+
+is_control_label() {
+  local label="$1"
+  for cl in "${CONTROL_LABELS[@]}"; do
+    if [[ "${cl}" == "${label}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# --- Action-specific validation and control labels ---
 
 case "${ACTION}" in
   insufficient)
@@ -76,10 +95,6 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided"
       exit 1
     fi
-    echo "Posting clarifying question..."
-    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
-
-    echo "Applying label..."
     remove_label "blocked"
     add_label "needs-info"
     ;;
@@ -94,13 +109,8 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})"
       exit 1
     fi
-    echo "Posting duplicate notice..."
-    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
-
-    echo "Applying label and closing..."
     remove_label "blocked"
     add_label "duplicate"
-    gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
     ;;
 
   blocked)
@@ -119,10 +129,6 @@ case "${ACTION}" in
       exit 1
     fi
     echo "Blocked by: ${BLOCKED_BY}"
-    echo "Posting blocked notice..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
-
-    echo "Applying label..."
     remove_label "ready-to-code"
     remove_label "needs-info"
     add_label "blocked"
@@ -142,10 +148,6 @@ case "${ACTION}" in
       exit 1
     fi
 
-    echo "Posting triage summary..."
-    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
-
-    echo "Removing stale labels..."
     remove_label "blocked"
     remove_label "needs-info"
 
@@ -172,5 +174,72 @@ case "${ACTION}" in
     exit 1
     ;;
 esac
+
+# --- Process label_actions (applies to all actions) ---
+
+HAS_LABEL_ACTIONS=$(jq 'has("label_actions")' "${RESULT_FILE}")
+if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
+  LABEL_REASON=$(jq -r '.label_actions.reason' "${RESULT_FILE}")
+  LABEL_COUNT=$(jq '.label_actions.actions | length' "${RESULT_FILE}")
+
+  echo "Processing ${LABEL_COUNT} label action(s)..."
+
+  LABELS_APPLIED=0
+  for i in $(seq 0 $((LABEL_COUNT - 1))); do
+    LA_ACTION=$(jq -r ".label_actions.actions[${i}].action" "${RESULT_FILE}")
+    LA_LABEL=$(jq -r ".label_actions.actions[${i}].label" "${RESULT_FILE}")
+
+    # Validate label name to prevent path injection from untrusted agent output.
+    if [[ ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL}' -- contains invalid characters"
+      continue
+    fi
+
+    if is_control_label "${LA_LABEL}"; then
+      echo "::warning::Refused to ${LA_ACTION} control label '${LA_LABEL}' -- control labels are managed by the triage pipeline"
+      continue
+    fi
+
+    case "${LA_ACTION}" in
+      add)
+        echo "Adding label '${LA_LABEL}'..."
+        add_label "${LA_LABEL}"
+        LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        ;;
+      remove)
+        echo "Removing label '${LA_LABEL}'..."
+        remove_label "${LA_LABEL}"
+        LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        ;;
+      *)
+        echo "::warning::Unknown label action '${LA_ACTION}' for label '${LA_LABEL}'"
+        ;;
+    esac
+  done
+
+  # Append the label reason to the comment only if at least one label was applied.
+  if [[ "${LABELS_APPLIED}" -gt 0 ]]; then
+    COMMENT="${COMMENT}
+
+---
+**Labels:** ${LABEL_REASON}"
+  fi
+fi
+
+# --- Post comment ---
+
+echo "Posting comment..."
+if [[ "${ACTION}" == "blocked" ]]; then
+  # Blocked uses plain gh issue comment (no marker-based upsert).
+  printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+else
+  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
+fi
+
+# --- Post-action: close duplicate issues ---
+
+if [[ "${ACTION}" == "duplicate" ]]; then
+  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
+fi
 
 echo "Post-triage complete."

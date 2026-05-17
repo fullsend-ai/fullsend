@@ -62,6 +62,39 @@ shim_content_b64() {
   sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE" | base64 -w0
 }
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
+PER_REPO_GUARD_VAR="FULLSEND_PER_REPO_INSTALL"
+
+# check_per_repo_guard checks whether a repo has an active per-repo installation.
+# Returns 0 (should skip) if per-repo guard is active or API error (fail closed).
+# Returns 1 (proceed) if guard is not set or not "true".
+check_per_repo_guard() {
+  local repo="$1"
+  local action="$2"
+  local resp rc var
+  resp=$(gh api "repos/$ORG/$repo/actions/variables/$PER_REPO_GUARD_VAR" 2>/dev/null) && rc=0 || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    var=$(printf '%s' "$resp" | jq -r '.value // empty')
+    if [[ "$var" == "true" ]]; then
+      echo "::warning::Skipping $action of $repo — per-repo installation active ($PER_REPO_GUARD_VAR=true)"
+      return 0
+    fi
+    if [[ -n "$var" ]]; then
+      local safe_var
+      safe_var=$(printf '%s' "$var" | tr -d '\n\r')
+      echo "::notice::$repo has $PER_REPO_GUARD_VAR=$safe_var (not \"true\") — proceeding with $action"
+    fi
+    return 1
+  fi
+  # Check if the error is a 404 (variable not found) via numeric status field.
+  if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+    return 1
+  fi
+  # Non-404 error (permissions, network) — skip to be safe.
+  local api_msg
+  api_msg=$(printf '%s' "$resp" | jq -r '.message // empty' 2>/dev/null | tr -d '\n\r')
+  echo "::warning::Skipping $action of $repo — could not check per-repo guard variable (exit code $rc${api_msg:+: $api_msg})"
+  return 0
+}
 
 ENROLLED=0
 UPDATED=0
@@ -253,8 +286,14 @@ if [ -n "$ENABLED_REPOS" ]; then
       continue
     fi
 
-    # Clean up any stale removal PR from a previous disable cycle.
+    # Clean up any stale removal PR from a previous disable cycle (even for per-repo repos).
     close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"
+
+    # Skip repos with per-repo installation — they manage their own WIF and shim.
+    if check_per_repo_guard "$REPO" "enrollment"; then
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
 
     # Check if already enrolled (shim exists on default branch).
     # Fetch content and SHA in one call to avoid race between reads.
@@ -367,6 +406,12 @@ if [ -n "$DISABLED_REPOS" ]; then
 
     # Close any stale enrollment PR.
     close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Repo disabled in config.yaml"
+
+    # Skip repos with per-repo installation — unenrollment would break their shim.
+    if check_per_repo_guard "$REPO" "unenrollment"; then
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
 
     # Check if a removal PR already exists.
     EXISTING_PR=$(gh pr list --repo "$ORG/$REPO" --head "$UNENROLL_BRANCH" --json url --jq '.[0].url // empty' 2>/dev/null || true)

@@ -51,7 +51,7 @@ jobs:
       github.event_name == 'issue_comment'
         && github.event.issue.pull_request
         && github.event.comment.user.type != 'Bot'
-        && github.event.comment.body == '/stop-fix'
+        && github.event.comment.body == '/fs-fix-stop'
         && (
           github.event.comment.author_association == 'OWNER'
           || github.event.comment.author_association == 'MEMBER'
@@ -77,4 +77,4 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "$REPO" \
             --add-label "fullsend-no-fix"
           gh pr comment "$PR_NUMBER" --repo "$REPO" \
-            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fix\` to re-engage."
+            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fs-fix\` to re-engage."

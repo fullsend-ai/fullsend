@@ -233,7 +233,7 @@ func runFullInstall(t *testing.T, env *e2eEnv) ([]layers.AgentCredentials, *conf
 
 			t.Logf("Attempt %d/%d for role %s failed: %v", attempt, maxAttempts, role, runErr)
 			if attempt < maxAttempts {
-				slug := appsetup.AppSlug(role)
+				slug := appsetup.AppSlug(appsetup.DefaultAppSet, role)
 				t.Logf("Cleaning up potentially stale app %s before retry", slug)
 				if delErr := deleteAppViaPlaywright(env.page, slug, t.Logf, env.screenshotDir); delErr != nil {
 					t.Logf("Warning: cleanup of %s failed (may not exist): %v", slug, delErr)

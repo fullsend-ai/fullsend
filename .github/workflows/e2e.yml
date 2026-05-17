@@ -14,6 +14,7 @@ on:
 concurrency:
   group: e2e-halfsend
   cancel-in-progress: false
+  queue: max
 
 jobs:
   e2e:

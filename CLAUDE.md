@@ -15,6 +15,12 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 
 ## Go code
 
+**Mint function:** The mint Cloud Function source lives in two places that must stay in sync:
+- `internal/mint/main.go` — the source of truth (has its own `go.mod`, tests run from `internal/mint/`)
+- `internal/dispatch/gcf/mintsrc/main.go.embed` — the embedded copy deployed as a GCP Cloud Function
+
+When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
+
 When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.

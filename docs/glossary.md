@@ -152,7 +152,7 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
 
 ### Slash Command
 
-A GitHub comment in the form `/triage`, `/code`, `/review`, etc., that manually triggers an agent workflow. Slash commands are parsed by the entry point and gated by an ACL — not every user can invoke every command. They provide an explicit human-initiated trigger alongside the automatic label-based triggers.
+A GitHub comment in the form `/fs-triage`, `/fs-code`, `/fs-review`, etc., that manually triggers an agent workflow. The `/fs-` prefix namespaces fullsend commands to avoid collisions with other AI tools. Slash commands are parsed by the entry point and gated by an ACL — not every user can invoke every command. They provide an explicit human-initiated trigger alongside the automatic label-based triggers.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 2.
 
 ## T

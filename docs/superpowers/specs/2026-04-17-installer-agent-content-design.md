@@ -164,8 +164,8 @@ jobs:
     if: >-
       github.event_name == 'issues' ||
       (github.event_name == 'issue_comment' && (
-        startsWith(github.event.comment.body || '', '/triage') ||
-        github.event.comment.body == '/triage'
+        startsWith(github.event.comment.body || '', '/fs-triage') ||
+        github.event.comment.body == '/fs-triage'
       ))
     steps:
       - name: Dispatch triage
@@ -184,8 +184,8 @@ jobs:
       (github.event_name == 'issues' && github.event.action == 'labeled'
         && github.event.label.name == 'ready-to-code') ||
       (github.event_name == 'issue_comment' && (
-        startsWith(github.event.comment.body || '', '/code') ||
-        github.event.comment.body == '/code'
+        startsWith(github.event.comment.body || '', '/fs-code') ||
+        github.event.comment.body == '/fs-code'
       ))
     steps:
       - name: Dispatch code
@@ -204,8 +204,8 @@ jobs:
       (github.event_name == 'issues' && github.event.action == 'labeled'
         && github.event.label.name == 'ready-for-review') ||
       (github.event_name == 'issue_comment' && (
-        startsWith(github.event.comment.body || '', '/review') ||
-        github.event.comment.body == '/review'
+        startsWith(github.event.comment.body || '', '/fs-review') ||
+        github.event.comment.body == '/fs-review'
       )) ||
       github.event_name == 'pull_request_target' ||
       github.event_name == 'pull_request_review'

@@ -65,10 +65,12 @@ func (f *fakePEMAccessor) AccessPEM(_ context.Context, org, role string) ([]byte
 }
 
 type fakeTokenValidator struct {
-	err error
+	err          error
+	lastProvider string
 }
 
-func (f *fakeTokenValidator) Validate(_ context.Context, _ string) error {
+func (f *fakeTokenValidator) Validate(_ context.Context, _ string, providerName string) error {
+	f.lastProvider = providerName
 	return f.err
 }
 
@@ -593,6 +595,117 @@ func TestHandler_OIDCPrevalidation_BadJobWorkflowRef(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoWorkflowRef(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-service")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/my-service/.github/workflows/gh-classify.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	claims, err := h.prevalidateOIDCToken(oidcToken)
+	if err != nil {
+		t.Fatalf("prevalidation should accept registered per-repo workflow ref: %v", err)
+	}
+	if claims.Repository != "test-org/my-service" {
+		t.Fatalf("expected repository test-org/my-service, got %s", claims.Repository)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoUnregistered(t *testing.T) {
+	setMintEnv(t)
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/unregistered-repo",
+		"test-org",
+		"test-org/unregistered-repo/.github/workflows/steal-tokens.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	_, err := h.prevalidateOIDCToken(oidcToken)
+	if err == nil {
+		t.Fatal("prevalidation should reject unregistered per-repo workflow ref")
+	}
+	if !strings.Contains(err.Error(), "registered per-repo repo") {
+		t.Fatalf("expected per-repo rejection error, got: %v", err)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoNonWorkflowPath(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-service")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/my-service/scripts/evil.sh@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	_, err := h.prevalidateOIDCToken(oidcToken)
+	if err == nil {
+		t.Fatal("prevalidation should reject per-repo non-workflow path")
+	}
+	if !strings.Contains(err.Error(), "does not reference a workflow file") {
+		t.Fatalf("expected workflow file error, got: %v", err)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoCrossRepoRef(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-service,test-org/other-repo")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/other-repo/.github/workflows/evil.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	_, err := h.prevalidateOIDCToken(oidcToken)
+	if err == nil {
+		t.Fatal("prevalidation should reject per-repo token with cross-repo job_workflow_ref")
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoMixedCase(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "Test-Org/My-Service")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/my-service/.github/workflows/gh-classify.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	claims, err := h.prevalidateOIDCToken(oidcToken)
+	if err != nil {
+		t.Fatalf("prevalidation should accept per-repo ref with case-insensitive matching: %v", err)
+	}
+	if claims.Repository != "test-org/my-service" {
+		t.Fatalf("expected repository test-org/my-service, got %s", claims.Repository)
 	}
 }
 
@@ -1160,5 +1273,203 @@ func TestHandler_MultiOrg_WrongOrg(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for org not in ALLOWED_ORGS, got %d", rec.Code)
+	}
+}
+
+func TestResolveWIFProvider(t *testing.T) {
+	h := &Handler{
+		defaultWIFProvider: "github-oidc",
+		perRepoWIFRepos:    map[string]bool{"acme-corp/my-service": true},
+	}
+
+	t.Run("dotFullsend uses default provider", func(t *testing.T) {
+		got := h.resolveWIFProvider("acme-corp/.fullsend")
+		if got != "github-oidc" {
+			t.Fatalf("expected github-oidc, got %s", got)
+		}
+	})
+
+	t.Run("registered per-repo uses dynamic provider", func(t *testing.T) {
+		got := h.resolveWIFProvider("acme-corp/my-service")
+		want := buildRepoProviderID("acme-corp", "my-service")
+		if got != want {
+			t.Fatalf("expected %s, got %s", want, got)
+		}
+	})
+
+	t.Run("unregistered repo falls back to default", func(t *testing.T) {
+		got := h.resolveWIFProvider("acme-corp/other-repo")
+		if got != "github-oidc" {
+			t.Fatalf("expected github-oidc for unregistered repo, got %s", got)
+		}
+	})
+
+	t.Run("unparseable falls back to default", func(t *testing.T) {
+		got := h.resolveWIFProvider("no-slash")
+		if got != "github-oidc" {
+			t.Fatalf("expected github-oidc for unparseable repo, got %s", got)
+		}
+	})
+
+	t.Run("case-insensitive lookup", func(t *testing.T) {
+		got := h.resolveWIFProvider("Acme-Corp/My-Service")
+		want := buildRepoProviderID("Acme-Corp", "My-Service")
+		if got != want {
+			t.Fatalf("expected %s, got %s", want, got)
+		}
+	})
+}
+
+// SYNC: these test cases must match TestBuildRepoProviderID in
+// internal/dispatch/gcf/provisioner_test.go to catch divergence.
+func TestBuildRepoProviderID(t *testing.T) {
+	tests := []struct {
+		owner, repo string
+		want        string
+	}{
+		{"acme", "widget", "gh-acme-widget"},
+		{"Acme", "My.Repo_v2", "gh-acme-my-repo-v2"},
+		{"org", "very-long-repository-name-that-exceeds-limit", "gh-org-very-long-repository-name"},
+		{"a", "b", "gh-a-b"},
+		{"nonflux", "integration-service", "gh-nonflux-integration-service"},
+		{"halfsend", "test-repo", "gh-halfsend-test-repo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.owner+"/"+tt.repo, func(t *testing.T) {
+			got := buildRepoProviderID(tt.owner, tt.repo)
+			if got != tt.want {
+				t.Fatalf("buildRepoProviderID(%q, %q) = %q, want %q", tt.owner, tt.repo, got, tt.want)
+			}
+			if len(got) < 4 || len(got) > 32 {
+				t.Fatalf("provider ID %q length %d outside 4-32 range", got, len(got))
+			}
+			if got[len(got)-1] == '-' {
+				t.Fatalf("provider ID %q ends with hyphen", got)
+			}
+		})
+	}
+}
+
+func TestPrevalidateOIDCToken_MissingRepository(t *testing.T) {
+	setMintEnv(t)
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	// Build a token with empty repository field.
+	header := map[string]string{"alg": "RS256", "typ": "JWT"}
+	claims := map[string]interface{}{
+		"iss":              "https://token.actions.githubusercontent.com",
+		"aud":              "fullsend-mint",
+		"iat":              time.Now().Unix(),
+		"exp":              time.Now().Add(10 * time.Minute).Unix(),
+		"repository":       "",
+		"repository_owner": "test-org",
+		"job_workflow_ref": "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+	}
+	headerJSON, _ := json.Marshal(header)
+	claimsJSON, _ := json.Marshal(claims)
+	token := base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(claimsJSON) + ".fakesig"
+
+	_, err := h.prevalidateOIDCToken(token)
+	if err == nil || !strings.Contains(err.Error(), "missing repository claim") {
+		t.Fatalf("expected 'missing repository claim' error, got: %v", err)
+	}
+}
+
+func TestServeHTTP_PerRepoProvider(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/integration-service")
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tv := &fakeTokenValidator{}
+	h := NewHandler(
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		tv,
+	)
+
+	// Token from a per-repo install (not .fullsend).
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/integration-service",
+		"test-org",
+		"test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	// The fake validator succeeds, so the request proceeds to minting.
+	// We verify the correct provider was resolved.
+	want := buildRepoProviderID("test-org", "integration-service")
+	if tv.lastProvider != want {
+		t.Fatalf("expected provider %q, got %q", want, tv.lastProvider)
+	}
+}
+
+func TestServeHTTP_PerRepoDirectWorkflow(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/integration-service")
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tv := &fakeTokenValidator{}
+	h := NewHandler(
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		tv,
+	)
+
+	// Token from a per-repo workflow_dispatch — job_workflow_ref references the
+	// target repo itself, not .fullsend or fullsend-ai/fullsend.
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/integration-service",
+		"test-org",
+		"test-org/integration-service/.github/workflows/gh-classify.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	want := buildRepoProviderID("test-org", "integration-service")
+	if tv.lastProvider != want {
+		t.Fatalf("expected provider %q, got %q", want, tv.lastProvider)
+	}
+}
+
+func TestServeHTTP_DotFullsendProvider(t *testing.T) {
+	setMintEnv(t)
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tv := &fakeTokenValidator{}
+	h := NewHandler(
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		tv,
+	)
+
+	oidcToken := validOIDCToken()
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	if tv.lastProvider != "github-oidc" {
+		t.Fatalf("expected provider %q for .fullsend repo, got %q", "github-oidc", tv.lastProvider)
 	}
 }

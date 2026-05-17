@@ -36,6 +36,7 @@ var executableFiles = map[string]struct{}{
 	"scripts/setup-prioritize.sh":            {},
 	"scripts/pre-retro.sh":                   {},
 	"scripts/validate-output-schema.sh":      {},
+	"scripts/extract-transcript-error.sh":    {},
 	"scripts/validate-output-schema-test.sh": {},
 	"scripts/validate-source-repo.sh":        {},
 }

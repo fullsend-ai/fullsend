@@ -63,10 +63,17 @@ func ValidProviders() []string {
 }
 
 // DefaultAgentRoles returns the standard set of agent roles installed
-// when no custom roles are specified. This excludes optional roles
-// like "prioritize" that must be explicitly requested via --agents.
+// when no custom roles are specified. The fix stage reuses the coder
+// app (role: coder) so it does not need a separate app or PEM.
 func DefaultAgentRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix"}
+	return []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
+}
+
+// PerRepoDefaultRoles returns agent roles for per-repo installation.
+// The "fullsend" dispatch role is excluded because per-repo mode uses
+// the target repo's shim workflow for dispatch instead of a separate app.
+func PerRepoDefaultRoles() []string {
+	return []string{"triage", "coder", "review", "retro", "prioritize"}
 }
 
 // NewOrgConfig creates a new OrgConfig with sensible defaults.

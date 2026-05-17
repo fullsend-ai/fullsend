@@ -3,8 +3,8 @@ version: 1
 # Sandbox policy for the retro agent.
 #
 # Read-only agent: needs GitHub API (gh run list, gh run view, gh pr view)
-# and Vertex AI for inference. No write access to GitHub — the post-script
-# handles mutations on the runner with a separate write-scoped token.
+# and Vertex AI for inference. The sandbox token has issues:write (needed by
+# the post-script on the runner) but not pull_requests:write or contents:write.
 # curl intentionally excluded to prevent disallowedTools bypass via raw HTTP
 # with the injected GH_TOKEN.
 
@@ -47,3 +47,19 @@ network_policies:
     binaries:
       - path: "**/gh"
       - path: "**/node"
+
+  github_artifacts:
+    name: github-artifacts
+    endpoints:
+      - host: "*.blob.core.windows.net"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "*.actions.githubusercontent.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/gh"

@@ -9,6 +9,7 @@ type AppPermissions struct {
 	PullRequests         string `json:"pull_requests,omitempty"`
 	Checks               string `json:"checks,omitempty"`
 	Contents             string `json:"contents,omitempty"`
+	Variables            string `json:"actions_variables,omitempty"`
 	Workflows            string `json:"workflows,omitempty"`
 	Administration       string `json:"administration,omitempty"`
 	Members              string `json:"members,omitempty"`
@@ -37,7 +38,7 @@ type AppConfig struct {
 
 // DefaultAgentRoles returns the standard set of agent roles.
 func DefaultAgentRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix"}
+	return []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
 }
 
 // AgentAppConfig returns the GitHub App configuration for a given agent role.
@@ -47,7 +48,7 @@ func DefaultAgentRoles() []string {
 // issues:read permission. Subscribing to "issue_comment" requires issues:read
 // or issues:write. Mismatches cause the manifest to be rejected. Every Events
 // entry below must have a corresponding permission.
-func AgentAppConfig(org, role string) AppConfig {
+func AgentAppConfig(org, role, appSet string) AppConfig {
 	base := AppConfig{
 		URL: fmt.Sprintf("https://github.com/%s", org),
 		// hook_attributes is required by the manifest spec even when we
@@ -58,14 +59,15 @@ func AgentAppConfig(org, role string) AppConfig {
 		},
 	}
 
-	base.Name = fmt.Sprintf("fullsend-%s", role)
+	base.Name = fmt.Sprintf("%s-%s", appSet, role)
 
-	switch role {
+	switch role{
 	case "fullsend":
 		base.Description = fmt.Sprintf("Fullsend orchestrator for %s", org)
 		base.Permissions = AppPermissions{
 			Actions:              "write",
 			Contents:             "write",
+			Variables:            "read",
 			Workflows:            "write",
 			Issues:               "read",
 			PullRequests:         "write",
@@ -113,15 +115,6 @@ func AgentAppConfig(org, role string) AppConfig {
 		}
 		base.Events = []string{"issues", "issue_comment", "pull_request"}
 
-	case "retro":
-		base.Description = fmt.Sprintf("Fullsend retro agent for %s", org)
-		base.Permissions = AppPermissions{
-			Contents:     "read",
-			PullRequests: "read",
-			Issues:       "write",
-		}
-		base.Events = []string{"issues", "pull_request"}
-
 	case "prioritize":
 		base.Description = fmt.Sprintf("Fullsend prioritize agent for %s", org)
 		base.Permissions = AppPermissions{
@@ -133,6 +126,17 @@ func AgentAppConfig(org, role string) AppConfig {
 			Issues:               "write",
 		}
 		// No webhook events — this agent runs on a cron schedule, not events.
+		base.Events = []string{}
+
+	case "retro":
+		base.Description = fmt.Sprintf("Fullsend retro agent for %s", org)
+		base.Permissions = AppPermissions{
+			Actions:      "read",
+			Contents:     "read",
+			PullRequests: "read",
+			Issues:       "write",
+		}
+		// No webhook events — triggered via workflow_dispatch from other agents.
 		base.Events = []string{}
 
 	default:

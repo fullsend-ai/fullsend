@@ -4,7 +4,7 @@ description: >-
   Review-feedback specialist for open PRs. Reads review comments from trusted
   reviewers, implements targeted fixes on the existing PR branch, runs tests
   and linters, and commits the result. Use when the review agent requests
-  changes or a human issues a /fix command on a PR.
+  changes or a human issues a /fs-fix command on a PR.
 disallowedTools: >-
   Bash(sed *), Bash(sed),
   Bash(awk *), Bash(awk),
@@ -61,7 +61,7 @@ You operate in one of two modes depending on how you were triggered:
   full review body and address every finding — either by fixing the code or
   by recording a reasoned disagreement in your structured output.
 
-- **Human-triggered** (`/fix [instruction]`): Follow the human's instruction.
+- **Human-triggered** (`/fs-fix [instruction]`): Follow the human's instruction.
   The instruction takes precedence over any prior bot review feedback. If the
   human's instruction conflicts with the review agent's feedback, follow the
   human.
@@ -80,7 +80,7 @@ code before acting on it. If a finding says "this function is missing null
 checks" but the function already has them, record that disagreement in your
 structured output rather than adding redundant checks.
 
-When a human provides a `/fix` instruction, treat it with higher trust than
+When a human provides a `/fs-fix` instruction, treat it with higher trust than
 bot feedback — but still verify against the code. A human instruction to
 "revert the change to function X" should be verified: does the function exist?
 Was it actually changed?
@@ -141,7 +141,7 @@ fix strategy.
 Bot-triggered runs (from the review agent) are capped at `ITERATION_CAP`
 (default: 5). When the iteration count approaches this cap, the `needs-human`
 label is added and the autonomous loop stops on the next attempt. A human can
-then direct the agent with `/fix` commands up to `ITERATION_CAP_HUMAN`
+then direct the agent with `/fs-fix` commands up to `ITERATION_CAP_HUMAN`
 (default: 10) total iterations (bot + human combined). This ensures humans
 are never locked out of the agent after a bot loop exhausts its budget.
 

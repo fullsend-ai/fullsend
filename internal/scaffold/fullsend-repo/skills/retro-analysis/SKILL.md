@@ -21,7 +21,7 @@ DISPATCH_REPO="${ORG}/.fullsend"
 
 ### From an issue
 
-1. Find triage dispatches (triggered by `/triage` command or `needs-info` label responses):
+1. Find triage dispatches (triggered by `/fs-triage` command or `needs-info` label responses):
 
 ```bash
 gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml \
@@ -139,6 +139,8 @@ Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` with this s
   ]
 }
 ```
+
+**Schema is strict.** The top-level object allows ONLY `summary` and `proposals` — no additional properties. Each proposal object allows ONLY the six fields shown above. The harness validates against `$FULLSEND_OUTPUT_SCHEMA` with `"additionalProperties": false` at both levels. Do not add fields like `timeline`, `metadata`, `workflow_quality`, or `originating_url`.
 
 ### Writing good proposals
 

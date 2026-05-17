@@ -7,12 +7,15 @@ description: >-
   qna.md uses a flat ## Q-NN log (Kind bullets + optional ### answers; one
   example ### under Q-01). Use for one-shot spec generation, GitHub-bound
   planning agents, or when the user invokes spec-start without back-and-forth
-  clarification.
+  clarification. For issue URL as canonical prompt plus branch/PR flow, pair
+  with spec-start-github.
 # Cursor Agent Skills: prefer explicit @-style invocation; other tooling may ignore.
 disable-model-invocation: true
 ---
 
 # spec-start (headless spec kickoff)
+
+For **GitHub issue as canonical prompt** (fetch issue, `agent/<n>-spec-*` branch, local or harness PR), use **`spec-start-github`** together with this skill.
 
 Help turn ideas into fully formed designs and specs **without** natural collaborative dialogue: run **once**, infer missing intent from the prompt and repo, and **write** the results to disk.
 

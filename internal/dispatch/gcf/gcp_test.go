@@ -745,6 +745,51 @@ func TestLiveGCFClient_UpdateFunction(t *testing.T) {
 	})
 }
 
+// --- UpdateFunctionEnvVars ---
+
+func TestLiveGCFClient_UpdateFunctionEnvVars(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPatch, r.Method)
+			assert.Contains(t, r.URL.Path, "/functions/my-func")
+			assert.Contains(t, r.URL.RawQuery, "serviceConfig.environmentVariables")
+
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+
+			assert.Contains(t, body, "name")
+			assert.Contains(t, body, "serviceConfig")
+			assert.NotContains(t, body, "buildConfig")
+
+			sc := body["serviceConfig"].(map[string]interface{})
+			envVars := sc["environmentVariables"].(map[string]interface{})
+			assert.Equal(t, "org1,org2", envVars["ALLOWED_ORGS"])
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"name": "operations/envvar-op"})
+		}))
+		defer srv.Close()
+
+		opName, err := newTestClient(srv).UpdateFunctionEnvVars(context.Background(), "proj", "us-central1", "my-func", map[string]string{
+			"ALLOWED_ORGS": "org1,org2",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "operations/envvar-op", opName)
+	})
+
+	t.Run("error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).UpdateFunctionEnvVars(context.Background(), "proj", "us-central1", "func", map[string]string{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
+	})
+}
+
 // --- WaitForOperation ---
 
 func TestLiveGCFClient_WaitForOperation(t *testing.T) {

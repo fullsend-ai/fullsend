@@ -187,8 +187,28 @@ func (l *EnrollmentLayer) Uninstall(_ context.Context) error {
 func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
-	var enrolled, notEnrolled []string
+	var enrolled, notEnrolled, perRepo, guardFailed []string
+
+	// checkGuard returns true if the repo is per-repo managed and should be
+	// skipped by the per-org enrollment analysis.
+	checkGuard := func(repo string) (skip bool, err error) {
+		guardVal, guardExists, guardErr := l.client.GetRepoVariable(ctx, l.org, repo, forge.PerRepoGuardVar)
+		if guardErr != nil {
+			guardFailed = append(guardFailed, repo)
+			return true, nil
+		}
+		if guardExists && guardVal == "true" {
+			perRepo = append(perRepo, repo)
+			return true, nil
+		}
+		return false, nil
+	}
+
 	for _, repo := range l.enabledRepos {
+		if skip, _ := checkGuard(repo); skip {
+			continue
+		}
+
 		_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
 		if err == nil {
 			enrolled = append(enrolled, repo)
@@ -199,9 +219,13 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		}
 	}
 
-	// Check disabled repos for stale shims.
+	// Check disabled repos for stale shims (skip per-repo managed repos).
 	var staleShim []string
 	for _, repo := range l.disabledRepos {
+		if skip, _ := checkGuard(repo); skip {
+			continue
+		}
+
 		_, err := l.client.GetFileContent(ctx, l.org, repo, shimWorkflowPath)
 		if err == nil {
 			staleShim = append(staleShim, repo)
@@ -212,14 +236,29 @@ func (l *EnrollmentLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		}
 	}
 
-	hasDrift := len(notEnrolled) > 0 || len(staleShim) > 0
+	hasDrift := len(notEnrolled) > 0 || len(staleShim) > 0 || len(guardFailed) > 0
+
+	// If every repo failed the guard check, the token likely lacks the required
+	// scope — surface a prominent warning so the operator can investigate.
+	totalRepos := len(l.enabledRepos) + len(l.disabledRepos)
+	if totalRepos > 0 && len(guardFailed) == totalRepos {
+		report.Details = append(report.Details,
+			fmt.Sprintf("all %d repos failed guard check — verify your token has variables:read scope", totalRepos))
+	}
+
+	for _, r := range perRepo {
+		report.Details = append(report.Details, r+" (per-repo install, skipped)")
+	}
+	for _, r := range guardFailed {
+		report.Details = append(report.Details, r+" (guard check failed, skipped)")
+	}
 
 	switch {
 	case len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0:
 		report.Status = StatusInstalled
 		report.Details = append(report.Details, "no repositories configured")
 	case hasDrift:
-		if len(enrolled) == 0 && len(staleShim) == 0 {
+		if len(enrolled) == 0 && len(staleShim) == 0 && len(perRepo) == 0 && len(guardFailed) == 0 {
 			report.Status = StatusNotInstalled
 		} else {
 			report.Status = StatusDegraded

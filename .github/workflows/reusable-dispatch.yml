@@ -78,6 +78,7 @@ jobs:
           TRIGGERING_LABEL: ${{ github.event.label.name }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
@@ -185,8 +186,14 @@ jobs:
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
                     if [[ "${PR_HEAD_REPO}" == "${PR_BASE_REPO}" ]]; then
                       if ! has_label "fullsend-no-fix" "${PR_LABELS}"; then
-                        STAGE="fix"
-                        TRIGGER_SOURCE="${REVIEW_USER_LOGIN}"
+                        # Human PRs require the fullsend-fix label to auto-trigger
+                        # the fix agent. The /fs-fix slash command (line ~129)
+                        # intentionally bypasses this gate — authorized users can
+                        # always trigger fix manually regardless of labels.
+                        if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || has_label "fullsend-fix" "${PR_LABELS}"; then
+                          STAGE="fix"
+                          TRIGGER_SOURCE="${REVIEW_USER_LOGIN}"
+                        fi
                       fi
                     fi
                   fi

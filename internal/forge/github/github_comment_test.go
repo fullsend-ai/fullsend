@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 func TestCreateIssueWithLabels(t *testing.T) {
@@ -421,7 +423,7 @@ func TestCreatePullRequestReview(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "abc123")
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "abc123", nil)
 	require.NoError(t, err)
 }
 
@@ -439,7 +441,39 @@ func TestCreatePullRequestReview_NoCommitSHA(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "")
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "", nil)
+	require.NoError(t, err)
+}
+
+func TestCreatePullRequestReview_WithInlineComments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/7/reviews", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "REQUEST_CHANGES", body["event"])
+		assert.Equal(t, "abc123", body["commit_id"])
+
+		comments, ok := body["comments"].([]any)
+		require.True(t, ok, "comments should be an array")
+		require.Len(t, comments, 1)
+
+		c := comments[0].(map[string]any)
+		assert.Equal(t, "internal/service.go", c["path"])
+		assert.Equal(t, float64(42), c["line"])
+		assert.Contains(t, c["body"], "missing-test")
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"id": 999})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comments := []forge.ReviewComment{
+		{Path: "internal/service.go", Line: 42, Body: "**[high]** missing-test\n\nAdd test coverage."},
+	}
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "REQUEST_CHANGES", "Review", "abc123", comments)
 	require.NoError(t, err)
 }
 

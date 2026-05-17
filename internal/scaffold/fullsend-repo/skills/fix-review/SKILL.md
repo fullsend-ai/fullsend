@@ -170,7 +170,7 @@ summaries from previous iterations and have already been addressed.
 
 **Important:** The fix agent does not read or respond to inline PR comments.
 Inline comments are not part of the review agent's output. If humans need to
-direct the fix agent, they use the `/fix` command.
+direct the fix agent, they use the `/fs-fix` command.
 
 **If TRIGGER_SOURCE doesn't end in `[bot]` (human-triggered):**
 

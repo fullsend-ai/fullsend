@@ -2,15 +2,17 @@
 name: pr-review
 description: >-
   PR-specific review procedure. Gathers GitHub context, delegates code
-  evaluation to the code-review skill, adds PR-specific checks, and
-  writes a structured review result.
+  evaluation to the code-review skill, delegates documentation
+  staleness checks to the docs-review skill, adds PR-specific checks,
+  and writes a structured review result.
 ---
 
 # PR Review
 
 This skill orchestrates a pull request review by gathering GitHub
-context, delegating code evaluation to the `code-review` skill, adding
-PR-specific checks, and producing a structured result. In pipeline mode
+context, delegating code evaluation to the `code-review` skill,
+delegating documentation staleness checks to the `docs-review` skill,
+adding PR-specific checks, and producing a structured result. In pipeline mode
 (`$FULLSEND_OUTPUT_DIR` set), it writes JSON for the post-script to
 post. In interactive mode, it posts directly via `gh pr review`. It
 does not evaluate code directly — that is the `code-review` skill's
@@ -77,17 +79,71 @@ The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
 against the diff.
 
+### 2a. Prior review context (re-reviews)
+
+Check if `/tmp/workspace/prior-review.txt` exists and is non-empty:
+
+- **Absent or empty:** This is a first review — skip to step 3.
+- **Present:** Read the **current section** (content before
+  `<details><summary>Previous run</summary>`) to extract prior findings
+  with their severities.
+
+If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, the prior
+review file is empty and this run should proceed as a first review.
+Note the provenance failure as an info-level finding (see step 5).
+
+If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
+changed since the prior review:
+
+```bash
+# REPO_FULL_NAME is set in env/review.env
+head_SHA=$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)
+COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
+TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
+FILE_COUNT=$(echo "$COMPARE" | jq '.files | length')
+if [ "$TOTAL_COMMITS" -gt 250 ] || [ "$FILE_COUNT" -ge 300 ]; then
+  CHANGED_FILES="all"
+else
+  CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
+fi
+```
+
+If the compare API fails (e.g., 404 from force-push or history
+rewrite), or if `total_commits` exceeds 250 (the compare API
+silently truncates file lists at 300 files), treat all files as
+changed — no anchoring for this run.
+
+Pass to the `code-review` skill:
+
+1. The list of prior findings with their severities
+2. The set of files that changed since the prior review (or "all" if
+   the compare failed)
+
 ### 3. Evaluate the code
 
 Follow the `code-review` skill to evaluate the diff and source files.
-Pass the diff obtained in step 2 and use the PR metadata and linked
-issues as additional context for the intent-alignment dimension.
+Pass the diff obtained in step 2, the prior review context from step
+2a (if available), and use the PR metadata and linked issues as
+additional context for the intent-alignment dimension.
 
 The `code-review` skill produces findings and an outcome. Carry those
-forward to steps 4 and 5. Proceed to step 4 regardless of outcome —
-it covers PR-specific inputs not examined by code-review.
+forward to steps 4, 5, and 6. Proceed to step 4 regardless of outcome.
 
-### 4. PR-specific checks
+### 4. Check documentation currency
+
+Invoke the `docs-review` skill to evaluate whether the code changes
+in this PR have made any in-repo documentation stale. The docs-review
+skill has its own multi-step process (build identifier checklist,
+grep for every identifier, two-pass evaluation). Follow that process
+completely — do not substitute ad-hoc grep searches.
+
+Merge the docs-review findings into the findings list from step 3.
+Documentation staleness findings are capped at `high` severity (never
+`critical`), so they contribute to the outcome but do not dominate it.
+
+Proceed to step 5 regardless of outcome.
+
+### 5. PR-specific checks
 
 These checks apply only in the PR context and augment the findings from
 step 3.
@@ -114,24 +170,71 @@ Verify the change scope matches the linked issue's authorization. A PR
 labeled "bug fix" that adds new capability is a feature, regardless of
 the label. Add a finding if the scope exceeds authorization.
 
-Merge any new findings into the findings list from step 3 and
-re-evaluate the overall outcome.
+#### Protected paths
 
-### 5. Produce the review result
+Check whether the PR modifies files under protected paths. These are
+governance and infrastructure files that require human approval — the
+review agent MUST NEVER approve changes to them without raising
+findings.
+
+Protected paths (kept in sync with `post-review.sh`):
+
+- `.github/`
+- `.claude/`
+- `agents/`
+- `harness/`
+- `policies/`
+- `scripts/`
+- `api-servers/`
+- `CODEOWNERS`
+- `.pre-commit-config.yaml`
+- `.gitattributes`
+
+For each file in the PR diff, check whether its path starts with (or
+exactly matches) any entry in the list above.
+
+If **any** protected files are modified:
+
+1. **Insufficient context** — the PR has no linked issue, or the PR
+   description does not explain why the protected files are being
+   changed: raise a **high** finding with category `protected-path`.
+   The description MUST list the affected protected files and note
+   that the PR lacks justification for modifying governance or
+   infrastructure files.
+
+2. **Sufficient context** — the PR links to an issue and the
+   description explains the rationale for the change: raise a
+   **medium** finding with category `protected-path`. The description
+   MUST list the affected protected files and note that human
+   approval is always required for protected-path changes, regardless
+   of context.
+
+In either case, the presence of a `protected-path` finding at high or
+medium severity means the outcome MUST NOT be `approve`.
+
+- For high severity, the finding MUST be `request-changes`
+- For medium severity (with sufficient context), the finding MUST be
+  `comment-only`
+
+The `post-review.sh` script independently downgrades approvals on
+protected-path PRs, but the review agent should surface the finding
+proactively so human reviewers understand what requires their
+attention.
+
+If no protected files are modified, do not add a `protected-path`
+finding.
+
+Merge any new findings into the findings list from steps 3 and 4,
+and re-evaluate the overall outcome.
+
+### 6. Produce the review result
 
 Compose the review comment using this structure:
 
 ```markdown
-## Review: <owner>/<repo>#<number>
+<!-- **Head SHA:** <sha> -->
 
-**Head SHA:** <sha>
-**Timestamp:** <ISO 8601>
-**Outcome:** <approve | request-changes | comment-only | reject>
-
-### Summary
-
-<one paragraph synthesizing the key findings; lead with the outcome
-rationale>
+## Review
 
 ### Findings
 
@@ -147,13 +250,33 @@ rationale>
 #### Medium / Low / Info
 
 ...
-
-### Footer
-
-Outcome: <outcome>
-This review applies to SHA `<sha>`. Any push to the PR head clears
-this review and requires a new evaluation.
 ```
+
+**Formatting rules:**
+
+- **Head SHA** is embedded in a hidden HTML comment on the first line.
+  It is not shown to reviewers but is required for re-review anchoring
+  (the `pre-fetch-prior-review.sh` script extracts it).
+- **No visible SHA, timestamp, or outcome lines.** These are implicit
+  in the GitHub PR review process (the SHA is pinned via the formal
+  review API, the timestamp is on the comment, and the outcome is
+  conveyed via GitHub's approve/request-changes mechanism).
+- **No summary section.** The PR description already explains the
+  change; the review should focus on findings.
+- **Only include finding severity sections that have findings.** If
+  there are no critical findings, omit the `#### Critical` heading
+  entirely. If the only findings are medium/low/info, only show that
+  section. If there are no findings at all, state "No findings." in
+  place of the findings section.
+- **No footer.** Do not repeat the outcome or include boilerplate
+  about pushes clearing the review.
+
+If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
+info-level finding in the review output:
+
+- **[provenance-warning]** — Prior review context discarded:
+  provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
+  This review treats all findings as first-time assessments.
 
 Map the outcome to an action value:
 
@@ -293,13 +416,18 @@ wins.
 - **Never approve with unresolved critical or high findings.** If any
   critical or high finding exists, the outcome must be
   `request-changes`.
-- **Never post without completing the `code-review` skill first.**
-  Partial reviews miss context and produce unreliable verdicts.
-- **Always include the PR head SHA in the review comment.** The review
-  is only valid for the SHA evaluated; new pushes require a new review.
+- **Never approve when any protected-path finding exists**, regardless of
+  severity
+- **Never post without completing the `code-review` and `docs-review`
+  skills first.** Partial reviews miss context and produce unreliable
+  verdicts.
+- **Always include the PR head SHA in a hidden HTML comment.** The
+  SHA must appear as `<!-- **Head SHA:** <sha> -->` so the re-review
+  anchoring script can extract it, but it must not be visible to
+  reviewers.
 - **Report failure rather than posting a partial review.** If you cannot
-  complete all six dimensions (tool failure, missing context, ambiguous
-  findings), produce a failure result (see step 5) rather than posting
+  complete all seven dimensions (tool failure, missing context, ambiguous
+  findings), produce a failure result (see step 6) rather than posting
   an incomplete result.
 - **In pipeline mode, `gh pr review` is reserved for the post-script.**
   The sandbox token is read-only. Write JSON to

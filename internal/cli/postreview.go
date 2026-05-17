@@ -128,7 +128,7 @@ has moved, a stale-head failure is posted instead.`,
 				return err
 			}
 
-			if err := submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, dryRun, printer); err != nil {
+			if err := submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
 				return err
 			}
 
@@ -214,9 +214,8 @@ func checkStaleHead(ctx context.Context, client forge.Client, owner, repo string
 // postStaleHeadNotice posts a failure comment when the PR HEAD has moved
 // since the review was generated.
 func postStaleHeadNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, reviewedSHA, currentSHA string, cfg sticky.Config, printer *ui.Printer) error {
-	body := fmt.Sprintf(`## Review: automated review
+	body := fmt.Sprintf(`## Review
 
-**Outcome:** failure
 **Reason:** stale-head
 
 The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. This review was discarded to avoid approving unreviewed code.`, reviewedSHA, currentSHA)
@@ -242,9 +241,8 @@ func postFailureNotice(ctx context.Context, client forge.Client, owner, repo str
 	if parsed.Body != "" {
 		body = parsed.Body
 	} else {
-		body = fmt.Sprintf(`## Review: automated review
+		body = fmt.Sprintf(`## Review
 
-**Outcome:** failure
 **Reason:** %s
 
 This PR was NOT reviewed. Do not count this as an approval.`, reason)
@@ -262,14 +260,20 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // review is pinned to that commit via the commit_id field, closing
 // the TOCTOU gap between the stale-head check and review submission.
 //
+// When findings are present and have file/line locations, they are
+// posted as inline diff comments on the review. This places feedback
+// directly on the relevant code lines instead of aggregating
+// everything in a single top-level comment.
+//
 // The review body varies by event type to balance notification noise
 // against GitHub API requirements:
 //   - APPROVE: empty body (avoids duplicate notification)
 //   - REQUEST_CHANGES: includes a link to the sticky comment (API
-//     requires a non-empty body for this event)
+//     requires a non-empty body for this event); when inline comments
+//     are attached, the body references them instead
 //   - COMMENT: skipped entirely (sticky comment already covers it,
 //     and the API requires a non-empty body)
-func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, dryRun bool, printer *ui.Printer) error {
+func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer) error {
 	event, ok := reviewActionToEvent(action)
 	if !ok {
 		printer.StepInfo(fmt.Sprintf("Unknown review action %q, skipping formal review", action))
@@ -296,6 +300,8 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
+	inlineComments := findingsToReviewComments(findings)
+
 	var reviewBody string
 	if event == "REQUEST_CHANGES" {
 		reviewBody = "See the review comment above for full details."
@@ -305,11 +311,46 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	}
 
 	printer.StepStart(fmt.Sprintf("Submitting %s review", event))
-	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA); err != nil {
+	if len(inlineComments) > 0 {
+		printer.StepInfo(fmt.Sprintf("Attaching %d inline comment(s)", len(inlineComments)))
+	}
+	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA, inlineComments); err != nil {
 		return fmt.Errorf("submitting review: %w", err)
 	}
 	printer.StepDone("Review submitted")
 	return nil
+}
+
+// findingsToReviewComments converts review findings with file and line
+// locations into inline review comments. Findings without a file path
+// or line number are omitted — they remain in the sticky comment body.
+func findingsToReviewComments(findings []ReviewFinding) []forge.ReviewComment {
+	var comments []forge.ReviewComment
+	for _, f := range findings {
+		if f.File == "" || f.Line <= 0 {
+			continue
+		}
+		comments = append(comments, forge.ReviewComment{
+			Path: f.File,
+			Line: f.Line,
+			Body: formatFindingComment(f),
+		})
+	}
+	return comments
+}
+
+// formatFindingComment renders a single review finding as a Markdown
+// inline comment body.
+func formatFindingComment(f ReviewFinding) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
+	b.WriteString("\n\n")
+	b.WriteString(strings.TrimSpace(f.Description))
+	if f.Remediation != "" {
+		b.WriteString("\n\n**Suggested fix:** ")
+		b.WriteString(strings.TrimSpace(f.Remediation))
+	}
+	return b.String()
 }
 
 type reviewFollowupIssue struct {

@@ -4,7 +4,7 @@
 
 **Goal:** Add a retrospective agent that analyzes completed or in-progress agent workflows and proposes improvements by filing GitHub issues.
 
-**Architecture:** The retro agent follows the same harness/sandbox/runtime/post-script pattern as all other agents (ADR 0024). It is triggered by PR close events (automatic) and `/retro` commands (on-demand). The agent explores workflow history at runtime using `gh` CLI and the `finding-agent-runs` skill, then writes structured proposal files that the post-script converts into GitHub issues and summary comments.
+**Architecture:** The retro agent follows the same harness/sandbox/runtime/post-script pattern as all other agents (ADR 0024). It is triggered by PR close events (automatic) and `/fs-retro` commands (on-demand). The agent explores workflow history at runtime using `gh` CLI and the `finding-agent-runs` skill, then writes structured proposal files that the post-script converts into GitHub issues and summary comments.
 
 **Tech Stack:** Bash (pre/post scripts), YAML (harness config, workflow, policy), JSON Schema (output validation), Markdown (agent definition), GitHub Actions (dispatch workflow)
 
@@ -183,7 +183,7 @@ git commit -m "feat(retro): add sandbox policy for retro agent"
 **Files:**
 - Create: `internal/scaffold/fullsend-repo/env/retro.env`
 
-The retro agent needs the originating URL, comment text (if `/retro`), the repo name, and a GH_TOKEN for API access inside the sandbox.
+The retro agent needs the originating URL, comment text (if `/fs-retro`), the repo name, and a GH_TOKEN for API access inside the sandbox.
 
 - [ ] **Step 1: Create the env file**
 
@@ -420,7 +420,7 @@ DISPATCH_REPO="${ORG}/.fullsend"
 
 ### From an issue
 
-1. Find triage dispatches (triggered by `/triage` or `needs-info` comments):
+1. Find triage dispatches (triggered by `/fs-triage` or `needs-info` comments):
 
 ```bash
 gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml \
@@ -576,7 +576,7 @@ You are a retrospective analyst. You examine agent workflows — completed, reje
 ## Inputs
 
 - `ORIGINATING_URL` — HTML URL of the PR or issue that triggered this retro.
-- `RETRO_COMMENT` — (optional) The human's `/retro` comment, if this was triggered on-demand. This is high-signal context: the human is telling you what to focus on. Read it carefully.
+- `RETRO_COMMENT` — (optional) The human's `/fs-retro` comment, if this was triggered on-demand. This is high-signal context: the human is telling you what to focus on. Read it carefully.
 - `REPO_FULL_NAME` — The source repository (owner/repo).
 
 ## Your role
@@ -881,7 +881,7 @@ git commit -m "feat(retro): add dispatch target workflow for retro stage"
 **Files:**
 - Modify: `internal/scaffold/fullsend-repo/templates/shim-workflow.yaml`
 
-Add two new dispatch jobs: `dispatch-retro` (automatic on PR close) and `dispatch-retro-command` (on-demand via `/retro`).
+Add two new dispatch jobs: `dispatch-retro` (automatic on PR close) and `dispatch-retro-command` (on-demand via `/fs-retro`).
 
 - [ ] **Step 1: Read the current shim**
 
@@ -1088,7 +1088,7 @@ Find the retro agent placeholder text.
 
 - [ ] **Step 2: Update the retro agent section**
 
-Replace the "Planned" placeholder with a description of what the retro agent does: runs automatically on PR close and on-demand via `/retro`, analyzes the workflow graph, and files improvement proposals as GitHub issues.
+Replace the "Planned" placeholder with a description of what the retro agent does: runs automatically on PR close and on-demand via `/fs-retro`, analyzes the workflow graph, and files improvement proposals as GitHub issues.
 
 - [ ] **Step 3: Commit**
 

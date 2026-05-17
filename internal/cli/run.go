@@ -538,13 +538,18 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 		// 9d. Extract target repo back to host. SafeDownload removes symlinks
 		// and .git/hooks/ after download to prevent sandbox escape.
+		if clearErr := os.RemoveAll(repoSrc); clearErr != nil {
+			return fmt.Errorf("clearing local repo %s before extraction: %w", repoSrc, clearErr)
+		}
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, repoDir, repoSrc); err != nil {
-			printer.StepWarn("Failed to extract target repo: " + err.Error())
-		} else {
-			printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", repoSrc, time.Since(repoExtractStart).Seconds()))
+			if es := extractTranscriptErrors(iterTranscriptDir); len(es) > 0 {
+				emitTranscriptErrors(os.Stderr, es)
+			}
+			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
+		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", repoSrc, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
@@ -575,7 +580,20 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 	}
 
-	// 9e. Post-agent output scan — redact secrets from extracted output.
+	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
+	// When the agent exits non-zero, parse transcript JSONL files and emit
+	// ::error:: annotations so operators can diagnose failures without
+	// downloading artifacts. See #704.
+	if lastExitCode != 0 {
+		lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
+		lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
+		if errorSummaries := extractTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
+			printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
+			emitTranscriptErrors(os.Stderr, errorSummaries)
+		}
+	}
+
+	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
 		if err := scanOutputFiles(runDir, traceID, printer); err != nil {

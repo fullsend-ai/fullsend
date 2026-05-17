@@ -146,6 +146,46 @@ For each issue identified, record:
   observations, praise, broad suggestions, and anything already handled
   by the PR.
 
+#### Severity anchoring (re-reviews)
+
+When prior review context is available (passed from the `pr-review`
+skill):
+
+- **Unchanged-file anchor:** For findings whose file has NOT changed
+  since the prior review SHA AND that match a prior finding (same
+  category + same file + substantially same code area/function):
+  severity SHOULD match unless your independent analysis concludes
+  the prior assessment was clearly incorrect — this prevents both
+  escalation and de-escalation on unchanged code. If you believe the
+  prior severity was incorrect, keep the prior severity but add a note
+  explaining why a different level might be warranted.
+
+  If a finding references multiple files and ANY of them have changed since the
+  prior review SHA, the finding may be re-evaluated normally.
+- **Changed-file re-evaluation:** For findings whose file HAS changed
+  since the prior review SHA: severity may be re-evaluated normally.
+- **New findings:** For findings with no prior match: assess severity
+  normally.
+
+When prior review context is NOT available (first review): assess all
+findings normally.
+
+#### Finding matching procedure
+
+To match a current finding against a prior finding:
+
+1. **Category match:** same review dimension (correctness, security, etc.)
+2. **File match:** same relative file path
+3. **Code location match:** verify the function or class containing the
+   finding still exists in the unchanged file. Use function/class names
+   as anchors — if line numbers shifted due to insertions or deletions
+   elsewhere in the file, the function name is the stable identifier.
+4. **Description match:** the finding's description applies to the same
+   logical issue (not just the same line number)
+
+If all four criteria match, apply the anchoring rule. If any criterion
+fails, treat the finding as new.
+
 Then determine the overall outcome:
 
 - Any **critical** or **high** finding -> `request-changes`

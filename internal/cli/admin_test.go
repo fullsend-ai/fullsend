@@ -93,7 +93,6 @@ func TestInstallCmd_Flags(t *testing.T) {
 	mintSourceDirFlag := cmd.Flags().Lookup("mint-source-dir")
 	require.NotNil(t, mintSourceDirFlag, "expected --mint-source-dir flag")
 
-	// Per-repo flags.
 	mintURLFlag := cmd.Flags().Lookup("mint-url")
 	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
 
@@ -101,22 +100,43 @@ func TestInstallCmd_Flags(t *testing.T) {
 	gcpAuthModeFlag := cmd.Flags().Lookup("gcp-auth-mode")
 	assert.Nil(t, gcpAuthModeFlag, "--gcp-auth-mode flag should have been removed")
 
+	// --scaffold-customized removed (customized dirs always included)
 	scaffoldCustomizedFlag := cmd.Flags().Lookup("scaffold-customized")
-	require.NotNil(t, scaffoldCustomizedFlag, "expected --scaffold-customized flag")
-	assert.Equal(t, "false", scaffoldCustomizedFlag.DefValue)
+	assert.Nil(t, scaffoldCustomizedFlag, "--scaffold-customized flag should have been removed")
+
+	skipMintCheckFlag := cmd.Flags().Lookup("skip-mint-check")
+	require.NotNil(t, skipMintCheckFlag, "expected --skip-mint-check flag")
+	assert.Equal(t, "false", skipMintCheckFlag.DefValue)
+
+	skipMintDeployFlag := cmd.Flags().Lookup("skip-mint-deploy")
+	require.NotNil(t, skipMintDeployFlag, "expected --skip-mint-deploy flag")
+
+	appSetFlag := cmd.Flags().Lookup("app-set")
+	require.NotNil(t, appSetFlag, "expected --app-set flag")
+	assert.Equal(t, "fullsend", appSetFlag.DefValue)
 }
 
-func TestInstallCmd_PerRepoRequiresMintURL(t *testing.T) {
+func TestInstallCmd_InvalidAppSet(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "myorg",
+		"--inference-project", "proj", "--mint-project", "proj",
+		"--app-set", "INVALID"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --app-set")
+}
+
+func TestInstallCmd_PerRepoRequiresMintProject(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--mint-url is required for per-repo installation")
+	assert.Contains(t, err.Error(), "--mint-project")
 }
 
 func TestInstallCmd_PerRepoRequiresInferenceProject(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://mint.example.com"})
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://mint-test-abc123.run.app"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--inference-project is required for per-repo installation")
@@ -124,7 +144,7 @@ func TestInstallCmd_PerRepoRequiresInferenceProject(t *testing.T) {
 
 func TestInstallCmd_PerRepoRejectsInvalidFormat(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"admin", "install", "acme/", "--mint-url", "https://mint.example.com", "--inference-project", "my-project"})
+	cmd.SetArgs([]string{"admin", "install", "acme/", "--mint-url", "https://mint-test-abc123.run.app", "--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "repo must be in owner/repo format")
@@ -132,7 +152,7 @@ func TestInstallCmd_PerRepoRejectsInvalidFormat(t *testing.T) {
 
 func TestInstallCmd_PerRepoRejectsMultiSlash(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"admin", "install", "acme/team/repo", "--mint-url", "https://mint.example.com", "--inference-project", "my-project"})
+	cmd.SetArgs([]string{"admin", "install", "acme/team/repo", "--mint-url", "https://mint-test-abc123.run.app", "--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid repo name")
@@ -146,20 +166,95 @@ func TestInstallCmd_PerRepoRejectsNonHTTPSMintURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "--mint-url must be a valid HTTPS URL")
 }
 
-func TestInstallCmd_PerOrgRejectsPerRepoFlags(t *testing.T) {
+func TestInstallCmd_PerRepoRejectsNonCloudRunMintURL(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"admin", "install", "acme", "--mint-url", "https://mint.example.com"})
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://evil.example.com", "--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--mint-url is only valid for per-repo installation")
+	assert.Contains(t, err.Error(), "--mint-url must be a Cloud Run URL")
 }
 
 func TestInstallCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
+	perOrgOnly := []struct {
+		flag  string
+		value string
+	}{
+		{"vendor-fullsend-binary", ""},
+		{"enroll-all", ""},
+		{"enroll-none", ""},
+	}
+	for _, tc := range perOrgOnly {
+		t.Run(tc.flag, func(t *testing.T) {
+			cmd := newRootCmd()
+			args := []string{"admin", "install", "acme/widget",
+				"--mint-url", "https://mint-test-abc123.run.app",
+				"--inference-project", "my-project"}
+			if tc.value != "" {
+				args = append(args, "--"+tc.flag, tc.value)
+			} else {
+				args = append(args, "--"+tc.flag)
+			}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("--%s is only valid for per-org installation", tc.flag))
+		})
+	}
+}
+
+func TestInstallCmd_PerRepoAcceptsSharedFlags(t *testing.T) {
+	sharedFlags := []struct {
+		flag  string
+		value string
+	}{
+		{"public", ""},
+		{"skip-app-setup", ""},
+		{"mint-provider", "gcf"},
+		{"mint-source-dir", "/tmp/src"},
+		{"skip-mint-deploy", ""},
+		{"app-set", "custom-prefix"},
+	}
+	for _, tc := range sharedFlags {
+		t.Run(tc.flag, func(t *testing.T) {
+			cmd := newRootCmd()
+			args := []string{"admin", "install", "acme/widget",
+				"--mint-url", "https://mint-test-abc123.run.app",
+				"--inference-project", "my-project",
+				"--dry-run"}
+			if tc.value != "" {
+				args = append(args, "--"+tc.flag, tc.value)
+			} else {
+				args = append(args, "--"+tc.flag)
+			}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			require.NoError(t, err, "--%s should be accepted in per-repo mode", tc.flag)
+		})
+	}
+}
+
+func TestInstallCmd_ForceMintDeployFlagRemoved(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://mint.example.com", "--inference-project", "my-project", "--mint-project", "my-project"})
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--force-mint-deploy",
+		"--inference-project", "my-project",
+		"--mint-project", "my-project",
+		"--dry-run"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--mint-project is only valid for per-org installation")
+	assert.Contains(t, err.Error(), "force-mint-deploy")
+}
+
+func TestInstallCmd_PerRepoAcceptsMintRegion(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-region", "us-central1",
+		"--inference-project", "my-project",
+		"--mint-region", "europe-west1",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
 }
 
 func TestParseAgentRoles(t *testing.T) {
@@ -202,6 +297,10 @@ func TestUninstallCmd_Flags(t *testing.T) {
 
 	yoloFlag := cmd.Flags().Lookup("yolo")
 	require.NotNil(t, yoloFlag, "expected --yolo flag")
+
+	appSetFlag := cmd.Flags().Lookup("app-set")
+	require.NotNil(t, appSetFlag, "expected --app-set flag")
+	assert.Equal(t, "fullsend", appSetFlag.DefValue)
 }
 
 func TestAnalyzeCmd_RequiresOrg(t *testing.T) {
@@ -1068,7 +1167,7 @@ func TestInstallCmd_PerRepoRejectsInvalidRole(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--agents", "triage,INVALID",
-		"--mint-url", "https://mint.example.com",
+		"--mint-url", "https://mint-test-abc123.run.app",
 		"--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1078,7 +1177,7 @@ func TestInstallCmd_PerRepoRejectsInvalidRole(t *testing.T) {
 func TestInstallCmd_PerRepoRejectsOwnerWithDots(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "my.org/widget",
-		"--mint-url", "https://mint.example.com",
+		"--mint-url", "https://mint-test-abc123.run.app",
 		"--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1098,11 +1197,303 @@ func TestInstallCmd_PerRepoRejectsURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newRootCmd()
 			cmd.SetArgs([]string{"admin", "install", tc.input,
-				"--mint-url", "https://mint.example.com",
+				"--mint-url", "https://mint-test-abc123.run.app",
 				"--inference-project", "my-project"})
 			err := cmd.Execute()
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "expected owner/repo format, got a URL")
 		})
 	}
+}
+
+// --- resolveSharedRoleAppIDs tests ---
+
+func TestResolveSharedRoleAppIDs_MatchesInstalledApps(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+		{AppID: 200, AppSlug: "acme-reviewer"},
+	}
+
+	existingIDs := map[string]string{
+		"other-org/coder":    "100",
+		"other-org/reviewer": "200",
+	}
+
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder", "reviewer"})
+	require.NoError(t, err)
+	assert.Equal(t, "100", result["new-org/coder"])
+	assert.Equal(t, "200", result["new-org/reviewer"])
+}
+
+func TestResolveSharedRoleAppIDs_ErrorWhenAppNotInstalled(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+	}
+
+	existingIDs := map[string]string{
+		"other-org/coder":    "100",
+		"other-org/reviewer": "999",
+	}
+
+	_, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder", "reviewer"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no shared app for role \"reviewer\"")
+}
+
+func TestResolveSharedRoleAppIDs_ErrorWhenNoExistingIDs(t *testing.T) {
+	fake := forge.NewFakeClient()
+
+	_, err := resolveSharedRoleAppIDs(context.Background(), fake, nil, "new-org", []string{"coder"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no existing ROLE_APP_IDS")
+}
+
+func TestResolveSharedRoleAppIDs_SkipsSameOrg(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+	}
+
+	existingIDs := map[string]string{
+		"new-org/coder":   "100",
+		"other-org/coder": "100",
+	}
+
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder"})
+	require.NoError(t, err)
+	assert.Equal(t, "100", result["new-org/coder"])
+}
+
+func TestResolveSharedRoleAppIDs_SameOrgUsesOwnEntry(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+	}
+
+	existingIDs := map[string]string{
+		"acme-corp/coder": "100",
+	}
+
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "acme-corp", []string{"coder"})
+	require.NoError(t, err)
+	assert.Equal(t, "100", result["acme-corp/coder"])
+}
+
+func TestInstallCmd_SkipMintCheckRequiresMintURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--skip-mint-check", "--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url is required when using --skip-mint-check")
+}
+
+func TestInstallCmd_SkipMintCheckAcceptsNonCloudRunURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "https://mint.example.com/v1/token",
+		"--inference-project", "my-project",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestInstallCmd_SkipMintCheckSkipsMintProject(t *testing.T) {
+	// Without --skip-mint-check and without --mint-project/--mint-url, an error is returned.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget"})
+	err := cmd.Execute()
+	require.Error(t, err)
+
+	// With --skip-mint-check, --mint-project is not required.
+	cmd2 := newRootCmd()
+	cmd2.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "https://mint.example.com/v1/token",
+		"--inference-project", "my-project",
+		"--dry-run"})
+	err2 := cmd2.Execute()
+	require.NoError(t, err2)
+}
+
+func TestInstallCmd_SkipMintCheckPerOrgRequiresMintURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--skip-mint-check"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url is required when using --skip-mint-check")
+}
+
+func TestInstallCmd_SkipMintCheckRejectsUserinfo(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "https://user:pass@mint.example.com/v1/token",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain embedded credentials")
+}
+
+func TestInstallCmd_SkipMintCheckRejectsHTTP(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "http://mint.example.com",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url must be a valid HTTPS URL")
+}
+
+func TestSkipMintDispatcher(t *testing.T) {
+	d := &skipMintDispatcher{mintURL: "https://mint.example.com/v1/token"}
+	assert.Equal(t, "skip-mint-check", d.Name())
+	assert.Nil(t, d.OrgSecretNames())
+	assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
+	assert.NoError(t, d.StoreAgentPEM(context.Background(), "org", "role", []byte("pem")))
+	vars, err := d.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "https://mint.example.com/v1/token"}, vars)
+}
+
+func TestValidateMintURLHTTPS(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{"valid URL", "https://mint.example.com/v1/token", ""},
+		{"valid with port", "https://mint.example.com:8443/v1", ""},
+		{"http rejected", "http://mint.example.com", "HTTPS URL"},
+		{"empty string", "", "HTTPS URL"},
+		{"no host", "https://", "HTTPS URL"},
+		{"userinfo", "https://user:pass@host.com", "embedded credentials"},
+		{"username only", "https://user@host.com", "embedded credentials"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMintURLHTTPS(tc.input)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateSkipMintCheck(t *testing.T) {
+	require.Error(t, validateSkipMintCheck(""))
+	require.Error(t, validateSkipMintCheck("http://example.com"))
+	require.NoError(t, validateSkipMintCheck("https://mint.example.com/v1/token"))
+}
+
+func TestValidateWIFProvider_Valid(t *testing.T) {
+	valid := []string{
+		"projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/gh-acme-widget",
+		"projects/999999999999/locations/global/workloadIdentityPools/my-pool-123/providers/my-provider-456",
+		"projects/1/locations/global/workloadIdentityPools/abcd/providers/efgh",
+		"projects/1/locations/global/workloadIdentityPools/a-very-long-pool-name-32-chars1/providers/a-very-long-prov-name-32-chars1",
+	}
+	for _, v := range valid {
+		t.Run(v, func(t *testing.T) {
+			require.NoError(t, validateWIFProvider(v))
+		})
+	}
+}
+
+func TestValidateWIFProvider_Invalid(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"bare name", "standalone-fullsend"},
+		{"missing projects prefix", "123/locations/global/workloadIdentityPools/pool/providers/prov"},
+		{"partial path", "projects/123/locations/global/workloadIdentityPools/pool"},
+		{"wrong location", "projects/123/locations/us-east1/workloadIdentityPools/pool/providers/prov"},
+		{"non-numeric project", "projects/my-project/locations/global/workloadIdentityPools/pool/providers/prov"},
+		{"empty string", ""},
+		{"trailing slash", "projects/123/locations/global/workloadIdentityPools/pool/providers/prov/"},
+		{"uppercase pool", "projects/123/locations/global/workloadIdentityPools/Pool/providers/prov"},
+		{"pool too short (1 char)", "projects/123/locations/global/workloadIdentityPools/a/providers/abcd"},
+		{"pool too short (3 chars)", "projects/123/locations/global/workloadIdentityPools/abc/providers/abcd"},
+		{"provider too short (1 char)", "projects/123/locations/global/workloadIdentityPools/abcd/providers/a"},
+		{"pool trailing hyphen", "projects/123/locations/global/workloadIdentityPools/abcd-/providers/abcd"},
+		{"provider trailing hyphen", "projects/123/locations/global/workloadIdentityPools/abcd/providers/abcd-"},
+		{"pool too long (33 chars)", "projects/123/locations/global/workloadIdentityPools/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/providers/abcd"},
+		{"provider too long (33 chars)", "projects/123/locations/global/workloadIdentityPools/abcd/providers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateWIFProvider(tc.input)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
+		})
+	}
+}
+
+func TestInstallCmd_PerOrgRejectsInvalidWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--dry-run",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "standalone-fullsend"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
+}
+
+func TestInstallCmd_PerRepoRejectsInvalidWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "just-a-name"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
+}
+
+func TestInstallCmd_PerOrgAcceptsValidWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--dry-run",
+		"--enroll-none",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc"})
+	err := cmd.Execute()
+	// Per-org dry-run hits live GitHub API for repo listing; expect a downstream
+	// error but NOT a WIF validation error — proving validation passed.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--inference-wif-provider must be")
+	}
+}
+
+func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--dry-run",
+		"--skip-mint-check",
+		"--mint-url", "https://mint.example.com/v1/token",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "standalone-fullsend"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
 }

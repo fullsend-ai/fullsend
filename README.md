@@ -35,10 +35,16 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Testing the Agents](docs/problems/testing-agents.md) — CI for prompts: regression testing, eval frameworks, and behavioral verification for agent instructions
   - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for GitLab support: webhook security, dispatch pipelines, forge interface evolution
   - [Operational Observability](docs/problems/operational-observability.md) — How do the humans operating an autonomous software factory understand what it is doing, debug it when it goes wrong, and improve it over time?
+  - [Adaptive Agent Selection](docs/problems/adaptive-agent-selection.md) — Learning which agent/team/workflow configurations work best for which problem classes, using evolutionary algorithms and Thompson Sampling
   - [Platform Nativeness](docs/problems/platform-nativeness.md) — When the platform you automate is also the one you build on: which problems are inherent vs. self-inflicted
   - [Cross-Run Memory](docs/problems/cross-run-memory.md) — How agents learn from prior run outcomes without violating the ephemeral sandbox invariant
 - **[docs/problems/applied/](docs/problems/applied/)** — Organization-specific considerations for downstream consumers:
   - [konflux-ci](docs/problems/applied/konflux-ci/) — Kubernetes-native CI/CD platform (the original proving ground)
+- **[docs/plans/](docs/plans/)** — Implementation plans for accepted or in-progress designs:
+  - [Universal Harness Access](docs/plans/universal-harness-access.md) — Making harnesses and agents universally accessible via URLs and paths, enabling community sharing and composability
+  - [Agent Execution Environment](docs/plans/agent-execution-environment.md) — Sandbox and runtime environment for agent execution
+  - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
+  - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).
