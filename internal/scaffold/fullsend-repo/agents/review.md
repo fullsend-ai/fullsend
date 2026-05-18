@@ -157,47 +157,52 @@ approve the PR and mark concrete follow-up work as `actionable: true`
 in the structured result so the post-script can create tracking issues.
 
 The `code-review` skill defines the finding structure. The `pr-review`
-skill defines the full review procedure and output details.
+skill defines the review comment format and procedure.
 
-### Review comment format
+### Pipeline output JSON schema
 
-The review comment must begin with a hidden HTML comment containing the
-PR head SHA. Construct the first line by concatenating: the HTML comment
-open delimiter, a space, `**Head SHA:**`, a space, the SHA value, a
-space, and the HTML comment close delimiter. For example, if the SHA
-were `abc123`, the line would read (with no line break):
+In pipeline mode (`$FULLSEND_OUTPUT_DIR` set), the agent writes
+`agent-result.json`. The harness validates this against
+`schemas/review-result.schema.json` before the post-script runs.
+The JSON must conform to the following schema:
 
-    [open]  **Head SHA:** abc123  [close]
+**Top-level object** (`additionalProperties: false`):
 
-where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
+| Field       | Type    | Always required | Description                                      |
+|-------------|---------|-----------------|--------------------------------------------------|
+| `action`    | string  | yes             | One of: `approve`, `request-changes`, `comment`, `reject`, `failure` |
+| `pr_number` | integer | yes             | PR number (minimum 1)                            |
+| `repo`      | string  | yes             | `owner/repo` format (pattern: `^[^/]+/[^/]+$`)  |
+| `head_sha`  | string  | conditional     | Commit SHA (min 7 chars)                         |
+| `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
+| `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
+| `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
 
-This hidden SHA is not shown to reviewers but is required for re-review
-anchoring (the `pre-fetch-prior-review.sh` script extracts it).
+**Required fields per action:**
 
-After the hidden SHA line, the body follows this structure:
+| Action            | Required fields                          |
+|-------------------|------------------------------------------|
+| `approve`         | `body`, `head_sha`                       |
+| `request-changes` | `body`, `head_sha`, `findings`           |
+| `comment`         | `body`, `head_sha`                       |
+| `reject`          | `body`, `head_sha`, `findings`           |
+| `failure`         | `reason`                                 |
 
-```markdown
-## Review
+**Finding object** (`additionalProperties: false`):
 
-### Findings
+| Field         | Type    | Required | Description                                   |
+|---------------|---------|----------|-----------------------------------------------|
+| `severity`    | string  | yes      | One of: `critical`, `high`, `medium`, `low`, `info` |
+| `category`    | string  | yes      | Finding category (min 1 char)                 |
+| `file`        | string  | yes      | File path (min 1 char)                        |
+| `line`        | integer | no       | Line number (minimum 1)                       |
+| `description` | string  | yes      | Finding description (min 1 char)              |
+| `remediation` | string  | no       | Suggested fix                                 |
+| `actionable`  | boolean | no       | When true on low/info findings in an `approve` result, the post-script creates follow-up issues |
 
-#### Critical
-
-- **[<category>]** `<file>:<line>` — <description>
-  Remediation: <remediation>
-
-#### High
-
-...
-
-#### Medium / Low / Info
-
-...
-```
-
-Only include severity sections that have findings. If there are no
-findings at all, state "No findings." in place of the findings section.
-No summary section, no footer, no visible SHA or timestamp lines.
+Schema validation failures trigger a harness retry iteration. Ensure
+every `agent-result.json` includes all required fields for its action
+and contains no extra properties.
 
 ## Exit code contract
 
