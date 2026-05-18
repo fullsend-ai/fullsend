@@ -157,7 +157,47 @@ approve the PR and mark concrete follow-up work as `actionable: true`
 in the structured result so the post-script can create tracking issues.
 
 The `code-review` skill defines the finding structure. The `pr-review`
-skill defines the GitHub review comment format.
+skill defines the full review procedure and output details.
+
+### Review comment format
+
+The review comment must begin with a hidden HTML comment containing the
+PR head SHA. Construct the first line by concatenating: the HTML comment
+open delimiter, a space, `**Head SHA:**`, a space, the SHA value, a
+space, and the HTML comment close delimiter. For example, if the SHA
+were `abc123`, the line would read (with no line break):
+
+    [open]  **Head SHA:** abc123  [close]
+
+where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
+
+This hidden SHA is not shown to reviewers but is required for re-review
+anchoring (the `pre-fetch-prior-review.sh` script extracts it).
+
+After the hidden SHA line, the body follows this structure:
+
+```markdown
+## Review
+
+### Findings
+
+#### Critical
+
+- **[<category>]** `<file>:<line>` — <description>
+  Remediation: <remediation>
+
+#### High
+
+...
+
+#### Medium / Low / Info
+
+...
+```
+
+Only include severity sections that have findings. If there are no
+findings at all, state "No findings." in place of the findings section.
+No summary section, no footer, no visible SHA or timestamp lines.
 
 ## Exit code contract
 
@@ -181,7 +221,7 @@ without updating all consumers.
 When the review cannot be completed, the failure body is:
 
 ```markdown
-<!-- **Head SHA:** <sha> -->
+[Head SHA hidden HTML comment — same format as review output]
 
 ## Review
 

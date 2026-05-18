@@ -231,9 +231,17 @@ and re-evaluate the overall outcome.
 
 Compose the review comment using this structure:
 
-```markdown
-<!-- **Head SHA:** <sha> -->
+The first line must be an HTML comment embedding the head SHA.
+Construct it by concatenating: the HTML comment open delimiter,
+a space, `**Head SHA:**`, a space, the SHA value, a space, and
+the HTML comment close delimiter. For example, if the SHA were
+`abc123`, the line would read (with no line break):
 
+    [open]  **Head SHA:** abc123  [close]
+
+where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
+
+```markdown
 ## Review
 
 ### Findings
@@ -422,7 +430,7 @@ wins.
   skills first.** Partial reviews miss context and produce unreliable
   verdicts.
 - **Always include the PR head SHA in a hidden HTML comment.** The
-  SHA must appear as `<!-- **Head SHA:** <sha> -->` so the re-review
+  SHA must appear in the format described in step 6 so the re-review
   anchoring script can extract it, but it must not be visible to
   reviewers.
 - **Report failure rather than posting a partial review.** If you cannot
