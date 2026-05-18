@@ -237,7 +237,7 @@ a space, `**Head SHA:**`, a space, the SHA value, a space, and
 the HTML comment close delimiter. For example, if the SHA were
 `abc123`, the line would read (with no line break):
 
-    [open]  **Head SHA:** abc123  [close]
+    [open] **Head SHA:** abc123 [close]
 
 where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 

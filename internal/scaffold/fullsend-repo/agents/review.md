@@ -163,8 +163,8 @@ skill defines the review comment format and procedure.
 
 In pipeline mode (`$FULLSEND_OUTPUT_DIR` set), the agent writes
 `agent-result.json`. The harness validates this against
-`schemas/review-result.schema.json` before the post-script runs.
-The JSON must conform to the following schema:
+`schemas/review-result.schema.json` (source of truth) before the
+post-script runs. The JSON must conform to the following schema:
 
 **Top-level object** (`additionalProperties: false`):
 
@@ -226,7 +226,7 @@ without updating all consumers.
 When the review cannot be completed, the failure body is:
 
 ```markdown
-[Head SHA hidden HTML comment — same format as review output]
+<!-- **Head SHA:** <sha> -->
 
 ## Review
 
