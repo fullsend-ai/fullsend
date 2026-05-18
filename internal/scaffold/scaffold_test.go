@@ -111,7 +111,7 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "event_action:")
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "__ORG__/.fullsend/.github/workflows/dispatch.yml@main")
-	assert.Contains(t, s, "secrets: {}")
+	assert.NotContains(t, s, "secrets: {}")
 	// Dispatch concurrency group (no cancel — thin callers handle per-stage cancellation)
 	assert.Contains(t, s, "fullsend-dispatch-${{")
 	assert.Contains(t, s, "cancel-in-progress: false")
