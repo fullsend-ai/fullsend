@@ -331,6 +331,77 @@ func TestSetup_KnownSlug_Match(t *testing.T) {
 	assert.False(t, prompter.confirmCalled, "should not prompt for reuse")
 }
 
+// installOnOpenBrowser adds an installation to the FakeClient synchronously
+// inside Open() before returning, so that ensureInstalled's poll loop sees the
+// installation on its first check after the browser call — no goroutine needed.
+type installOnOpenBrowser struct {
+	client *forge.FakeClient
+	inst   forge.Installation
+	urlCh  chan string
+}
+
+func (b *installOnOpenBrowser) Open(_ context.Context, url string) error {
+	b.client.Installations = append(b.client.Installations, b.inst)
+	b.urlCh <- url
+	return nil
+}
+
+func TestSetup_PublicApp_NotInstalledYet_InstallsRatherThanCreates(t *testing.T) {
+	// App exists globally (public) but is not installed on the org yet.
+	// Expected: ensureInstalled is called (browser opens install URL), no manifest flow.
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{},
+		AppClientIDs:  map[string]string{"fullsend-ai-coder": "Iv1.public123"},
+	}
+	prompter := &fakePrompter{}
+	browser := &installOnOpenBrowser{
+		client: client,
+		inst:   forge.Installation{ID: 1, AppID: 42, AppSlug: "fullsend-ai-coder"},
+		urlCh:  make(chan string, 1),
+	}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend-ai").
+		WithPublicApps(true)
+
+	creds, err := s.Run(context.Background(), "myorg", "coder")
+	require.NoError(t, err)
+
+	assert.Equal(t, "fullsend-ai-coder", creds.Slug)
+	assert.Equal(t, "Iv1.public123", creds.ClientID)
+	assert.Equal(t, 42, creds.AppID)
+	assert.Empty(t, creds.PEM, "no PEM expected for reused public app")
+}
+
+func TestSetup_PublicApp_NotInstalledYet_FallsThroughToCreateWhenNotFound(t *testing.T) {
+	// publicApps=true but GetAppClientID fails (app doesn't exist) → manifest flow.
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{},
+		// No AppClientIDs entry for "fullsend-ai-coder" → GetAppClientID returns error.
+	}
+	prompter := &fakePrompter{}
+	browser := newFakeBrowser()
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend-ai").
+		WithPublicApps(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := s.Run(ctx, "myorg", "coder")
+	require.Error(t, err)
+	// Should have entered manifest flow (browser URL sent).
+	select {
+	case url := <-browser.urlCh:
+		assert.NotEmpty(t, url)
+	default:
+		t.Error("manifest flow should have opened browser")
+	}
+}
+
 func TestSetup_NoExistingApp(t *testing.T) {
 	client := &forge.FakeClient{
 		Installations: []forge.Installation{},
