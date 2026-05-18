@@ -1037,6 +1037,39 @@ func TestLoadExistingEnabledRepos_ReturnsNilWhenNoConfig(t *testing.T) {
 	assert.Nil(t, repos)
 }
 
+func TestFilterSlugsByAppSet_KeepsMatchingSlugs(t *testing.T) {
+	in := map[string]string{
+		"fullsend": "fullsend-ai-fullsend",
+		"coder":    "fullsend-ai-coder",
+	}
+	out := filterSlugsByAppSet(in, "fullsend-ai")
+	assert.Equal(t, in, out)
+}
+
+func TestFilterSlugsByAppSet_DropsNonMatchingSlugs(t *testing.T) {
+	in := map[string]string{
+		"fullsend": "konflux-ci-fullsend",
+		"coder":    "konflux-ci-coder",
+	}
+	out := filterSlugsByAppSet(in, "fullsend-ai")
+	assert.Empty(t, out)
+}
+
+func TestFilterSlugsByAppSet_MixedSlugs(t *testing.T) {
+	in := map[string]string{
+		"fullsend": "fullsend-ai-fullsend",
+		"coder":    "konflux-ci-coder",
+	}
+	out := filterSlugsByAppSet(in, "fullsend-ai")
+	assert.Equal(t, map[string]string{"fullsend": "fullsend-ai-fullsend"}, out)
+}
+
+func TestFilterSlugsByAppSet_NilInputReturnsEmptyMap(t *testing.T) {
+	out := filterSlugsByAppSet(nil, "fullsend-ai")
+	assert.NotNil(t, out)
+	assert.Empty(t, out)
+}
+
 func TestCheckInstallScopes_AllPresent(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: []string{"repo", "workflow", "admin:org", "read:org"},

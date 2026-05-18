@@ -1311,10 +1311,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		WithStoredAppIDs(storedAppIDs)
 
 	// Merge known slugs: config-based first, then shared app overrides.
-	knownSlugs := loadKnownSlugs(ctx, client, org)
-	if knownSlugs == nil {
-		knownSlugs = make(map[string]string)
-	}
+	knownSlugs := filterSlugsByAppSet(loadKnownSlugs(ctx, client, org), appSet)
 	for role, slug := range sharedSlugs {
 		knownSlugs[role] = slug
 	}
@@ -1898,6 +1895,22 @@ func loadExistingEnabledRepos(ctx context.Context, client forge.Client, org stri
 	}
 	return cfg.EnabledRepos()
 }
+// filterSlugsByAppSet returns a copy of slugs containing only entries whose
+// slug starts with the given app set prefix. Slugs from a previous install
+// with a different app set must not be carried over, as they would cause
+// findExistingInstallation to pick up the wrong app when switching app sets.
+// Always returns a non-nil map.
+func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]string {
+	prefix := appSet + "-"
+	out := make(map[string]string, len(slugs))
+	for role, slug := range slugs {
+		if strings.HasPrefix(slug, prefix) {
+			out[role] = slug
+		}
+	}
+	return out
+}
+
 // loadKnownSlugs tries to read agent slugs from an existing config.
 func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[string]string {
 	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
