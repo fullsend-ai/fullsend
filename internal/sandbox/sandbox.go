@@ -272,12 +272,19 @@ func Upload(sandboxName, localPath, remotePath string) error {
 // RestoreSymlinks recreates git-tracked symlinks after a sandbox upload.
 // openshell sandbox upload dereferences symlinks into real directories;
 // this reads the git index for mode-120000 entries and recreates them.
+// See https://github.com/NVIDIA/OpenShell/issues/1425
 func RestoreSymlinks(sandboxName, repoDir string) error {
+	// Shell-escape repoDir to prevent injection
+	escapedDir := strings.ReplaceAll(repoDir, "'", "'\\''")
+
+	// Use tab as field separator to handle paths with spaces correctly.
+	// git ls-files --stage format: <mode> <sha> <stage>\t<path>
+	// We split the first field on spaces to extract mode and sha, then use tab to get the full path.
 	cmd := fmt.Sprintf(
-		`cd %s && git ls-files --stage | awk '$1=="120000"{print $2,$4}' | while IFS=' ' read sha path; do target=$(git cat-file blob "$sha"); rm -rf "$path"; mkdir -p "$(dirname "$path")"; ln -s "$target" "$path"; done`,
-		repoDir,
+		`set -euo pipefail; cd '%s' && git ls-files --stage | awk -F'\t' '/^120000 /{split($1,a," "); print a[2]"\t"$2}' | while IFS=$'\t' read -r sha path; do [ -n "$path" ] || continue; target=$(git cat-file blob "$sha"); rm -rf "$path"; mkdir -p "$(dirname "$path")"; ln -s "$target" "$path"; done`,
+		escapedDir,
 	)
-	_, stderr, exitCode, err := Exec(sandboxName, cmd, 30*time.Second)
+	_, stderr, exitCode, err := Exec(sandboxName, cmd, 60*time.Second)
 	if err != nil {
 		return fmt.Errorf("restoring symlinks in sandbox %q: %w", sandboxName, err)
 	}

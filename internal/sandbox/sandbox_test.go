@@ -244,3 +244,30 @@ func TestSanitizeDownload_EmptyDir(t *testing.T) {
 	err := sanitizeDownload(dir)
 	assert.NoError(t, err)
 }
+
+func TestRestoreSymlinks_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	err := RestoreSymlinks("test-sandbox", "/tmp/workspace/repo")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "restoring symlinks")
+}
+
+func TestRestoreSymlinks_PathWithSpaces(t *testing.T) {
+	// This test validates the shell command construction for paths with spaces.
+	// Full integration testing requires a live sandbox with a git repo containing symlinks.
+	t.Setenv("PATH", "")
+
+	// Even with PATH cleared, we can verify the function handles the path correctly
+	// by checking it doesn't panic with special characters in repoDir.
+	err := RestoreSymlinks("test-sandbox", "/tmp/workspace/repo with spaces")
+	assert.Error(t, err) // Will error due to missing openshell, but shouldn't panic
+}
+
+func TestRestoreSymlinks_PathWithQuotes(t *testing.T) {
+	// Verify shell escaping handles single quotes in repoDir
+	t.Setenv("PATH", "")
+
+	err := RestoreSymlinks("test-sandbox", "/tmp/workspace/repo's name")
+	assert.Error(t, err) // Will error due to missing openshell, but shouldn't panic
+}

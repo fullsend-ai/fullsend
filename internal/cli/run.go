@@ -332,10 +332,12 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	if fi, statErr := os.Stat(gitDir); statErr == nil && fi.IsDir() {
 		if err := sandbox.Upload(sandboxName, gitDir, filepath.Join(repoDir, ".git")); err != nil {
 			printer.StepWarn("Could not upload .git directory: " + err.Error())
+		} else {
+			// Only restore symlinks if .git was successfully uploaded
+			if err := sandbox.RestoreSymlinks(sandboxName, repoDir); err != nil {
+				printer.StepWarn("Could not restore symlinks: " + err.Error())
+			}
 		}
-	}
-	if err := sandbox.RestoreSymlinks(sandboxName, repoDir); err != nil {
-		printer.StepWarn("Could not restore symlinks: " + err.Error())
 	}
 	printer.StepDone(fmt.Sprintf("Project code copied to %s/ (%.1fs)", repoName, time.Since(copyStart).Seconds()))
 
