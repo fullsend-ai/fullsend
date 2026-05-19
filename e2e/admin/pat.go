@@ -20,7 +20,7 @@ var patScopes = []string{
 // createPAT creates a classic GitHub Personal Access Token via the browser.
 // The token is created with a 7-day expiry and the scopes needed for e2e tests.
 // Returns the token string.
-func createPAT(page playwright.Page, note, password, screenshotDir string, logf func(string, ...any)) (string, error) {
+func createPAT(page playwright.Page, note, password, totpSecret, screenshotDir string, logf func(string, ...any)) (string, error) {
 	url := "https://github.com/settings/tokens/new"
 	if _, err := page.Goto(url, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
@@ -39,7 +39,7 @@ func createPAT(page playwright.Page, note, password, screenshotDir string, logf 
 	}
 
 	// Handle sudo confirmation if GitHub requires re-authentication.
-	if handled, err := handleSudoIfPresent(page, password, screenshotDir, logf); err != nil {
+	if handled, err := handleSudoIfPresent(page, password, totpSecret, screenshotDir, logf); err != nil {
 		return "", fmt.Errorf("sudo confirmation for PAT creation: %w", err)
 	} else if handled {
 		// After sudo, we may need to re-navigate to the token page.

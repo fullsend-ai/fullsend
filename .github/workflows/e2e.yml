@@ -57,6 +57,7 @@ jobs:
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
           E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
+          E2E_GITHUB_TOTP_SECRET: ${{ secrets.E2E_GITHUB_TOTP_SECRET }}
 
       - name: Upload debug screenshots
         if: always() && steps.secrets-check.outputs.available == 'true'

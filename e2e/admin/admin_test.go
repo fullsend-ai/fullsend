@@ -87,7 +87,7 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	// Generate a PAT for API access.
 	patNote := fmt.Sprintf("fullsend-e2e-%d", time.Now().Unix())
 	t.Logf("Creating PAT: %s", patNote)
-	token, err := createPAT(page, patNote, cfg.password, screenshotDir, t.Logf)
+	token, err := createPAT(page, patNote, cfg.password, cfg.totpSecret, screenshotDir, t.Logf)
 	require.NoError(t, err, "creating PAT")
 	t.Cleanup(func() {
 		t.Log("Deleting PAT...")
