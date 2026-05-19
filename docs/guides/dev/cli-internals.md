@@ -74,7 +74,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 2: App setup (shared: runAppSetup)                   │ │
 │  │                                                            │ │
 │  │  For each role in --agents:                                │ │
-│  │    - Create/reuse GitHub App ({org}-{role} or --app-set)   │ │
+│  │    - Create/reuse GitHub App ({appSet}-{role} via --app-set)│ │
 │  │    - Download PEM key from App creation flow               │ │
 │  │    - Store PEM in GCP Secret Manager                       │ │
 │  │    - Record App ID + Client ID                             │ │

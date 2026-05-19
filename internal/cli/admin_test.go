@@ -113,7 +113,7 @@ func TestInstallCmd_Flags(t *testing.T) {
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
-	assert.Equal(t, "fullsend", appSetFlag.DefValue)
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestInstallCmd_InvalidAppSet(t *testing.T) {
@@ -302,7 +302,7 @@ func TestUninstallCmd_Flags(t *testing.T) {
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
-	assert.Equal(t, "fullsend", appSetFlag.DefValue)
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestAnalyzeCmd_RequiresOrg(t *testing.T) {
@@ -1524,7 +1524,7 @@ func TestFilterSlugsByAppSet(t *testing.T) {
 			want:   map[string]string{},
 		},
 		{
-			name:   "default app-set does not match longer prefix",
+			name:   "shorter prefix does not match longer slug",
 			appSet: "fullsend",
 			slugs:  map[string]string{"coder": "fullsend-ai-coder"},
 			want:   map[string]string{},

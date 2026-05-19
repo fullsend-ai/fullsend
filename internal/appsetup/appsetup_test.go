@@ -756,10 +756,10 @@ func TestSetup_CorrectPermissions_NoError(t *testing.T) {
 func TestSetup_DefaultAppSet(t *testing.T) {
 	client := &forge.FakeClient{
 		Installations: []forge.Installation{
-			{ID: 100, AppID: 10, AppSlug: "fullsend-coder"},
+			{ID: 100, AppID: 10, AppSlug: "fullsend-ai-coder"},
 		},
 		AppClientIDs: map[string]string{
-			"fullsend-coder": "Iv1.default123",
+			"fullsend-ai-coder": "Iv1.default123",
 		},
 	}
 	printer := ui.New(&discardWriter{})
@@ -769,7 +769,7 @@ func TestSetup_DefaultAppSet(t *testing.T) {
 
 	creds, err := s.Run(context.Background(), "myorg", "coder")
 	require.NoError(t, err)
-	assert.Equal(t, "fullsend-coder", creds.Slug)
+	assert.Equal(t, "fullsend-ai-coder", creds.Slug)
 	assert.Equal(t, "Iv1.default123", creds.ClientID)
 }
 

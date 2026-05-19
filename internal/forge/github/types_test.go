@@ -114,19 +114,19 @@ func TestAgentAppConfig_UnknownRole(t *testing.T) {
 }
 
 func TestAgentAppConfig_CustomAppSet(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "coder", "my-custom")
+	assert.Equal(t, "my-custom-coder", cfg.Name)
+
+	cfg = AgentAppConfig("myorg", "fullsend", "my-custom")
+	assert.Equal(t, "my-custom-fullsend", cfg.Name)
+}
+
+func TestAgentAppConfig_DefaultAppSet(t *testing.T) {
 	cfg := AgentAppConfig("myorg", "coder", "fullsend-ai")
 	assert.Equal(t, "fullsend-ai-coder", cfg.Name)
 
 	cfg = AgentAppConfig("myorg", "fullsend", "fullsend-ai")
 	assert.Equal(t, "fullsend-ai-fullsend", cfg.Name)
-}
-
-func TestAgentAppConfig_DefaultAppSet(t *testing.T) {
-	cfg := AgentAppConfig("myorg", "coder", "fullsend")
-	assert.Equal(t, "fullsend-coder", cfg.Name)
-
-	cfg = AgentAppConfig("myorg", "fullsend", "fullsend")
-	assert.Equal(t, "fullsend-fullsend", cfg.Name)
 }
 
 func TestAppConfig_RedirectURL_InJSON(t *testing.T) {

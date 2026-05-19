@@ -217,7 +217,7 @@ Per-repo maps to these profiles:
 | **Self-managed** | Per-repo user deploys own mint + own Apps | `fullsend admin install owner/repo --mint-project=my-proj` creates everything |
 
 **SaaS profile (default)**: The simplest path. Shared public Apps
-(`fullsend-triage`, `fullsend-coder`, `fullsend-review`) are pre-created
+(`fullsend-ai-triage`, `fullsend-ai-coder`, `fullsend-ai-review`) are pre-created
 by the platform operator and installed on the per-repo user's repo (requires
 org admin approval). The `mint-token` composite action exchanges a GitHub
 OIDC token for a scoped installation token — no PEMs, client IDs, or App
@@ -263,7 +263,7 @@ Shared flags (valid for both per-org and per-repo):
 - `--public` — create public unlisted GitHub Apps (for multi-org)
 - `--mint-provider` — token mint provider backend (default: `gcf`)
 - `--mint-source-dir` — path to mint function source directory
-- `--app-set` — app set name prefix for GitHub Apps (default: `fullsend`)
+- `--app-set` — app set name prefix for GitHub Apps (default: `fullsend-ai`)
 
 Per-org-only flags (`--vendor-fullsend-binary`, `--enroll-all`, `--enroll-none`) are rejected when an `owner/repo` argument is given. All other flags are shared between per-org and per-repo modes — per-repo can create GitHub Apps, deploy a mint, and manage public apps when existing infrastructure is not found.
 

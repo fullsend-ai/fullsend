@@ -73,7 +73,7 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--mint-provider` | `gcf` | Token mint provider backend |
 | `--mint-source-dir` | `internal/mint/` | Path to mint function source directory. When the path does not exist (e.g., running from a downloaded binary), the embedded source baked into the binary is used automatically |
 | `--public` | `false` | Create public unlisted GitHub Apps (for multi-org) |
-| `--app-set` | `fullsend` | App set name prefix for GitHub Apps (see [Custom app sets](#custom-app-sets)) |
+| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps (see [Custom app sets](#custom-app-sets)) |
 | `--skip-app-setup` | `false` | Skip GitHub App creation (reuse existing apps) |
 | `--skip-mint-deploy` | `false` | Skip Cloud Function deployment, reuse existing mint URL |
 | `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup; requires `--mint-url` |
@@ -222,7 +222,7 @@ The uninstall preflight will prompt you to add the `delete_repo` scope if it is 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--yolo` | `false` | Skip the confirmation prompt |
-| `--app-set` | `fullsend` | App set name prefix for GitHub Apps (used for fallback slug generation when config is unavailable) |
+| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps (used for fallback slug generation when config is unavailable) |
 
 ---
 
@@ -287,7 +287,7 @@ Per-repo accepts all `admin install` flags except `--vendor-fullsend-binary`, `-
 
 ## Custom app sets
 
-By default, the installer creates GitHub Apps with the `fullsend` prefix (e.g., `fullsend-fullsend`, `fullsend-coder`, `fullsend-review`). Organizations that need their own set of apps — for example, to use org-specific permissions or to register multiple app sets on the same mint — can pass `--app-set` to override the prefix.
+By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`, `fullsend-ai-review`). Organizations that need their own set of apps — for example, to use org-specific permissions or to register multiple app sets on the same mint — can pass `--app-set` to override the prefix.
 
 ### Creating a custom app set
 
@@ -312,6 +312,8 @@ fullsend admin install "$NEW_ORG" \
 ```
 
 The installer detects that the public apps are already installed in the org (matched by app ID from the mint's `ROLE_APP_IDS`), copies PEM secrets to the new org's scoped key, and skips app creation. The `--app-set` value ensures convention-based slug lookups match the existing apps.
+
+> **Migration note:** Prior to this change, the default app set was `fullsend`, producing slugs like `fullsend-coder`. The default is now `fullsend-ai`, producing `fullsend-ai-coder`. Existing installations that used the old default should pass `--app-set fullsend` explicitly to continue matching their existing GitHub App slugs, or re-install with the new default.
 
 ### Uninstalling a custom app set
 

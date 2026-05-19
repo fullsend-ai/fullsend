@@ -868,9 +868,11 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 }
 
 // DefaultAppSet is the default app set prefix for GitHub Apps.
-// Orgs that created apps under a different prefix (e.g., "fullsend-ai")
-// pass --app-set explicitly.
-const DefaultAppSet = "fullsend"
+// The official GitHub Apps maintained by the fullsend-ai organization use
+// the "fullsend-ai" prefix (fullsend-ai-fullsend, fullsend-ai-coder, etc.).
+// Orgs that created apps under a different prefix (e.g., "fullsend")
+// must pass --app-set explicitly.
+const DefaultAppSet = "fullsend-ai"
 
 // AppSlug returns the conventional app slug for a given app set and role.
 func AppSlug(appSet, role string) string {
