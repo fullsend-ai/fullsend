@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -27,23 +27,16 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7.6.0
 
+      - name: Install pre-commit and test dependencies
+        run: uv pip install --system pre-commit jsonschema
+
       - name: Install lychee
         run: |
           curl -sSfL "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/lychee.tar.gz
           echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum -c
           tar xzf /tmp/lychee.tar.gz -C /usr/local/bin --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
 
-      - name: Install pre-commit
-        run: uv pip install --system pre-commit
-
-      - name: Run pre-commit (skip ty)
-        run: SKIP=ty pre-commit run --all-files
-
-      - name: Run ty check
-        run: uvx ty check hack/
-
-      - name: Run ADR linting
-        run: make lint
+      - run: make test
 
   commit-lint:
     # On pull_request: lint the PR title (which becomes the merge commit

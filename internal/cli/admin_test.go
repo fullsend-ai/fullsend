@@ -203,6 +203,7 @@ func TestInstallCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
 }
 
 func TestInstallCmd_PerRepoAcceptsSharedFlags(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	sharedFlags := []struct {
 		flag  string
 		value string
@@ -246,6 +247,7 @@ func TestInstallCmd_ForceMintDeployFlagRemoved(t *testing.T) {
 }
 
 func TestInstallCmd_PerRepoAcceptsMintRegion(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--mint-url", "https://mint-test-abc123.run.app",
@@ -1290,6 +1292,7 @@ func TestInstallCmd_SkipMintCheckRequiresMintURL(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckAcceptsNonCloudRunURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--skip-mint-check",
@@ -1301,6 +1304,7 @@ func TestInstallCmd_SkipMintCheckAcceptsNonCloudRunURL(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckSkipsMintProject(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	// Without --skip-mint-check and without --mint-project/--mint-url, an error is returned.
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget"})
@@ -1319,6 +1323,7 @@ func TestInstallCmd_SkipMintCheckSkipsMintProject(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckPerOrgRequiresMintURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
 		"--skip-mint-check"})
@@ -1438,6 +1443,7 @@ func TestValidateWIFProvider_Invalid(t *testing.T) {
 }
 
 func TestInstallCmd_PerOrgRejectsInvalidWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
 		"--dry-run",
@@ -1475,6 +1481,7 @@ func TestInstallCmd_PerOrgAcceptsValidWIFProvider(t *testing.T) {
 }
 
 func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--mint-url", "https://mint-test-abc123.run.app",
@@ -1539,6 +1546,7 @@ func TestFilterSlugsByAppSet(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
 		"--dry-run",
