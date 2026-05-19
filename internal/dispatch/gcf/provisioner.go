@@ -1183,6 +1183,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	}
 
 	var projectNumber string
+	providerID := p.cfg.WIFProvider
 	if p.cfg.Repo != "" {
 		// Repo-scoped: dedicated provider per repo, no org merge.
 		// Each repo gets a unique provider ID (via BuildRepoProviderID),
@@ -1202,10 +1203,10 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
 			return "", fmt.Errorf("creating WIF pool: %w", err)
 		}
-		p.cfg.WIFProvider = BuildRepoProviderID(parts[0], parts[1])
+		providerID = BuildRepoProviderID(parts[0], parts[1])
 		attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
-		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
+		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
 			IssuerURI:          oidcIssuer,
 			AttributeCondition: attrCondition,
 			AllowedAudiences:   audiences,
@@ -1242,7 +1243,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	}
 
 	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-		projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+		projectNumber, p.cfg.WIFPoolName, providerID)
 
 	return wifProvider, nil
 }
