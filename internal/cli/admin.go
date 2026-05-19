@@ -106,6 +106,17 @@ var perOrgOnlyFlags = []string{
 	"vendor-fullsend-binary", "enroll-all", "enroll-none",
 }
 
+// HostedMintURL is the URL of the fullsend-ai hosted token mint service.
+// When --mint-url is not explicitly provided, this URL is used as the default.
+// When this URL is active and no --mint-project is given, mint provisioning
+// is automatically skipped (equivalent to --skip-mint-check).
+const HostedMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
+
+// isHostedMintURL returns true if the given URL matches the fullsend-ai hosted mint.
+func isHostedMintURL(u string) bool {
+	return u == HostedMintURL
+}
+
 // skipMintDispatcher implements dispatch.Dispatcher for --skip-mint-check mode.
 // It returns the user-provided mint URL without making any GCP API calls.
 type skipMintDispatcher struct {
@@ -317,6 +328,12 @@ Inference authentication:
 			roles, err := parseAgentRoles(agents)
 			if err != nil {
 				return err
+			}
+
+			// Auto-enable skip-mint-check when using the hosted mint URL
+			// without a GCP project — this is the zero-GCP install path.
+			if !skipMintCheck && isHostedMintURL(mintURL) && mintProject == "" {
+				skipMintCheck = true
 			}
 
 			if skipMintCheck {
@@ -532,7 +549,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., fullsend-ai creates fullsend-ai-fullsend, fullsend-ai-coder)")
 	// Shared flags.
-	cmd.Flags().StringVar(&mintURL, "mint-url", "", "token mint URL for OIDC token exchange")
+	cmd.Flags().StringVar(&mintURL, "mint-url", HostedMintURL, "token mint URL for OIDC token exchange (default: fullsend-ai hosted mint)")
 
 	return cmd
 }
@@ -567,6 +584,12 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	}
 	if !githubRepoPattern.MatchString(repo) {
 		return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
+	}
+
+	// Auto-enable skip-mint-check when using the hosted mint URL
+	// without a GCP project — this is the zero-GCP install path.
+	if !skipMintCheck && isHostedMintURL(mintURL) && mintProject == "" {
+		skipMintCheck = true
 	}
 
 	if skipMintCheck {
