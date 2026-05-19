@@ -113,7 +113,7 @@ func TestInstallCmd_Flags(t *testing.T) {
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
-	assert.Equal(t, "fullsend", appSetFlag.DefValue)
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestInstallCmd_InvalidAppSet(t *testing.T) {
@@ -300,7 +300,7 @@ func TestUninstallCmd_Flags(t *testing.T) {
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
-	assert.Equal(t, "fullsend", appSetFlag.DefValue)
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestAnalyzeCmd_RequiresOrg(t *testing.T) {
