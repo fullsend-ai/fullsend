@@ -117,8 +117,13 @@ func acquireLock(ctx context.Context, client forge.Client, token, org, runID str
 func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, logf func(string, ...any)) (bool, error) {
 	_, err := client.CreateRepo(ctx, org, lockRepo, "E2E test lock — do not delete manually", false)
 	if err != nil {
-		// Repo already exists (409 or similar) — someone else got it.
-		return false, nil
+		if isRepoAlreadyExists(err) {
+			// Repo already exists — someone else got it.
+			return false, nil
+		}
+		// Unexpected error (rate limit, auth failure, network). Propagate
+		// so acquireOrg can distinguish "locked" from "broken".
+		return false, fmt.Errorf("creating lock repo in %s: %w", org, err)
 	}
 
 	// Use CreateOrUpdateFile since auto_init creates a default README.md.
@@ -178,4 +183,15 @@ func truncateUUID(u string) string {
 func isValidUUID(s string) bool {
 	_, err := uuid.Parse(s)
 	return err == nil
+}
+
+// isRepoAlreadyExists reports whether the error indicates that CreateRepo
+// failed because the repository already exists (422 from GitHub API or
+// "already exists" from the fake client).
+func isRepoAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "422")
 }

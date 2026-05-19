@@ -47,8 +47,8 @@ var orgPool = []string{
 }
 
 // acquireOrg scans the org pool for an unlocked org and acquires its lock.
-// If all orgs are locked, it falls back to waiting on the first org in the
-// pool (with the standard lock timeout). Returns the org name.
+// If all orgs are locked, it falls back to waiting on each org in sequence,
+// bounded by a single shared deadline (not per-org). Returns the org name.
 func acquireOrg(ctx context.Context, client forge.Client, token, runID string, timeout time.Duration, logf func(string, ...any)) (string, error) {
 	// First pass: try each org without waiting.
 	for _, org := range orgPool {
@@ -65,17 +65,23 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, t
 		logf("[org-pool] %s is locked, trying next", org)
 	}
 
-	// All orgs are locked. Fall back to waiting on the first available.
-	logf("[org-pool] All %d orgs are locked, waiting with timeout %s", len(orgPool), timeout)
+	// All orgs are locked. Fall back to waiting with a shared deadline
+	// across all orgs so total wait is bounded by timeout, not N*timeout.
+	logf("[org-pool] All %d orgs are locked, waiting with total timeout %s", len(orgPool), timeout)
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	for _, org := range orgPool {
-		err := acquireLock(ctx, client, token, org, runID, timeout, logf)
+		if deadline.Err() != nil {
+			break
+		}
+		err := acquireLock(deadline, client, token, org, runID, timeout, logf)
 		if err == nil {
 			return org, nil
 		}
 		logf("[org-pool] Could not acquire %s: %v", org, err)
 	}
 
-	return "", fmt.Errorf("could not acquire any org from pool after %s", timeout)
+	return "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(orgPool))
 }
 
 // defaultRoles is the standard set of agent roles.

@@ -48,14 +48,14 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 	for _, role := range defaultRoles {
 		slug := org + "-" + role // v6 convention: halfsend-fullsend, etc.
 		t.Logf("[cleanup] Attempting to delete app %s (if it exists)", slug)
-		if delErr := deleteAppViaPlaywright(page, org,slug, t.Logf, screenshotDir); delErr != nil {
+		if delErr := deleteAppViaPlaywright(page, org, slug, t.Logf, screenshotDir); delErr != nil {
 			t.Logf("[cleanup] App %s not found or could not delete: %v", slug, delErr)
 		}
 
 		newSlug := appsetup.AppSlug(appsetup.DefaultAppSet, role) // current convention: fullsend-triage, etc.
 		if newSlug != slug {
 			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", newSlug)
-			if delErr := deleteAppViaPlaywright(page, org,newSlug, t.Logf, screenshotDir); delErr != nil {
+			if delErr := deleteAppViaPlaywright(page, org, newSlug, t.Logf, screenshotDir); delErr != nil {
 				t.Logf("[cleanup] App %s not found or could not delete: %v", newSlug, delErr)
 			}
 		}
@@ -63,7 +63,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		legacySlug := "fullsend-" + role // legacy convention: fullsend-triage, etc.
 		if legacySlug != slug && legacySlug != newSlug {
 			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", legacySlug)
-			if delErr := deleteAppViaPlaywright(page, org,legacySlug, t.Logf, screenshotDir); delErr != nil {
+			if delErr := deleteAppViaPlaywright(page, org, legacySlug, t.Logf, screenshotDir); delErr != nil {
 				t.Logf("[cleanup] App %s not found or could not delete: %v", legacySlug, delErr)
 			}
 		}
@@ -81,7 +81,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 				strings.HasPrefix(inst.AppSlug, "fullsend-") // legacy: fullsend-triage, fullsend-halfsend-*, etc.
 			if isStale {
 				t.Logf("[cleanup] Deleting stale installed app: %s", inst.AppSlug)
-				if delErr := deleteAppViaPlaywright(page, org,inst.AppSlug, t.Logf, screenshotDir); delErr != nil {
+				if delErr := deleteAppViaPlaywright(page, org, inst.AppSlug, t.Logf, screenshotDir); delErr != nil {
 					t.Logf("[cleanup] Warning: could not delete app %s: %v", inst.AppSlug, delErr)
 				}
 			}
