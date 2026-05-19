@@ -147,6 +147,26 @@ func TestBuildClaudeCommand_DebugEscapesQuotes(t *testing.T) {
 	assert.Contains(t, cmd, "--debug 'api'\\''hooks'")
 }
 
+func TestBuildClaudeCommand_UsesSingleSpacesAroundOptionalFlags(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "sonnet", "/tmp/workspace/repo", []string{
+		"/tmp/claude-config/plugins/gopls-lsp",
+		"/tmp/claude-config/plugins/other-lsp",
+	}, "api,hooks")
+
+	assert.Contains(t, cmd, "--output-format stream-json --debug-file")
+	assert.Contains(t, cmd, "claude-debug.log' --debug 'api,hooks' --model 'sonnet'")
+	assert.Contains(t, cmd, "--model 'sonnet' --plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
+	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/other-lsp' --agent 'agent'")
+	assert.NotContains(t, cmd, "  ")
+}
+
+func TestBuildClaudeCommand_UsesSingleSpacesWithoutOptionalFlags(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil, "")
+
+	assert.Contains(t, cmd, "--output-format stream-json --agent 'agent'")
+	assert.NotContains(t, cmd, "  ")
+}
+
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
 	dir := t.TempDir()
 	pluginDir := filepath.Join(dir, "gopls-lsp")
