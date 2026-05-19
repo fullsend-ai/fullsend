@@ -2,7 +2,6 @@ package otp
 
 import (
 	"testing"
-	"time"
 
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
@@ -37,15 +36,19 @@ func TestGenerateCodeRejectsInvalidBase32(t *testing.T) {
 func TestGenerateCodeDeterministic(t *testing.T) {
 	const secret = "JBSWY3DPEHPK3PXP"
 
-	// Two calls within the same 30s window should produce the same code.
+	// Calling GenerateCode twice in quick succession should produce the
+	// same code, unless we happen to straddle a 30s TOTP window boundary.
+	// To avoid flakes, accept a match with either the first or second code.
 	code1, err := GenerateCode(secret)
 	require.NoError(t, err)
-
-	// Small sleep to stay in the same period (well under 30s).
-	time.Sleep(100 * time.Millisecond)
 
 	code2, err := GenerateCode(secret)
 	require.NoError(t, err)
 
-	assert.Equal(t, code1, code2, "codes generated in the same period should match")
+	if code1 != code2 {
+		// We straddled a window boundary. Verify the new code is valid
+		// (it should be the next period's code).
+		valid := totp.Validate(code2, secret)
+		assert.True(t, valid, "second code should still be a valid TOTP code")
+	}
 }

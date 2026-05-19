@@ -115,8 +115,8 @@ func main() {
 			log.Fatalf("generating TOTP code: %v", err)
 		}
 
-		// Use Type instead of Fill to simulate keystroke entry, which
-		// triggers GitHub's auto-submit after the 6th digit.
+		// Use PressSequentially instead of Fill to simulate keystroke
+		// entry, which triggers GitHub's auto-submit after the 6th digit.
 		if err := totpInput.PressSequentially(code, playwright.LocatorPressSequentiallyOptions{
 			Delay: playwright.Float(50),
 		}); err != nil {
@@ -125,7 +125,7 @@ func main() {
 
 		// GitHub's 2FA form auto-submits when 6 digits are entered.
 		// Wait for the URL to leave the 2FA page.
-		if err := page.WaitForURL("https://github.com/", playwright.PageWaitForURLOptions{
+		if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
 			Timeout: playwright.Float(15000),
 		}); err != nil {
 			log.Fatalf("waiting for post-2FA navigation: %v (url: %s)", err, page.URL())

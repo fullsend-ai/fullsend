@@ -59,6 +59,9 @@ func handleSudoIfPresent(page playwright.Page, password, totpSecret, screenshotD
 		if err := passwordInput.Fill(password); err != nil {
 			return false, fmt.Errorf("filling sudo password: %w", err)
 		}
+	} else if passwordVisible {
+		saveDebugScreenshot(page, screenshotDir, "sudo-password-not-set", logf)
+		return false, fmt.Errorf("sudo page shows password field but E2E_GITHUB_PASSWORD is not set")
 	} else if totpSecret != "" {
 		if handled, err := handleTOTPIfPresent(page, totpSecret, screenshotDir, logf); err != nil {
 			return false, fmt.Errorf("TOTP on sudo page: %w", err)
@@ -116,6 +119,7 @@ func handleTOTPIfPresent(page playwright.Page, totpSecret, screenshotDir string,
 	if err := totpInput.PressSequentially(code, playwright.LocatorPressSequentiallyOptions{
 		Delay: playwright.Float(50),
 	}); err != nil {
+		saveDebugScreenshot(page, screenshotDir, "totp-type-failed", logf)
 		return false, fmt.Errorf("typing TOTP code: %w", err)
 	}
 
@@ -124,10 +128,21 @@ func handleTOTPIfPresent(page playwright.Page, totpSecret, screenshotDir string,
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 		State: playwright.LoadStateNetworkidle,
 	}); err != nil {
+		saveDebugScreenshot(page, screenshotDir, "totp-navigation-failed", logf)
 		return false, fmt.Errorf("waiting for post-TOTP navigation: %w", err)
 	}
 
-	logf("[totp] TOTP submission succeeded (URL: %s)", page.URL())
+	// Verify we actually left the TOTP/sudo page. If the code was wrong
+	// (e.g. expired at a period boundary), GitHub redisplays the form.
+	postURL := page.URL()
+	postTitle, _ := page.Title()
+	if strings.Contains(postURL, "/two-factor") || strings.Contains(postURL, "/2fa") ||
+		strings.Contains(postTitle, "Confirm access") || strings.Contains(postTitle, "Sudo") {
+		saveDebugScreenshot(page, screenshotDir, "totp-verification-failed", logf)
+		return false, fmt.Errorf("TOTP code was not accepted (still at %s, title: %s)", postURL, postTitle)
+	}
+
+	logf("[totp] TOTP submission succeeded (URL: %s)", postURL)
 	return true, nil
 }
 
