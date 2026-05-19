@@ -104,6 +104,45 @@ def iter_messages(path, line_range=None):
             yield i, "meta", obj, obj
 
 
+# --- Pricing ---
+
+# Prices in USD per million tokens. Matched by substring against model ID.
+# Cache write = 1.25× input; cache read = 0.10× input (standard Anthropic rates).
+_PRICING = [
+    # (substring, input, output, cache_write, cache_read)
+    ("opus-4", 5.00, 25.00, 6.25, 0.50),
+    ("sonnet-4", 3.00, 15.00, 3.75, 0.30),
+    ("haiku-4", 0.80, 4.00, 1.00, 0.08),
+    ("opus-3-7", 3.00, 15.00, 3.75, 0.30),
+    ("opus-3", 15.00, 75.00, 18.75, 1.50),
+    ("sonnet-3", 3.00, 15.00, 3.75, 0.30),
+    ("haiku-3", 0.25, 1.25, 0.30, 0.03),
+]
+
+
+def _model_pricing(model):
+    """Return (input, output, cache_write, cache_read) per-million prices or None."""
+    if not model:
+        return None
+    m = model.lower()
+    for substr, *prices in _PRICING:
+        if substr in m:
+            return tuple(prices)
+    return None
+
+
+def _compute_cost(tokens, pricing):
+    """Return cost dict given token counts and per-million pricing tuple."""
+    inp_p, out_p, cw_p, cr_p = pricing
+    M = 1_000_000
+    return {
+        "input": tokens["input"] / M * inp_p,
+        "output": tokens["output"] / M * out_p,
+        "cache_write": tokens["cache_create"] / M * cw_p,
+        "cache_read": tokens["cache_read"] / M * cr_p,
+    }
+
+
 # --- Subcommands ---
 
 
@@ -166,21 +205,31 @@ def cmd_summary(args):
         except (ValueError, TypeError):
             pass
 
+    tokens = {
+        "input": total_input_tokens,
+        "output": total_output_tokens,
+        "cache_read": total_cache_read,
+        "cache_create": total_cache_create,
+    }
+
+    # Cost — use first recognised model; skip if unknown.
+    primary_model = sorted(models)[0] if models else None
+    pricing = _model_pricing(primary_model)
+    cost = _compute_cost(tokens, pricing) if pricing else None
+
     result = {
         "agent": agent_setting,
         "session_ids": sorted(session_ids),
         "models": sorted(models),
         "messages": dict(msg_counts),
-        "tokens": {
-            "input": total_input_tokens,
-            "output": total_output_tokens,
-            "cache_read": total_cache_read,
-            "cache_create": total_cache_create,
-        },
+        "tokens": tokens,
         "duration_seconds": duration,
         "tool_calls": dict(tool_counts.most_common()),
         "stop_reasons": dict(stop_reasons),
     }
+    if cost is not None:
+        result["cost_usd"] = {k: round(v, 6) for k, v in cost.items()}
+        result["cost_usd"]["total"] = round(sum(cost.values()), 6)
 
     if args.json_output:
         print(json.dumps(result, indent=2))
@@ -200,6 +249,16 @@ def cmd_summary(args):
         f"{total_cache_read} cache-read / "
         f"{total_cache_create} cache-create"
     )
+    if cost is not None:
+        total = sum(cost.values())
+        print(
+            f"Cost:       ~${total:.4f}  "
+            f"(in ${cost['input']:.4f} / "
+            f"out ${cost['output']:.4f} / "
+            f"cache-write ${cost['cache_write']:.4f} / "
+            f"cache-read ${cost['cache_read']:.4f})"
+            f"  [approx; Anthropic list prices, actual Vertex AI costs may differ]"
+        )
     print()
     if tool_counts:
         print("Tool calls:")
