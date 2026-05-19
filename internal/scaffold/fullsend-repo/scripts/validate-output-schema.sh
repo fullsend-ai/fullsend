@@ -69,6 +69,10 @@ except ValidationError as e:
     print(f'FAIL: schema validation error: {e.message}')
     if e.path:
         print(f'  at: {\".\".join(str(p) for p in e.path)}')
+    # Show allowed properties for additionalProperties violations
+    if 'properties' in e.schema:
+        allowed = ', '.join(sorted(e.schema['properties'].keys()))
+        print(f'  allowed properties: {allowed}')
     sys.exit(1)
 " "${RESULT_FILE}" "${FULLSEND_OUTPUT_SCHEMA}"; then
   exit 1

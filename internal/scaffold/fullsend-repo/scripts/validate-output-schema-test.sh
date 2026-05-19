@@ -232,6 +232,48 @@ run_test_custom_filename "review-approve-valid" \
   "${REVIEW_SCHEMA}" \
   "true"
 
+# --- Enriched error output (issue #1052) ---
+
+run_test_check_output() {
+  local test_name="$1"
+  local json_content="$2"
+  local schema="$3"
+  local expected_substring="$4"
+
+  local test_dir="${TMPDIR}/${test_name}"
+  mkdir -p "${test_dir}/output"
+  echo "${json_content}" > "${test_dir}/output/agent-result.json"
+
+  local exit_code=0
+  FULLSEND_OUTPUT_SCHEMA="${schema}" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected validation to fail but got PASS"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "${expected_substring}" "${TMPDIR}/stdout.log"; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — expected output to contain '${expected_substring}'"
+    echo "  actual output:"
+    cat "${TMPDIR}/stdout.log" | while IFS= read -r line; do echo "    ${line}"; done
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_test_check_output "additional-properties-shows-allowed" \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  "${SCHEMA}" \
+  "allowed properties:"
+
+run_test_check_output "nested-additional-properties-shows-allowed" \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Note.","unexpected_field":"bad"}]}' \
+  "${REVIEW_SCHEMA}" \
+  "allowed properties:"
+
 # --- Summary ---
 
 echo ""
