@@ -242,6 +242,33 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 		return recovered, nil
 	}
 
+	// For public app-sets, check if the app already exists globally before
+	// creating a new one. Public apps (e.g. fullsend-ai-fullsend) are owned
+	// by another org and just need to be installed — not re-created.
+	// We do not attempt PEM recovery here; the PEM is owned by the source org
+	// and is copied separately by copySharedAppPEMs.
+	if s.publicApps {
+		clientID, lookupErr := s.client.GetAppClientID(ctx, slug)
+		if lookupErr != nil && !forge.IsNotFound(lookupErr) {
+			return nil, fmt.Errorf("checking public app %s: %w", slug, lookupErr)
+		}
+		if lookupErr == nil {
+			if err := s.ensureInstalled(ctx, org, slug); err != nil {
+				return nil, fmt.Errorf("ensuring installation of public app %s: %w", slug, err)
+			}
+			inst, found, err := s.findExistingInstallation(ctx, org, role, slug)
+			if err != nil {
+				return nil, fmt.Errorf("looking up installed public app: %w", err)
+			}
+			if !found {
+				return nil, fmt.Errorf("public app %s was installed but not found in installations list", slug)
+			}
+			s.checkPermissions(inst, org, role)
+			s.ui.StepDone(fmt.Sprintf("Reusing public app %s (ID: %d)", slug, inst.AppID))
+			return &AppCredentials{AppID: inst.AppID, Slug: slug, Name: slug, ClientID: clientID}, nil
+		}
+	}
+
 	// No existing app found — run the manifest flow.
 	s.ui.StepStart(fmt.Sprintf("Creating new GitHub App: %s", slug))
 	creds, err := s.runManifestFlow(ctx, org, role)

@@ -1485,6 +1485,59 @@ func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestFilterSlugsByAppSet(t *testing.T) {
+	tests := []struct {
+		name string
+		appSet string
+		slugs map[string]string
+		want  map[string]string
+	}{
+		{
+			name:   "matching app-set preserved",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+			want:   map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+		},
+		{
+			name:   "different app-set filtered out",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "konflux-ci-coder", "review": "konflux-ci-review"},
+			want:   map[string]string{},
+		},
+		{
+			name:   "mixed app-sets keeps only matching",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "konflux-ci-review"},
+			want:   map[string]string{"coder": "fullsend-ai-coder"},
+		},
+		{
+			name:   "nil input returns empty map",
+			appSet: "fullsend-ai",
+			slugs:  nil,
+			want:   map[string]string{},
+		},
+		{
+			name:   "default app-set does not match longer prefix",
+			appSet: "fullsend",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder"},
+			want:   map[string]string{},
+		},
+		{
+			name:   "default app-set matches own slugs",
+			appSet: "fullsend",
+			slugs:  map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+			want:   map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterSlugsByAppSet(tt.slugs, tt.appSet)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
