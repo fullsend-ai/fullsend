@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -914,4 +915,108 @@ func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
 	data, err := os.ReadFile(destPath)
 	require.NoError(t, err)
 	assert.Equal(t, "good binary", string(data))
+}
+
+// initGitRepo creates a bare git repo in dir with a minimal identity config.
+// It returns a helper that runs git commands in dir, failing the test on error.
+func initGitRepo(t *testing.T, dir string) func(args ...string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	return run
+}
+
+func TestRestoreTrackedSymlinks_RestoresSymlink(t *testing.T) {
+	dir := t.TempDir()
+	git := initGitRepo(t, dir)
+
+	// target file the symlink points to
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "real.txt"), []byte("data"), 0o644))
+	require.NoError(t, os.Symlink("real.txt", filepath.Join(dir, "link.txt")))
+	git("add", ".")
+	git("commit", "-m", "add symlink")
+
+	// Simulate SafeDownload removing the symlink.
+	require.NoError(t, os.Remove(filepath.Join(dir, "link.txt")))
+	_, err := os.Lstat(filepath.Join(dir, "link.txt"))
+	require.True(t, os.IsNotExist(err), "symlink should be gone before restore")
+
+	require.NoError(t, restoreTrackedSymlinks(dir))
+
+	info, err := os.Lstat(filepath.Join(dir, "link.txt"))
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&os.ModeSymlink != 0, "link.txt should be a symlink after restore")
+	target, err := os.Readlink(filepath.Join(dir, "link.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "real.txt", target)
+}
+
+func TestRestoreTrackedSymlinks_NoSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	git := initGitRepo(t, dir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0o644))
+	git("add", ".")
+	git("commit", "-m", "no symlinks")
+
+	// Should succeed silently when there are no tracked symlinks.
+	require.NoError(t, restoreTrackedSymlinks(dir))
+}
+
+func TestRestoreTrackedSymlinks_MultipleSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	git := initGitRepo(t, dir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644))
+	require.NoError(t, os.Symlink("a.txt", filepath.Join(dir, "link-a")))
+	require.NoError(t, os.Symlink("b.txt", filepath.Join(dir, "link-b")))
+	git("add", ".")
+	git("commit", "-m", "add two symlinks")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "link-a")))
+	require.NoError(t, os.Remove(filepath.Join(dir, "link-b")))
+
+	require.NoError(t, restoreTrackedSymlinks(dir))
+
+	for _, name := range []string{"link-a", "link-b"} {
+		info, err := os.Lstat(filepath.Join(dir, name))
+		require.NoError(t, err, "%s should exist", name)
+		assert.True(t, info.Mode()&os.ModeSymlink != 0, "%s should be a symlink", name)
+	}
+}
+
+func TestRestoreTrackedSymlinks_PreservesRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	git := initGitRepo(t, dir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0o644))
+	require.NoError(t, os.Symlink("keep.txt", filepath.Join(dir, "link")))
+	git("add", ".")
+	git("commit", "-m", "initial")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "link")))
+
+	// Modify the regular file; restore must not revert it.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("modified"), 0o644))
+
+	require.NoError(t, restoreTrackedSymlinks(dir))
+
+	content, err := os.ReadFile(filepath.Join(dir, "keep.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "modified", string(content), "regular file should be untouched by symlink restore")
 }

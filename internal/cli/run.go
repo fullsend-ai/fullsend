@@ -569,6 +569,14 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", repoSrc, time.Since(repoExtractStart).Seconds()))
 
+		// Temporary workaround for #1149: SafeDownload strips all symlinks, but
+		// git-tracked symlinks must exist for lint-broken-symlinks to pass.
+		// Restore them from the committed state so the post-script sees a
+		// consistent working tree. Dereference-on-download (#1149) is the real fix.
+		if err := restoreTrackedSymlinks(repoSrc); err != nil {
+			printer.StepWarn("Failed to restore tracked symlinks: " + err.Error())
+		}
+
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
 			break
@@ -1938,6 +1946,20 @@ func crossCompileFullsend(arch, destPath string) error {
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
 		return fmt.Errorf("cross-compiling for linux/%s: %w", arch, err)
+	}
+	return nil
+}
+
+// restoreTrackedSymlinks re-creates any git-tracked symlinks that SafeDownload
+// removed. It reads the index for mode-120000 entries and checks them out from
+// HEAD, so the working tree is consistent with what was committed.
+// This is a workaround for #1149; the proper fix is dereference-on-download.
+func restoreTrackedSymlinks(dir string) error {
+	cmd := exec.Command("bash", "-c",
+		`git ls-files -s | awk '$1=="120000"{print $4}' | xargs -r git checkout HEAD --`)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}
 	return nil
 }
