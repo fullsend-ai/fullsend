@@ -7,6 +7,10 @@
 //   - E2E_GITHUB_USERNAME: GitHub username
 //   - E2E_GITHUB_PASSWORD: GitHub password (use `pass` or similar)
 //
+// Optional environment variables:
+//   - E2E_GITHUB_TOTP_SECRET: Base32-encoded TOTP secret for 2FA.
+//     Required when the GitHub account has two-factor authentication enabled.
+//
 // Output is written to E2E_GITHUB_SESSION_FILE (default: .playwright/session.json).
 package main
 
@@ -16,8 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/playwright-community/playwright-go"
+	"github.com/pquerna/otp/totp"
 )
 
 func main() {
@@ -26,6 +32,8 @@ func main() {
 	if username == "" || password == "" {
 		log.Fatal("Set E2E_GITHUB_USERNAME and E2E_GITHUB_PASSWORD")
 	}
+
+	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
 
 	outFile := os.Getenv("E2E_GITHUB_SESSION_FILE")
 	if outFile == "" {
@@ -83,10 +91,18 @@ func main() {
 		log.Fatalf("clicking submit: %v", err)
 	}
 
-	if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
-		Timeout: playwright.Float(15000),
+	// Wait for post-login navigation — this may land on the 2FA page or the
+	// dashboard depending on account settings.
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State: playwright.LoadStateDomcontentloaded,
 	}); err != nil {
-		log.Fatalf("post-login navigation: %v (url: %s)", err, page.URL())
+		log.Fatalf("waiting for post-login page: %v", err)
+	}
+
+	// Handle 2FA challenge if present. GitHub shows a TOTP input with
+	// id="app_totp" on the two-factor authentication page.
+	if err := handle2FA(page, totpSecret); err != nil {
+		log.Fatalf("2FA: %v", err)
 	}
 
 	url := page.URL()
@@ -96,6 +112,62 @@ func main() {
 
 	fmt.Printf("Logged in (URL: %s)\n", url)
 	export(ctx, outFile)
+}
+
+// handle2FA detects whether the current page is a GitHub 2FA challenge and,
+// if so, generates a TOTP code from the provided secret and submits it.
+func handle2FA(page playwright.Page, totpSecret string) error {
+	// Check for the TOTP input field. GitHub uses id="app_totp" for the
+	// authenticator app code input on the 2FA page.
+	totpInput := page.Locator("#app_totp")
+	if err := totpInput.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		// No 2FA page detected — not an error, account may not have 2FA.
+		return nil
+	}
+
+	fmt.Println("2FA challenge detected")
+
+	if totpSecret == "" {
+		return fmt.Errorf("GitHub is requesting two-factor authentication but E2E_GITHUB_TOTP_SECRET is not set — " +
+			"set this environment variable to the base32-encoded TOTP secret for the account")
+	}
+
+	code, err := totp.GenerateCode(totpSecret, time.Now())
+	if err != nil {
+		return fmt.Errorf("generating TOTP code: %w", err)
+	}
+
+	if err := totpInput.Fill(code); err != nil {
+		return fmt.Errorf("filling TOTP code: %w", err)
+	}
+
+	// Wait for navigation after TOTP submission. GitHub auto-submits when
+	// the 6-digit code is filled, but we also click submit as a fallback.
+	submitBtn := page.Locator("button[type='submit']")
+	if err := submitBtn.First().Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		// Auto-submit may have already navigated away — ignore click errors.
+		fmt.Printf("Note: submit click after TOTP fill returned: %v (may be expected if auto-submitted)\n", err)
+	}
+
+	if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
+		Timeout: playwright.Float(15000),
+	}); err != nil {
+		return fmt.Errorf("post-2FA navigation timed out (url: %s): %w", page.URL(), err)
+	}
+
+	// Verify we're past the 2FA page.
+	url := page.URL()
+	if strings.Contains(url, "two_factor") || strings.Contains(url, "/sessions/two-factor") {
+		return fmt.Errorf("2FA failed — still on 2FA page: %s", url)
+	}
+
+	fmt.Println("2FA succeeded")
+	return nil
 }
 
 func export(ctx playwright.BrowserContext, outFile string) {
