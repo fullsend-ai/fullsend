@@ -17,9 +17,6 @@ import (
 )
 
 const (
-	// testOrg is the dedicated GitHub org for e2e tests.
-	testOrg = "halfsend"
-
 	// testRepo is a pre-existing repo in the test org for enrollment testing.
 	testRepo = "test-repo"
 
@@ -27,6 +24,7 @@ const (
 	lockRepo = "e2e-lock"
 
 	// defaultLockTimeout is how long to wait for the lock before giving up.
+	// This is only used as the fallback if ALL orgs are locked.
 	defaultLockTimeout = 2 * time.Minute
 
 	// lockPollInterval is how often to poll while waiting for the lock.
@@ -36,6 +34,49 @@ const (
 	// "just acquired" and we reset the wait timer.
 	freshLockThreshold = 1 * time.Minute
 )
+
+// orgPool is the set of GitHub orgs available for parallel e2e test runs.
+// Each run acquires a lock on one org before proceeding.
+var orgPool = []string{
+	"halfsend-01",
+	"halfsend-02",
+	"halfsend-03",
+	"halfsend-04",
+	"halfsend-05",
+	"halfsend-06",
+}
+
+// acquireOrg scans the org pool for an unlocked org and acquires its lock.
+// If all orgs are locked, it falls back to waiting on the first org in the
+// pool (with the standard lock timeout). Returns the org name.
+func acquireOrg(ctx context.Context, client forge.Client, token, runID string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+	// First pass: try each org without waiting.
+	for _, org := range orgPool {
+		logf("[org-pool] Trying to acquire %s...", org)
+		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+		if err != nil {
+			logf("[org-pool] Error trying %s: %v", org, err)
+			continue
+		}
+		if acquired {
+			logf("[org-pool] Acquired %s", org)
+			return org, nil
+		}
+		logf("[org-pool] %s is locked, trying next", org)
+	}
+
+	// All orgs are locked. Fall back to waiting on the first available.
+	logf("[org-pool] All %d orgs are locked, waiting with timeout %s", len(orgPool), timeout)
+	for _, org := range orgPool {
+		err := acquireLock(ctx, client, token, org, runID, timeout, logf)
+		if err == nil {
+			return org, nil
+		}
+		logf("[org-pool] Could not acquire %s: %v", org, err)
+	}
+
+	return "", fmt.Errorf("could not acquire any org from pool after %s", timeout)
+}
 
 // defaultRoles is the standard set of agent roles.
 var defaultRoles = []string{"fullsend", "triage", "coder", "review"}

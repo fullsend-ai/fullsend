@@ -12,9 +12,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: e2e-halfsend
+  group: e2e-${{ github.run_id }}
   cancel-in-progress: false
-  queue: max
 
 jobs:
   e2e:

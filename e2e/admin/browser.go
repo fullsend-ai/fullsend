@@ -268,8 +268,8 @@ func (b *PlaywrightBrowserOpener) handleInstallAppPage() error {
 }
 
 // deleteAppViaPlaywright navigates to the app's advanced settings and deletes it.
-func deleteAppViaPlaywright(page playwright.Page, slug string, logf func(string, ...any), screenshotDir string) error {
-	url := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", testOrg, slug)
+func deleteAppViaPlaywright(page playwright.Page, org, slug string, logf func(string, ...any), screenshotDir string) error {
+	url := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", org, slug)
 	if _, err := page.Goto(url, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(10000),
