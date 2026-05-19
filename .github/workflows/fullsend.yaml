@@ -44,6 +44,7 @@ jobs:
     uses: fullsend-ai/.fullsend/.github/workflows/dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}
+    secrets: {}
 
   stop-fix:
     if: >-
