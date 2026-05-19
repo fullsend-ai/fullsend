@@ -51,7 +51,25 @@ All agents are designed to operate safely, but some produce output with higher d
 
 > **Recommendation:** Start with **triage**, **coder**, and **review** on private repos. Enable **retro** and **prioritize** only after configuring the guardrails described below.
 
-To limit which agents run on a specific repo, customize the harness configuration via the [layered configuration model](../user/customizing-agents.md#layered-configuration-resolution). The `--agents` flag during installation controls which agent apps are provisioned org-wide, but per-repo agent enablement is controlled by the shim workflow and harness overrides.
+To limit which agents run, edit the `roles` list in `config.yaml`:
+
+- **Per-repo install:** `.fullsend/config.yaml` in the target repo. List only the roles you want enabled:
+  ```yaml
+  version: "1"
+  roles: [triage, coder, review]   # retro and prioritize omitted
+  ```
+
+- **Per-org install:** `.fullsend` config repo's `config.yaml`. Use `defaults.roles` for an org-wide default, or add a per-repo override under `repos`:
+  ```yaml
+  defaults:
+    roles: [fullsend, triage, coder, review, retro, prioritize]
+  repos:
+    my-private-repo:
+      enabled: true
+      roles: [triage, coder, review]   # retro and prioritize disabled for this repo
+  ```
+
+Roles omitted from the list are not dispatched — the dispatcher blocks them before any agent runs.
 
 ## Configuring AGENTS.md for private repos
 
