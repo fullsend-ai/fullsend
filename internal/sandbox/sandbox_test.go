@@ -180,6 +180,28 @@ func TestSanitizeDownload_KeepsRelativeSymlinksInsideRepo(t *testing.T) {
 	assert.NoError(t, err, "relative in-repo symlink should be preserved")
 }
 
+func TestSanitizeDownload_RemovesSymlinkChainEscape(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "real"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
+	// dirlink -> ../real: relative, inside repo — sanitizeDownload keeps it.
+	require.NoError(t, os.Symlink("../real", filepath.Join(dir, "sub", "dirlink")))
+	// escape -> "sub/dirlink/../../etc/passwd":
+	//   filepath.Clean sees: dir/sub/dirlink/../../etc/passwd → dir/etc/passwd (inside, passes textual check)
+	//   EvalSymlinks follows: sub/dirlink → dir/real → ../../etc/passwd → outside dir (escapes)
+	require.NoError(t, os.Symlink("sub/dirlink/../../etc/passwd", filepath.Join(dir, "escape")))
+
+	err := sanitizeDownload(dir)
+	require.NoError(t, err)
+
+	_, err = os.Lstat(filepath.Join(dir, "sub", "dirlink"))
+	assert.NoError(t, err, "in-repo dirlink should be preserved")
+
+	_, err = os.Lstat(filepath.Join(dir, "escape"))
+	assert.True(t, os.IsNotExist(err), "symlink-chain escape should be removed")
+}
+
 func TestSanitizeDownload_RemovesRelativeSymlinksEscapingRepo(t *testing.T) {
 	dir := t.TempDir()
 

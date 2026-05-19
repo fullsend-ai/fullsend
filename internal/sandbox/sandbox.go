@@ -44,9 +44,16 @@ func sanitizeDownload(localDir string) error {
 			if filepath.IsAbs(target) {
 				return os.Remove(path)
 			}
-			// Resolve the relative target against the symlink's directory and
-			// remove if it escapes the repo root.
-			resolved := filepath.Clean(filepath.Join(filepath.Dir(path), target))
+			// Use EvalSymlinks, not filepath.Clean: Clean is textual and misses
+			// chains where an in-repo dir-symlink is used as a component
+			// (e.g. "sub/link/../../etc/passwd" cleans to inside the repo but
+			// follows the link to outside). Fall back to remove on error
+			// (dangling or looping).
+			rawPath := filepath.Dir(path) + string(filepath.Separator) + target
+			resolved, evalErr := filepath.EvalSymlinks(rawPath)
+			if evalErr != nil {
+				return os.Remove(path)
+			}
 			if !strings.HasPrefix(resolved+string(filepath.Separator), absLocal+string(filepath.Separator)) {
 				return os.Remove(path)
 			}
