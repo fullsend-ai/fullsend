@@ -13,13 +13,15 @@ This guide walks through installing fullsend in a GitHub organization and enroll
 
   *Note*: If running from a local clone of the repository, the CLI uses the local `internal/mint/` source instead of the embedded copy (a log message confirms this). This lets developers iterate on the mint source without rebuilding the binary. Use `go run ./cmd/fullsend/main.go <command>` to run from source.
 
-- **GCP project** with the following APIs enabled:
-  - [Agent Platform](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) (inference)
-  - [Cloud Functions](https://console.cloud.google.com/apis/library/cloudfunctions.googleapis.com) (token mint)
-  - [Cloud Run](https://console.cloud.google.com/apis/library/run.googleapis.com) (token mint runtime)
-  - [Secret Manager](https://console.cloud.google.com/apis/library/secretmanager.googleapis.com) (PEM storage)
+- **GCP project** (required only for self-hosted mint or self-hosted inference) with the following APIs enabled:
+  - [Agent Platform](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) (inference — omit if using hosted inference)
+  - [Cloud Functions](https://console.cloud.google.com/apis/library/cloudfunctions.googleapis.com) (token mint — omit if using hosted mint)
+  - [Cloud Run](https://console.cloud.google.com/apis/library/run.googleapis.com) (token mint runtime — omit if using hosted mint)
+  - [Secret Manager](https://console.cloud.google.com/apis/library/secretmanager.googleapis.com) (PEM storage — omit if using hosted mint)
   - [IAM Credentials](https://console.cloud.google.com/apis/library/iamcredentials.googleapis.com) (WIF token exchange)
   - [Cloud Resource Manager](https://console.cloud.google.com/apis/library/cloudresourcemanager.googleapis.com) (project number lookup)
+
+  > **Hosted mint:** When using the fullsend-ai hosted mint (the default), you do not need GCP access for the mint infrastructure — only `--inference-project` is required.
 
 ### OAuth scope reference
 
@@ -48,6 +50,15 @@ The installer creates the `.fullsend` config repo as **public** by default. This
 
 If the installer fails partway through, run `fullsend admin uninstall "$ORG_NAME"` to clean up before retrying. The uninstall preflight will prompt you to add the `delete_repo` scope if it is missing.
 
+**Quick start (hosted mint):** The mint URL defaults to the fullsend-ai hosted mint. When no `--mint-project` is provided, mint provisioning is automatically skipped — only an inference project is needed:
+
+```bash
+fullsend admin install "$ORG_NAME" \
+  --inference-project "$GCP_PROJECT"
+```
+
+**Self-hosted mint:** To deploy and manage your own token mint in a GCP project, pass `--mint-project`:
+
 ```bash
 fullsend admin install "$ORG_NAME" \
   --inference-project "$GCP_PROJECT" \
@@ -69,19 +80,19 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--inference-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/.../providers/{id}`); skips auto-provisioning when set |
 | `--mint-project` | | GCP project for the token mint Cloud Function |
 | `--mint-region` | `us-central1` | Cloud region for the token mint function |
-| `--mint-url` | | Use an existing mint at this URL instead of deploying one |
+| `--mint-url` | fullsend-ai hosted mint URL | Use an existing mint at this URL instead of deploying one |
 | `--mint-provider` | `gcf` | Token mint provider backend |
 | `--mint-source-dir` | `internal/mint/` | Path to mint function source directory. When the path does not exist (e.g., running from a downloaded binary), the embedded source baked into the binary is used automatically |
 | `--public` | `false` | Create public unlisted GitHub Apps (for multi-org) |
 | `--app-set` | `fullsend` | App set name prefix for GitHub Apps (see [Custom app sets](#custom-app-sets)) |
 | `--skip-app-setup` | `false` | Skip GitHub App creation (reuse existing apps) |
 | `--skip-mint-deploy` | `false` | Skip Cloud Function deployment, reuse existing mint URL |
-| `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup; requires `--mint-url` |
+| `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup (auto-enabled when using hosted mint without `--mint-project`) |
 | `--enroll-all` | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | `false` | Skip repository enrollment without prompting (per-org only) |
 | `--vendor-fullsend-binary` | `false` | Cross-compile and upload the fullsend binary into `.fullsend/bin/` for development iteration (per-org only) |
 
-The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
+The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup, and only validates that the mint URL uses HTTPS. It is automatically enabled when using the hosted mint URL without `--mint-project`. Pass it explicitly when using a custom `--mint-url` without a `--mint-project`, or when mint infrastructure is managed externally.
 
 The installer automatically detects when the deployed mint function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure, org registration, and PEM secrets. Use `--skip-mint-deploy` to explicitly skip the Cloud Function deployment step.
 

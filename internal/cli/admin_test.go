@@ -1452,6 +1452,23 @@ func TestInstallCmd_HostedMintSkipsGCPPerRepo(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestInstallCmd_HostedMintSkipsGCPPerOrg(t *testing.T) {
+	// With the default hosted mint URL and no --mint-project, per-org
+	// install auto-skips mint provisioning (only --inference-project needed).
+	// Per-org dry-run hits a live GitHub API call for repo listing, so we
+	// accept a downstream API error but assert no mint/GCP validation error.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--inference-project", "my-project",
+		"--dry-run",
+		"--enroll-none"})
+	err := cmd.Execute()
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--mint-project is required")
+		assert.NotContains(t, err.Error(), "--mint-url is required")
+	}
+}
+
 func TestInstallCmd_HostedMintWithMintProjectDoesNotAutoSkip(t *testing.T) {
 	// When --mint-project is explicitly provided alongside the hosted mint URL,
 	// the auto-skip does not activate — normal provisioning flow is used.
