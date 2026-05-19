@@ -1517,7 +1517,7 @@ func TestFilterSlugsByAppSet(t *testing.T) {
 			want:   map[string]string{},
 		},
 		{
-			name:   "default app-set does not match longer prefix",
+			name:   "shorter prefix does not match longer slug",
 			appSet: "fullsend",
 			slugs:  map[string]string{"coder": "fullsend-ai-coder"},
 			want:   map[string]string{},
