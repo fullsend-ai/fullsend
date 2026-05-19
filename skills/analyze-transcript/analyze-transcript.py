@@ -113,10 +113,10 @@ _PRICING = [
     ("opus-4", 5.00, 25.00, 6.25, 0.50),
     ("sonnet-4", 3.00, 15.00, 3.75, 0.30),
     ("haiku-4", 0.80, 4.00, 1.00, 0.08),
-    ("opus-3-7", 3.00, 15.00, 3.75, 0.30),
-    ("opus-3", 15.00, 75.00, 18.75, 1.50),
-    ("sonnet-3", 3.00, 15.00, 3.75, 0.30),
-    ("haiku-3", 0.25, 1.25, 0.30, 0.03),
+    ("3-7-sonnet", 3.00, 15.00, 3.75, 0.30),
+    ("3-opus", 15.00, 75.00, 18.75, 1.50),
+    ("3-5-sonnet", 3.00, 15.00, 3.75, 0.30),
+    ("3-haiku", 0.25, 1.25, 0.30, 0.03),
 ]
 
 
@@ -158,6 +158,7 @@ def cmd_summary(args):
     total_cache_create = 0
     stop_reasons = Counter()
     agent_setting = None
+    model_tokens = {}  # model -> {input, output, cache_read, cache_create}
 
     for _i, role, msg, raw in iter_messages(args.file, args.line_range):
         if role == "meta":
@@ -183,10 +184,22 @@ def cmd_summary(args):
             if model:
                 models.add(model)
             usage = msg.get("usage", {})
-            total_input_tokens += usage.get("input_tokens", 0)
-            total_output_tokens += usage.get("output_tokens", 0)
-            total_cache_read += usage.get("cache_read_input_tokens", 0)
-            total_cache_create += usage.get("cache_creation_input_tokens", 0)
+            inp = usage.get("input_tokens", 0)
+            out = usage.get("output_tokens", 0)
+            cr = usage.get("cache_read_input_tokens", 0)
+            cc = usage.get("cache_creation_input_tokens", 0)
+            total_input_tokens += inp
+            total_output_tokens += out
+            total_cache_read += cr
+            total_cache_create += cc
+            if model:
+                mt = model_tokens.setdefault(
+                    model, {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0}
+                )
+                mt["input"] += inp
+                mt["output"] += out
+                mt["cache_read"] += cr
+                mt["cache_create"] += cc
             sr = msg.get("stop_reason")
             if sr:
                 stop_reasons[sr] += 1
@@ -212,10 +225,19 @@ def cmd_summary(args):
         "cache_create": total_cache_create,
     }
 
-    # Cost — use first recognised model; skip if unknown.
-    primary_model = sorted(models)[0] if models else None
-    pricing = _model_pricing(primary_model)
-    cost = _compute_cost(tokens, pricing) if pricing else None
+    # Cost — sum per-model; skip models with no pricing entry.
+    cost = None
+    if model_tokens:
+        cost_acc = {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0}
+        any_priced = False
+        for mdl, mt in model_tokens.items():
+            p = _model_pricing(mdl)
+            if p:
+                any_priced = True
+                mc = _compute_cost(mt, p)
+                for k in cost_acc:
+                    cost_acc[k] += mc[k]
+        cost = cost_acc if any_priced else None
 
     result = {
         "agent": agent_setting,

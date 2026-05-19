@@ -178,7 +178,7 @@ destination hosts, and HTTP URLs.
   check timestamps.
 - **Did the agent hit the timeout?** Check `summary` duration vs the harness
   `timeout_minutes`.
-- **Token cost?** `summary` shows input/output/cache token counts.
+- **Token cost?** `summary` shows input/output/cache token counts and a `Cost: ~$X.XXXX` line with per-component breakdown (input, output, cache-write, cache-read). Add `--json` to get a `cost_usd` key with `total` and per-component values. Cost is approximate (Anthropic list prices; actual Vertex AI billing may differ). Omitted for unrecognised models.
 - **Was a network request blocked?** `network <sandbox-log>` shows all denials
   at the top. Use `netsearch "DENIED"` for raw lines.
 - **What endpoints did the agent talk to?** `network <sandbox-log>` lists hosts
