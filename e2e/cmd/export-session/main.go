@@ -102,33 +102,12 @@ func main() {
 		}
 		fmt.Println("2FA page detected, entering TOTP code...")
 
-		totpInput := page.Locator("#app_totp")
-		if err := totpInput.WaitFor(playwright.LocatorWaitForOptions{
-			State:   playwright.WaitForSelectorStateVisible,
-			Timeout: playwright.Float(5000),
-		}); err != nil {
-			log.Fatalf("TOTP input not found on 2FA page: %v", err)
-		}
-
-		code, err := otp.GenerateCode(totpSecret)
+		handled, err := otp.EnterTOTPCode(page, totpSecret, log.Printf)
 		if err != nil {
-			log.Fatalf("generating TOTP code: %v", err)
+			log.Fatalf("TOTP submission failed: %v", err)
 		}
-
-		// Use PressSequentially instead of Fill to simulate keystroke
-		// entry, which triggers GitHub's auto-submit after the 6th digit.
-		if err := totpInput.PressSequentially(code, playwright.LocatorPressSequentiallyOptions{
-			Delay: playwright.Float(50),
-		}); err != nil {
-			log.Fatalf("typing TOTP code: %v", err)
-		}
-
-		// GitHub's 2FA form auto-submits when 6 digits are entered.
-		// Wait for the URL to leave the 2FA page.
-		if err := page.WaitForURL("https://github.com/**", playwright.PageWaitForURLOptions{
-			Timeout: playwright.Float(15000),
-		}); err != nil {
-			log.Fatalf("waiting for post-2FA navigation: %v (url: %s)", err, page.URL())
+		if !handled {
+			log.Fatalf("2FA page detected but TOTP input not found at %s", url)
 		}
 
 		url = page.URL()

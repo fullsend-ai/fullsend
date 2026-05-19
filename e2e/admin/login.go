@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/e2e/internal/otp"
 	"github.com/playwright-community/playwright-go"
@@ -98,70 +99,37 @@ func handleSudoIfPresent(page playwright.Page, password, totpSecret, screenshotD
 // (/sessions/two-factor) and the sudo TOTP prompt. Returns true if a TOTP
 // form was found and submitted.
 func handleTOTPIfPresent(page playwright.Page, totpSecret, screenshotDir string, logf func(string, ...any)) (bool, error) {
-	// GitHub uses #app_totp for the TOTP input on both 2FA and sudo pages.
-	totpInput := page.Locator("#app_totp")
-	if err := totpInput.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(3000),
-	}); err != nil {
-		return false, nil
-	}
-
-	logf("[totp] Detected TOTP input on page (URL: %s)", page.URL())
-
-	code, err := otp.GenerateCode(totpSecret)
+	handled, err := otp.EnterTOTPCode(page, totpSecret, logf)
 	if err != nil {
-		return false, fmt.Errorf("generating TOTP code: %w", err)
+		saveDebugScreenshot(page, screenshotDir, "totp-failed", logf)
 	}
-
-	// Use PressSequentially to simulate keystroke entry, which triggers
-	// GitHub's auto-submit after the 6th digit.
-	if err := totpInput.PressSequentially(code, playwright.LocatorPressSequentiallyOptions{
-		Delay: playwright.Float(50),
-	}); err != nil {
-		saveDebugScreenshot(page, screenshotDir, "totp-type-failed", logf)
-		return false, fmt.Errorf("typing TOTP code: %w", err)
-	}
-
-	// GitHub's 2FA form auto-submits when 6 digits are entered.
-	// Wait for the page to navigate away.
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State: playwright.LoadStateNetworkidle,
-	}); err != nil {
-		saveDebugScreenshot(page, screenshotDir, "totp-navigation-failed", logf)
-		return false, fmt.Errorf("waiting for post-TOTP navigation: %w", err)
-	}
-
-	// Verify we actually left the TOTP/sudo page. If the code was wrong
-	// (e.g. expired at a period boundary), GitHub redisplays the form.
-	postURL := page.URL()
-	postTitle, _ := page.Title()
-	if strings.Contains(postURL, "/two-factor") || strings.Contains(postURL, "/2fa") ||
-		strings.Contains(postTitle, "Confirm access") || strings.Contains(postTitle, "Sudo") {
-		saveDebugScreenshot(page, screenshotDir, "totp-verification-failed", logf)
-		return false, fmt.Errorf("TOTP code was not accepted (still at %s, title: %s)", postURL, postTitle)
-	}
-
-	logf("[totp] TOTP submission succeeded (URL: %s)", postURL)
-	return true, nil
+	return handled, err
 }
 
-// waitForPageToLeave waits for the page to navigate away from a page whose
-// title contains any of the given substrings.
+// waitForPageToLeave polls the page title until it no longer contains any
+// of the given substrings, or until the timeout (10s) is reached.
 func waitForPageToLeave(page playwright.Page, titleSubstrings ...string) error {
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State: playwright.LoadStateDomcontentloaded,
-	}); err != nil {
-		return fmt.Errorf("waiting for navigation: %w", err)
-	}
-
-	newTitle, _ := page.Title()
-	for _, sub := range titleSubstrings {
-		if strings.Contains(newTitle, sub) {
-			return fmt.Errorf("still on page (title: %s)", newTitle)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		title, err := page.Title()
+		if err != nil {
+			return fmt.Errorf("checking page title: %w", err)
 		}
+		still := false
+		for _, sub := range titleSubstrings {
+			if strings.Contains(title, sub) {
+				still = true
+				break
+			}
+		}
+		if !still {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("still on page after 10s (title: %s)", title)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	return nil
 }
 
 // saveDebugScreenshot saves a screenshot to dir for debugging.
