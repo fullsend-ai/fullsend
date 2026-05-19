@@ -18,6 +18,8 @@ Date: 2026-04-03
 
 Accepted
 
+Extended by [ADR 0039](0039-totp-automation-for-e2e-2fa.md).
+
 ## Context
 
 The admin CLI e2e tests use Playwright to automate browser interactions with
