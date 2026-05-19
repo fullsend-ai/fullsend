@@ -11,10 +11,6 @@ on:
     paths: ['**/*.go', 'go.mod', 'go.sum', 'e2e/**']
   workflow_dispatch:
 
-concurrency:
-  group: e2e-${{ github.run_id }}
-  cancel-in-progress: false
-
 jobs:
   e2e:
     runs-on: ubuntu-latest

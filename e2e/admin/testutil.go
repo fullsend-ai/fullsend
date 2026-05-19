@@ -68,19 +68,26 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, t
 	// All orgs are locked. Fall back to waiting with a shared deadline
 	// across all orgs so total wait is bounded by timeout, not N*timeout.
 	logf("[org-pool] All %d orgs are locked, waiting with total timeout %s", len(orgPool), timeout)
-	deadline, cancel := context.WithTimeout(ctx, timeout)
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var lastErr error
 	for _, org := range orgPool {
-		if deadline.Err() != nil {
+		if deadlineCtx.Err() != nil {
 			break
 		}
-		err := acquireLock(deadline, client, token, org, runID, timeout, logf)
+		// Pass remaining context time, not the full timeout, so that
+		// each org only uses its fair share of the shared deadline.
+		err := acquireLock(deadlineCtx, client, token, org, runID, timeout, logf)
 		if err == nil {
 			return org, nil
 		}
+		lastErr = err
 		logf("[org-pool] Could not acquire %s: %v", org, err)
 	}
 
+	if lastErr != nil {
+		return "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs): %w", timeout, len(orgPool), lastErr)
+	}
 	return "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(orgPool))
 }
 
@@ -184,7 +191,7 @@ func (d *e2eDispatcher) OrgSecretNames() []string { return nil }
 
 func (d *e2eDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
 
-// retryOnNotFound retries an operation up to maxAttempts times with exponential
+// retryOnNotFound retries an operation up to maxAttempts times with linear
 // backoff when it returns a not-found error (GitHub eventual consistency).
 func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) error {
 	var err error
