@@ -28,7 +28,7 @@ const (
 
 	// defaultLockTimeout is how long to wait for the lock before giving up.
 	// This is only used as the fallback if ALL orgs are locked.
-	defaultLockTimeout = 2 * time.Minute
+	defaultLockTimeout = 20 * time.Minute
 
 	// lockPollInterval is how often to poll while waiting for the lock.
 	lockPollInterval = 30 * time.Second
