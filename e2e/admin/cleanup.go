@@ -12,7 +12,6 @@ import (
 
 	"github.com/playwright-community/playwright-go"
 
-	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -42,49 +41,14 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 3. Delete any stale fullsend GitHub Apps via Playwright.
-	// First, try deleting by expected slug for each role (catches apps that
-	// were created but never installed, which don't appear in ListOrgInstallations).
+	// 3. Clean up stale app installations — but never delete the shared
+	// public apps (fullsend-ai-*). Only delete org-scoped apps that were
+	// created by previous test runs with old naming conventions.
 	for _, role := range defaultRoles {
-		slug := org + "-" + role // v6 convention: halfsend-fullsend, etc.
+		slug := org + "-" + role // v6 convention: halfsend-01-fullsend, etc.
 		t.Logf("[cleanup] Attempting to delete app %s (if it exists)", slug)
 		if delErr := deleteAppViaPlaywright(page, org, slug, t.Logf, screenshotDir); delErr != nil {
 			t.Logf("[cleanup] App %s not found or could not delete: %v", slug, delErr)
-		}
-
-		newSlug := appsetup.AppSlug(appsetup.DefaultAppSet, role) // current convention: fullsend-triage, etc.
-		if newSlug != slug {
-			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", newSlug)
-			if delErr := deleteAppViaPlaywright(page, org, newSlug, t.Logf, screenshotDir); delErr != nil {
-				t.Logf("[cleanup] App %s not found or could not delete: %v", newSlug, delErr)
-			}
-		}
-
-		legacySlug := "fullsend-" + role // legacy convention: fullsend-triage, etc.
-		if legacySlug != slug && legacySlug != newSlug {
-			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", legacySlug)
-			if delErr := deleteAppViaPlaywright(page, org, legacySlug, t.Logf, screenshotDir); delErr != nil {
-				t.Logf("[cleanup] App %s not found or could not delete: %v", legacySlug, delErr)
-			}
-		}
-	}
-
-	// Also clean up apps found via installations (catches old naming conventions).
-	installations, err := client.ListOrgInstallations(ctx, org)
-	if err != nil {
-		t.Logf("[cleanup] Warning: could not list installations: %v", err)
-	} else {
-		for _, inst := range installations {
-			// Safe: org is a dedicated E2E org with no production apps.
-			isStale := strings.HasPrefix(inst.AppSlug, org+"-") || // v6: halfsend-*
-				strings.HasPrefix(inst.AppSlug, appsetup.DefaultAppSet+"-") || // current: fullsend-*
-				strings.HasPrefix(inst.AppSlug, "fullsend-") // legacy: fullsend-triage, fullsend-halfsend-*, etc.
-			if isStale {
-				t.Logf("[cleanup] Deleting stale installed app: %s", inst.AppSlug)
-				if delErr := deleteAppViaPlaywright(page, org, inst.AppSlug, t.Logf, screenshotDir); delErr != nil {
-					t.Logf("[cleanup] Warning: could not delete app %s: %v", inst.AppSlug, delErr)
-				}
-			}
 		}
 	}
 

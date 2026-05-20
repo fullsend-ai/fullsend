@@ -22,12 +22,15 @@ type PlaywrightBrowserOpener struct {
 	page          playwright.Page
 	logf          func(string, ...any)
 	screenshotDir string
+	targetOrg     string // org to select when GitHub shows an org picker
 }
 
 // NewPlaywrightBrowserOpener creates a new PlaywrightBrowserOpener
-// using the given Playwright page.
-func NewPlaywrightBrowserOpener(page playwright.Page, logf func(string, ...any), screenshotDir string) *PlaywrightBrowserOpener {
-	return &PlaywrightBrowserOpener{page: page, logf: logf, screenshotDir: screenshotDir}
+// using the given Playwright page. targetOrg is the org to auto-select
+// when GitHub shows a "where do you want to install?" picker (which
+// appears when the account owns multiple orgs).
+func NewPlaywrightBrowserOpener(page playwright.Page, logf func(string, ...any), screenshotDir, targetOrg string) *PlaywrightBrowserOpener {
+	return &PlaywrightBrowserOpener{page: page, logf: logf, screenshotDir: screenshotDir, targetOrg: targetOrg}
 }
 
 // Open navigates the Playwright page to the given URL and handles the
@@ -58,6 +61,8 @@ func (b *PlaywrightBrowserOpener) Open(_ context.Context, url string) error {
 		return b.handleCreateAppPage()
 	case strings.Contains(pageURL, "/installations/new"):
 		return b.handleInstallAppPage()
+	case strings.Contains(pageURL, "/installations/select_target"):
+		return b.handleSelectTargetPage()
 	default:
 		saveDebugScreenshot(b.page, b.screenshotDir, "browser-unexpected-url", b.logf)
 		return fmt.Errorf("unexpected URL: %s", pageURL)
@@ -202,6 +207,31 @@ func (b *PlaywrightBrowserOpener) handleCreateAppPage() error {
 	}
 
 	return nil
+}
+
+// handleSelectTargetPage handles the "Where do you want to install?" org
+// picker that GitHub shows when the account owns multiple orgs.
+func (b *PlaywrightBrowserOpener) handleSelectTargetPage() error {
+	b.logf("[browser] handleSelectTargetPage: selecting org %s", b.targetOrg)
+
+	// Click on the target org in the list.
+	orgLink := b.page.Locator(fmt.Sprintf("a:has-text('%s')", b.targetOrg))
+	if err := orgLink.Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		saveDebugScreenshot(b.page, b.screenshotDir, "browser-select-target-failed", b.logf)
+		return fmt.Errorf("selecting org %s on target page: %w", b.targetOrg, err)
+	}
+
+	// Wait for the install page to load.
+	if err := b.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State: playwright.LoadStateDomcontentloaded,
+	}); err != nil {
+		return fmt.Errorf("waiting for install page after selecting org: %w", err)
+	}
+
+	b.logf("[browser] Selected org %s, now at: %s", b.targetOrg, b.page.URL())
+	return b.handleInstallAppPage()
 }
 
 // handleInstallAppPage clicks "Install" on the GitHub App installation page.

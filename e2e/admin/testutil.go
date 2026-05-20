@@ -50,7 +50,9 @@ var orgPool = []string{
 // If all orgs are locked, it falls back to waiting on each org in sequence,
 // bounded by a single shared deadline (not per-org). Returns the org name.
 func acquireOrg(ctx context.Context, client forge.Client, token, runID string, timeout time.Duration, logf func(string, ...any)) (string, error) {
-	// First pass: try each org without waiting.
+	// First pass: try each org without waiting. If a lock exists but is
+	// stale (older than timeout), force-acquire it so we don't waste pool
+	// capacity on crashed runs.
 	for _, org := range orgPool {
 		logf("[org-pool] Trying to acquire %s...", org)
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
@@ -61,6 +63,12 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, t
 		if acquired {
 			logf("[org-pool] Acquired %s", org)
 			return org, nil
+		}
+		// Lock exists — check if it's stale and force-acquire if so.
+		if token != "" {
+			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, timeout, logf); reclaimed {
+				return org, nil
+			}
 		}
 		logf("[org-pool] %s is locked, trying next", org)
 	}
@@ -94,11 +102,15 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, t
 // defaultRoles is the standard set of agent roles.
 var defaultRoles = []string{"fullsend", "triage", "coder", "review"}
 
+// e2eAppSet is the app set prefix used by the shared public GitHub Apps.
+const e2eAppSet = "fullsend-ai"
+
 // envConfig holds required environment configuration.
 type envConfig struct {
 	sessionFile string
 	password    string
 	totpSecret  string
+	mintURL     string
 	lockTimeout time.Duration
 }
 
@@ -119,6 +131,11 @@ func loadEnvConfig(t *testing.T) envConfig {
 	password := os.Getenv("E2E_GITHUB_PASSWORD")
 	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
 
+	mintURL := os.Getenv("E2E_MINT_URL")
+	if mintURL == "" {
+		t.Skip("E2E_MINT_URL not set, skipping e2e test")
+	}
+
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -132,6 +149,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 		sessionFile: sessionFile,
 		password:    password,
 		totpSecret:  totpSecret,
+		mintURL:     mintURL,
 		lockTimeout: lockTimeout,
 	}
 }
@@ -174,22 +192,28 @@ func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, 
 	return result.CreatedAt, nil
 }
 
-// e2eDispatcher is a no-op dispatch.Dispatcher for e2e tests. It returns a
-// dummy mint URL so the OIDC dispatch layer can create org variables without
-// provisioning real cloud infrastructure.
-type e2eDispatcher struct{}
-
-func (d *e2eDispatcher) Name() string { return "e2e-test" }
-
-func (d *e2eDispatcher) Provision(_ context.Context) (map[string]string, error) {
-	return map[string]string{"FULLSEND_MINT_URL": "https://e2e-test.example.com/mint"}, nil
+// sharedMintDispatcher is a dispatch.Dispatcher for e2e tests that points at
+// the shared public mint. It doesn't provision infrastructure — it just
+// returns the mint URL so the OIDC dispatch layer sets the org variable.
+// PEM storage is a no-op because the shared apps' PEMs are already in the
+// mint's Secret Manager.
+type sharedMintDispatcher struct {
+	mintURL string
 }
 
-func (d *e2eDispatcher) StoreAgentPEM(_ context.Context, _, _ string, _ []byte) error { return nil }
+func (d *sharedMintDispatcher) Name() string { return "shared-mint" }
 
-func (d *e2eDispatcher) OrgSecretNames() []string { return nil }
+func (d *sharedMintDispatcher) Provision(_ context.Context) (map[string]string, error) {
+	return map[string]string{"FULLSEND_MINT_URL": d.mintURL}, nil
+}
 
-func (d *e2eDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
+func (d *sharedMintDispatcher) StoreAgentPEM(_ context.Context, _, _ string, _ []byte) error {
+	return nil
+}
+
+func (d *sharedMintDispatcher) OrgSecretNames() []string { return nil }
+
+func (d *sharedMintDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
 
 // retryOnNotFound retries an operation up to maxAttempts times with linear
 // backoff when it returns a not-found error (GitHub eventual consistency).

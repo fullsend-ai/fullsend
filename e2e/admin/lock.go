@@ -171,6 +171,31 @@ func releaseLock(ctx context.Context, client forge.Client, org, runID string, t 
 	t.Logf("[e2e-lock] Lock released (run: %s)", truncateUUID(runID))
 }
 
+// tryReclaimStaleLock checks whether the lock on org is stale (older than
+// timeout) and force-acquires it if so. Returns true if the lock was
+// reclaimed. This runs during the first pass so stale locks from crashed
+// runs don't waste pool capacity.
+func tryReclaimStaleLock(ctx context.Context, client forge.Client, token, org, runID string, timeout time.Duration, logf func(string, ...any)) bool {
+	createdAt, err := getRepoCreatedAt(ctx, token, org, lockRepo)
+	if err != nil {
+		logf("[org-pool] Could not check lock age for %s: %v", org, err)
+		return false
+	}
+	age := time.Since(createdAt)
+	if age <= timeout {
+		logf("[org-pool] %s lock is fresh (age: %s), skipping", org, age.Round(time.Second))
+		return false
+	}
+	logf("[org-pool] %s lock is stale (age: %s > %s), force-acquiring", org, age.Round(time.Second), timeout)
+	_ = client.DeleteRepo(ctx, org, lockRepo)
+	acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+	if err != nil {
+		logf("[org-pool] Error force-acquiring %s: %v", org, err)
+		return false
+	}
+	return acquired
+}
+
 // truncateUUID returns the first 8 chars of a UUID for log readability.
 func truncateUUID(u string) string {
 	if len(u) > 8 {
