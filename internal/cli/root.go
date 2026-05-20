@@ -1,14 +1,48 @@
 package cli
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 )
 
 var version = "dev"
+var buildSHA = "dev"
 
 // Version returns the CLI version string set at build time.
 func Version() string {
 	return version
+}
+
+// BuildSHA returns the git commit SHA embedded at build time.
+func BuildSHA() string {
+	return buildSHA
+}
+
+// FullsendRef returns the ref string used to pin scaffold uses: lines.
+// For release builds: "<sha>  # v<version>".
+// For dev builds: "<sha>  # main (dev)".
+func FullsendRef() string {
+	sha := resolvedBuildSHA()
+	if isReleasedVersion(version) {
+		v := version
+		if !strings.HasPrefix(v, "v") {
+			v = "v" + v
+		}
+		return sha + "  # " + v
+	}
+	return sha + "  # main (dev)"
+}
+
+// resolvedBuildSHA returns buildSHA when set via ldflags (goreleaser /
+// make go-build). For unset dev builds (go run) it returns "main" so that
+// the scaffolded ref resolves to the live HEAD of the main branch rather
+// than an invalid placeholder.
+func resolvedBuildSHA() string {
+	if buildSHA != "dev" {
+		return buildSHA
+	}
+	return "main"
 }
 
 func newRootCmd() *cobra.Command {

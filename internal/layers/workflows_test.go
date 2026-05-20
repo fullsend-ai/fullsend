@@ -15,11 +15,13 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+const testRef = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  # v0.0.0-test"
+
 func newWorkflowsLayer(t *testing.T, client *forge.FakeClient) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user")
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user").WithRef(testRef)
 	return layer, &buf
 }
 
@@ -73,9 +75,12 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 	}
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 
-	expected, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
+	template, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
+	expected := bytes.ReplaceAll(template, []byte("@__FULLSEND_REF__"), []byte("@"+testRef))
 	assert.Equal(t, string(expected), triageContent)
+	assert.NotContains(t, triageContent, "@__FULLSEND_REF__", "placeholder must be substituted")
+	assert.Contains(t, triageContent, "@"+testRef, "ref must appear in installed content")
 }
 
 func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
@@ -94,11 +99,51 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 	}
 	require.NotEmpty(t, maintenanceContent, "repo-maintenance.yml should have been written")
 
-	expected, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
+	template, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
+	expected := bytes.ReplaceAll(template, []byte("@__FULLSEND_REF__"), []byte("@"+testRef))
 	assert.Equal(t, string(expected), maintenanceContent)
+	assert.NotContains(t, maintenanceContent, "@__FULLSEND_REF__", "placeholder must be substituted")
 }
 
+
+func TestWorkflowsLayer_Install_NoRefLeavesPlaceholder(t *testing.T) {
+	client := forge.NewFakeClient()
+	var buf bytes.Buffer
+	layer := NewWorkflowsLayer("test-org", client, ui.New(&buf), "admin-user") // no WithRef
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	for _, f := range client.CommittedFiles[0].Files {
+		if strings.HasSuffix(f.Path, ".yml") {
+			// Without a ref, placeholder is left intact (not substituted).
+			if strings.Contains(string(f.Content), "@__FULLSEND_REF__") {
+				return // found at least one file with placeholder — expected
+			}
+		}
+	}
+}
+
+func TestWorkflowsLayer_Install_RefSubstitution(t *testing.T) {
+	client := forge.NewFakeClient()
+	ref := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef  # v1.2.3"
+	var buf bytes.Buffer
+	layer := NewWorkflowsLayer("test-org", client, ui.New(&buf), "admin-user").WithRef(ref)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	for _, f := range client.CommittedFiles[0].Files {
+		content := string(f.Content)
+		assert.NotContains(t, content, "@__FULLSEND_REF__",
+			"placeholder must not appear in installed file %s", f.Path)
+		if strings.Contains(content, "fullsend-ai/fullsend") {
+			assert.Contains(t, content, "@"+ref,
+				"ref must be substituted in file %s", f.Path)
+		}
+	}
+}
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
 	client := &forge.FakeClient{

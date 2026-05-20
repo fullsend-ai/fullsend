@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   review:
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@__FULLSEND_REF__
     with:
       event_type: ${{ inputs.event_type }}
       source_repo: ${{ inputs.source_repo }}

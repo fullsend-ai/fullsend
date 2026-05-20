@@ -83,9 +83,10 @@ mindmap:
 	@xdg-open web/public/index.html 2>/dev/null || open web/public/index.html 2>/dev/null || echo "Open web/public/index.html in your browser"
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+SHA     ?= $(shell git rev-parse HEAD 2>/dev/null || echo "dev")
 
 go-build:
-	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
+	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION) -X github.com/fullsend-ai/fullsend/internal/cli.buildSHA=$(SHA)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= go test -race -cover ./...

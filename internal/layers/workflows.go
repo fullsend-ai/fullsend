@@ -1,6 +1,7 @@
 package layers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -37,6 +38,7 @@ type WorkflowsLayer struct {
 	client            forge.Client
 	ui                *ui.Printer
 	authenticatedUser string
+	ref               string // SHA-pinned ref substituted for @__FULLSEND_REF__ during install
 }
 
 // Compile-time check that WorkflowsLayer implements Layer.
@@ -51,6 +53,16 @@ func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, use
 		ui:                printer,
 		authenticatedUser: user,
 	}
+}
+
+// WithRef sets the ref string used to pin scaffold uses: lines.
+// ref should be "<sha>  # <label>" (e.g. "abc1234...  # v1.2.3").
+// During Install, every @__FULLSEND_REF__ placeholder in scaffold files
+// is replaced with @<ref>. Call this on the install path; uninstall and
+// analyze do not write files and ignore the ref.
+func (l *WorkflowsLayer) WithRef(ref string) *WorkflowsLayer {
+	l.ref = ref
+	return l
 }
 
 func (l *WorkflowsLayer) Name() string {
@@ -79,6 +91,9 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	var files []forge.TreeFile
 	err := scaffold.WalkFullsendRepo(func(path string, content []byte) error {
+		if l.ref != "" {
+			content = bytes.ReplaceAll(content, []byte("@__FULLSEND_REF__"), []byte("@"+l.ref))
+		}
 		files = append(files, forge.TreeFile{
 			Path:    path,
 			Content: content,

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -621,6 +622,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	if err != nil {
 		return fmt.Errorf("loading per-repo shim template: %w", err)
 	}
+	shimContent = bytes.ReplaceAll(shimContent, []byte("@__FULLSEND_REF__"), []byte("@"+FullsendRef()))
 
 	cfgYAML, err := cfg.Marshal()
 	if err != nil {
@@ -1770,7 +1772,7 @@ func buildLayerStack(
 
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
-		layers.NewWorkflowsLayer(org, client, printer, user),
+		layers.NewWorkflowsLayer(org, client, printer, user).WithRef(FullsendRef()),
 		layers.NewVendorBinaryLayer(org, client, printer, vendorBinary, vendorFn),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
