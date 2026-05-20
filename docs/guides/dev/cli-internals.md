@@ -365,7 +365,7 @@ fullsend-repo/                      (embedded template)
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
 | **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
-| **Layered** | No (runtime) | Upstream reusable workflows | agents/, skills/, harness/, policies/, scripts/, schemas/, env/ |
+| **Layered** | No (runtime) | Upstream reusable workflows | agents/, skills/, harness/, plugins/, policies/, scripts/, schemas/, env/ |
 | **Upstream-only** | No | Referenced directly | .github/actions/, .github/scripts/ |
 
 ### File Mode Tracking
