@@ -2,6 +2,7 @@ name: E2E Tests
 
 permissions:
   contents: read
+  id-token: write
 
 on:
   push:
@@ -65,6 +66,13 @@ jobs:
           echo "E2E_GITHUB_SESSION_FILE=${SESSION_FILE}" >> "$GITHUB_ENV"
         env:
           E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
+
+      - name: Authenticate to GCP
+        if: steps.secrets-check.outputs.available == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: fullsend-e2e@it-gcp-konflux-e2e-fullsend.iam.gserviceaccount.com
 
       - name: Run e2e tests
         if: steps.secrets-check.outputs.available == 'true'
