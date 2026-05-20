@@ -153,7 +153,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 	require.NoError(t, err, "config.yaml should exist")
 	parsedCfg, err := config.ParseOrgConfig(cfgData)
 	require.NoError(t, err, "config.yaml should parse")
-	require.Len(t, parsedCfg.Agents, len(defaultRoles), "should have %d agents", len(defaultRoles))
+	require.Len(t, parsedCfg.Defaults.Roles, len(defaultRoles), "should have %d roles", len(defaultRoles))
 	analyzeOutput := runCLI(t, env.binary, env.token, "admin", "analyze", env.org)
 	t.Logf("Analyze output:\n%s", analyzeOutput)
 
