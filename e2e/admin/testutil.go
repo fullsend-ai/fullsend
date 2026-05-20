@@ -103,7 +103,7 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, t
 }
 
 // defaultRoles is the standard set of agent roles.
-var defaultRoles = []string{"fullsend", "triage", "coder", "review"}
+var defaultRoles = []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
 
 // e2eAppSet is the app set prefix used by the shared public GitHub Apps.
 const e2eAppSet = "fullsend-ai"
