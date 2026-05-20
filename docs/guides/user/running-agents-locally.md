@@ -138,13 +138,16 @@ Each agent requires additional variables via its harness `runner_env` and sandbo
 
 | Variable | Agent(s) | Description |
 |----------|----------|-------------|
-| `GITHUB_ISSUE_URL` | triage | Full URL of the GitHub issue to triage |
-| `REPO_FULL_NAME` | code, review, fix | `owner/repo` of the target repository |
+| `GITHUB_ISSUE_URL` | triage, prioritize | Full URL of the GitHub issue to triage or prioritize |
+| `REPO_FULL_NAME` | code, review, fix, retro | `owner/repo` of the target repository |
 | `ISSUE_NUMBER` | code | Issue number the code agent should implement |
 | `TARGET_BRANCH` | code, fix | Branch to base work on (e.g. `main`) |
 | `PR_NUMBER` | review, fix | Pull request number to review or fix |
 | `GITHUB_PR_URL` | review | Full URL of the pull request to review |
 | `REVIEW_BODY_FILE` | fix | Path to a file containing the review body to fix |
+| `ORG` | prioritize | GitHub organization name |
+| `PROJECT_NUMBER` | prioritize | GitHub Projects (v2) project number |
+| `ORIGINATING_URL` | retro | URL of the PR or issue to run a retrospective on |
 
 See the harness definitions in `harness/*.yaml` within your `.fullsend` config directory for the complete list per agent.
 
@@ -267,6 +270,39 @@ REVIEW_BODY_FILE=/path/to/review-body.txt
 
 ```bash
 fullsend run fix \
+  --fullsend-dir /tmp/fullsend-dot \
+  --target-repo /path/to/repo \
+  --env-file /tmp/fullsend.env
+```
+
+### Prioritize an issue
+
+Add to your env file:
+
+```bash
+GITHUB_ISSUE_URL=https://github.com/owner/repo/issues/42
+ORG=owner
+PROJECT_NUMBER=1
+```
+
+```bash
+fullsend run prioritize \
+  --fullsend-dir /tmp/fullsend-dot \
+  --target-repo /path/to/repo \
+  --env-file /tmp/fullsend.env
+```
+
+### Run a retrospective
+
+Add to your env file:
+
+```bash
+REPO_FULL_NAME=owner/repo
+ORIGINATING_URL=https://github.com/owner/repo/pull/123
+```
+
+```bash
+fullsend run retro \
   --fullsend-dir /tmp/fullsend-dot \
   --target-repo /path/to/repo \
   --env-file /tmp/fullsend.env
