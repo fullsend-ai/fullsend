@@ -1283,6 +1283,50 @@ func TestResolveSharedRoleAppIDs_SameOrgUsesOwnEntry(t *testing.T) {
 	assert.Equal(t, "100", result["acme-corp/coder"])
 }
 
+func TestVerifySkipAppSetupInstallations_MissingApps(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "myset-coder"},
+	}
+
+	err := verifySkipAppSetupInstallations(context.Background(), fake, "test-org", []string{"coder", "triage"}, "myset", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--skip-app-setup was specified but the following apps are not installed")
+	assert.Contains(t, err.Error(), `app "myset-triage" is not installed on org "test-org"`)
+	assert.Contains(t, err.Error(), "https://github.com/apps/myset-triage/installations/new")
+	// coder is installed, so should not appear in error
+	assert.NotContains(t, err.Error(), "myset-coder")
+}
+
+func TestVerifySkipAppSetupInstallations_AllInstalled(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "myset-coder"},
+		{AppID: 200, AppSlug: "myset-triage"},
+	}
+
+	// All apps installed by slug, but no ROLE_APP_IDS — should still error
+	// with "could not resolve" rather than "not installed".
+	err := verifySkipAppSetupInstallations(context.Background(), fake, "test-org", []string{"coder", "triage"}, "myset", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not resolve app IDs")
+	assert.NotContains(t, err.Error(), "not installed")
+}
+
+func TestVerifySkipAppSetupInstallations_IncludesResolveErr(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "myset-coder"},
+	}
+
+	resolveErr := errors.New("no shared app for role \"coder\" is installed in test-org")
+	err := verifySkipAppSetupInstallations(context.Background(), fake, "test-org", []string{"coder"}, "myset", resolveErr)
+	require.Error(t, err)
+	// App is installed by slug, so falls through to resolve error path
+	assert.Contains(t, err.Error(), "could not resolve app IDs")
+	assert.Contains(t, err.Error(), resolveErr.Error())
+}
+
 func TestInstallCmd_SkipMintCheckRequiresMintURL(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--skip-mint-check", "--inference-project", "my-project"})

@@ -512,9 +512,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to mint token: org=%s role=%s err=%v", org, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
-			writeError(w, me.status, "mint failed")
+			writeErrorDetail(w, me.status, "mint failed", me.msg)
 		} else {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeErrorDetail(w, http.StatusInternalServerError, "internal error", "")
 		}
 		return
 	}
@@ -698,7 +698,14 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 
 	installationID, err := h.findInstallation(ctx, jwt, org, repos[0])
 	if err != nil {
-		return "", "", &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		status := http.StatusBadGateway
+		msg := err.Error()
+		if strings.Contains(msg, "returned status 404") {
+			status = http.StatusUnprocessableEntity
+			msg = fmt.Sprintf("app (ID %s) for role %q is not installed on %s — verify the app is installed on this org at https://github.com/organizations/%s/settings/installations",
+				appID, role, org, org)
+		}
+		return "", "", &mintError{status: status, msg: msg}
 	}
 
 	token, expiresAt, err := h.createInstallationToken(ctx, jwt, installationID, role, repos)
@@ -906,8 +913,19 @@ func (e *mintError) Error() string { return e.msg }
 
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
+	writeErrorDetail(w, status, msg, "")
+}
+
+// writeErrorDetail writes a JSON error response with an optional detail field.
+// The detail is included only for client-actionable errors (e.g. missing app
+// installations) so callers can diagnose the issue without server-side logs.
+func writeErrorDetail(w http.ResponseWriter, status int, msg, detail string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	resp := map[string]string{"error": msg}
+	if detail != "" {
+		resp["detail"] = detail
+	}
+	json.NewEncoder(w).Encode(resp)
 }

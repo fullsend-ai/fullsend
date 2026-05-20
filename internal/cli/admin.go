@@ -720,9 +720,11 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		}
 	}
 
+	var resolveAppErr error
 	if mintFound && existingIDs != nil {
 		roleAppIDs, resolveErr := resolveSharedRoleAppIDs(ctx, client, existingIDs, owner, roles)
 		if resolveErr != nil {
+			resolveAppErr = resolveErr
 			printer.StepWarn(fmt.Sprintf("Could not resolve shared app IDs: %v (will attempt app creation)", resolveErr))
 		} else {
 			agentAppIDs = make(map[string]string, len(roles))
@@ -819,7 +821,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		if !mintFound {
 			return fmt.Errorf("no mint function found in project %s region %s and --skip-app-setup prevents creating one", mintProject, mintRegion)
 		}
-		return fmt.Errorf("could not resolve app IDs for %s from the mint and --skip-app-setup prevents creating them", owner)
+		return verifySkipAppSetupInstallations(ctx, client, owner, roles, c.AppSet, resolveAppErr)
 	}
 
 	// Scope escalation: app creation requires admin:org beyond the
@@ -1229,6 +1231,37 @@ func resolveSharedRoleAppIDs(ctx context.Context, client forge.Client, existingI
 	}
 
 	return result, nil
+}
+
+// verifySkipAppSetupInstallations checks that all required apps are installed
+// on the org when --skip-app-setup is used. Returns a descriptive error naming
+// each missing app with an installation URL.
+func verifySkipAppSetupInstallations(ctx context.Context, client forge.Client, owner string, roles []string, appSet string, resolveErr error) error {
+	installations, listErr := client.ListOrgInstallations(ctx, owner)
+	if listErr != nil {
+		return fmt.Errorf("could not verify app installations on %s: %w\nRemove --skip-app-setup to run the interactive installation flow", owner, listErr)
+	}
+	installedSlugs := make(map[string]bool, len(installations))
+	for _, inst := range installations {
+		installedSlugs[inst.AppSlug] = true
+	}
+	var missing []string
+	for _, role := range roles {
+		slug := appsetup.AppSlug(appSet, role)
+		if !installedSlugs[slug] {
+			missing = append(missing, fmt.Sprintf("  app %q is not installed on org %q — install it at https://github.com/apps/%s/installations/new", slug, owner, slug))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("--skip-app-setup was specified but the following apps are not installed:\n%s\nInstall them or remove --skip-app-setup to run the interactive installation flow",
+			strings.Join(missing, "\n"))
+	}
+	// Apps are installed by slug but couldn't be resolved from ROLE_APP_IDS.
+	msg := "could not resolve app IDs for %s from the mint and --skip-app-setup prevents creating them"
+	if resolveErr != nil {
+		msg += ": " + resolveErr.Error()
+	}
+	return fmt.Errorf(msg, owner)
 }
 
 // copySharedAppPEMs detects public GitHub Apps shared across orgs and copies

@@ -988,14 +988,18 @@ func TestHandler_InstallationNotFound(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+validOIDCToken())
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]string
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if resp["error"] != "mint failed" {
 		t.Fatalf("expected 'mint failed', got: %s", resp["error"])
+	}
+
+	if !strings.Contains(resp["detail"], "is not installed on test-org") {
+		t.Fatalf("expected detail to mention missing installation, got: %s", resp["detail"])
 	}
 }
 
