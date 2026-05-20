@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -10,6 +11,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+var gcpProjectPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
 func newInferenceCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -77,6 +80,9 @@ WIF pools are always created at locations/global.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
 				return fmt.Errorf("--project is required")
+			}
+			if !gcpProjectPattern.MatchString(project) {
+				return fmt.Errorf("invalid GCP project ID %q: must be 6-30 lowercase letters, digits, and hyphens", project)
 			}
 
 			org, repo, err := parseOrgOrRepo(args[0])
@@ -214,6 +220,9 @@ Use --format=json to get a machine-readable status + config output.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
 				return fmt.Errorf("--project is required")
+			}
+			if !gcpProjectPattern.MatchString(project) {
+				return fmt.Errorf("invalid GCP project ID %q: must be 6-30 lowercase letters, digits, and hyphens", project)
 			}
 
 			switch format {

@@ -48,6 +48,28 @@ func TestInferenceProvisionCmd_RequiresProject(t *testing.T) {
 	assert.Contains(t, err.Error(), "--project is required")
 }
 
+func TestInferenceProvisionCmd_RejectsInvalidProjectID(t *testing.T) {
+	tests := []struct {
+		name    string
+		project string
+	}{
+		{"uppercase", "MY-PROJECT"},
+		{"too short", "ab"},
+		{"starts with digit", "1project"},
+		{"starts with hyphen", "-project"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"inference", "provision", "acme",
+				"--project", tc.project, "--dry-run"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid GCP project ID")
+		})
+	}
+}
+
 func TestInferenceProvisionCmd_Flags(t *testing.T) {
 	cmd := newInferenceProvisionCmd()
 
@@ -167,6 +189,15 @@ func TestInferenceStatusCmd_RequiresProject(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestInferenceStatusCmd_RejectsInvalidProjectID(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "status", "acme",
+		"--project", "UPPER-CASE"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
 }
 
 func TestInferenceStatusCmd_Flags(t *testing.T) {
