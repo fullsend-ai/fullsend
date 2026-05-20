@@ -10,10 +10,11 @@ import (
 
 // EnterTOTPCode detects a GitHub TOTP input (#app_totp) on the current page,
 // generates a code from the given secret, and enters it via simulated
-// keystrokes (triggering GitHub's auto-submit). If the first code is rejected
-// (e.g. due to clock skew), it retries once with a fresh code. Returns true
-// if a TOTP form was found and submitted successfully. Returns (false, nil)
-// if no TOTP input is visible.
+// keystrokes. On the 2FA login page, GitHub auto-submits after 6 digits;
+// on sudo pages, the submit button is clicked explicitly. If the first code
+// is rejected, it retries once after waiting for the next TOTP period.
+// Returns true if a TOTP form was found and submitted successfully.
+// Returns (false, nil) if no TOTP input is visible.
 func EnterTOTPCode(page playwright.Page, secret string, logf func(string, ...any)) (bool, error) {
 	totpInput := page.Locator("#app_totp")
 	if err := totpInput.WaitFor(playwright.LocatorWaitForOptions{
@@ -38,16 +39,22 @@ func EnterTOTPCode(page playwright.Page, secret string, logf func(string, ...any
 			}
 		}
 
-		// Use PressSequentially to simulate keystroke entry, which triggers
-		// GitHub's auto-submit after the 6th digit.
 		if err := totpInput.PressSequentially(code, playwright.LocatorPressSequentiallyOptions{
 			Delay: playwright.Float(50),
 		}); err != nil {
 			return false, fmt.Errorf("typing TOTP code: %w", err)
 		}
 
-		// GitHub's 2FA form auto-submits when 6 digits are entered.
-		// Wait for the page to navigate away.
+		// The 2FA login page auto-submits after 6 digits, but the sudo
+		// confirmation page does not. Click submit if a button is visible.
+		submitBtn := page.Locator("button[type='submit']")
+		if visible, _ := submitBtn.First().IsVisible(); visible {
+			logf("[totp] Clicking submit button (sudo page)")
+			_ = submitBtn.First().Click(playwright.LocatorClickOptions{
+				Timeout: playwright.Float(3000),
+			})
+		}
+
 		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 			State: playwright.LoadStateDomcontentloaded,
 		}); err != nil {
