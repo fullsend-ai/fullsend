@@ -80,13 +80,22 @@ these from the changelog anyway.
 Build the tag message:
 
 - **Line 1 (subject):** The custom title from step 4, if one was given.
-  If no custom title, **omit the subject line** — start the annotation
-  body directly with the highlights. This avoids duplicating the version
-  in the release title.
-- **Lines 3+:** Summary of highlights organized by category.
+  If no custom title, **leave line 1 blank** — the annotation must start
+  with an empty line so that GoReleaser's `.TagSubject` is empty and the
+  release title renders as just the tag.
+- **Remaining lines:** Summary of highlights organized by category.
 
 ```
-git tag -a v0.X.0 -m "<message>"
+# With a custom title:
+git tag -a v0.X.0 -m "My Custom Title
+
+Features
+- ..."
+
+# Without a custom title (note the leading blank line):
+git tag -a v0.X.0 -m "
+Features
+- ..."
 ```
 
 The first line of the annotation flows into the GitHub release title via
