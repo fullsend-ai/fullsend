@@ -77,9 +77,9 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 
 	template, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
-	expected := bytes.ReplaceAll(template, []byte("@__FULLSEND_REF__"), []byte("@"+testRef))
+	expected := bytes.ReplaceAll(template, []byte("__FULLSEND_REF__"), []byte(testRef))
 	assert.Equal(t, string(expected), triageContent)
-	assert.NotContains(t, triageContent, "@__FULLSEND_REF__", "placeholder must be substituted")
+	assert.NotContains(t, triageContent, "__FULLSEND_REF__", "placeholder must be substituted")
 	assert.Contains(t, triageContent, "@"+testRef, "ref must appear in installed content")
 }
 
@@ -101,9 +101,9 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 
 	template, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
-	expected := bytes.ReplaceAll(template, []byte("@__FULLSEND_REF__"), []byte("@"+testRef))
+	expected := bytes.ReplaceAll(template, []byte("__FULLSEND_REF__"), []byte(testRef))
 	assert.Equal(t, string(expected), maintenanceContent)
-	assert.NotContains(t, maintenanceContent, "@__FULLSEND_REF__", "placeholder must be substituted")
+	assert.NotContains(t, maintenanceContent, "__FULLSEND_REF__", "placeholder must be substituted")
 }
 
 
@@ -118,7 +118,7 @@ func TestWorkflowsLayer_Install_NoRefLeavesPlaceholder(t *testing.T) {
 	for _, f := range client.CommittedFiles[0].Files {
 		if strings.HasSuffix(f.Path, ".yml") {
 			// Without a ref, placeholder is left intact (not substituted).
-			if strings.Contains(string(f.Content), "@__FULLSEND_REF__") {
+			if strings.Contains(string(f.Content), "__FULLSEND_REF__") {
 				return // found at least one file with placeholder — expected
 			}
 		}
@@ -136,11 +136,11 @@ func TestWorkflowsLayer_Install_RefSubstitution(t *testing.T) {
 
 	for _, f := range client.CommittedFiles[0].Files {
 		content := string(f.Content)
-		assert.NotContains(t, content, "@__FULLSEND_REF__",
+		assert.NotContains(t, content, "__FULLSEND_REF__",
 			"placeholder must not appear in installed file %s", f.Path)
 		if strings.Contains(content, "fullsend-ai/fullsend") {
 			assert.Contains(t, content, "@"+ref,
-				"ref must be substituted in file %s", f.Path)
+				"uses: ref must be substituted in file %s", f.Path)
 		}
 	}
 }

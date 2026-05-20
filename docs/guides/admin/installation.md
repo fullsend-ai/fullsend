@@ -233,10 +233,10 @@ Per-repo mode installs fullsend for a single repository without requiring an org
 > **Installing fullsend in the `fullsend-ai` org:** When installing fullsend for
 > `fullsend-ai/fullsend` itself, prefer **per-org mode** (`fullsend admin install fullsend-ai`).
 > Per-repo mode technically works but creates a circular reference: the per-repo
-> shim workflow calls `fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0`,
+> shim workflow calls `fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@<sha>`,
 > which in turn calls reusable stage workflows in the same repo, which check out
-> `fullsend-ai/fullsend@v0` again for upstream defaults and use
-> `fullsend-ai/fullsend@v0` as the composite action. The repo ends up
+> `fullsend-ai/fullsend@<sha>` again for upstream defaults and use
+> `fullsend-ai/fullsend@<sha>` as the composite action. The repo ends up
 > simultaneously serving as the source of reusable workflows, the source of the
 > composite action, the caller repo, and the target repo being acted on. Per-org
 > mode avoids this by placing the shim in `fullsend-ai/fullsend` and the agent

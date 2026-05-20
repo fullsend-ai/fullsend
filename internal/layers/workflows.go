@@ -92,7 +92,7 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	var files []forge.TreeFile
 	err := scaffold.WalkFullsendRepo(func(path string, content []byte) error {
 		if l.ref != "" {
-			content = bytes.ReplaceAll(content, []byte("@__FULLSEND_REF__"), []byte("@"+l.ref))
+			content = bytes.ReplaceAll(content, []byte("__FULLSEND_REF__"), []byte(l.ref))
 		}
 		files = append(files, forge.TreeFile{
 			Path:    path,

@@ -622,7 +622,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	if err != nil {
 		return fmt.Errorf("loading per-repo shim template: %w", err)
 	}
-	shimContent = bytes.ReplaceAll(shimContent, []byte("@__FULLSEND_REF__"), []byte("@"+FullsendRef()))
+	shimContent = bytes.ReplaceAll(shimContent, []byte("__FULLSEND_REF__"), []byte(FullsendRef()))
 
 	cfgYAML, err := cfg.Marshal()
 	if err != nil {

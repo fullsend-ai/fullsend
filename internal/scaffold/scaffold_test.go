@@ -646,6 +646,7 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "templates/shim-workflow.yaml",
 		"PAT shim template reference should be removed")
 	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_REF__")
+	assert.Contains(t, s, "ref: __FULLSEND_REF__", "checkout ref must use placeholder, not floating tag")
 	assert.Contains(t, s, "Checkout upstream scripts")
 	assert.Contains(t, s, "Prepare scripts")
 	assert.Contains(t, s, "customized/scripts")
@@ -708,6 +709,7 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/setup-gcp@__FULLSEND_REF__")
 	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/validate-enrollment@__FULLSEND_REF__")
+	assert.Contains(t, s, "ref: __FULLSEND_REF__", "checkout ref must use placeholder, not floating tag")
 	assert.Contains(t, s, "Checkout upstream defaults")
 	assert.Contains(t, s, "Prepare workspace")
 	assert.Contains(t, s, "customized/")
