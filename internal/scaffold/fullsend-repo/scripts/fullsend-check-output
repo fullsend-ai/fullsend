@@ -58,6 +58,11 @@ if ! python3 -m json.tool "${CANDIDATE}" > /dev/null 2>&1; then
   exit 1
 fi
 
+if ! python3 -m json.tool "${FULLSEND_OUTPUT_SCHEMA}" > /dev/null 2>&1; then
+  echo "FAIL: schema file is not valid JSON: ${FULLSEND_OUTPUT_SCHEMA}"
+  exit 1
+fi
+
 python3 -c "
 import json, sys
 from jsonschema import validate, ValidationError, SchemaError

@@ -788,24 +788,28 @@ func bootstrapSandbox(sandboxName, repoDir, fullsendBinary string, h *harness.Ha
 	checkScript, err := scaffold.FullsendRepoFile("scripts/fullsend-check-output")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: could not load self-check script: %v\n", err)
-	} else {
+	} else if err := func() error {
 		tmpCheck, err := os.CreateTemp("", "fullsend-check-output-*")
 		if err != nil {
-			return fmt.Errorf("creating temp file for check script: %w", err)
+			return fmt.Errorf("creating temp file: %w", err)
 		}
 		defer os.Remove(tmpCheck.Name())
 		if _, err := tmpCheck.Write(checkScript); err != nil {
 			tmpCheck.Close()
-			return fmt.Errorf("writing check script: %w", err)
+			return fmt.Errorf("writing temp file: %w", err)
 		}
 		tmpCheck.Close()
+		// Safe: remoteBin is built from the SandboxWorkspace constant.
 		remoteBin := fmt.Sprintf("%s/bin/fullsend-check-output", sandbox.SandboxWorkspace)
 		if err := sandbox.Upload(sandboxName, tmpCheck.Name(), remoteBin); err != nil {
-			return fmt.Errorf("copying check script to sandbox: %w", err)
+			return fmt.Errorf("uploading to sandbox: %w", err)
 		}
 		if _, _, _, err := sandbox.Exec(sandboxName, fmt.Sprintf("chmod +x %s", remoteBin), 10*time.Second); err != nil {
-			return fmt.Errorf("chmod check script: %w", err)
+			return fmt.Errorf("chmod: %w", err)
 		}
+		return nil
+	}(); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: could not install self-check script: %v\n", err)
 	}
 
 	// Scan plugin definitions for injection before copying into sandbox.
@@ -893,6 +897,7 @@ func bootstrapEnv(sandboxName, repoDir string, h *harness.Harness) error {
 			} else if uploadErr := sandbox.Upload(sandboxName, schemaHost, remoteSchemaPath); uploadErr != nil {
 				fmt.Fprintf(os.Stderr, "WARNING: could not upload output schema: %v\n", uploadErr)
 			} else {
+				// Safe: remoteSchemaPath is built from the SandboxWorkspace constant.
 				lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_SCHEMA=%s", remoteSchemaPath))
 			}
 		}
