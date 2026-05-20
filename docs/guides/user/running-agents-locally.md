@@ -10,6 +10,7 @@ This guide walks through running fullsend agents on your machine using released 
 |-------------|-------|-------|
 | Container runtime | Podman Desktop with a running machine | Podman |
 | [OpenShell](https://github.com/NVIDIA/OpenShell) | 0.0.38 | 0.0.38 |
+| GCP project | [Agent Platform API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled with [Claude models](https://console.cloud.google.com/vertex-ai/model-garden) | Same |
 | GCP credentials | Service account key (see [GCP credentials](#gcp-credentials) below) | Same |
 | GitHub PAT | Classic PAT with `repo` scope (see [GitHub tokens](#github-tokens) below) | Same |
 
@@ -74,27 +75,48 @@ Env files contain secrets and must never be committed. Keep your env file outsid
 
 ### GCP credentials
 
-In CI, fullsend uses Workload Identity Federation (WIF) to authenticate to Vertex AI — no service account keys are stored. Locally, use a service account key instead:
+Fullsend agents use Claude models via [Vertex AI](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/use-claude). Your GCP project must have:
+
+1. The [Agent Platform API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled
+2. Claude models enabled in [Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) — search for "Claude" and enable the Anthropic models you need (all agents default to Claude Opus)
+
+In CI, fullsend uses [Workload Identity Federation (WIF)](https://cloud.google.com/iam/docs/workload-identity-federation) — no service account keys are stored. Locally, use a service account key instead.
+
+**Create a service account and key:**
 
 ```bash
-ANTHROPIC_VERTEX_PROJECT_ID=<gcp-project-with-vertex-ai>
-GOOGLE_CLOUD_PROJECT=<gcp-project-with-vertex-ai>
-CLOUD_ML_REGION=global
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json
+# Create a service account
+gcloud iam service-accounts create fullsend-local \
+  --display-name="Fullsend local agent runner" \
+  --project=<project-id>
+
+# Grant Vertex AI User role (call Claude models via Vertex AI)
+gcloud projects add-iam-policy-binding <project-id> \
+  --member="serviceAccount:fullsend-local@<project-id>.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Create and download the key file
+gcloud iam service-accounts keys create sa-key.json \
+  --iam-account=fullsend-local@<project-id>.iam.gserviceaccount.com
+chmod 600 sa-key.json
 ```
 
-The service account needs the `Vertex AI User` role (`roles/aiplatform.user`) on the project. Create a key with:
+See [Creating service account keys](https://cloud.google.com/iam/docs/keys-create-delete) for details. Note that Google recommends WIF over long-lived keys for production use — service account keys are appropriate for local development.
+
+**Add to your env file:**
 
 ```bash
-gcloud iam service-accounts keys create sa-key.json \
-  --iam-account=<sa-name>@<project>.iam.gserviceaccount.com
+ANTHROPIC_VERTEX_PROJECT_ID=<project-id>
+GOOGLE_CLOUD_PROJECT=<project-id>
+CLOUD_ML_REGION=global
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json
 ```
 
 > WIF's OIDC token refresh is handled automatically in CI. With a service account key locally, no refresh is needed — the key is valid for the duration of the run.
 
 ### GitHub tokens
 
-In CI, fullsend mints separate GitHub App installation tokens per role (read-only for sandboxes, write-scoped for post-scripts). Locally, a single classic PAT with `repo` scope can serve all three token variables:
+In CI, fullsend mints separate GitHub App installation tokens per role (read-only for sandboxes, write-scoped for post-scripts). Locally, use a [classic personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) — a single PAT can serve all three token variables:
 
 ```bash
 GH_TOKEN=<github-pat>
@@ -104,7 +126,9 @@ REVIEW_TOKEN=<github-pat>
 
 All three can be the same PAT. The separation exists for CI's security architecture (read-only tokens inside sandboxes, write tokens only on the runner for post-scripts), but locally a single token works.
 
-The PAT needs `repo` scope for the target organization. Fine-grained PATs are not supported because they cannot span multiple repositories in the same org.
+**Required scope:** `repo` — grants read/write access to code, pull requests, and issues in repositories the token owner can access. Create one at [github.com/settings/tokens](https://github.com/settings/tokens/new).
+
+[Fine-grained PATs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) are not supported. They are scoped to individual repositories and cannot cover both the target repo and the `.fullsend` config repo in a single token. Fullsend needs access to both during a run.
 
 ### Per-agent variables
 
