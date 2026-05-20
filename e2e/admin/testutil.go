@@ -217,16 +217,25 @@ func buildCLIBinary(t *testing.T) string {
 }
 
 // runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
+// The working directory is set to the module root so that --vendor-fullsend-binary
+// can find ./cmd/fullsend/ (same as a user running from the repo root).
 func runCLI(t *testing.T, binary, token string, args ...string) string {
 	t.Helper()
 	t.Logf("[cli] fullsend %s", strings.Join(args, " "))
+
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root for runCLI: %v", err)
+	}
+
 	cmd := exec.Command(binary, args...)
+	cmd.Dir = strings.TrimSpace(string(modRoot))
 	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token)
-	out, err := cmd.CombinedOutput()
+	out, runErr := cmd.CombinedOutput()
 	output := string(out)
 	t.Logf("[cli] output:\n%s", output)
-	if err != nil {
-		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	if runErr != nil {
+		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), runErr, output)
 	}
 	return output
 }
