@@ -59,6 +59,35 @@ func handleSudoIfPresent(page playwright.Page, password, totpSecret, screenshotD
 		if err := passwordInput.Fill(password); err != nil {
 			return false, fmt.Errorf("filling sudo password: %w", err)
 		}
+
+		confirmBtn := page.Locator("button[type='submit']:has-text('Confirm'), button[type='submit']:has-text('Confirm password'), button[type='submit']")
+		if err := confirmBtn.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(5000),
+		}); err != nil {
+			saveDebugScreenshot(page, screenshotDir, "sudo-confirm-click-failed", logf)
+			return false, fmt.Errorf("clicking sudo confirm button: %w", err)
+		}
+
+		if err := waitForPageToLeave(page, "Confirm access", "Sudo"); err != nil {
+			if totpSecret != "" {
+				logf("[sudo] Password did not clear sudo page, falling back to TOTP")
+				if handled, totpErr := handleTOTPIfPresent(page, totpSecret, screenshotDir, logf); totpErr != nil {
+					return false, fmt.Errorf("TOTP fallback after password failed: %w", totpErr)
+				} else if handled {
+					if err := waitForPageToLeave(page, "Confirm access", "Sudo"); err != nil {
+						saveDebugScreenshot(page, screenshotDir, "sudo-totp-fallback-still-on-page", logf)
+						return false, err
+					}
+					logf("[sudo] Sudo confirmation succeeded via TOTP fallback")
+					return true, nil
+				}
+			}
+			saveDebugScreenshot(page, screenshotDir, "sudo-still-on-page", logf)
+			return false, err
+		}
+
+		logf("[sudo] Sudo confirmation succeeded via password")
+		return true, nil
 	} else if passwordVisible && totpSecret != "" {
 		if handled, err := handleTOTPIfPresent(page, totpSecret, screenshotDir, logf); err != nil {
 			return false, fmt.Errorf("TOTP on sudo page (password field present but empty): %w", err)
@@ -90,23 +119,6 @@ func handleSudoIfPresent(page playwright.Page, password, totpSecret, screenshotD
 		saveDebugScreenshot(page, screenshotDir, "sudo-no-credentials", logf)
 		return false, fmt.Errorf("sudo confirmation required but no password or TOTP secret available — set E2E_GITHUB_PASSWORD or E2E_GITHUB_TOTP_SECRET")
 	}
-
-	// Click the confirm button (password path).
-	confirmBtn := page.Locator("button[type='submit']:has-text('Confirm'), button[type='submit']:has-text('Confirm password'), button[type='submit']")
-	if err := confirmBtn.First().Click(playwright.LocatorClickOptions{
-		Timeout: playwright.Float(5000),
-	}); err != nil {
-		saveDebugScreenshot(page, screenshotDir, "sudo-confirm-click-failed", logf)
-		return false, fmt.Errorf("clicking sudo confirm button: %w", err)
-	}
-
-	if err := waitForPageToLeave(page, "Confirm access", "Sudo"); err != nil {
-		saveDebugScreenshot(page, screenshotDir, "sudo-still-on-page", logf)
-		return false, err
-	}
-
-	logf("[sudo] Sudo confirmation succeeded")
-	return true, nil
 }
 
 // handleTOTPIfPresent detects a GitHub 2FA/TOTP input on the current page
