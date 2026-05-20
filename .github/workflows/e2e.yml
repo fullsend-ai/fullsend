@@ -6,9 +6,29 @@ permissions:
 on:
   push:
     branches: [main]
-    paths: ['**/*.go', 'go.mod', 'go.sum', 'e2e/**']
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'e2e/**'
+      - 'internal/scaffold/fullsend-repo/**'
+      - 'internal/security/hooks/**'
+      - 'internal/dispatch/gcf/mintsrc/**'
+      - 'internal/sentencetoken/english.json'
+      - 'Makefile'
+      - '.github/workflows/e2e.yml'
   pull_request:
-    paths: ['**/*.go', 'go.mod', 'go.sum', 'e2e/**']
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'e2e/**'
+      - 'internal/scaffold/fullsend-repo/**'
+      - 'internal/security/hooks/**'
+      - 'internal/dispatch/gcf/mintsrc/**'
+      - 'internal/sentencetoken/english.json'
+      - 'Makefile'
+      - '.github/workflows/e2e.yml'
   workflow_dispatch:
 
 jobs:
