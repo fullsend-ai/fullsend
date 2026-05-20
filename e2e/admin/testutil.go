@@ -9,6 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,11 +110,12 @@ const e2eAppSet = "fullsend-ai"
 
 // envConfig holds required environment configuration.
 type envConfig struct {
-	sessionFile string
-	password    string
-	totpSecret  string
-	mintURL     string
-	lockTimeout time.Duration
+	sessionFile  string
+	password     string
+	totpSecret   string
+	mintURL      string
+	gcpProjectID string
+	lockTimeout  time.Duration
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
@@ -136,6 +140,8 @@ func loadEnvConfig(t *testing.T) envConfig {
 		t.Skip("E2E_MINT_URL not set, skipping e2e test")
 	}
 
+	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
+
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -146,11 +152,12 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	return envConfig{
-		sessionFile: sessionFile,
-		password:    password,
-		totpSecret:  totpSecret,
-		mintURL:     mintURL,
-		lockTimeout: lockTimeout,
+		sessionFile:  sessionFile,
+		password:     password,
+		totpSecret:   totpSecret,
+		mintURL:      mintURL,
+		gcpProjectID: gcpProjectID,
+		lockTimeout:  lockTimeout,
 	}
 }
 
@@ -192,28 +199,37 @@ func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, 
 	return result.CreatedAt, nil
 }
 
-// sharedMintDispatcher is a dispatch.Dispatcher for e2e tests that points at
-// the shared public mint. It doesn't provision infrastructure — it just
-// returns the mint URL so the OIDC dispatch layer sets the org variable.
-// PEM storage is a no-op because the shared apps' PEMs are already in the
-// mint's Secret Manager.
-type sharedMintDispatcher struct {
-	mintURL string
+// buildCLIBinary compiles the fullsend CLI binary once per test run.
+func buildCLIBinary(t *testing.T) string {
+	t.Helper()
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root: %v", err)
+	}
+	binary := filepath.Join(t.TempDir(), "fullsend")
+	cmd := exec.Command("go", "build", "-o", binary, "./cmd/fullsend/")
+	cmd.Dir = strings.TrimSpace(string(modRoot))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("building fullsend binary: %s\n%s", err, out)
+	}
+	return binary
 }
 
-func (d *sharedMintDispatcher) Name() string { return "shared-mint" }
-
-func (d *sharedMintDispatcher) Provision(_ context.Context) (map[string]string, error) {
-	return map[string]string{"FULLSEND_MINT_URL": d.mintURL}, nil
+// runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
+func runCLI(t *testing.T, binary, token string, args ...string) string {
+	t.Helper()
+	t.Logf("[cli] fullsend %s", strings.Join(args, " "))
+	cmd := exec.Command(binary, args...)
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token)
+	out, err := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[cli] output:\n%s", output)
+	if err != nil {
+		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return output
 }
-
-func (d *sharedMintDispatcher) StoreAgentPEM(_ context.Context, _, _ string, _ []byte) error {
-	return nil
-}
-
-func (d *sharedMintDispatcher) OrgSecretNames() []string { return nil }
-
-func (d *sharedMintDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
 
 // retryOnNotFound retries an operation up to maxAttempts times with linear
 // backoff when it returns a not-found error (GitHub eventual consistency).

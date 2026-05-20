@@ -155,7 +155,7 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 func releaseLock(ctx context.Context, client forge.Client, org, runID string, t *testing.T) {
 	content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
 	if err != nil {
-		t.Logf("[e2e-lock] Could not read lock file during release: %v", err)
+		t.Errorf("[e2e-lock] could not read lock file during release: %v", err)
 		return
 	}
 
@@ -165,7 +165,7 @@ func releaseLock(ctx context.Context, client forge.Client, org, runID string, t 
 	}
 
 	if err := client.DeleteRepo(ctx, org, lockRepo); err != nil {
-		t.Logf("[e2e-lock] Failed to release lock: %v", err)
+		t.Errorf("[e2e-lock] failed to release lock: %v", err)
 		return
 	}
 	t.Logf("[e2e-lock] Lock released (run: %s)", truncateUUID(runID))

@@ -10,14 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/playwright-community/playwright-go"
-
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // cleanupStaleResources removes leftover resources from previous test runs.
 // This is the "teardown-first" part of the dual cleanup strategy.
-func cleanupStaleResources(ctx context.Context, client forge.Client, page playwright.Page, token, org, screenshotDir string, t *testing.T) {
+func cleanupStaleResources(ctx context.Context, client forge.Client, token, org string, t *testing.T) {
 	t.Helper()
 	t.Log("[cleanup] Scanning for stale resources from previous runs...")
 
@@ -41,18 +39,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 3. Clean up stale app installations — but never delete the shared
-	// public apps (fullsend-ai-*). Only delete org-scoped apps that were
-	// created by previous test runs with old naming conventions.
-	for _, role := range defaultRoles {
-		slug := org + "-" + role // v6 convention: halfsend-01-fullsend, etc.
-		t.Logf("[cleanup] Attempting to delete app %s (if it exists)", slug)
-		if delErr := deleteAppViaPlaywright(page, org, slug, t.Logf, screenshotDir); delErr != nil {
-			t.Logf("[cleanup] App %s not found or could not delete: %v", slug, delErr)
-		}
-	}
-
-	// 4. Ensure test-repo exists (needed for enrollment testing).
+	// 3. Ensure test-repo exists (needed for enrollment testing).
 	_, err = client.GetRepo(ctx, org, testRepo)
 	if forge.IsNotFound(err) {
 		t.Logf("[cleanup] Creating missing %s repo", testRepo)
@@ -61,15 +48,15 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		}
 	}
 
-	// 5. Delete stale enrollment and unenrollment branches from test-repo.
+	// 4. Delete stale enrollment and unenrollment branches from test-repo.
 	deleteBranch(ctx, token, org, testRepo, "fullsend/onboard", t)
 	deleteBranch(ctx, token, org, testRepo, "fullsend/offboard", t)
 
-	// 6. Delete shim workflow from test-repo's default branch (left behind
+	// 5. Delete shim workflow from test-repo's default branch (left behind
 	// when a previous run merged the enrollment PR in Phase 2.5).
 	deleteShimWorkflow(ctx, token, org, testRepo, t)
 
-	// 7. Close any open fullsend-related PRs in test-repo.
+	// 6. Close any open fullsend-related PRs in test-repo.
 	prs, err := client.ListRepoPullRequests(ctx, org, testRepo)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list PRs: %v", err)
@@ -83,17 +70,6 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 	}
 
 	t.Log("[cleanup] Stale resource scan complete")
-}
-
-// registerAppCleanup registers a t.Cleanup that deletes the given app slug.
-func registerAppCleanup(t *testing.T, page playwright.Page, org, slug, screenshotDir string) {
-	t.Helper()
-	t.Cleanup(func() {
-		t.Logf("[cleanup] Deleting app %s via Playwright", slug)
-		if err := deleteAppViaPlaywright(page, org, slug, t.Logf, screenshotDir); err != nil {
-			t.Logf("[cleanup] Warning: could not delete app %s: %v", slug, err)
-		}
-	})
 }
 
 // deleteBranch deletes a branch from a repo using the GitHub API directly
@@ -240,7 +216,7 @@ func registerRepoCleanup(t *testing.T, client forge.Client, org, repo string) {
 		}
 		t.Logf("[cleanup] Deleting repo %s/%s", org, repo)
 		if delErr := client.DeleteRepo(ctx, org, repo); delErr != nil {
-			t.Logf("[cleanup] Warning: could not delete %s/%s: %v", org, repo, delErr)
+			t.Errorf("[cleanup] could not delete %s/%s: %v", org, repo, delErr)
 		}
 	})
 }
