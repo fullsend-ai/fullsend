@@ -72,7 +72,7 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
-          service_account: fullsend-e2e@it-gcp-konflux-e2e-fullsend.iam.gserviceaccount.com
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Run e2e tests
         if: steps.secrets-check.outputs.available == 'true'
