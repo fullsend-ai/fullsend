@@ -307,6 +307,14 @@ Before writing code, form a concrete plan:
    changed behavior needs updated tests.
 7. **Assess risk** — will this change affect other callers? Does it change a
    public interface? Could it break downstream consumers?
+8. **Search for old literal values when changing constants or defaults** — when
+   the task changes a constant, default, or configuration value from X to Y:
+   1. Search for all references to the constant/variable **name** (symbol search).
+   2. Search for the **old value X** as a string literal in test files, docs, and
+      config (e.g., `*_test.go`, `*.md`, `*.yaml`). Tests often hardcode expected
+      values rather than referencing constants, so a symbol-only search misses them.
+   3. Evaluate each match — some may be intentional (e.g., testing the non-default
+      case) while others are stale assumptions that need updating.
 
 When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
