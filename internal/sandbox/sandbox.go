@@ -18,12 +18,13 @@ const (
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
 	SandboxClaudeConfig = "/tmp/claude-config" //nolint:gosec // not a credential
 
-	createTimeout   = 130 * time.Second
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second
+	readyCtxBuffer  = 10 * time.Second
+	maxReadyTimeout = 600 * time.Second
 	transferTimeout = 5 * time.Minute
 
-	defaultMaxCreateAttempts = 3
+	DefaultMaxCreateAttempts = 3
 	retryInitialBackoff      = 5 * time.Second
 	retryMaxBackoff          = 15 * time.Second
 )
@@ -157,21 +158,24 @@ func CheckGateway() error {
 // explicit override (from harness config) > FULLSEND_SANDBOX_READY_TIMEOUT
 // env var > package default.
 func effectiveReadyTimeout(override time.Duration) time.Duration {
+	t := readyTimeout
 	if override > 0 {
-		return override
-	}
-	if envVal := os.Getenv("FULLSEND_SANDBOX_READY_TIMEOUT"); envVal != "" {
+		t = override
+	} else if envVal := os.Getenv("FULLSEND_SANDBOX_READY_TIMEOUT"); envVal != "" {
 		if d, err := time.ParseDuration(envVal); err == nil && d > 0 {
-			return d
+			t = d
 		}
 	}
-	return readyTimeout
+	if t > maxReadyTimeout {
+		t = maxReadyTimeout
+	}
+	return t
 }
 
 // Create creates a persistent OpenShell sandbox and waits for it to be ready,
 // retrying up to defaultMaxCreateAttempts times with exponential backoff.
 func Create(name string, providers []string, image, policy string) error {
-	return CreateWithRetry(name, providers, image, policy, defaultMaxCreateAttempts, 0)
+	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0)
 }
 
 // CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
@@ -179,6 +183,10 @@ func Create(name string, providers []string, image, policy string) error {
 // deleted to avoid name conflicts. If readyTimeoutOverride is positive, it
 // overrides the default ready timeout.
 func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error {
+	if maxAttempts < 1 {
+		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
+	}
+
 	timeout := effectiveReadyTimeout(readyTimeoutOverride)
 
 	var lastErr error
@@ -188,19 +196,24 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 			return nil
 		}
 
-		// Clean up failed sandbox before retry.
-		_ = Delete(name)
+		if delErr := Delete(name); delErr != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+		}
 
 		if attempt < maxAttempts {
-			backoff := retryInitialBackoff * time.Duration(1<<uint(attempt-1))
+			shift := uint(attempt - 1)
+			if shift > 30 {
+				shift = 30
+			}
+			backoff := retryInitialBackoff * time.Duration(1<<shift)
 			if backoff > retryMaxBackoff {
 				backoff = retryMaxBackoff
 			}
-			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed, retrying in %s...\n", attempt, maxAttempts, backoff)
+			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed (%v), retrying in %s...\n", attempt, maxAttempts, lastErr, backoff)
 			time.Sleep(backoff)
 		}
 	}
-	return lastErr
+	return fmt.Errorf("sandbox creation failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // createOnce creates a persistent OpenShell sandbox and waits for it to be
@@ -208,8 +221,7 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 // is non-empty, it is passed as --from to start the sandbox from a container
 // image. If policy is non-empty, it is applied at creation time via --policy.
 func createOnce(name string, providers []string, image, policy string, timeout time.Duration) error {
-	ctxTimeout := timeout + 10*time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+readyCtxBuffer)
 	defer cancel()
 
 	args := []string{
@@ -237,7 +249,7 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
-		check := exec.Command("openshell", "sandbox", "get", name)
+		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
 		if checkErr := check.Run(); checkErr != nil {
 			return fmt.Errorf("sandbox create failed: %s", string(out))
 		}
@@ -247,7 +259,7 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 	deadline := time.Now().Add(timeout)
 	var lastOutput, lastStderr string
 	for time.Now().Before(deadline) {
-		check := exec.Command("openshell", "sandbox", "get", name)
+		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
 		var stdoutBuf, stderrBuf strings.Builder
 		check.Stdout = &stdoutBuf
 		check.Stderr = &stderrBuf

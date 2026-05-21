@@ -352,6 +352,30 @@ func TestCreateWithRetry_OpenshellNotInPath(t *testing.T) {
 
 	err := CreateWithRetry("test-sandbox", nil, "", "", 1, 0)
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox creation failed after 1 attempts")
+}
+
+func TestCreateWithRetry_ZeroAttempts(t *testing.T) {
+	err := CreateWithRetry("test-sandbox", nil, "", "", 0, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
+}
+
+func TestCreateWithRetry_NegativeAttempts(t *testing.T) {
+	err := CreateWithRetry("test-sandbox", nil, "", "", -1, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
+}
+
+func TestEffectiveReadyTimeout_CappedAtMax(t *testing.T) {
+	got := effectiveReadyTimeout(999 * time.Second)
+	assert.Equal(t, maxReadyTimeout, got)
+}
+
+func TestEffectiveReadyTimeout_EnvVarCappedAtMax(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "1h")
+	got := effectiveReadyTimeout(0)
+	assert.Equal(t, maxReadyTimeout, got)
 }
 
 func TestUploadDir_OpenshellNotInPath(t *testing.T) {

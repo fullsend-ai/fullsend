@@ -241,7 +241,7 @@ runs:
       run: |
         IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
         echo "Pre-pulling sandbox image: ${IMAGE}"
-        podman pull "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
+        timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
 
     - name: Install validation dependencies
       shell: bash

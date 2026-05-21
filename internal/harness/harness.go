@@ -249,8 +249,8 @@ func (h *Harness) Validate() error {
 	if h.TimeoutMinutes < 0 {
 		return fmt.Errorf("timeout_minutes must be non-negative, got %d", h.TimeoutMinutes)
 	}
-	if h.SandboxTimeoutSeconds < 0 {
-		return fmt.Errorf("sandbox_timeout_seconds must be non-negative, got %d", h.SandboxTimeoutSeconds)
+	if h.SandboxTimeoutSeconds < 0 || h.SandboxTimeoutSeconds > 600 {
+		return fmt.Errorf("sandbox_timeout_seconds must be between 0 and 600, got %d", h.SandboxTimeoutSeconds)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Src == "" {
