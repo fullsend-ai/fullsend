@@ -21,7 +21,7 @@ a specific agent performs a specific task. See
 [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Customizing with Skills](../guides/user/customizing-with-skills.md).
 
-## Bring Your Own Agent (BYOA)
+## Custom Agents
 
 Support for adding your own custom agents to the fullsend pipeline is coming
 soon.

@@ -9,7 +9,7 @@ Review-feedback specialist that reads review comments on open PRs, implements ta
 The fix agent is triggered when the [review agent](review.md) requests changes or when a human issues a `/fs-fix` command on a PR. It follows the same sandboxed pipeline as the [code agent](code.md).
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads the pre-fetched review body, understands each finding, implements targeted fixes, and verifies them against tests and linters. Like the code agent, it cannot push or create PRs.
+2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 

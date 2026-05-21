@@ -1,5 +1,5 @@
 #!/bin/bash
-# Lint: every OOTB harness YAML must have a doc: field pointing to an existing file.
+# Lint: every default harness YAML must have a doc: field pointing to an existing file.
 # Also checks that docs/agents/README.md links to every agent doc.
 set -euo pipefail
 shopt -s nullglob
@@ -10,7 +10,7 @@ AGENTS_README="$REPO_ROOT/docs/agents/README.md"
 
 errors=0
 
-echo "Checking OOTB harness files for doc: field..."
+echo "Checking default harness files for doc: field..."
 echo "================================================"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
@@ -128,5 +128,5 @@ if [[ $errors -gt 0 ]]; then
     echo "FAILED: $errors error(s) found"
     exit 1
 else
-    echo "OK: All OOTB harness files have valid doc references and structure"
+    echo "OK: All default harness files have valid doc references and structure"
 fi

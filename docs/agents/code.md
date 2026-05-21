@@ -6,6 +6,8 @@ Implementation specialist that reads triaged GitHub issues, implements fixes or 
 
 ## How the agent works
 
+Triggered when the `ready-to-code` label is applied to an issue or via `/fs-code`.
+
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
@@ -35,6 +37,7 @@ on issues (not PRs). The code agent is also triggered automatically when the
 | Label | Meaning |
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. |
+| `ready-for-review` | Applied by the code agent's post-script after pushing a PR. Signals the [review agent](review.md) to evaluate the change. |
 
 ## Configuration and extension
 
