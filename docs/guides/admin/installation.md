@@ -34,7 +34,7 @@ This guide walks through installing fullsend in a GitHub organization and enroll
 
   `roles/owner` covers all of the above for users with broad access.
 
-  Grant all required roles with a single script:
+  An administrator with elevated access to the GCP project (for example, with the ability to set IAM policy) can grant all required roles with a single script:
 
   ```bash
   for ROLE in \
@@ -50,7 +50,7 @@ This guide walks through installing fullsend in a GitHub organization and enroll
   done
   ```
 
-  > **Reducing required roles:** If you supply `--inference-wif-provider` with a pre-existing WIF provider, `roles/iam.workloadIdentityPoolAdmin` is not needed. If you supply `--skip-mint-check` with `--mint-url`, no GCP roles are needed at all (all GCP provisioning is skipped).
+  > **Reducing required roles:** If you supply `--inference-wif-provider` with a pre-existing WIF provider, `roles/iam.workloadIdentityPoolAdmin` is not needed. If you supply `--skip-mint-check` with `--mint-url` **and** `--inference-wif-provider`, no GCP roles are needed (all GCP provisioning is skipped). Without `--inference-wif-provider`, inference WIF auto-provisioning still requires `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin`.
 
 ### OAuth scope reference
 
