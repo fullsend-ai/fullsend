@@ -1152,38 +1152,43 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 func buildClaudeCommand(agentName, model, repoDir string, pluginDirs []string, debug string) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 
-	// Defense-in-depth: escape single quotes even though Validate() rejects them.
-	safe := strings.ReplaceAll(agentName, "'", "'\\''")
-
-	modelFlag := ""
-	if model != "" {
-		modelFlag = fmt.Sprintf("--model '%s' ", strings.ReplaceAll(model, "'", "'\\''"))
+	claudeParts := []string{
+		"claude",
+		"--print",
+		"--verbose",
+		"--output-format",
+		"stream-json",
 	}
 
-	var pluginDirParts []string
-	for _, pd := range pluginDirs {
-		pluginDirParts = append(pluginDirParts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
-	}
-	pluginDirFlags := ""
-	if len(pluginDirParts) > 0 {
-		pluginDirFlags = strings.Join(pluginDirParts, " ") + " "
-	}
-
-	debugFlags := ""
 	if debug != "" {
-		debugFlags = fmt.Sprintf("--debug-file '%s/%s' ", sandbox.SandboxWorkspace, claudeDebugLog)
+		claudeParts = append(claudeParts, "--debug-file", shellSingleQuote(sandbox.SandboxWorkspace+"/"+claudeDebugLog))
 		if debug != "*" {
-			debugFlags += fmt.Sprintf("--debug '%s' ", strings.ReplaceAll(debug, "'", "'\\''"))
+			claudeParts = append(claudeParts, "--debug", shellSingleQuote(debug))
 		}
 	}
+	if model != "" {
+		claudeParts = append(claudeParts, "--model", shellSingleQuote(model))
+	}
+	for _, pd := range pluginDirs {
+		claudeParts = append(claudeParts, "--plugin-dir", shellSingleQuote(pd))
+	}
+	claudeParts = append(
+		claudeParts,
+		"--agent", shellSingleQuote(agentName),
+		"--dangerously-skip-permissions", shellSingleQuote("Run the agent task"),
+	)
 
 	return fmt.Sprintf(
 		// --verbose increases log output in the job log. If artifact upload is
 		// added to this workflow, consider whether verbose output should be
 		// redacted or made conditional via an env var.
-		"cd %s && . %s && claude --print --verbose --output-format stream-json %s%s%s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
-		repoDir, envFile, debugFlags, modelFlag, pluginDirFlags, safe,
+		"cd %s && . %s && %s",
+		repoDir, envFile, strings.Join(claudeParts, " "),
 	)
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 // buildScanContextCommand builds the command to run `fullsend scan context`
