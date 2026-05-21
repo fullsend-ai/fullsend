@@ -172,8 +172,9 @@ func effectiveReadyTimeout(override time.Duration) time.Duration {
 	return t
 }
 
-// Create creates a persistent OpenShell sandbox and waits for it to be ready,
-// retrying up to defaultMaxCreateAttempts times with exponential backoff.
+// Create creates a persistent OpenShell sandbox and waits for it to be ready.
+// It retries up to DefaultMaxCreateAttempts times with exponential backoff,
+// deleting the failed sandbox between attempts.
 func Create(name string, providers []string, image, policy string) error {
 	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0)
 }

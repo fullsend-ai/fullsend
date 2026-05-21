@@ -494,14 +494,26 @@ func TestValidate_NegativeSandboxTimeout(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: -1}
 	err := h.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be between 0 and 600")
+	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
+}
+
+func TestValidate_SandboxTimeoutTooSmall(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 10}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
 }
 
 func TestValidate_SandboxTimeoutTooLarge(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 601}
 	err := h.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be between 0 and 600")
+	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
+}
+
+func TestValidate_SandboxTimeoutAtMin(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 30}
+	require.NoError(t, h.Validate())
 }
 
 func TestValidate_SandboxTimeoutAtMax(t *testing.T) {
