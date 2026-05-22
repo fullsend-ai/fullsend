@@ -326,52 +326,47 @@ Per-repo mode installs fullsend for a single repository without requiring an org
 
 When a platform operator has pre-provisioned shared public GitHub Apps and a token mint, you only need to provide a GCP project for inference. This is the simplest installation path — no Apps to create, no mint to deploy, no PEM management.
 
+> This section documents the **SaaS installation profile** defined in [ADR 0033 §6](../../ADRs/0033-per-repo-installation-mode.md#6-credential-models). If you are reusing apps from your own prior per-org installation, see [Reusing existing infrastructure](#reusing-existing-infrastructure) instead.
+
 **Prerequisites:**
 
 - **Org admin approval** to install the shared GitHub Apps on your repository
 - **GCP project** with the [Agent Platform API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled for inference
-- **Platform mint URL** — obtain from your platform operator (used for OIDC token exchange and app discovery)
-- **Repository enrollment prerequisites** — enrolling a new repository to an existing mint may require coordination with the platform operator to ensure:
+- **Platform mint details** — obtain from your platform operator:
+  - Mint URL (for OIDC token exchange)
+  - Mint GCP project ID and region (for app discovery and validation via GCP APIs)
+- **Platform operator coordination** — the platform operator must ensure before you run the installer:
   - Your organization is registered in the mint's `ALLOWED_ORGS` configuration
   - The mint has the necessary GitHub App PEMs stored in Secret Manager
-  - Workload Identity Federation (WIF) is configured to accept tokens from your organization or repository
+  - Workload Identity Federation (WIF) is configured to accept tokens from your organization
 
-**Recommended: Assisted installation with mint URL**
+**Recommended: Assisted installation**
 
-Your platform operator provides a mint URL. Pass it directly — no GCP access to the platform project required:
-
-```bash
-fullsend admin install "$ORG_NAME/$REPO_NAME" \
-  --inference-project "$GCP_PROJECT" \
-  --mint-url "$PLATFORM_MINT_URL"
-```
-
-This command:
-- Queries the mint to discover shared app IDs
-- Checks if the shared apps are already installed on your repository
-- If apps are not installed, opens browser windows to install the pre-existing shared apps (requires org admin approval)
-- Validates and updates the mint configuration (registers your org, updates WIF, stores PEM references)
-- Auto-provisions Workload Identity Federation for your repo to authenticate with GCP
-- Generates workflow files and commits scaffold to your repository
-- Sets repository variables and secrets
-
-**Alternative: Discovery from GCP project**
-
-If you have IAM access to the platform operator's GCP project (requires `roles/cloudfunctions.viewer` for discovery and write roles for mint provisioning), you can let the installer discover the mint URL automatically:
+The installer discovers shared apps from the platform mint project and helps you install them:
 
 ```bash
 fullsend admin install "$ORG_NAME/$REPO_NAME" \
   --inference-project "$GCP_PROJECT" \
+  --mint-url "$PLATFORM_MINT_URL" \
   --mint-project "$PLATFORM_MINT_PROJECT" \
   --mint-region "$PLATFORM_MINT_REGION"
 ```
 
+This requires read access (`roles/cloudfunctions.viewer`) to the platform mint project for app discovery, plus write access (`roles/cloudfunctions.developer`, `roles/secretmanager.admin`) for mint validation and org registration. The command:
+- Discovers shared app IDs from the platform mint project via GCP Cloud Functions API
+- Checks if the shared apps are already installed on your repository
+- If apps are not installed, opens browser windows to install the pre-existing shared apps (requires org admin approval)
+- Validates and updates the mint configuration if needed (registers your org, updates WIF, stores PEM references)
+- Auto-provisions Workload Identity Federation for your repo in the inference project
+- Generates workflow files and commits scaffold to your repository
+- Sets repository variables and secrets
+
 > [!NOTE]
-> Most per-repo users will not have access to the platform project. Use this path only if you are a platform operator or have been granted access.
+> Most per-repo users will not have IAM access to the platform project. If you do not have access, ask your platform operator to pre-register your org and use the manual path below.
 
-**Advanced: Manual installation (skip all validation)**
+**Alternative: Manual installation (no platform project access)**
 
-If you've already installed the apps and configured everything manually, use `--skip-mint-check` to bypass all discovery and validation:
+If the platform operator has pre-registered your org and you only have the mint URL, use `--skip-mint-check` to bypass all GCP-based discovery and validation:
 
 ```bash
 fullsend admin install "$ORG_NAME/$REPO_NAME" \
@@ -380,13 +375,13 @@ fullsend admin install "$ORG_NAME/$REPO_NAME" \
   --skip-mint-check
 ```
 
-This assumes:
+This requires the platform operator to have completed the following before you run the installer:
 - The shared GitHub Apps are already installed on your repository
 - Your organization is registered in the mint's `ALLOWED_ORGS`
-- WIF is configured to accept tokens from your organization or repository
+- WIF is configured to accept tokens from your organization
 - All PEMs are stored in Secret Manager
 
-The installer skips all app discovery, mint validation, and GCP provisioning — it only generates workflow files and sets repository variables.
+The installer skips all app discovery, mint validation, and mint-related GCP provisioning — it only generates workflow files and sets repository variables and secrets. WIF infrastructure is still auto-provisioned in the inference project; pass `--inference-wif-provider` to skip this as well if the platform operator provides a pre-existing WIF provider.
 
 ### First-time install (no prior infrastructure)
 
@@ -413,11 +408,7 @@ Creating apps requires `admin:org` OAuth scope (the installer prompts for it). R
 
 ### Reusing existing infrastructure
 
-When a per-org install already exists, per-repo reuses the apps and mint. `ORG_NAME`, `REPO_NAME`, and `GCP_PROJECT` carry over from the first-time install step, or set them now. If you have an existing mint URL, set it too:
-
-```bash
-export MINT_URL="<your-mint-url>"
-```
+When a per-org install already exists in **your own org**, per-repo reuses the apps and mint. If the infrastructure belongs to a separate platform operator (SaaS profile), see [Using platform-provided infrastructure](#using-platform-provided-infrastructure) instead.
 
 ```bash
 fullsend admin install "$ORG_NAME/$REPO_NAME" \
