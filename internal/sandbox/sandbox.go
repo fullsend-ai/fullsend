@@ -250,17 +250,25 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
-		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
+		// Use a fresh context for the existence check — the create context
+		// may have expired while the sandbox was still initializing.
+		getCtx, getCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer getCancel()
+		check := exec.CommandContext(getCtx, "openshell", "sandbox", "get", name)
 		if checkErr := check.Run(); checkErr != nil {
 			return fmt.Errorf("sandbox create failed: %s", string(out))
 		}
 	}
 
 	// Wait for sandbox to be fully ready (image pull can take a while).
+	// Use a fresh context so we get the full ready timeout even if the
+	// create command consumed most of the original context.
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), timeout+readyCtxBuffer)
+	defer readyCancel()
 	deadline := time.Now().Add(timeout)
 	var lastOutput, lastStderr string
 	for time.Now().Before(deadline) {
-		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
+		check := exec.CommandContext(readyCtx, "openshell", "sandbox", "get", name)
 		var stdoutBuf, stderrBuf strings.Builder
 		check.Stdout = &stdoutBuf
 		check.Stderr = &stderrBuf
