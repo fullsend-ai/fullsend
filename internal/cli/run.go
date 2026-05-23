@@ -29,6 +29,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -57,8 +58,8 @@ func newRunCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
-			printer := ui.New(os.Stdout)
-			return runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, printer)
+			ip := telemetry.NewInstrumentedPrinter(os.Stdout)
+			return runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, ip)
 		},
 	}
 
@@ -76,11 +77,11 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, printer *ui.Printer) (runErr error) {
-	printer.Banner()
-	printer.Blank()
-	printer.Header("Running agent: " + agentName)
-	printer.Blank()
+func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, ip *telemetry.InstrumentedPrinter) (runErr error) {
+	ip.Banner()
+	ip.Blank()
+	ip.Header("Running agent: " + agentName)
+	ip.Blank()
 
 	// 0. Load env files before anything else so vars are available for harness expansion.
 	for _, ef := range envFiles {
@@ -89,15 +90,31 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 	}
 
+	// Initialize telemetry. Context propagation: accept TRACEPARENT from the
+	// environment so the caller (GitHub Actions workflow, dispatch) can link
+	// this run into a broader trace.
+	ctx := telemetry.ContextFromTraceparent(context.Background(), "")
+	telCfg := telemetry.ConfigFromEnv()
+	telCfg.Enabled = true // structured events always written; OTEL export is opt-in via endpoint
+	telCfg.ServiceVersion = version
+	tp, tpErr := telemetry.InitTracer(ctx, telCfg)
+	if tpErr != nil {
+		ip.Warn("Telemetry init failed: " + tpErr.Error())
+		tp = telemetry.NoopProvider()
+	}
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+
 	// 1. Resolve and load harness.
 	harnessPath := filepath.Join(fullsendDir, "harness", agentName+".yaml")
 	harnessStart := time.Now()
-	printer.StepStart("Loading harness: " + harnessPath)
+	ip.StepStart("load-harness", "Loading harness: "+harnessPath)
 
-	h, err := harness.Load(harnessPath)
-	if err != nil {
-		printer.StepFail("Failed to load harness")
-		return fmt.Errorf("loading harness: %w", err)
+	h, loadErr := harness.Load(harnessPath)
+	if loadErr != nil {
+		ip.StepFail("load-harness", "Failed to load harness", loadErr)
+		return fmt.Errorf("loading harness: %w", loadErr)
 	}
 
 	absFullsendDir, err := filepath.Abs(fullsendDir)
@@ -105,12 +122,12 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
 	if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
-		printer.StepFail("Path validation failed")
+		ip.StepFail("load-harness", "Path validation failed", err)
 		return fmt.Errorf("resolving paths: %w", err)
 	}
 
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
-		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
+		ip.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
 	}
 
@@ -130,132 +147,192 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		return os.LookupEnv(key)
 	}
 	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
-		printer.StepFail("Environment validation failed")
+		ip.StepFail("load-harness", "Environment validation failed", err)
 		return fmt.Errorf("validating env: %w", err)
 	}
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
 	if err := h.ValidateFilesExist(); err != nil {
-		printer.StepFail("File validation failed")
+		ip.StepFail("load-harness", "File validation failed", err)
 		return fmt.Errorf("validating files: %w", err)
 	}
-	// Ensure scripts are executable. The GitHub Contents API does not
-	// preserve file permissions, so scripts written via admin install
-	// may lack the execute bit.
 	for _, script := range h.Scripts() {
 		if script != "" {
 			if chmodErr := os.Chmod(script, 0o755); chmodErr != nil {
-				printer.StepWarn("Could not chmod " + script + ": " + chmodErr.Error())
+				ip.Warn("Could not chmod " + script + ": " + chmodErr.Error())
 			}
 		}
 	}
-	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
+	ip.StepDone("load-harness", telemetry.TimedMsg("Harness loaded", time.Since(harnessStart)))
 
 	// Print plan.
-	printer.KeyValue("Agent", h.Agent)
+	ip.KeyValue("Agent", h.Agent)
 	if h.Policy != "" {
-		printer.KeyValue("Policy", h.Policy)
+		ip.KeyValue("Policy", h.Policy)
 	}
 	if h.Model != "" {
-		printer.KeyValue("Model", h.Model)
+		ip.KeyValue("Model", h.Model)
 	}
 	if h.Image != "" {
-		printer.KeyValue("Image", h.Image)
+		ip.KeyValue("Image", h.Image)
 	}
 	if len(h.Providers) > 0 {
-		printer.KeyValue("Providers", strings.Join(h.Providers, ", "))
+		ip.KeyValue("Providers", strings.Join(h.Providers, ", "))
 	}
 	if len(h.Skills) > 0 {
-		printer.KeyValue("Skills", strings.Join(h.Skills, ", "))
+		ip.KeyValue("Skills", strings.Join(h.Skills, ", "))
 	}
 	if len(h.Plugins) > 0 {
-		printer.KeyValue("Plugins", strings.Join(h.Plugins, ", "))
+		ip.KeyValue("Plugins", strings.Join(h.Plugins, ", "))
 	}
 	if h.AgentInput != "" {
-		printer.KeyValue("Agent input", h.AgentInput)
+		ip.KeyValue("Agent input", h.AgentInput)
 	}
 	if h.PreScript != "" {
-		printer.KeyValue("Pre-script", h.PreScript)
+		ip.KeyValue("Pre-script", h.PreScript)
 	}
 	if h.PostScript != "" {
 		if noPostScript {
-			printer.KeyValue("Post-script", h.PostScript+" (SKIPPED: --no-post-script)")
+			ip.KeyValue("Post-script", h.PostScript+" (SKIPPED: --no-post-script)")
 		} else {
-			printer.KeyValue("Post-script", h.PostScript)
+			ip.KeyValue("Post-script", h.PostScript)
 		}
 	}
 	if h.TimeoutMinutes > 0 {
-		printer.KeyValue("Timeout", fmt.Sprintf("%d minutes", h.TimeoutMinutes))
+		ip.KeyValue("Timeout", fmt.Sprintf("%d minutes", h.TimeoutMinutes))
 	}
-	printer.Blank()
+	ip.Blank()
+
+	// Compute sandbox name and run directory early so the telemetry recorder
+	// can be initialized before any lifecycle steps.
+	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
+	if outputBase == "" {
+		outputBase = filepath.Join(os.TempDir(), "fullsend")
+	}
+	runDir := filepath.Join(outputBase, sandboxName)
+
+	// Initialize the structured event recorder and attach it to the
+	// InstrumentedPrinter. Any steps that occurred before this point
+	// (load-harness) are replayed into the recorder automatically.
+	// Determine root span kind: Consumer when dispatched (TRACEPARENT present),
+	// Internal for local invocations.
+	rootSpanKind := telemetry.SpanKindInternal()
+	if os.Getenv("TRACEPARENT") != "" {
+		rootSpanKind = telemetry.SpanKindConsumer()
+	}
+
+	rec, runCtx, recErr := telemetry.NewRecorder(ctx, runDir, tp.Tracer,
+		agentName+"-run",
+		[]telemetry.Attr{
+			telemetry.StringAttr("fullsend.agent", agentName),
+			telemetry.StringAttr("fullsend.harness", harnessPath),
+			telemetry.StringAttr("fullsend.model", h.Model),
+			telemetry.StringAttr("fullsend.image", h.Image),
+			telemetry.StringAttr("fullsend.work_item_id", telemetry.WorkItemIDFromEnv()),
+			telemetry.StringAttr("gen_ai.operation.name", "invoke_agent"),
+			telemetry.StringAttr("gen_ai.agent.name", agentName),
+			telemetry.StringAttr("gen_ai.request.model", h.Model),
+			telemetry.StringAttr("gen_ai.system", "anthropic"),
+		},
+		rootSpanKind,
+	)
+	if recErr != nil {
+		ip.Warn("Telemetry recorder init failed: " + recErr.Error())
+	}
+	if rec != nil {
+		ip.AttachRecorder(rec, runCtx)
+		defer func() {
+			exitCode := 0
+			if runErr != nil {
+				exitCode = 1
+			}
+			summary := telemetry.RunSummary{
+				Agent:      agentName,
+				Harness:    harnessPath,
+				Model:      h.Model,
+				Image:      h.Image,
+				WorkItemID: telemetry.WorkItemIDFromEnv(),
+				StartTime:  rec.StartTime(),
+				ExitCode:   exitCode,
+				Attrs: map[string]string{
+					"sandbox.name": sandboxName,
+				},
+			}
+			if runErr != nil {
+				summary.Attrs["error"] = runErr.Error()
+			}
+			_ = rec.WriteSummary(summary)
+			_ = rec.Close()
+		}()
+	}
 
 	// 2. Check openshell availability.
 	openshellStart := time.Now()
-	printer.StepStart("Checking openshell availability")
+	ip.StepStart("check-openshell", "Checking openshell availability")
 	if err := sandbox.EnsureAvailable(); err != nil {
-		printer.StepFail("openshell not available")
+		ip.StepFail("check-openshell", "openshell not available", err)
 		return fmt.Errorf("openshell is required: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("openshell available (%.1fs)", time.Since(openshellStart).Seconds()))
+	ip.StepDone("check-openshell", telemetry.TimedMsg("openshell available", time.Since(openshellStart)))
 
 	// 2a. Check that a gateway is running.
 	gatewayStart := time.Now()
-	printer.StepStart("Checking gateway")
+	ip.StepStart("check-gateway", "Checking gateway")
 	if err := sandbox.CheckGateway(); err != nil {
-		printer.StepFail("Gateway not running")
+		ip.StepFail("check-gateway", "Gateway not running", err)
 		return fmt.Errorf("gateway check failed: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Gateway available (%.1fs)", time.Since(gatewayStart).Seconds()))
+	ip.StepDone("check-gateway", telemetry.TimedMsg("Gateway available", time.Since(gatewayStart)))
 
 	// 2b. Ensure providers exist on the gateway (if any declared).
 	if len(h.Providers) > 0 {
 		providersDir := filepath.Join(absFullsendDir, "providers")
 		providerDefs, err := harness.LoadProviderDefs(providersDir)
 		if err != nil {
-			printer.StepFail("Failed to load provider definitions")
+			ip.StepFail("ensure-providers", "Failed to load provider definitions", err)
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
 		for _, pd := range providerDefs {
 			providerStart := time.Now()
-			printer.StepStart("Ensuring provider: " + pd.Name)
+			stepName := "ensure-provider." + pd.Name
+			ip.StepStart(stepName, "Ensuring provider: "+pd.Name)
 			if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
-				printer.StepFail("Failed to create provider " + pd.Name)
+				ip.StepFail(stepName, "Failed to create provider "+pd.Name, err)
 				return fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
 			}
-			printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			ip.StepDone(stepName, telemetry.TimedMsg("Provider ready: "+pd.Name, time.Since(providerStart)))
 		}
 	}
 
 	// 2c. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
-		printer.StepStart("Running pre-script: " + h.PreScript)
+		ip.StepStart("pre-script", "Running pre-script: "+h.PreScript)
 		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+		preEnv := append(os.Environ(), envToList(h.RunnerEnv)...)
+		if tpEnv := telemetry.TraceparentEnvVar(ip.Context()); tpEnv != "" {
+			preEnv = append(preEnv, tpEnv)
+		}
+		preCmd.Env = preEnv
 		preCmd.Stdout = os.Stdout
 		preCmd.Stderr = os.Stderr
 		if err := preCmd.Run(); err != nil {
-			printer.StepFail("Pre-script failed")
+			ip.StepFail("pre-script", "Pre-script failed", err)
 			return fmt.Errorf("running pre-script: %w", err)
 		}
-		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+		ip.StepDone("pre-script", telemetry.TimedMsg("Pre-script completed", time.Since(preStart)))
 	}
 
 	// 3. Create sandbox.
-	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
 	createStart := time.Now()
-	printer.StepStart("Creating sandbox: " + sandboxName)
+	ip.StepStart("create-sandbox", "Creating sandbox: "+sandboxName)
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		printer.StepFail("Failed to create sandbox")
+		ip.StepFail("create-sandbox", "Failed to create sandbox", err)
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	if outputBase == "" {
-		outputBase = filepath.Join(os.TempDir(), "fullsend")
-	}
-	runDir := filepath.Join(outputBase, sandboxName)
 
 	// validationPassed is declared here (before the post-script defer) so the
 	// defer closure can guard on it. The post-script must only run when
@@ -264,55 +341,53 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	var validationPassed bool
 
 	// Post-script runs after sandbox cleanup (defers are LIFO).
-	// When a validation_loop is configured, the post-script only runs if
-	// validation passed (ADR 0022). When no validation_loop exists (e.g.,
-	// the code agent), the post-script runs unconditionally after a
-	// successful agent run — the post-script itself is responsible for
-	// any output checks it needs.
 	if h.PostScript != "" {
 		defer func() {
 			if noPostScript {
-				printer.StepWarn(fmt.Sprintf("Skipping post-script %s: --no-post-script", h.PostScript))
+				ip.Warn(fmt.Sprintf("Skipping post-script %s: --no-post-script", h.PostScript))
 				return
 			}
 			if h.ValidationLoop != nil && !validationPassed {
-				printer.StepWarn("Skipping post-script: validation did not pass")
+				ip.Warn("Skipping post-script: validation did not pass")
 				return
 			}
 			if runErr != nil {
-				printer.StepWarn("Skipping post-script: agent run failed")
+				ip.Warn("Skipping post-script: agent run failed")
 				return
 			}
 			postStart := time.Now()
-			printer.StepStart("Running post-script: " + h.PostScript)
+			ip.StepStart("post-script", "Running post-script: "+h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+			postEnv := append(os.Environ(), envToList(h.RunnerEnv)...)
+			if tpEnv := telemetry.TraceparentEnvVar(ip.Context()); tpEnv != "" {
+				postEnv = append(postEnv, tpEnv)
+			}
+			postCmd.Env = postEnv
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
-				printer.StepFail("Post-script failed: " + err.Error())
+				ip.StepFail("post-script", "Post-script failed: "+err.Error(), err)
 				if runErr == nil {
 					runErr = fmt.Errorf("post-script %s failed: %w", h.PostScript, err)
 				}
 			} else {
-				printer.StepDone(fmt.Sprintf("Post-script completed (%.1fs)", time.Since(postStart).Seconds()))
+				ip.StepDone("post-script", telemetry.TimedMsg("Post-script completed", time.Since(postStart)))
 			}
 		}()
 	}
 	defer func() {
-		// Collect OpenShell logs before sandbox deletion for post-mortem debugging.
-		collectOpenshellLogs(sandboxName, runDir, printer)
+		collectOpenshellLogs(sandboxName, runDir, ip)
 
 		cleanupStart := time.Now()
-		printer.StepStart("Cleaning up sandbox")
+		ip.StepStart("delete-sandbox", "Cleaning up sandbox")
 		if err := sandbox.Delete(sandboxName); err != nil {
-			printer.StepWarn("Sandbox cleanup failed: " + err.Error())
+			ip.StepWarn("delete-sandbox", "Sandbox cleanup failed: "+err.Error())
 		} else {
-			printer.StepDone(fmt.Sprintf("Sandbox deleted (%.1fs)", time.Since(cleanupStart).Seconds()))
+			ip.StepDone("delete-sandbox", telemetry.TimedMsg("Sandbox deleted", time.Since(cleanupStart)))
 		}
 	}()
-	printer.StepDone(fmt.Sprintf("Sandbox created (%.1fs)", time.Since(createStart).Seconds()))
+	ip.StepDone("create-sandbox", telemetry.TimedMsg("Sandbox created", time.Since(createStart)), telemetry.StringAttr("sandbox.name", sandboxName))
 
 	// 4. Resolve target repo path (needed by bootstrap for env vars).
 	repoSrc, err := filepath.Abs(targetRepo)
@@ -324,21 +399,21 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 7. Bootstrap sandbox.
 	bootstrapStart := time.Now()
-	printer.StepStart("Bootstrapping sandbox")
+	ip.StepStart("bootstrap-sandbox", "Bootstrapping sandbox")
 	if err := bootstrapSandbox(sandboxName, repoDir, fullsendBinary, h); err != nil {
-		printer.StepFail("Failed to bootstrap sandbox")
+		ip.StepFail("bootstrap-sandbox", "Failed to bootstrap sandbox", err)
 		return err
 	}
-	printer.StepDone(fmt.Sprintf("Sandbox bootstrapped (%.1fs)", time.Since(bootstrapStart).Seconds()))
+	ip.StepDone("bootstrap-sandbox", telemetry.TimedMsg("Sandbox bootstrapped", time.Since(bootstrapStart)))
 
 	// 8. Make project code available (copy repo root into a named subdirectory).
 	copyStart := time.Now()
-	printer.StepStart("Copying project code into sandbox")
+	ip.StepStart("upload-target-repo", "Copying project code into sandbox")
 	if err := sandbox.UploadDir(sandboxName, repoSrc, repoDir); err != nil {
-		printer.StepFail("Failed to copy project code")
+		ip.StepFail("upload-target-repo", "Failed to copy project code", err)
 		return fmt.Errorf("copying project code: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Project code copied to %s/ (%.1fs)", repoName, time.Since(copyStart).Seconds()))
+	ip.StepDone("upload-target-repo", telemetry.TimedMsg(fmt.Sprintf("Project code copied to %s/", repoName), time.Since(copyStart)), telemetry.StringAttr("repo.name", repoName))
 
 	// 8a. Inject org-level AGENTS.md if the target repo does not have one.
 	// The scaffold ships a default AGENTS.md with baseline behavioral
@@ -349,14 +424,13 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		orgAgentsMD := filepath.Join(absFullsendDir, "AGENTS.md")
 		if _, err := os.Stat(orgAgentsMD); err == nil {
 			if err := sandbox.Upload(sandboxName, orgAgentsMD, repoDir+"/AGENTS.md"); err != nil {
-				printer.StepWarn("Could not inject org AGENTS.md: " + err.Error())
+				ip.Warn("Could not inject org AGENTS.md: " + err.Error())
 			} else {
-				// Hide the injected file from git status so agents don't stage it.
 				excludeCmd := fmt.Sprintf("echo 'AGENTS.md' >> %s/.git/info/exclude", repoDir)
 				if _, _, _, err := sandbox.Exec(sandboxName, excludeCmd, 5*time.Second); err != nil {
-					printer.StepWarn("Could not add AGENTS.md to git exclude: " + err.Error())
+					ip.Warn("Could not add AGENTS.md to git exclude: " + err.Error())
 				}
-				printer.StepDone("Injected org-level AGENTS.md (target repo has none)")
+				ip.StepInfo("Injected org-level AGENTS.md (target repo has none)")
 			}
 		}
 	}
@@ -364,70 +438,66 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	// 8b. Copy agent-input files (if configured).
 	if h.AgentInput != "" {
 		inputStart := time.Now()
-		printer.StepStart("Copying agent-input files into sandbox")
+		ip.StepStart("upload-agent-input", "Copying agent-input files into sandbox")
 		remoteInput := fmt.Sprintf("%s/agent-input", sandbox.SandboxWorkspace)
 		mkInputCmd := fmt.Sprintf("mkdir -p %s", remoteInput)
 		if _, _, _, err := sandbox.Exec(sandboxName, mkInputCmd, 10*time.Second); err != nil {
 			return fmt.Errorf("creating agent-input dir in sandbox: %w", err)
 		}
 		if err := sandbox.Upload(sandboxName, h.AgentInput+"/.", remoteInput+"/"); err != nil {
-			printer.StepFail("Failed to copy agent-input files")
+			ip.StepFail("upload-agent-input", "Failed to copy agent-input files", err)
 			return fmt.Errorf("copying agent-input files: %w", err)
 		}
-		printer.StepDone(fmt.Sprintf("Agent-input files copied (%.1fs)", time.Since(inputStart).Seconds()))
+		ip.StepDone("upload-agent-input", telemetry.TimedMsg("Agent-input files copied", time.Since(inputStart)))
 	}
 
-	// 8c. Host-side scan (Path A): scan the target repo's context files
-	// (CLAUDE.md, AGENTS.md, SKILL.md, etc.) before the agent processes them.
-	// The target branch may contain attacker-controlled files from a PR.
+	// 8c. Host-side scan (Path A): scan the target repo's context files.
 	if h.SecurityEnabled() {
-		printer.StepStart("Scanning target repo context files")
+		ip.StepStart("scan-host-context", "Scanning target repo context files")
 		findings := scanRepoContextFiles(repoSrc)
 		if security.HasCriticalFindings(findings) {
 			if h.FailModeClosed() {
-				printer.StepFail("BLOCKED: critical injection findings in target repo context files")
+				ip.StepFail("scan-host-context", "BLOCKED: critical injection findings in target repo context files", fmt.Errorf("critical injection findings"))
 				return fmt.Errorf("target repo context scan blocked: critical injection findings")
 			}
-			printer.StepWarn("Target repo has critical injection findings (fail_mode: open)")
+			ip.StepWarn("scan-host-context", "Target repo has critical injection findings (fail_mode: open)")
 		} else if len(findings) > 0 {
-			printer.StepWarn(fmt.Sprintf("Target repo context scan: %d finding(s)", len(findings)))
+			ip.StepWarn("scan-host-context", fmt.Sprintf("Target repo context scan: %d finding(s)", len(findings)))
 		} else {
-			printer.StepDone("Target repo context files clean")
+			ip.StepDone("scan-host-context", "Target repo context files clean")
 		}
 	}
 
 	// 9a. Generate trace ID for security finding correlation.
 	traceID := security.GenerateTraceID()
-	printer.KeyValue("Trace ID", traceID)
+	ip.KeyValue("Trace ID", traceID)
 	if err := injectTraceID(sandboxName, traceID); err != nil {
-		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
+		ip.Warn("Could not inject trace ID into sandbox: " + err.Error())
 	}
 
 	// 9b. Pre-agent security scan (sandbox-internal, Path B).
-	// Scans context files (CLAUDE.md, AGENTS.md, .cursorrules, agent defs,
-	// SKILL.md) that were just copied into the sandbox.
 	if h.SecurityEnabled() {
-		printer.StepStart("Running pre-agent security scan")
+		ip.StepStart("scan-pre-agent", "Running pre-agent security scan")
 		scanCmd := buildScanContextCommand(repoDir, traceID)
 		stdout, stderr, exitCode, execErr := sandbox.Exec(sandboxName, scanCmd, 60*time.Second)
 		if execErr != nil {
-			printer.StepFail("Security scan failed: " + execErr.Error())
 			if h.FailModeClosed() {
+				ip.StepFail("scan-pre-agent", "Security scan failed: "+execErr.Error(), execErr)
 				return fmt.Errorf("pre-agent security scan failed: %w", execErr)
 			}
-			printer.StepWarn("Continuing despite scan failure (fail_mode: open)")
+			ip.StepWarn("scan-pre-agent", "Continuing despite scan failure (fail_mode: open)")
 		} else if exitCode != 0 {
-			printer.StepWarn("Security scan findings:\n" + stdout)
+			ip.Warn("Security scan findings:\n" + stdout)
 			if stderr != "" {
-				printer.StepWarn("Scan stderr: " + stderr)
+				ip.Warn("Scan stderr: " + stderr)
 			}
 			if h.FailModeClosed() {
-				printer.StepFail("BLOCKED: pre-agent scan detected critical findings")
+				ip.StepFail("scan-pre-agent", "BLOCKED: pre-agent scan detected critical findings", fmt.Errorf("critical findings detected"))
 				return fmt.Errorf("pre-agent security scan blocked: critical findings detected")
 			}
-			printer.StepWarn("Continuing despite findings (fail_mode: open)")
+			ip.StepWarn("scan-pre-agent", "Continuing despite findings (fail_mode: open)")
 		} else {
-			printer.StepDone("Pre-agent scan passed")
+			ip.StepDone("scan-pre-agent", "Pre-agent scan passed")
 		}
 	}
 
@@ -458,13 +528,13 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	if oidcURL := os.Getenv("FULLSEND_GCP_OIDC_URL"); oidcURL != "" {
 		oidcAuth, err := readOIDCAuthFile(os.Getenv("FULLSEND_GCP_OIDC_AUTH_FILE"))
 		if err != nil {
-			printer.StepWarn("OIDC token refresh disabled: " + err.Error())
+			ip.Warn("OIDC token refresh disabled: " + err.Error())
 		} else {
-			printer.StepDone("OIDC token refresh enabled (WIF mode)")
+			ip.StepInfo("OIDC token refresh enabled (WIF mode)")
 			oidcWg.Add(1)
 			go func() {
 				defer oidcWg.Done()
-				runOIDCRefresh(oidcCtx, sandboxName, oidcURL, oidcAuth, printer)
+				runOIDCRefresh(oidcCtx, sandboxName, oidcURL, oidcAuth, ip.Printer())
 			}()
 		}
 	}
@@ -488,8 +558,8 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 
 		if maxIterations > 1 {
-			printer.Blank()
-			printer.Header(fmt.Sprintf("Iteration %d of %d", iteration, maxIterations))
+			ip.Blank()
+			ip.Header(fmt.Sprintf("Iteration %d of %d", iteration, maxIterations))
 		}
 
 		// Clear sandbox-side output and transcripts so the next iteration starts fresh.
@@ -497,85 +567,89 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/*.jsonl",
 				sandbox.SandboxWorkspace, sandbox.SandboxClaudeConfig)
 			if _, _, _, clearErr := sandbox.Exec(sandboxName, clearCmd, 10*time.Second); clearErr != nil {
-				printer.StepWarn("Failed to clear sandbox output: " + clearErr.Error())
+				ip.Warn("Failed to clear sandbox output: " + clearErr.Error())
 			}
 		}
 
 		// 9a. Run agent.
-		printer.StepStart("Running agent")
-		printer.Blank()
+		iterStep := fmt.Sprintf("agent-execution.iteration-%d", iteration)
+		ip.StepStart(iterStep, "Running agent",
+			telemetry.StringAttr("gen_ai.operation.name", "invoke_agent"),
+			telemetry.StringAttr("gen_ai.agent.name", agentName),
+			telemetry.StringAttr("gen_ai.request.model", h.Model),
+		)
+		ip.Blank()
 
 		agentStart := time.Now()
 		heartbeatDone := make(chan struct{})
-		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
+		go runHeartbeat(ip.Printer(), agentStart, timeout, heartbeatDone)
 
 		var metrics RunMetrics
-		exitCode, runErr := runAgentWithProgress(sandboxName, claudeCmd, timeout, printer, agentStart, &metrics)
+		exitCode, runErr := runAgentWithProgress(sandboxName, claudeCmd, timeout, ip.Printer(), agentStart, &metrics)
 		close(heartbeatDone)
 
 		if runErr != nil {
-			printer.StepFail("Agent execution failed")
+			ip.StepFail(iterStep, "Agent execution failed", runErr)
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
 
-		printer.Blank()
-		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
+		ip.Blank()
 		if exitCode == 0 {
-			printer.StepDone(fmt.Sprintf("Agent exited with code %d (%.1fs)", exitCode, time.Since(agentStart).Seconds()))
+			ip.StepDone(iterStep, telemetry.TimedMsg(fmt.Sprintf("Agent exited with code %d", exitCode), time.Since(agentStart)), telemetry.StringAttr("exit_code", fmt.Sprintf("%d", exitCode)))
 		} else {
-			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", exitCode))
+			ip.StepWarn(iterStep, fmt.Sprintf("Agent exited with code %d (exit_code=%d)", exitCode, exitCode))
 		}
 
 		// 9b. Extract output files.
 		extractStart := time.Now()
-		printer.StepStart("Extracting output files")
+		ip.StepStart("extract-output", "Extracting output files")
 		remoteSrc := fmt.Sprintf("%s/output", sandbox.SandboxWorkspace)
 		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir)
 		if extractErr != nil {
-			printer.StepWarn("Failed to extract output files: " + extractErr.Error())
+			ip.StepWarn("extract-output", "Failed to extract output files: "+extractErr.Error())
 		} else if len(extracted) == 0 {
-			printer.StepInfo("No output files found")
+			ip.StepDone("extract-output", "No output files found")
 		} else {
 			for _, f := range extracted {
-				printer.StepInfo(f)
+				ip.StepInfo(f)
 			}
-			printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), time.Since(extractStart).Seconds()))
+			ip.StepDone("extract-output", telemetry.TimedMsg(fmt.Sprintf("Extracted %d output file(s)", len(extracted)), time.Since(extractStart)))
 		}
 
 		// 9c. Extract transcripts for this iteration.
 		transcriptStart := time.Now()
-		printer.StepStart("Extracting transcripts")
+		ip.StepStart("extract-transcripts", "Extracting transcripts")
 		if err := sandbox.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
-			printer.StepWarn("Failed to extract transcripts: " + err.Error())
+			ip.StepWarn("extract-transcripts", "Failed to extract transcripts: "+err.Error())
 		} else {
-			printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
+			ip.StepDone("extract-transcripts", telemetry.TimedMsg("Transcripts extracted", time.Since(transcriptStart)))
 		}
 
 		// Extract debug log if --debug was enabled.
 		if debug != "" {
 			debugDst := filepath.Join(iterDir, claudeDebugLog)
 			if err := sandbox.DownloadFile(sandboxName, sandbox.SandboxWorkspace+"/"+claudeDebugLog, debugDst); err != nil {
-				printer.StepWarn("Failed to extract debug log: " + err.Error())
+				ip.Warn("Failed to extract debug log: " + err.Error())
 			} else {
-				printer.StepInfo("Extracted claude-debug.log")
+				ip.StepInfo("Extracted claude-debug.log")
 			}
 		}
 
-		// 9d. Extract target repo back to host. SafeDownload removes dangerous
-		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
+		// 9d. Extract target repo back to host.
 		if clearErr := os.RemoveAll(repoSrc); clearErr != nil {
 			return fmt.Errorf("clearing local repo %s before extraction: %w", repoSrc, clearErr)
 		}
 		repoExtractStart := time.Now()
-		printer.StepStart("Extracting target repo")
+		ip.StepStart("extract-target-repo", "Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, repoDir, repoSrc); err != nil {
 			if es := extractTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				emitTranscriptErrors(os.Stderr, es)
 			}
+			ip.StepFail("extract-target-repo", "Failed to extract target repo", err)
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
-		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", repoSrc, time.Since(repoExtractStart).Seconds()))
+		ip.StepDone("extract-target-repo", telemetry.TimedMsg(fmt.Sprintf("Target repo extracted to %s", repoSrc), time.Since(repoExtractStart)))
 
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
@@ -583,7 +657,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 
 		valStart := time.Now()
-		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
+		ip.StepStart("validation", "Running validation: "+h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		valCmd.Env = append(os.Environ(),
@@ -595,64 +669,89 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
-			printer.StepDone(fmt.Sprintf("Validation passed: %s (%.1fs)", strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
+			ip.StepDone("validation", telemetry.TimedMsg("Validation passed: "+strings.TrimSpace(string(valOut)), time.Since(valStart)))
 			validationPassed = true
 			break
 		}
 
-		printer.StepFail("Validation failed: " + strings.TrimSpace(string(valOut)))
+		ip.StepFail("validation", "Validation failed: "+strings.TrimSpace(string(valOut)), valErr)
 		if iteration < maxIterations {
-			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+			ip.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
 		}
 	}
 
-	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
-	// When the agent exits non-zero, parse transcript JSONL files and emit
-	// ::error:: annotations so operators can diagnose failures without
-	// downloading artifacts. See #704.
+	// Surface transcript errors in workflow logs (GitHub Actions).
 	if lastExitCode != 0 {
 		lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
 		lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
 		if errorSummaries := extractTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
-			printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
+			ip.Warn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
 			emitTranscriptErrors(os.Stderr, errorSummaries)
 		}
 	}
 
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
-		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, traceID, printer); err != nil {
-			printer.StepWarn("Output scan error: " + err.Error())
+		ip.StepStart("scan-post-agent", "Running post-agent output scan")
+		if err := scanOutputFiles(runDir, traceID, ip); err != nil {
+			ip.StepWarn("scan-post-agent", "Output scan error: "+err.Error())
+		} else {
+			ip.StepDone("scan-post-agent", "Post-agent output scan complete")
 		}
 
-		// Extract sandbox-side security findings for audit trail.
 		findingsDir := filepath.Join(runDir, "security")
 		if err := os.MkdirAll(findingsDir, 0o755); err == nil {
 			remoteFindingsDir := sandbox.SandboxWorkspace + "/.security/"
 			if dlErr := sandbox.Download(sandboxName, remoteFindingsDir, findingsDir); dlErr != nil {
-				printer.StepInfo("No sandbox security findings to extract")
+				ip.StepInfo("No sandbox security findings to extract")
 			} else {
-				printer.StepDone("Security findings extracted")
+				ip.StepInfo("Security findings extracted")
 			}
 		}
 	}
 
-	// 10. Print results.
-	printer.Blank()
-	printer.Header("Results")
-	printer.KeyValue("Run directory", runDir)
-	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
-	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
-	printer.KeyValue("Trace ID", traceID)
-	if h.ValidationLoop != nil {
-		if validationPassed {
-			printer.KeyValue("Validation", "passed")
-		} else {
-			printer.KeyValue("Validation", "failed")
+	// Enrich the deferred summary with data only available at this point.
+	// The defer block above handles WriteSummary + Close for all exit paths.
+	if rec != nil {
+		rec.SetSummaryFields(func(s *telemetry.RunSummary) {
+			s.SecurityTraceID = traceID
+			s.ExitCode = lastExitCode
+			s.Iterations = runCount
+			if h.ValidationLoop != nil {
+				s.Validation = &telemetry.ValidationResult{
+					Configured: true,
+					Passed:     validationPassed,
+					Iterations: runCount,
+				}
+				if validationPassed {
+					s.Validation.Status = telemetry.StatusOK
+				} else {
+					s.Validation.Status = telemetry.StatusError
+				}
+			}
+		})
+	}
+
+	// Print results.
+	ip.Blank()
+	ip.Header("Results")
+	ip.KeyValue("Run directory", runDir)
+	ip.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
+	ip.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
+	ip.KeyValue("Trace ID", traceID)
+	if tp != nil && tp.Tracer != nil {
+		if otelTraceID := telemetry.Traceparent(ip.Context()); otelTraceID != "" {
+			ip.KeyValue("Traceparent", otelTraceID)
 		}
 	}
-	printer.Blank()
+	if h.ValidationLoop != nil {
+		if validationPassed {
+			ip.KeyValue("Validation", "passed")
+		} else {
+			ip.KeyValue("Validation", "failed")
+		}
+	}
+	ip.Blank()
 
 	if h.ValidationLoop != nil && !validationPassed {
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
@@ -1234,18 +1333,18 @@ func buildScanContextCommand(repoDir, traceID string) string {
 // collectOpenshellLogs extracts OpenShell logs (sandbox and gateway sources)
 // into <runDir>/logs/ before sandbox deletion. Failures are warned but never
 // block the run — log collection is best-effort.
-func collectOpenshellLogs(sandboxName, runDir string, printer *ui.Printer) {
+func collectOpenshellLogs(sandboxName, runDir string, ip *telemetry.InstrumentedPrinter) {
 	if runDir == "" {
 		return
 	}
 
 	logsDir := filepath.Join(runDir, "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
-		printer.StepWarn("Failed to create logs directory: " + err.Error())
+		ip.Warn("Failed to create logs directory: " + err.Error())
 		return
 	}
 
-	printer.StepStart("Collecting OpenShell logs")
+	ip.StepStart("collect-logs", "Collecting OpenShell logs")
 	collected := 0
 
 	sources := []struct {
@@ -1259,19 +1358,21 @@ func collectOpenshellLogs(sandboxName, runDir string, printer *ui.Printer) {
 	for _, src := range sources {
 		output, err := sandbox.CollectLogs(sandboxName, src.name)
 		if err != nil {
-			printer.StepWarn(fmt.Sprintf("Could not collect %s logs: %s", src.name, err.Error()))
+			ip.Warn(fmt.Sprintf("Could not collect %s logs: %s", src.name, err.Error()))
 			continue
 		}
 		logPath := filepath.Join(logsDir, src.file)
 		if err := os.WriteFile(logPath, []byte(output), 0o644); err != nil {
-			printer.StepWarn(fmt.Sprintf("Could not write %s: %s", src.file, err.Error()))
+			ip.Warn(fmt.Sprintf("Could not write %s: %s", src.file, err.Error()))
 			continue
 		}
 		collected++
 	}
 
 	if collected > 0 {
-		printer.StepDone(fmt.Sprintf("Collected %d OpenShell log source(s) to %s", collected, logsDir))
+		ip.StepDone("collect-logs", fmt.Sprintf("Collected %d OpenShell log source(s) to %s", collected, logsDir))
+	} else {
+		ip.StepWarn("collect-logs", "No OpenShell logs collected")
 	}
 }
 
@@ -1396,9 +1497,9 @@ func scanRepoContextFiles(repoDir string) []security.Finding {
 
 // scanOutputFiles runs the secret redactor on extracted output files,
 // recursively walking all subdirectories (iteration-N/output/, etc.).
-func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
+func scanOutputFiles(outputDir, traceID string, ip *telemetry.InstrumentedPrinter) error {
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
-		printer.StepInfo("No output files to scan")
+		ip.StepInfo("No output files to scan")
 		return nil
 	}
 
@@ -1408,10 +1509,9 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			return nil
 		}
 		if d.IsDir() {
-			// Skip the security findings directory itself.
 			if d.Name() == "security" {
 				return filepath.SkipDir
 			}
@@ -1420,7 +1520,7 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
 			relPath, _ := filepath.Rel(outputDir, path)
-			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
+			ip.Warn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
 			return nil
 		}
 
@@ -1429,7 +1529,7 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			redacted += len(result.Findings)
 			relPath, _ := filepath.Rel(outputDir, path)
 			for _, f := range result.Findings {
-				printer.StepWarn(fmt.Sprintf("Redacted [%s] in %s: %s", f.Name, relPath, f.Detail))
+				ip.Warn(fmt.Sprintf("Redacted [%s] in %s: %s", f.Name, relPath, f.Detail))
 				security.AppendFinding(findingsPath,
 					security.TracedFinding{
 						TraceID:   traceID,
@@ -1439,7 +1539,7 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 					})
 			}
 			if writeErr := os.WriteFile(path, []byte(result.Sanitized), 0o644); writeErr != nil {
-				printer.StepWarn(fmt.Sprintf("Could not write redacted %s: %v", relPath, writeErr))
+				ip.Warn(fmt.Sprintf("Could not write redacted %s: %v", relPath, writeErr))
 			}
 		}
 		return nil
@@ -1449,9 +1549,9 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 	}
 
 	if redacted > 0 {
-		printer.StepWarn(fmt.Sprintf("Redacted %d secret(s) from output files", redacted))
+		ip.Warn(fmt.Sprintf("Redacted %d secret(s) from output files", redacted))
 	} else {
-		printer.StepDone("Output files clean — no secrets found")
+		ip.StepInfo("Output files clean — no secrets found")
 	}
 	return nil
 }

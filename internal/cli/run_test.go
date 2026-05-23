@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -335,8 +336,8 @@ func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 
 func TestCollectOpenshellLogs_EmptyRunDir(t *testing.T) {
 	// Should be a no-op when runDir is empty — no panic, no error.
-	printer := ui.New(io.Discard)
-	collectOpenshellLogs("test-sandbox", "", printer)
+	ip := telemetry.NewInstrumentedPrinter(io.Discard)
+	collectOpenshellLogs("test-sandbox", "", ip)
 }
 
 func TestCollectOpenshellLogs_CreatesLogsDir(t *testing.T) {
@@ -347,8 +348,8 @@ func TestCollectOpenshellLogs_CreatesLogsDir(t *testing.T) {
 	runDir := filepath.Join(tmpDir, "run")
 	require.NoError(t, os.MkdirAll(runDir, 0o755))
 
-	printer := ui.New(io.Discard)
-	collectOpenshellLogs("nonexistent-sandbox", runDir, printer)
+	ip := telemetry.NewInstrumentedPrinter(io.Discard)
+	collectOpenshellLogs("nonexistent-sandbox", runDir, ip)
 
 	// The logs directory should be created even if collection fails.
 	logsDir := filepath.Join(runDir, "logs")

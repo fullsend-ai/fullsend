@@ -10,6 +10,7 @@ Guides for org administrators who install, configure, and manage fullsend.
 
 - [Installing fullsend](admin/installation.md) — Set up fullsend in a GitHub organization from scratch (see [#328](https://github.com/fullsend-ai/fullsend/pull/328))
 - [Enabling fullsend on private repositories](admin/private-repositories.md) — Additional guardrails and configuration for private repos
+- [Distributed tracing](admin/distributed-tracing.md) — Configure and consume structured telemetry from agent runs
 
 ## User guides
 

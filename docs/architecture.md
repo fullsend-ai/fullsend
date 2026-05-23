@@ -175,11 +175,12 @@ Observability is a cross-cutting concern that touches every other component. Eac
 **Decided:**
 
 - JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
+- Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-events.jsonl` and `run-summary.json` locally; optional OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0040](ADRs/0040-distributed-tracing-instrumentation.md)).
 
 **Open questions:**
 
 - What signals matter most — cost, latency, token usage, action logs, decision traces, or something else?
-- How do we balance detailed tracing (useful for debugging) with the volume of data agents will produce?
+- ~~How do we balance detailed tracing (useful for debugging) with the volume of data agents will produce?~~ Decided in [ADR 0040](ADRs/0040-distributed-tracing-instrumentation.md): instrument all lifecycle steps comprehensively; volume is managed by backends not by suppressing data at the source.
 - What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); retention policy and broader log access remain open.)
 - How does observability interact with the security requirement that "every action is logged, attributable, and reviewable"? (See [security-threat-model.md](problems/security-threat-model.md).)
 - Is there a real-time monitoring requirement (agent is stuck, agent is behaving anomalously), or is observability primarily forensic?
