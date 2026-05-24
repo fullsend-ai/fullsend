@@ -39,7 +39,11 @@ on:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
       FULLSEND_GCP_PROJECT_ID:
-        required: true
+        required: false
+      PHOENIX_URL:
+        required: false
+      PHOENIX_INGEST_TOKEN:
+        required: false
 
 jobs:
   route:
