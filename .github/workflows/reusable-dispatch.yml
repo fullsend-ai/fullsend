@@ -322,7 +322,7 @@ jobs:
     name: Triage
     needs: route
     if: needs.route.outputs.stage == 'triage'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
+    uses: ascerra/fullsend/.github/workflows/reusable-triage.yml@distributed-tracing
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -332,10 +332,7 @@ jobs:
 
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    secrets: inherit
 
   code:
     name: Code

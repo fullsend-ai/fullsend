@@ -131,10 +131,50 @@ jobs:
           TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
         run: bash .github/scripts/setup-agent-env.sh
 
-      - name: Run triage agent
+      - name: Install fullsend infrastructure
         uses: fullsend-ai/fullsend@v0
+        with:
+          agent: __install_only__
+          version: ${{ inputs.fullsend_version }}
+
+      - name: Setup Go
+        if: secrets.PHOENIX_URL != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build telemetry-enabled fullsend
+        if: secrets.PHOENIX_URL != ''
+        run: |
+          set -euo pipefail
+          git clone --branch distributed-tracing --depth 1 \
+            https://github.com/ascerra/fullsend.git /tmp/fullsend-src
+          cd /tmp/fullsend-src
+          go build -o /tmp/fullsend-bin ./cmd/fullsend/
+          FULLSEND_PATH="$(which fullsend)"
+          echo "Replacing ${FULLSEND_PATH} with telemetry-enabled build"
+          cp /tmp/fullsend-bin "${FULLSEND_PATH}"
+          fullsend --version
+          rm -rf /tmp/fullsend-src
+
+      - name: Run triage agent
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          FULLSEND_TELEMETRY: ${{ secrets.PHOENIX_URL != '' && '1' || '' }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.PHOENIX_URL }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.PHOENIX_URL != '' && format('X-Phoenix-Token={0}', secrets.PHOENIX_INGEST_TOKEN) || '' }}
+          OTEL_SERVICE_NAME: fullsend-cli
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/output"
+          fullsend run triage \
+            --fullsend-dir "${GITHUB_WORKSPACE}" \
+            --output-dir "${GITHUB_WORKSPACE}/output" \
+            --target-repo "${GITHUB_WORKSPACE}/target-repo"
+
+      - name: Upload fullsend artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          agent: triage
-          version: ${{ inputs.fullsend_version }}
+          name: fullsend-triage
+          path: ${{ github.workspace }}/output
