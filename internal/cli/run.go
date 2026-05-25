@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
+	"go.opentelemetry.io/otel/codes"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -109,7 +110,9 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	// 1. Resolve and load harness.
 	harnessPath := filepath.Join(fullsendDir, "harness", agentName+".yaml")
 	harnessStart := time.Now()
-	ip.StepStart("load-harness", "Loading harness: "+harnessPath)
+	ip.StepStart("load-harness", "Loading harness: "+harnessPath,
+		telemetry.StringAttr("harness.path", harnessPath),
+	)
 
 	h, loadErr := harness.Load(harnessPath)
 	if loadErr != nil {
@@ -164,7 +167,15 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			}
 		}
 	}
-	ip.StepDone("load-harness", telemetry.TimedMsg("Harness loaded", time.Since(harnessStart)))
+	ip.StepDone("load-harness", telemetry.TimedMsg("Harness loaded", time.Since(harnessStart)),
+		telemetry.StringAttr("harness.agent", h.Agent),
+		telemetry.StringAttr("harness.model", h.Model),
+		telemetry.StringAttr("harness.image", h.Image),
+		telemetry.StringAttr("harness.policy", h.Policy),
+		telemetry.StringAttr("harness.pre_script", h.PreScript),
+		telemetry.StringAttr("harness.post_script", h.PostScript),
+		telemetry.StringAttr("harness.timeout_minutes", fmt.Sprintf("%d", h.TimeoutMinutes)),
+	)
 
 	// Print plan.
 	ip.KeyValue("Agent", h.Agent)
@@ -242,6 +253,17 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	}
 	if rec != nil {
 		ip.AttachRecorder(rec, runCtx)
+		ip.AddRootEvent("run.plan",
+			telemetry.StringAttr("agent", h.Agent),
+			telemetry.StringAttr("model", h.Model),
+			telemetry.StringAttr("image", h.Image),
+			telemetry.StringAttr("sandbox.name", sandboxName),
+			telemetry.StringAttr("run_dir", runDir),
+			telemetry.StringAttr("target_repo", targetRepo),
+			telemetry.StringAttr("pre_script", h.PreScript),
+			telemetry.StringAttr("post_script", h.PostScript),
+			telemetry.StringAttr("timeout_minutes", fmt.Sprintf("%d", h.TimeoutMinutes)),
+		)
 		defer func() {
 			exitCode := 0
 			if runErr != nil {
@@ -263,6 +285,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 				summary.Attrs["error"] = runErr.Error()
 			}
 			_ = rec.WriteSummary(summary)
+			if runErr != nil {
+				rec.SetRootStatus(codes.Error, runErr.Error())
+			} else {
+				rec.SetRootStatus(codes.Ok, "")
+			}
 			_ = rec.Close()
 		}()
 	}
@@ -308,7 +335,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	// 2c. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
-		ip.StepStart("pre-script", "Running pre-script: "+h.PreScript)
+		ip.StepStart("pre-script", "Running pre-script: "+h.PreScript,
+			telemetry.StringAttr("script.path", h.PreScript),
+			telemetry.StringAttr("script.type", "pre"),
+		)
 		preCmd := exec.Command(h.PreScript)
 		preEnv := append(os.Environ(), envToList(h.RunnerEnv)...)
 		if tpEnv := telemetry.TraceparentEnvVar(ip.Context()); tpEnv != "" {
@@ -326,7 +356,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 3. Create sandbox.
 	createStart := time.Now()
-	ip.StepStart("create-sandbox", "Creating sandbox: "+sandboxName)
+	ip.StepStart("create-sandbox", "Creating sandbox: "+sandboxName,
+		telemetry.StringAttr("sandbox.name", sandboxName),
+		telemetry.StringAttr("sandbox.image", h.Image),
+		telemetry.StringAttr("sandbox.policy", h.Policy),
+	)
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
@@ -356,7 +390,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 				return
 			}
 			postStart := time.Now()
-			ip.StepStart("post-script", "Running post-script: "+h.PostScript)
+			ip.StepStart("post-script", "Running post-script: "+h.PostScript,
+				telemetry.StringAttr("script.path", h.PostScript),
+				telemetry.StringAttr("script.type", "post"),
+				telemetry.StringAttr("script.working_dir", runDir),
+			)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
 			postEnv := append(os.Environ(), envToList(h.RunnerEnv)...)
@@ -380,7 +418,9 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		collectOpenshellLogs(sandboxName, runDir, ip)
 
 		cleanupStart := time.Now()
-		ip.StepStart("delete-sandbox", "Cleaning up sandbox")
+		ip.StepStart("delete-sandbox", "Cleaning up sandbox",
+			telemetry.StringAttr("sandbox.name", sandboxName),
+		)
 		if err := sandbox.Delete(sandboxName); err != nil {
 			ip.StepWarn("delete-sandbox", "Sandbox cleanup failed: "+err.Error())
 		} else {
@@ -399,7 +439,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 7. Bootstrap sandbox.
 	bootstrapStart := time.Now()
-	ip.StepStart("bootstrap-sandbox", "Bootstrapping sandbox")
+	ip.StepStart("bootstrap-sandbox", "Bootstrapping sandbox",
+		telemetry.StringAttr("sandbox.name", sandboxName),
+		telemetry.StringAttr("sandbox.repo_dir", repoDir),
+	)
 	if err := bootstrapSandbox(sandboxName, repoDir, fullsendBinary, h); err != nil {
 		ip.StepFail("bootstrap-sandbox", "Failed to bootstrap sandbox", err)
 		return err
@@ -408,7 +451,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 8. Make project code available (copy repo root into a named subdirectory).
 	copyStart := time.Now()
-	ip.StepStart("upload-target-repo", "Copying project code into sandbox")
+	ip.StepStart("upload-target-repo", "Copying project code into sandbox",
+		telemetry.StringAttr("repo.source", repoSrc),
+		telemetry.StringAttr("repo.name", repoName),
+		telemetry.StringAttr("repo.sandbox_path", repoDir),
+	)
 	if err := sandbox.UploadDir(sandboxName, repoSrc, repoDir); err != nil {
 		ip.StepFail("upload-target-repo", "Failed to copy project code", err)
 		return fmt.Errorf("copying project code: %w", err)
@@ -453,7 +500,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 8c. Host-side scan (Path A): scan the target repo's context files.
 	if h.SecurityEnabled() {
-		ip.StepStart("scan-host-context", "Scanning target repo context files")
+		ip.StepStart("scan-host-context", "Scanning target repo context files",
+			telemetry.StringAttr("scan.target", repoSrc),
+			telemetry.StringAttr("scan.type", "host-context"),
+		)
 		findings := scanRepoContextFiles(repoSrc)
 		if security.HasCriticalFindings(findings) {
 			if h.FailModeClosed() {
@@ -464,7 +514,9 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		} else if len(findings) > 0 {
 			ip.StepWarn("scan-host-context", fmt.Sprintf("Target repo context scan: %d finding(s)", len(findings)))
 		} else {
-			ip.StepDone("scan-host-context", "Target repo context files clean")
+			ip.StepDone("scan-host-context", "Target repo context files clean",
+				telemetry.StringAttr("scan.findings_count", "0"),
+			)
 		}
 	}
 
@@ -477,7 +529,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 	// 9b. Pre-agent security scan (sandbox-internal, Path B).
 	if h.SecurityEnabled() {
-		ip.StepStart("scan-pre-agent", "Running pre-agent security scan")
+		ip.StepStart("scan-pre-agent", "Running pre-agent security scan",
+			telemetry.StringAttr("scan.type", "pre-agent"),
+			telemetry.StringAttr("scan.sandbox", sandboxName),
+		)
 		scanCmd := buildScanContextCommand(repoDir, traceID)
 		stdout, stderr, exitCode, execErr := sandbox.Exec(sandboxName, scanCmd, 60*time.Second)
 		if execErr != nil {
@@ -487,6 +542,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			}
 			ip.StepWarn("scan-pre-agent", "Continuing despite scan failure (fail_mode: open)")
 		} else if exitCode != 0 {
+			ip.AddEvent("scan-pre-agent", "scan.findings", telemetry.StringAttr("stdout", stdout))
+			if stderr != "" {
+				ip.AddEvent("scan-pre-agent", "scan.stderr", telemetry.StringAttr("stderr", stderr))
+			}
 			ip.Warn("Security scan findings:\n" + stdout)
 			if stderr != "" {
 				ip.Warn("Scan stderr: " + stderr)
@@ -497,7 +556,9 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			}
 			ip.StepWarn("scan-pre-agent", "Continuing despite findings (fail_mode: open)")
 		} else {
-			ip.StepDone("scan-pre-agent", "Pre-agent scan passed")
+			ip.StepDone("scan-pre-agent", "Pre-agent scan passed",
+				telemetry.StringAttr("scan.exit_code", "0"),
+			)
 		}
 	}
 
@@ -577,6 +638,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			telemetry.StringAttr("gen_ai.operation.name", "invoke_agent"),
 			telemetry.StringAttr("gen_ai.agent.name", agentName),
 			telemetry.StringAttr("gen_ai.request.model", h.Model),
+			telemetry.StringAttr("iteration", fmt.Sprintf("%d", iteration)),
+			telemetry.StringAttr("max_iterations", fmt.Sprintf("%d", maxIterations)),
+			telemetry.StringAttr("timeout", timeout.String()),
+			telemetry.StringAttr("sandbox.name", sandboxName),
+			telemetry.StringAttr("command", claudeCmd),
 		)
 		ip.Blank()
 
@@ -603,27 +669,42 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 
 		// 9b. Extract output files.
 		extractStart := time.Now()
-		ip.StepStart("extract-output", "Extracting output files")
+		ip.StepStart("extract-output", "Extracting output files",
+			telemetry.StringAttr("output.destination", iterOutputDir),
+		)
 		remoteSrc := fmt.Sprintf("%s/output", sandbox.SandboxWorkspace)
 		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir)
 		if extractErr != nil {
 			ip.StepWarn("extract-output", "Failed to extract output files: "+extractErr.Error())
 		} else if len(extracted) == 0 {
-			ip.StepDone("extract-output", "No output files found")
+			ip.StepDone("extract-output", "No output files found",
+				telemetry.StringAttr("output.file_count", "0"),
+			)
 		} else {
 			for _, f := range extracted {
 				ip.StepInfo(f)
 			}
-			ip.StepDone("extract-output", telemetry.TimedMsg(fmt.Sprintf("Extracted %d output file(s)", len(extracted)), time.Since(extractStart)))
+			ip.StepDone("extract-output", telemetry.TimedMsg(fmt.Sprintf("Extracted %d output file(s)", len(extracted)), time.Since(extractStart)),
+				telemetry.StringAttr("output.file_count", fmt.Sprintf("%d", len(extracted))),
+				telemetry.StringAttr("output.files", strings.Join(extracted, ", ")),
+			)
 		}
 
 		// 9c. Extract transcripts for this iteration.
 		transcriptStart := time.Now()
-		ip.StepStart("extract-transcripts", "Extracting transcripts")
+		ip.StepStart("extract-transcripts", "Extracting transcripts",
+			telemetry.StringAttr("transcripts.destination", iterTranscriptDir),
+		)
 		if err := sandbox.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
 			ip.StepWarn("extract-transcripts", "Failed to extract transcripts: "+err.Error())
 		} else {
-			ip.StepDone("extract-transcripts", telemetry.TimedMsg("Transcripts extracted", time.Since(transcriptStart)))
+			ip.StepDone("extract-transcripts", telemetry.TimedMsg("Transcripts extracted", time.Since(transcriptStart)),
+				telemetry.StringAttr("transcripts.directory", iterTranscriptDir),
+			)
+			// Parse transcripts and emit LLM interaction spans under the
+			// iteration step. This populates input/output on child spans
+			// so any OTLP backend can display what the agent said/received.
+			telemetry.EmitTranscriptSpans(ip.Recorder(), iterStep, iterTranscriptDir, h.Model)
 		}
 
 		// Extract debug log if --debug was enabled.
@@ -641,7 +722,10 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			return fmt.Errorf("clearing local repo %s before extraction: %w", repoSrc, clearErr)
 		}
 		repoExtractStart := time.Now()
-		ip.StepStart("extract-target-repo", "Extracting target repo")
+		ip.StepStart("extract-target-repo", "Extracting target repo",
+			telemetry.StringAttr("repo.sandbox_path", repoDir),
+			telemetry.StringAttr("repo.local_path", repoSrc),
+		)
 		if err := sandbox.SafeDownload(sandboxName, repoDir, repoSrc); err != nil {
 			if es := extractTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				emitTranscriptErrors(os.Stderr, es)
@@ -657,7 +741,11 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 
 		valStart := time.Now()
-		ip.StepStart("validation", "Running validation: "+h.ValidationLoop.Script)
+		ip.StepStart("validation", "Running validation: "+h.ValidationLoop.Script,
+			telemetry.StringAttr("validation.script", h.ValidationLoop.Script),
+			telemetry.StringAttr("validation.iteration", fmt.Sprintf("%d", iteration)),
+			telemetry.StringAttr("validation.working_dir", iterDir),
+		)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		valCmd.Env = append(os.Environ(),
@@ -669,11 +757,17 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
-			ip.StepDone("validation", telemetry.TimedMsg("Validation passed: "+strings.TrimSpace(string(valOut)), time.Since(valStart)))
+			ip.StepDone("validation", telemetry.TimedMsg("Validation passed: "+strings.TrimSpace(string(valOut)), time.Since(valStart)),
+				telemetry.StringAttr("validation.result", "passed"),
+				telemetry.StringAttr("validation.output", strings.TrimSpace(string(valOut))),
+			)
 			validationPassed = true
 			break
 		}
 
+		ip.AddEvent("validation", "validation.output",
+			telemetry.StringAttr("output", strings.TrimSpace(string(valOut))),
+		)
 		ip.StepFail("validation", "Validation failed: "+strings.TrimSpace(string(valOut)), valErr)
 		if iteration < maxIterations {
 			ip.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
@@ -730,6 +824,15 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 				}
 			}
 		})
+		rec.SetRootAttribute("fullsend.iterations", fmt.Sprintf("%d", runCount))
+		rec.SetRootAttribute("fullsend.exit_code", fmt.Sprintf("%d", lastExitCode))
+		if h.ValidationLoop != nil {
+			if validationPassed {
+				rec.SetRootAttribute("fullsend.validation", "passed")
+			} else {
+				rec.SetRootAttribute("fullsend.validation", "failed")
+			}
+		}
 	}
 
 	// Print results.

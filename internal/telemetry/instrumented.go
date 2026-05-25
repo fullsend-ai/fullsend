@@ -109,6 +109,22 @@ func (ip *InstrumentedPrinter) StepInfo(text string) {
 	ip.printer.StepInfo(text)
 }
 
+// AddEvent attaches a log-style event to the currently-open step span.
+// This is the standard OTEL mechanism for adding context to spans and
+// appears in all backends (Jaeger, Phoenix, Tempo) under "Events" or "Logs".
+func (ip *InstrumentedPrinter) AddEvent(stepName, eventName string, attrs ...Attr) {
+	if ip.rec != nil {
+		ip.rec.AddEvent(stepName, eventName, attrs...)
+	}
+}
+
+// AddRootEvent attaches an event directly to the root span.
+func (ip *InstrumentedPrinter) AddRootEvent(eventName string, attrs ...Attr) {
+	if ip.rec != nil {
+		ip.rec.AddRootEvent(eventName, attrs...)
+	}
+}
+
 // Warn prints a standalone warning not associated with a step lifecycle.
 // Use for informational warnings that aren't closing a span.
 func (ip *InstrumentedPrinter) Warn(msg string) {

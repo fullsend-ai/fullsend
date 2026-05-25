@@ -261,6 +261,36 @@ func (r *Recorder) StepWarn(name string, detail string) {
 	r.recordLocked(event)
 }
 
+// AddEvent attaches a named event (log line) to a currently-open step span.
+// If the step has no open span, the event is attached to the root span.
+// This uses OTEL's span.AddEvent which appears as "Events" in any backend.
+func (r *Recorder) AddEvent(stepName, eventName string, attrs ...Attr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var span trace.Span
+	if entry, ok := r.spans[stepName]; ok {
+		span = entry.span
+	} else if r.rootSpan != nil {
+		span = r.rootSpan
+	}
+	if span != nil {
+		otelAttrs := attrsToOTEL(attrs)
+		span.AddEvent(eventName, trace.WithAttributes(otelAttrs...))
+	}
+}
+
+// AddRootEvent attaches an event to the root span directly.
+func (r *Recorder) AddRootEvent(eventName string, attrs ...Attr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.rootSpan != nil {
+		otelAttrs := attrsToOTEL(attrs)
+		r.rootSpan.AddEvent(eventName, trace.WithAttributes(otelAttrs...))
+	}
+}
+
 // Context returns the root span context for propagation to subprocesses.
 func (r *Recorder) Context() context.Context {
 	return r.rootCtx
@@ -279,6 +309,24 @@ func (r *Recorder) SetSummaryFields(fn func(*RunSummary)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.summaryEnrich = fn
+}
+
+// SetRootStatus sets the status on the root span.
+func (r *Recorder) SetRootStatus(code codes.Code, description string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rootSpan != nil {
+		r.rootSpan.SetStatus(code, description)
+	}
+}
+
+// SetRootAttribute sets a string attribute on the root span.
+func (r *Recorder) SetRootAttribute(key, value string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rootSpan != nil {
+		r.rootSpan.SetAttributes(attribute.String(key, value))
+	}
 }
 
 // Steps returns the accumulated step summaries.
