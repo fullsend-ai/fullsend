@@ -701,10 +701,6 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			ip.StepDone("extract-transcripts", telemetry.TimedMsg("Transcripts extracted", time.Since(transcriptStart)),
 				telemetry.StringAttr("transcripts.directory", iterTranscriptDir),
 			)
-			// Parse transcripts and emit LLM interaction spans under the
-			// iteration step. This populates input/output on child spans
-			// so any OTLP backend can display what the agent said/received.
-			telemetry.EmitTranscriptSpans(ip.Recorder(), iterStep, iterTranscriptDir, h.Model)
 		}
 
 		// Extract debug log if --debug was enabled.
