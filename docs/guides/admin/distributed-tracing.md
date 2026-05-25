@@ -148,7 +148,56 @@ A CI regression gate (`telemetry_lint_test.go`) ensures that raw
 `printer.StepStart` calls cannot be introduced in `runAgent` — the test
 will fail if someone bypasses the unified path.
 
-## Recommended backends for evaluation
+## MLflow tracing backend (production)
+
+Fullsend traces are exported to an MLflow instance at
+`https://mlflow-35-212-57-52.nip.io`. MLflow ingests OTLP/HTTP traces and
+provides GenAI-aware dashboards with automatic token usage rollups.
+
+### GHA workflow configuration
+
+Add these environment variables to workflow jobs that run `fullsend run`:
+
+```yaml
+env:
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://mlflow-35-212-57-52.nip.io/v1/traces"
+  OTEL_EXPORTER_OTLP_TRACES_HEADERS: "Authorization=Bearer ${{ secrets.MLFLOW_OTLP_TOKEN }},x-mlflow-experiment-id=0"
+```
+
+The `MLFLOW_OTLP_TOKEN` GitHub Actions secret must be set at the org or repo
+level. The token value is stored in GCP Secret Manager
+(`mlflow-otlp-token` in `it-gcp-konflux-dev-fullsend`).
+
+### MLflow UI access
+
+The MLflow UI is at `https://mlflow-35-212-57-52.nip.io` behind basic auth
+(user: `admin`, password: same as the OTLP token). Navigate to the **Traces**
+tab to view agent run traces with span hierarchies, GenAI attributes, and
+token usage.
+
+### Infrastructure
+
+The MLflow instance runs on a GCP VM (`mlflow`, zone `us-east4-c`) in the
+`it-gcp-konflux-dev-fullsend` project:
+
+- **VM**: e2-medium (2 vCPU, 4GB), Ubuntu 24.04 LTS
+- **Static IP**: 35.212.57.52
+- **Stack**: MLflow + PostgreSQL + RustFS (S3-compatible artifacts) + Caddy
+  (TLS, auth, reverse proxy)
+- **Service account**: `mlflow-vm@it-gcp-konflux-dev-fullsend.iam.gserviceaccount.com`
+  (logging + monitoring write only)
+- **Network**: HTTPS (443) open, SSH via IAP only (35.235.240.0/20), iptables
+  rate limiting (30 new connections/min per source IP)
+- **Auth**: Bearer token for OTLP, basic auth for UI, both enforced by Caddy
+
+Admin access:
+
+```bash
+gcloud compute ssh mlflow --zone=us-east4-c --tunnel-through-iap \
+  --project=it-gcp-konflux-dev-fullsend
+```
+
+## Other backends for evaluation
 
 | Backend | Strengths | Setup |
 |---------|-----------|-------|

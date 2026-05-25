@@ -40,9 +40,7 @@ on:
         required: false
       FULLSEND_GCP_PROJECT_ID:
         required: false
-      PHOENIX_URL:
-        required: false
-      PHOENIX_INGEST_TOKEN:
+      MLFLOW_OTLP_TOKEN:
         required: false
 
 jobs:

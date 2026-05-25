@@ -46,6 +46,7 @@ func TestInitTracer_EnabledNoEndpoint(t *testing.T) {
 func TestConfigFromEnv_Defaults(t *testing.T) {
 	t.Setenv("FULLSEND_TELEMETRY", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	cfg := ConfigFromEnv()
 	assert.False(t, cfg.Enabled)
 }
@@ -53,6 +54,7 @@ func TestConfigFromEnv_Defaults(t *testing.T) {
 func TestConfigFromEnv_TelemetryFlag(t *testing.T) {
 	t.Setenv("FULLSEND_TELEMETRY", "1")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	cfg := ConfigFromEnv()
 	assert.True(t, cfg.Enabled)
 }
@@ -60,9 +62,18 @@ func TestConfigFromEnv_TelemetryFlag(t *testing.T) {
 func TestConfigFromEnv_OTLPEndpoint(t *testing.T) {
 	t.Setenv("FULLSEND_TELEMETRY", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	cfg := ConfigFromEnv()
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, "http://localhost:4318", cfg.OTLPEndpoint)
+}
+
+func TestConfigFromEnv_TracesEndpoint(t *testing.T) {
+	t.Setenv("FULLSEND_TELEMETRY", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://mlflow.example.com/v1/traces")
+	cfg := ConfigFromEnv()
+	assert.True(t, cfg.Enabled, "traces-specific endpoint should enable telemetry")
 }
 
 func TestTracerProvider_ShutdownNil(t *testing.T) {

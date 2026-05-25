@@ -38,12 +38,14 @@ type Config struct {
 
 // ConfigFromEnv builds a Config from environment variables.
 // Telemetry is enabled when FULLSEND_TELEMETRY=1 or when
-// OTEL_EXPORTER_OTLP_ENDPOINT is set (opt-in via either mechanism).
+// OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+// is set (opt-in via either mechanism).
 func ConfigFromEnv() Config {
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	tracesEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 	explicit := os.Getenv("FULLSEND_TELEMETRY")
 	return Config{
-		Enabled:      explicit == "1" || explicit == "true" || endpoint != "",
+		Enabled:      explicit == "1" || explicit == "true" || endpoint != "" || tracesEndpoint != "",
 		OTLPEndpoint: endpoint,
 	}
 }
@@ -98,7 +100,7 @@ func InitTracer(ctx context.Context, cfg Config) (*TracerProvider, error) {
 	// env var), let the SDK read it directly — it expects a full URL
 	// (e.g. "http://localhost:4318") and handles scheme/path parsing.
 	// WithEndpoint() expects bare host:port and would break with a scheme.
-	if cfg.OTLPEndpoint != "" || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
+	if cfg.OTLPEndpoint != "" || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" {
 		exporter, err := otlptracehttp.New(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("creating OTLP exporter: %w", err)

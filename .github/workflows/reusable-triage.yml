@@ -33,9 +33,7 @@ on:
         required: false
       FULLSEND_GCP_PROJECT_ID:
         required: false
-      PHOENIX_URL:
-        required: false
-      PHOENIX_INGEST_TOKEN:
+      MLFLOW_OTLP_TOKEN:
         required: false
 
 jobs:
@@ -168,8 +166,8 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           FULLSEND_TELEMETRY: '1'
-          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.PHOENIX_URL }}
-          OTEL_EXPORTER_OTLP_HEADERS: ${{ format('X-Phoenix-Token={0}', secrets.PHOENIX_INGEST_TOKEN) }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: https://mlflow-35-212-57-52.nip.io/v1/traces
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ format('Authorization=Bearer {0},x-mlflow-experiment-id=0', secrets.MLFLOW_OTLP_TOKEN) }}
           OTEL_SERVICE_NAME: fullsend-cli
         run: |
           set -euo pipefail
