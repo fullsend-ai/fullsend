@@ -113,10 +113,11 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  create .fullsend config repo    │              │ │
 │  │  │           push reusable workflows         │              │ │
-│  │  │           vendor fullsend binary          │              │ │
+│  │  │           vendor fullsend binary (opt)    │              │ │
 │  │  │                                           │              │ │
 │  │  │ Per-repo: write .fullsend/ dir in repo    │              │ │
 │  │  │           push shim workflow template     │              │ │
+│  │  │           vendor fullsend binary (opt)    │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -161,7 +162,7 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
 | **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | + `RegisterPerRepoWIF()` |
 | **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `BuildRepoProviderID()` (repo-scoped) |
-| **5. Scaffold** | `scaffold.PerRepoCustomizedDirs()` / `WalkFullsendRepo()` | Creates `.fullsend` repo, pushes workflows + binary | Writes `.fullsend/` dir + shim workflow in target repo |
+| **5. Scaffold** | `scaffold.PerRepoCustomizedDirs()` / `WalkFullsendRepo()` | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
 | **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
 
@@ -185,7 +186,7 @@ Install:      process 1→7 (forward)
 Uninstall:    process 7→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` since there's no need for composable uninstall ordering with a single repo.
+Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` since there's no need for composable uninstall ordering with a single repo. Binary vendoring (when `--vendor-fullsend-binary` is set) and stale binary cleanup are handled inline rather than through `VendorBinaryLayer`.
 
 ---
 

@@ -546,8 +546,8 @@ func vendorBinaryForE2E(t *testing.T, env *e2eEnv) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "building fullsend binary: %s", string(out))
 
-	t.Log("Uploading vendored binary to .fullsend/bin/fullsend...")
-	err = layers.VendorBinary(context.Background(), env.client, testOrg, tmpBinary.Name())
+	t.Logf("Uploading vendored binary to %s...", layers.VendoredBinaryPath)
+	err = layers.VendorBinary(context.Background(), env.client, testOrg, forge.ConfigRepoName, layers.VendoredBinaryPath, tmpBinary.Name())
 	require.NoError(t, err, "vendoring binary")
 	t.Log("Vendored binary uploaded successfully")
 }

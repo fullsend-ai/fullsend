@@ -179,7 +179,6 @@ func TestInstallCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
 		flag  string
 		value string
 	}{
-		{"vendor-fullsend-binary", ""},
 		{"enroll-all", ""},
 		{"enroll-none", ""},
 	}
@@ -214,6 +213,7 @@ func TestInstallCmd_PerRepoAcceptsSharedFlags(t *testing.T) {
 		{"mint-source-dir", "/tmp/src"},
 		{"skip-mint-deploy", ""},
 		{"app-set", "custom-prefix"},
+		{"vendor-fullsend-binary", ""},
 	}
 	for _, tc := range sharedFlags {
 		t.Run(tc.flag, func(t *testing.T) {
@@ -1092,7 +1092,7 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
 		layers.NewEnrollmentLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
-		layers.NewVendorBinaryLayer("test-org", nil, ui.New(&discardWriter{}), false, nil),
+		layers.NewVendorBinaryLayer("test-org", ".fullsend", nil, ui.New(&discardWriter{}), false, nil),
 	)
 	layerScopes := stack.CollectRequiredScopes(layers.OpInstall)
 

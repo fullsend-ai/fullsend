@@ -265,7 +265,10 @@ Shared flags (valid for both per-org and per-repo):
 - `--mint-source-dir` — path to mint function source directory
 - `--app-set` — app set name prefix for GitHub Apps (default: `fullsend-ai`)
 
-Per-org-only flags (`--vendor-fullsend-binary`, `--enroll-all`, `--enroll-none`) are rejected when an `owner/repo` argument is given. All other flags are shared between per-org and per-repo modes — per-repo can create GitHub Apps, deploy a mint, and manage public apps when existing infrastructure is not found.
+Per-org-only flags are rejected when an `owner/repo` argument is given:
+- `--enroll-all`, `--enroll-none` — control org-wide repository enrollment
+
+All other flags are shared between per-org and per-repo modes — per-repo can create GitHub Apps, deploy a mint, and manage public apps when existing infrastructure is not found.
 
 **Per-repo install steps**:
 

@@ -8,12 +8,10 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const vendoredBinaryPath = "bin/fullsend"
-
 // VendorFunc is a callback that cross-compiles and uploads a vendored binary.
-type VendorFunc func(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error
+type VendorFunc func(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error
 
-// VendorBinaryLayer manages the vendored development binary in .fullsend/bin/.
+// VendorBinaryLayer manages the vendored development binary.
 //
 // When enabled (--vendor-fullsend-binary flag), it calls a VendorFunc callback
 // to cross-compile and upload the binary. When disabled (the default), it
@@ -21,6 +19,7 @@ type VendorFunc func(ctx context.Context, client forge.Client, printer *ui.Print
 // binary from shadowing released versions.
 type VendorBinaryLayer struct {
 	org      string
+	repo     string
 	client   forge.Client
 	ui       *ui.Printer
 	enabled  bool
@@ -31,9 +30,10 @@ type VendorBinaryLayer struct {
 var _ Layer = (*VendorBinaryLayer)(nil)
 
 // NewVendorBinaryLayer creates a new VendorBinaryLayer.
-func NewVendorBinaryLayer(org string, client forge.Client, printer *ui.Printer, enabled bool, vendorFn VendorFunc) *VendorBinaryLayer {
+func NewVendorBinaryLayer(org, repo string, client forge.Client, printer *ui.Printer, enabled bool, vendorFn VendorFunc) *VendorBinaryLayer {
 	return &VendorBinaryLayer{
 		org:      org,
+		repo:     repo,
 		client:   client,
 		ui:       printer,
 		enabled:  enabled,
@@ -42,6 +42,15 @@ func NewVendorBinaryLayer(org string, client forge.Client, printer *ui.Printer, 
 }
 
 func (l *VendorBinaryLayer) Name() string { return "vendor-binary" }
+
+// binaryPath returns the upload path for the vendored binary based on the
+// target repo: per-org uses bin/fullsend, per-repo uses .fullsend/bin/fullsend.
+func (l *VendorBinaryLayer) binaryPath() string {
+	if l.repo != forge.ConfigRepoName {
+		return VendoredBinaryPathPerRepo
+	}
+	return VendoredBinaryPath
+}
 
 // RequiredScopes returns the scopes needed for the given operation.
 func (l *VendorBinaryLayer) RequiredScopes(op Operation) []string {
@@ -60,11 +69,12 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 		if l.vendorFn == nil {
 			return fmt.Errorf("vendor function not configured")
 		}
-		return l.vendorFn(ctx, l.client, l.ui, l.org)
+		return l.vendorFn(ctx, l.client, l.ui, l.org, l.repo)
 	}
 
 	// Disabled — clean up any vendored binary left from a previous install.
-	_, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, vendoredBinaryPath)
+	path := l.binaryPath()
+	_, err := l.client.GetFileContent(ctx, l.org, l.repo, path)
 	if err != nil {
 		if forge.IsNotFound(err) {
 			return nil
@@ -73,7 +83,7 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 	}
 
 	l.ui.StepStart("removing stale vendored binary")
-	if err := l.client.DeleteFile(ctx, l.org, forge.ConfigRepoName, vendoredBinaryPath, "chore: remove vendored binary"); err != nil {
+	if err := l.client.DeleteFile(ctx, l.org, l.repo, path, "chore: remove vendored binary"); err != nil {
 		l.ui.StepFail("failed to remove vendored binary")
 		return fmt.Errorf("deleting vendored binary: %w", err)
 	}
@@ -81,15 +91,16 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 	return nil
 }
 
-// Uninstall is a no-op. The vendored binary is removed when the config repo
-// is deleted by the ConfigRepoLayer.
+// Uninstall is a no-op. In per-org mode the vendored binary is removed when
+// the config repo is deleted by ConfigRepoLayer. In per-repo mode the binary
+// lives in the target repo and is cleaned up on re-install with vendor disabled.
 func (l *VendorBinaryLayer) Uninstall(_ context.Context) error { return nil }
 
 // Analyze assesses the current state of the vendored binary.
 func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
-	_, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, vendoredBinaryPath)
+	_, err := l.client.GetFileContent(ctx, l.org, l.repo, l.binaryPath())
 	if err != nil {
 		if forge.IsNotFound(err) {
 			if l.enabled {
