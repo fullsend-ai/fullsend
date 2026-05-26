@@ -26,7 +26,7 @@ help:
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
 	@echo "  script-test          - Run shell script tests (post-triage, post-code, post-review, reconcile-repos, validate-output-schema)"
-	@echo "  test                 - Run all checks: lint, go-vet, go-test, script-test"
+	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
 	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_SESSION_FILE or E2E_GITHUB_USERNAME + E2E_GITHUB_PASSWORD)"
 	@echo "  e2e-export-session   - Login to GitHub and export a Playwright session file"
 	@echo "  e2e-upload-session   - Export session and upload it as a GitHub repo secret"
@@ -88,7 +88,7 @@ go-build:
 	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
-	go test -race -cover ./...
+	GH_TOKEN= GITHUB_TOKEN= go test -race -cover ./...
 
 go-lint:
 	golangci-lint run ./...
@@ -114,7 +114,7 @@ script-test:
 	bash internal/scaffold/fullsend-repo/scripts/pre-code-test.sh
 	python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py
 
-test: lint go-vet go-test script-test
+test: lint-all go-test script-test
 
 E2E_SESSION_FILE ?= $(CURDIR)/.playwright/session.json
 

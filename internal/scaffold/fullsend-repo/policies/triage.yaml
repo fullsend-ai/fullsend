@@ -1,5 +1,11 @@
 version: 1
 
+# Sandbox policy for the triage agent.
+#
+# Needs GitHub API for issue/PR triage and Vertex AI for inference.
+# curl intentionally excluded from vertex_ai binaries to prevent
+# disallowedTools bypass via raw HTTP with the injected GH_TOKEN.
+
 filesystem_policy:
   include_workdir: true
   read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
@@ -14,17 +20,33 @@ network_policies:
   vertex_ai:
     name: vertex-ai
     endpoints:
-      - host: "*.github.com"
+      - host: "api.anthropic.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
       - host: "*.googleapis.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
     binaries:
-      - path: "**/curl"
       - path: "**/claude"
+      - path: "**/node"
+
+  github_api:
+    name: github-api
+    endpoints:
+      - host: "api.github.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: "github.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: "**/gh"
       - path: "**/node"

@@ -62,6 +62,38 @@ TARGET_BRANCH="${TARGET_BRANCH:-main}"
 echo "::add-mask::${PUSH_TOKEN}"
 
 # ---------------------------------------------------------------------------
+# Error reporting — post a comment on the issue when the post-script fails.
+#
+# This ensures humans get feedback without checking workflow logs. The
+# function is called from a trap on ERR. It is a best-effort operation:
+# if the comment fails (e.g. token expired), we still exit non-zero.
+# ---------------------------------------------------------------------------
+report_failure_to_issue() {
+  local exit_code=$?
+  # Only report if we have the necessary context
+  if [ -z "${GH_TOKEN:-}" ]; then
+    export GH_TOKEN="${PUSH_TOKEN}"
+  fi
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${REPO_FULL_NAME}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+  local comment_body="⚠️ **Post-code script failed** (exit code ${exit_code})
+
+The code agent completed, but the post-code script failed while \
+pushing the branch or creating the PR.
+
+**Workflow run:** ${run_url}
+
+Please check the workflow logs for details and retry with \`/fs-code\` \
+if appropriate."
+
+  echo "::warning::Posting failure comment to issue #${ISSUE_NUMBER}..."
+  gh issue comment "${ISSUE_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --body "${comment_body}" 2>/dev/null || \
+    echo "::warning::Failed to post error comment to issue #${ISSUE_NUMBER}"
+}
+trap report_failure_to_issue ERR
+
+# ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
@@ -196,16 +228,50 @@ fi
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
-# Plain push (no --force-with-lease). Agents always create new
-# commits (amend is in disallowedTools), so force-push is unnecessary
-# and plain push is safer (refuses diverged branches).
+export GH_TOKEN="${PUSH_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# 7a. Delete stale remote branch if it exists with no open PR.
+#
+# When a human closes a code agent PR and re-triggers /fs-code, the old
+# remote branch still exists. A plain push will fail with non-fast-forward
+# because the local branch was created fresh from origin/main. Delete the
+# stale remote branch so the push succeeds.
+# ---------------------------------------------------------------------------
+REMOTE_REF="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | head -1 || true)"
+if [ -n "${REMOTE_REF}" ]; then
+  echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
+  OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
+    --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+  if [ -z "${OPEN_PR}" ]; then
+    echo "No open PR uses ${BRANCH} — deleting stale remote branch"
+    git push origin --delete "${BRANCH}" 2>&1 || \
+      echo "::warning::Failed to delete stale remote branch ${BRANCH}"
+  else
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} — keeping remote branch"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
+# ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
-git push -u origin -- "${BRANCH}" 2>&1
+PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+echo "${PUSH_OUTPUT}"
+
+if [ "${PUSH_RC}" -ne 0 ]; then
+  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+  else
+    echo "::error::Push failed with unexpected error"
+    exit 1
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # 8. Create PR
 # ---------------------------------------------------------------------------
-export GH_TOKEN="${PUSH_TOKEN}"
 
 EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
   --json number --jq '.[0].number' 2>/dev/null || true)"

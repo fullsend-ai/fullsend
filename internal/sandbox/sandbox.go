@@ -18,19 +18,54 @@ const (
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
 	SandboxClaudeConfig = "/tmp/claude-config" //nolint:gosec // not a credential
 
-	createTimeout   = 65 * time.Second
-	readyTimeout    = 60 * time.Second
+	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second
+	readyCtxBuffer  = 10 * time.Second
+	maxReadyTimeout = 600 * time.Second
 	transferTimeout = 5 * time.Minute
+
+	DefaultMaxCreateAttempts = 3
+	retryInitialBackoff      = 5 * time.Second
+	retryMaxBackoff          = 15 * time.Second
 )
 
 func sanitizeDownload(localDir string) error {
-	return filepath.WalkDir(localDir, func(path string, d fs.DirEntry, err error) error {
+	absLocal, err := filepath.Abs(localDir)
+	if err != nil {
+		return err
+	}
+	absLocal, err = filepath.EvalSymlinks(absLocal)
+	if err != nil {
+		return err
+	}
+
+	return filepath.WalkDir(absLocal, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
-			return os.Remove(path)
+			target, readErr := os.Readlink(path)
+			if readErr != nil {
+				return os.Remove(path)
+			}
+			// Absolute targets always point outside the repo root.
+			if filepath.IsAbs(target) {
+				return os.Remove(path)
+			}
+			// Use EvalSymlinks, not filepath.Clean: Clean is textual and misses
+			// chains where an in-repo dir-symlink is used as a component
+			// (e.g. "sub/link/../../etc/passwd" cleans to inside the repo but
+			// follows the link to outside). Fall back to remove on error
+			// (dangling or looping).
+			rawPath := filepath.Dir(path) + string(filepath.Separator) + target
+			resolved, evalErr := filepath.EvalSymlinks(rawPath)
+			if evalErr != nil {
+				return os.Remove(path)
+			}
+			if !strings.HasPrefix(resolved+string(filepath.Separator), absLocal+string(filepath.Separator)) {
+				return os.Remove(path)
+			}
+			return nil
 		}
 
 		if d.IsDir() && d.Name() == "hooks" && filepath.Base(filepath.Dir(path)) == ".git" {
@@ -105,29 +140,89 @@ func EnsureAvailable() error {
 	return nil
 }
 
-// EnsureGateway starts a local gateway if none is active. It is idempotent —
-// if a gateway is already running the command is a no-op.
-func EnsureGateway() error {
-	// Check if a gateway is already active.
-	check := exec.Command("openshell", "gateway", "info")
-	if err := check.Run(); err == nil {
-		return nil
-	}
-
-	cmd := exec.Command("openshell", "gateway", "start")
-	out, err := cmd.CombinedOutput()
+// CheckGateway verifies that an openshell gateway is already running.
+// The gateway must be started externally (e.g. in CI via the action.yml steps)
+// before invoking fullsend run.
+func CheckGateway() error {
+	out, err := exec.Command("openshell", "gateway", "list").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("gateway start failed: %s", string(out))
+		return fmt.Errorf("no openshell gateway running (openshell gateway list: %s) -- start openshell-gateway before running fullsend", strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("no openshell gateway configured -- start openshell-gateway before running fullsend")
 	}
 	return nil
 }
 
+// effectiveReadyTimeout returns the sandbox ready timeout to use. Priority:
+// explicit override (from harness config) > FULLSEND_SANDBOX_READY_TIMEOUT
+// env var > package default.
+func effectiveReadyTimeout(override time.Duration) time.Duration {
+	t := readyTimeout
+	if override > 0 {
+		t = override
+	} else if envVal := os.Getenv("FULLSEND_SANDBOX_READY_TIMEOUT"); envVal != "" {
+		if d, err := time.ParseDuration(envVal); err == nil && d > 0 {
+			t = d
+		}
+	}
+	if t > maxReadyTimeout {
+		t = maxReadyTimeout
+	}
+	return t
+}
+
 // Create creates a persistent OpenShell sandbox and waits for it to be ready.
-// If providers are given, they are passed as --provider flags. If image is
-// non-empty, it is passed as --from to start the sandbox from a container image.
-// If policy is non-empty, it is applied at creation time via --policy.
+// It retries up to DefaultMaxCreateAttempts times with exponential backoff,
+// deleting the failed sandbox between attempts.
 func Create(name string, providers []string, image, policy string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
+	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0)
+}
+
+// CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
+// exponential backoff on failure. Between attempts the failed sandbox is
+// deleted to avoid name conflicts. If readyTimeoutOverride is positive, it
+// overrides the default ready timeout.
+func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error {
+	if maxAttempts < 1 {
+		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
+	}
+
+	timeout := effectiveReadyTimeout(readyTimeoutOverride)
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = createOnce(name, providers, image, policy, timeout)
+		if lastErr == nil {
+			return nil
+		}
+
+		if delErr := Delete(name); delErr != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+		}
+
+		if attempt < maxAttempts {
+			shift := uint(attempt - 1)
+			if shift > 30 {
+				shift = 30
+			}
+			backoff := retryInitialBackoff * time.Duration(1<<shift)
+			if backoff > retryMaxBackoff {
+				backoff = retryMaxBackoff
+			}
+			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed (%v), retrying in %s...\n", attempt, maxAttempts, lastErr, backoff)
+			time.Sleep(backoff)
+		}
+	}
+	return fmt.Errorf("sandbox creation failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// createOnce creates a persistent OpenShell sandbox and waits for it to be
+// ready. If providers are given, they are passed as --provider flags. If image
+// is non-empty, it is passed as --from to start the sandbox from a container
+// image. If policy is non-empty, it is applied at creation time via --policy.
+func createOnce(name string, providers []string, image, policy string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+readyCtxBuffer)
 	defer cancel()
 
 	args := []string{
@@ -155,24 +250,37 @@ func Create(name string, providers []string, image, policy string) error {
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
-		check := exec.Command("openshell", "sandbox", "get", name)
+		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
 		if checkErr := check.Run(); checkErr != nil {
 			return fmt.Errorf("sandbox create failed: %s", string(out))
 		}
 	}
 
 	// Wait for sandbox to be fully ready (image pull can take a while).
-	deadline := time.Now().Add(readyTimeout)
+	deadline := time.Now().Add(timeout)
+	var lastOutput, lastStderr string
 	for time.Now().Before(deadline) {
-		check := exec.Command("openshell", "sandbox", "get", name)
-		output, checkErr := check.Output()
-		if checkErr == nil && strings.Contains(string(output), "Ready") {
+		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
+		var stdoutBuf, stderrBuf strings.Builder
+		check.Stdout = &stdoutBuf
+		check.Stderr = &stderrBuf
+		checkErr := check.Run()
+		lastOutput = stdoutBuf.String()
+		lastStderr = stderrBuf.String()
+		if checkErr == nil && strings.Contains(lastOutput, "Ready") {
 			return nil
 		}
 		time.Sleep(readyPoll)
 	}
 
-	return fmt.Errorf("sandbox %q not ready after %s", name, readyTimeout)
+	// Collect sandbox logs to help diagnose the failure.
+	supervisorLogs, _ := CollectLogs(name, "supervisor")
+	gatewayLogs, _ := CollectLogs(name, "gateway")
+
+	containerLogs := collectPodmanLogs(name)
+
+	return fmt.Errorf("sandbox %q not ready after %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
+		name, timeout, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
 }
 
 // Delete deletes a sandbox, returning any error for the caller to log.
@@ -269,6 +377,39 @@ func Upload(sandboxName, localPath, remotePath string) error {
 	return nil
 }
 
+// UploadDir uploads a local directory into a sandbox, preserving symlinks.
+// openshell sandbox upload dereferences symlinks; this builds a local tarball
+// with --no-dereference, uploads it, and extracts it in the sandbox.
+func UploadDir(sandboxName, localPath, remotePath string) error {
+	tmp, err := os.CreateTemp("", "openshell-upload-*.tar.gz")
+	if err != nil {
+		return fmt.Errorf("creating temp tarball: %w", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	tarCmd := exec.Command("tar", "-czf", tmpPath, "-C", localPath, ".")
+	if out, tarErr := tarCmd.CombinedOutput(); tarErr != nil {
+		return fmt.Errorf("creating tarball of %q: %s: %w", localPath, string(out), tarErr)
+	}
+
+	remoteTar := fmt.Sprintf("/tmp/fs-upload-%s.tar.gz", sandboxName)
+	if err := Upload(sandboxName, tmpPath, remoteTar); err != nil {
+		return err
+	}
+
+	extractCmd := fmt.Sprintf("mkdir -p %s && tar -xzf %s -C %s && rm %s", remotePath, remoteTar, remotePath, remoteTar)
+	_, stderr, exitCode, err := Exec(sandboxName, extractCmd, transferTimeout)
+	if err != nil {
+		return fmt.Errorf("extracting tarball in sandbox %q: %w", sandboxName, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("extracting tarball in sandbox %q: exit %d: %s", sandboxName, exitCode, stderr)
+	}
+	return nil
+}
+
 // Download copies a file or directory from a sandbox to the local machine.
 // The localPath is always treated as a directory by openshell — for single-file
 // downloads use DownloadFile instead.
@@ -310,7 +451,7 @@ func DownloadFile(sandboxName, remotePath, localPath string) error {
 }
 
 // SafeDownload copies a directory from a sandbox to the local machine and then
-// sanitizes the result by removing symlinks and .git/hooks/.
+// sanitizes the result by removing dangerous symlinks (absolute or repo-escaping) and .git/hooks/.
 func SafeDownload(sandboxName, remoteDir, localDir string) error {
 	if err := Download(sandboxName, remoteDir, localDir); err != nil {
 		return err
@@ -334,6 +475,63 @@ func CollectLogs(name, source string) (string, error) {
 		return "", fmt.Errorf("openshell logs %q --source %s: %s", name, source, string(out))
 	}
 	return string(out), nil
+}
+
+const (
+	podmanLogTimeout  = 15 * time.Second
+	maxContainerLogs  = 1 << 20 // 1 MB
+	podmanLogTailLines = "200"
+)
+
+// collectPodmanLogs gathers recent container logs for diagnostics when a
+// sandbox fails to become ready. Filters by sandbox name prefix, caps
+// per-container output with --tail, and limits total size.
+func collectPodmanLogs(sandboxName string) string {
+	if _, err := exec.LookPath("podman"); err != nil {
+		return "(podman not available on this host)"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), podmanLogTimeout)
+	defer cancel()
+
+	listCmd := exec.CommandContext(ctx, "podman", "ps", "-a",
+		"--filter", "name="+sandboxName,
+		"--format", "{{.Names}}")
+	listOut, listErr := listCmd.Output()
+	if listErr != nil {
+		return fmt.Sprintf("(podman ps failed: %v)", listErr)
+	}
+
+	names := strings.TrimSpace(string(listOut))
+	if names == "" {
+		return "(no matching containers)"
+	}
+
+	var b strings.Builder
+	for _, cname := range strings.Split(names, "\n") {
+		cname = strings.TrimSpace(cname)
+		if cname == "" {
+			continue
+		}
+		logCmd := exec.CommandContext(ctx, "podman", "logs", "--tail", podmanLogTailLines, cname)
+		logOut, logErr := logCmd.CombinedOutput()
+		if logErr != nil {
+			chunk := fmt.Sprintf("=== %s === (log collection failed: %v)\n", cname, logErr)
+			if b.Len()+len(chunk) > maxContainerLogs {
+				b.WriteString("... (truncated)\n")
+				break
+			}
+			b.WriteString(chunk)
+			continue
+		}
+		chunk := fmt.Sprintf("=== %s ===\n%s\n", cname, string(logOut))
+		if b.Len()+len(chunk) > maxContainerLogs {
+			b.WriteString("... (truncated)\n")
+			break
+		}
+		b.WriteString(chunk)
+	}
+	return b.String()
 }
 
 // ExtractTranscripts copies Claude transcript files (.jsonl) from the sandbox

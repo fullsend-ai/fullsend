@@ -113,7 +113,7 @@ func TestInstallCmd_Flags(t *testing.T) {
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
-	assert.Equal(t, "fullsend", appSetFlag.DefValue)
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestInstallCmd_InvalidAppSet(t *testing.T) {
@@ -203,6 +203,7 @@ func TestInstallCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
 }
 
 func TestInstallCmd_PerRepoAcceptsSharedFlags(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	sharedFlags := []struct {
 		flag  string
 		value string
@@ -246,6 +247,7 @@ func TestInstallCmd_ForceMintDeployFlagRemoved(t *testing.T) {
 }
 
 func TestInstallCmd_PerRepoAcceptsMintRegion(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--mint-url", "https://mint-test-abc123.run.app",
@@ -300,7 +302,7 @@ func TestUninstallCmd_Flags(t *testing.T) {
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
-	assert.Equal(t, "fullsend", appSetFlag.DefValue)
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestAnalyzeCmd_RequiresOrg(t *testing.T) {
@@ -1290,6 +1292,7 @@ func TestInstallCmd_SkipMintCheckRequiresMintURL(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckAcceptsNonCloudRunURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--skip-mint-check",
@@ -1301,6 +1304,7 @@ func TestInstallCmd_SkipMintCheckAcceptsNonCloudRunURL(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckSkipsMintProject(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	// Without --skip-mint-check and without --mint-project/--mint-url, an error is returned.
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget"})
@@ -1319,6 +1323,7 @@ func TestInstallCmd_SkipMintCheckSkipsMintProject(t *testing.T) {
 }
 
 func TestInstallCmd_SkipMintCheckPerOrgRequiresMintURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
 		"--skip-mint-check"})
@@ -1438,6 +1443,7 @@ func TestValidateWIFProvider_Invalid(t *testing.T) {
 }
 
 func TestInstallCmd_PerOrgRejectsInvalidWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
 		"--dry-run",
@@ -1475,6 +1481,7 @@ func TestInstallCmd_PerOrgAcceptsValidWIFProvider(t *testing.T) {
 }
 
 func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme/widget",
 		"--mint-url", "https://mint-test-abc123.run.app",
@@ -1485,7 +1492,130 @@ func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestFilterSlugsByAppSet(t *testing.T) {
+	tests := []struct {
+		name string
+		appSet string
+		slugs map[string]string
+		want  map[string]string
+	}{
+		{
+			name:   "matching app-set preserved",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+			want:   map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+		},
+		{
+			name:   "different app-set filtered out",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "konflux-ci-coder", "review": "konflux-ci-review"},
+			want:   map[string]string{},
+		},
+		{
+			name:   "mixed app-sets keeps only matching",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "konflux-ci-review"},
+			want:   map[string]string{"coder": "fullsend-ai-coder"},
+		},
+		{
+			name:   "nil input returns empty map",
+			appSet: "fullsend-ai",
+			slugs:  nil,
+			want:   map[string]string{},
+		},
+		{
+			name:   "shorter prefix does not match longer slug",
+			appSet: "fullsend",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder"},
+			want:   map[string]string{},
+		},
+		{
+			name:   "default app-set matches own slugs",
+			appSet: "fullsend",
+			slugs:  map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+			want:   map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterSlugsByAppSet(tt.slugs, tt.appSet)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestRunUninstall_LegacySlugsIncludedWhenConfigUnavailable(t *testing.T) {
+	// When the config repo is unavailable, runUninstall should check
+	// both current (fullsend-ai-*) and legacy (fullsend-*) app naming
+	// so that apps created under an older version are not silently skipped.
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	// Simulate a legacy app installed under the old naming convention.
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "fullsend-coder"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai")
+	require.NoError(t, err)
+
+	output := buf.String()
+	// The legacy slug "fullsend-coder" should NOT be reported as "not found".
+	assert.NotContains(t, output, "App fullsend-coder not found")
+	// It should appear in the app cleanup section.
+	assert.Contains(t, output, "fullsend-coder")
+}
+
+func TestRunUninstall_WarnsWhenNoAppsFound(t *testing.T) {
+	// When no apps are found under any naming convention, the uninstaller
+	// should warn the user instead of silently reporting success.
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	// No installations at all.
+	client.Installations = []forge.Installation{}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai")
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "No fullsend apps found installed in this organization")
+}
+
+func TestRunUninstall_LegacySlugsSkippedWhenAppSetMatchesLegacy(t *testing.T) {
+	// When --app-set is explicitly "fullsend" (matching legacy), the legacy
+	// slugs should not be duplicated.
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "fullsend-coder"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend")
+	require.NoError(t, err)
+
+	output := buf.String()
+	// Should find the legacy app and attempt cleanup.
+	assert.NotContains(t, output, "No fullsend apps found")
+	assert.Contains(t, output, "fullsend-coder")
+}
+
 func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "acme",
 		"--dry-run",

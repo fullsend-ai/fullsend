@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# fullsend-check-output — Validate agent output JSON against the declared schema.
+#
+# Usage: fullsend-check-output <path-to-json-file>
+#
+# Agents call this BEFORE finishing to catch schema violations early,
+# rather than waiting for the harness validation_loop to fail post-exit.
+#
+# Required env vars:
+#   FULLSEND_OUTPUT_SCHEMA — path to the JSON Schema file
+#
+# Optional env vars:
+#   FULLSEND_OUTPUT_FILE — expected output filename (default: agent-result.json)
+#
+# Exit codes:
+#   0 — validation passed
+#   1 — validation failed (schema error, missing file, bad JSON)
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: fullsend-check-output <path-to-json-file>"
+  exit 1
+fi
+
+CANDIDATE="$1"
+
+if [[ -z "${FULLSEND_OUTPUT_SCHEMA:-}" ]]; then
+  echo "FAIL: FULLSEND_OUTPUT_SCHEMA is not set"
+  exit 1
+fi
+
+if [[ ! -f "${FULLSEND_OUTPUT_SCHEMA}" ]]; then
+  echo "FAIL: schema file not found: ${FULLSEND_OUTPUT_SCHEMA}"
+  exit 1
+fi
+
+if [[ ! -f "${CANDIDATE}" ]]; then
+  echo "FAIL: output file not found: ${CANDIDATE}"
+  exit 1
+fi
+
+_expected="${FULLSEND_OUTPUT_FILE:-agent-result.json}"
+_actual="$(basename "${CANDIDATE}")"
+if [[ "${_actual}" != "${_expected}" ]]; then
+  echo "FAIL: filename is '${_actual}' but harness expects '${_expected}'"
+  echo "      Rename to: $(dirname "${CANDIDATE}")/${_expected}"
+  exit 1
+fi
+
+if ! python3 -c "import jsonschema" 2>/dev/null; then
+  echo "FAIL: python3 jsonschema package is not installed"
+  exit 1
+fi
+
+if ! python3 -m json.tool "${CANDIDATE}" > /dev/null 2>&1; then
+  echo "FAIL: ${CANDIDATE} is not valid JSON"
+  exit 1
+fi
+
+if ! python3 -m json.tool "${FULLSEND_OUTPUT_SCHEMA}" > /dev/null 2>&1; then
+  echo "FAIL: schema file is not valid JSON: ${FULLSEND_OUTPUT_SCHEMA}"
+  exit 1
+fi
+
+python3 -c "
+import json, sys
+from jsonschema import validate, ValidationError, SchemaError
+
+with open(sys.argv[1]) as f:
+    instance = json.load(f)
+with open(sys.argv[2]) as f:
+    schema = json.load(f)
+
+try:
+    validate(instance=instance, schema=schema)
+    print('PASS: output validated against schema')
+except SchemaError as e:
+    print(f'FAIL: invalid schema: {e.message}')
+    sys.exit(1)
+except ValidationError as e:
+    print(f'FAIL: {e.message}')
+    if e.path:
+        print(f'  at: {\".\".join(str(p) for p in e.path)}')
+    if e.context:
+        for sub in e.context[:5]:
+            print(f'  - {sub.message}')
+    sys.exit(1)
+" "${CANDIDATE}" "${FULLSEND_OUTPUT_SCHEMA}"

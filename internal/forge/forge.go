@@ -90,6 +90,14 @@ type ReviewComment struct {
 	Body string // comment body (Markdown)
 }
 
+// PullRequestFileDiff represents a file changed in a pull request along
+// with its unified diff patch. The patch may be empty for binary files,
+// rename-only changes, or when GitHub truncates large diffs.
+type PullRequestFileDiff struct {
+	Path  string
+	Patch string
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID          int
@@ -214,6 +222,10 @@ type Client interface {
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
 	ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error)
+	// ListPullRequestFileDiffs returns the files changed by a pull request
+	// along with their unified diff patches. Use this when you need to
+	// determine which lines are within diff hunks (e.g. for inline comments).
+	ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error)
 
 	// Pull request review operations.
 	// commitSHA, when non-empty, pins the review to a specific commit.

@@ -139,6 +139,9 @@ type FakeClient struct {
 	// Pull request files for ListPullRequestFiles.
 	PRFiles map[string][]string // key: "owner/repo/number"
 
+	// Pull request file diffs for ListPullRequestFileDiffs.
+	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
+
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
@@ -812,6 +815,21 @@ func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string,
 	if f.PRFiles != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFiles[key]; ok {
+			return files, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestFileDiffs"); e != nil {
+		return nil, e
+	}
+	if f.PRFileDiffs != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if files, ok := f.PRFileDiffs[key]; ok {
 			return files, nil
 		}
 	}

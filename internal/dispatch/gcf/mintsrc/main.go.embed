@@ -226,7 +226,7 @@ var githubOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-z
 // GitHub allows repos starting with dot (e.g., .fullsend, .github).
 var repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9._-]{0,99}$`)
 
-const maxRepos = 100
+const maxRepos = 500
 
 // mintRequest is the JSON body sent by .fullsend agent workflows.
 type mintRequest struct {
@@ -475,7 +475,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Repos) > maxRepos {
-		writeError(w, http.StatusBadRequest, "too many repos (max 100)")
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
 		return
 	}
 	for _, repo := range req.Repos {
@@ -712,6 +712,10 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 // findInstallation looks up the app's installation ID via the repo-based API.
 // Using GET /repos/{owner}/{repo}/installation instead of /orgs/{org}/installation
 // enables per-repo app installations in the future.
+//
+// The returned installation's account is verified against the expected org to
+// prevent cross-org token leakage when the same GitHub App is installed on
+// multiple orgs (see issue #1321).
 func (h *Handler) findInstallation(ctx context.Context, jwt, org, repo string) (int64, error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/installation", h.githubBaseURL, org, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -739,6 +743,17 @@ func (h *Handler) findInstallation(ctx context.Context, jwt, org, repo string) (
 
 	if inst.ID == 0 {
 		return 0, fmt.Errorf("no installation found for %s/%s", org, repo)
+	}
+
+	// Verify the installation belongs to the expected org. When the same
+	// GitHub App is installed on multiple orgs, the API could return an
+	// installation for the wrong org. Accepting it would mint a token
+	// scoped to a different org's repos.
+	if !strings.EqualFold(inst.Account.Login, org) {
+		log.Printf("installation org mismatch: expected %s, got %s (installation %d for %s/%s)",
+			org, inst.Account.Login, inst.ID, org, repo)
+		return 0, fmt.Errorf("installation for %s/%s belongs to %s, not %s",
+			org, repo, inst.Account.Login, org)
 	}
 
 	return inst.ID, nil

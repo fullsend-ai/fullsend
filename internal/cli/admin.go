@@ -530,7 +530,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&mintSkipDeploy, "skip-mint-deploy", false, "skip Cloud Function deployment, reuse existing mint URL")
 	cmd.Flags().BoolVar(&skipMintCheck, "skip-mint-check", false, "skip mint validation, GCP provisioning, and app setup; requires --mint-url")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
-	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., fullsend-ai creates fullsend-ai-fullsend, fullsend-ai-coder)")
+	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
 	// Shared flags.
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "token mint URL for OIDC token exchange")
 
@@ -1311,11 +1311,13 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		WithStoredAppIDs(storedAppIDs)
 
 	// Merge known slugs: config-based first, then shared app overrides.
-	knownSlugs := loadKnownSlugs(ctx, client, org)
-	if knownSlugs == nil {
-		knownSlugs = make(map[string]string)
-	}
-	for role, slug := range sharedSlugs {
+	// Filter both config slugs and shared slugs to the requested app-set
+	// so that an existing install of app-set A doesn't shadow a new install
+	// of app-set B. Without this, nonflux-triage (app-set "nonflux") would
+	// prevent fullsend-ai-triage (app-set "fullsend-ai") from being detected
+	// and installed.
+	knownSlugs := filterSlugsByAppSet(loadKnownSlugs(ctx, client, org), appSet)
+	for role, slug := range filterSlugsByAppSet(sharedSlugs, appSet) {
 		knownSlugs[role] = slug
 	}
 	if len(knownSlugs) > 0 {
@@ -1580,9 +1582,19 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		}
 	}
 	if len(agentSlugs) == 0 {
-		// Config unavailable — assume default app naming convention.
+		// Config unavailable — assume default app naming convention and
+		// also include any legacy app-set prefixes so that apps created
+		// under an older version are not silently skipped.
 		for _, role := range config.DefaultAgentRoles() {
 			agentSlugs = append(agentSlugs, appsetup.AppSlug(appSet, role))
+		}
+		for _, legacy := range appsetup.LegacyAppSets {
+			if legacy == appSet {
+				continue // already included above
+			}
+			for _, role := range config.DefaultAgentRoles() {
+				agentSlugs = append(agentSlugs, appsetup.AppSlug(legacy, role))
+			}
 		}
 		if err != nil {
 			printer.StepInfo("Config repo unavailable; using default app names")
@@ -1672,6 +1684,9 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 				}
 			}
 			printer.Blank()
+		} else if listErr == nil {
+			printer.StepWarn("No fullsend apps found installed in this organization.")
+			printer.StepInfo("If apps were created under a custom --app-set prefix, re-run with that prefix.")
 		}
 	}
 
@@ -1898,6 +1913,22 @@ func loadExistingEnabledRepos(ctx context.Context, client forge.Client, org stri
 	}
 	return cfg.EnabledRepos()
 }
+
+// filterSlugsByAppSet returns a new map containing only entries whose slug
+// matches the convention for the given app set (i.e., slug == appSet + "-" + role).
+// Slugs from a previous install with a different app set must not be carried
+// over, as they would cause findExistingInstallation to pick up the wrong app.
+// Always returns a non-nil map.
+func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]string {
+	out := make(map[string]string, len(slugs))
+	for role, slug := range slugs {
+		if slug == appsetup.AppSlug(appSet, role) {
+			out[role] = slug
+		}
+	}
+	return out
+}
+
 // loadKnownSlugs tries to read agent slugs from an existing config.
 func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[string]string {
 	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")

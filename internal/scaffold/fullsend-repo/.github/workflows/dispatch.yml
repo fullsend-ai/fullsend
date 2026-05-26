@@ -122,7 +122,7 @@ jobs:
                 *)
                   # Non-command issue_comment: auto-triage on needs-info issues
                   # when commenter is a non-bot with association != NONE or is issue author
-                  if has_label "needs-info" && ! has_label "type/feature"; then
+                  if has_label "needs-info" && ! has_label "feature"; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
                         STAGE="triage"
@@ -263,6 +263,7 @@ jobs:
           fi
 
       - name: Check role is enabled
+        id: role-check
         if: steps.route.outputs.stage != ''
         env:
           STAGE: ${{ steps.route.outputs.stage }}
@@ -276,12 +277,13 @@ jobs:
 
           ROLES=$(yq '.defaults.roles[]' config.yaml 2>/dev/null || echo "")
           if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
-            echo "::error::Stage '$STAGE' (role: $STAGE_ROLE) is not in defaults.roles — dispatch blocked"
-            exit 1
+            echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in defaults.roles"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
       - name: Block fork PRs for fix stage
-        if: steps.route.outputs.stage == 'fix' && github.event.issue.pull_request
+        if: steps.route.outputs.stage == 'fix' && steps.role-check.outputs.skipped != 'true' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -300,7 +302,7 @@ jobs:
           fi
 
       - name: Find and trigger agent workflows for stage
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
           STAGE: ${{ steps.route.outputs.stage }}

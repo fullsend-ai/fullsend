@@ -203,8 +203,9 @@ type Harness struct {
 	AgentInput     string            `yaml:"agent_input,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
-	TimeoutMinutes int               `yaml:"timeout_minutes,omitempty"`
-	Security       *SecurityConfig   `yaml:"security,omitempty"`
+	TimeoutMinutes        int             `yaml:"timeout_minutes,omitempty"`
+	SandboxTimeoutSeconds int             `yaml:"sandbox_timeout_seconds,omitempty"`
+	Security              *SecurityConfig `yaml:"security,omitempty"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -247,6 +248,9 @@ func (h *Harness) Validate() error {
 	}
 	if h.TimeoutMinutes < 0 {
 		return fmt.Errorf("timeout_minutes must be non-negative, got %d", h.TimeoutMinutes)
+	}
+	if h.SandboxTimeoutSeconds != 0 && (h.SandboxTimeoutSeconds < 30 || h.SandboxTimeoutSeconds > 600) {
+		return fmt.Errorf("sandbox_timeout_seconds must be 0 (default) or between 30 and 600, got %d", h.SandboxTimeoutSeconds)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Src == "" {
@@ -374,12 +378,14 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 }
 
 // ValidateRunnerEnvWith checks that all ${VAR} references in RunnerEnv and
-// HostFiles.Src expand to non-empty values using the provided expander function.
-func (h *Harness) ValidateRunnerEnvWith(expander func(string) string) error {
+// HostFiles.Src are defined in the host environment using the provided lookup
+// function. Variables set to an empty string are allowed; only truly unset
+// variables produce an error.
+func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
 	checkVarRefs := func(source, value string) error {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
-			if expander(varName) == "" {
+			if _, ok := lookup(varName); !ok {
 				return fmt.Errorf("%s: host variable %s is not set (referenced in %q)", source, varName, value)
 			}
 		}
@@ -403,9 +409,9 @@ func (h *Harness) ValidateRunnerEnvWith(expander func(string) string) error {
 }
 
 // ValidateRunnerEnv checks that all ${VAR} references in RunnerEnv and
-// HostFiles.Src expand to non-empty values in the host environment.
+// HostFiles.Src are defined in the host environment.
 func (h *Harness) ValidateRunnerEnv() error {
-	return h.ValidateRunnerEnvWith(os.Getenv)
+	return h.ValidateRunnerEnvWith(os.LookupEnv)
 }
 
 // ValidateFilesExist checks that all file paths referenced by the harness

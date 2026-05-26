@@ -384,8 +384,8 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 
 	expected := []string{
 		"GetFunction", // auto-routing check (no existing function → full deploy)
-		"GetProjectNumber",
 		"CreateServiceAccount",
+		"GetProjectNumber",
 		"CreateWIFPool",
 		"GetWIFProvider",
 		"CreateWIFProvider",
@@ -1203,6 +1203,23 @@ func TestProvisioner_Provision_CreateWIFProviderError(t *testing.T) {
 	assert.Contains(t, err.Error(), "provider error")
 }
 
+func TestProvisioner_Provision_GetWIFProviderError_FailsFast(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetWIFProvider"] = fmt.Errorf("transient error")
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "test-project-id",
+		GitHubOrgs:        []string{"org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
+}
+
 func TestProvisioner_Provision_CreateSecretError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetSecret"] = ErrSecretNotFound
@@ -1795,6 +1812,49 @@ func TestProvisionWIF_RepoScoped(t *testing.T) {
 	assert.NotContains(t, fake.calls, "GetWIFProvider")
 }
 
+func TestProvisionWIF_RepoScoped_LowercasesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "Acme/Widget",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/widget")
+	assert.Equal(t, "Acme/Widget", p.cfg.Repo, "ProvisionWIF should not mutate p.cfg.Repo")
+}
+
+func TestProvisionWIF_RepoScoped_DotPrefixRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"nonflux"},
+		Repo:       "nonflux/.fullsend",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository == 'nonflux/.fullsend'", fake.lastWIFProviderConfig.AttributeCondition)
+}
+
+func TestProvisionWIF_RepoScoped_ErrorPreservesOriginalCase(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "Owner.Name/Repo",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Owner.Name", "error should show original casing, not lowercased")
+}
+
 func TestProvisionWIF_RepoScoped_DoesNotTouchSharedProvider(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.wifProvider = &WIFProviderInfo{
@@ -1827,6 +1887,96 @@ func TestProvisionWIF_OrgScoped_Unchanged(t *testing.T) {
 	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
 	require.Len(t, fake.projectIAMBindings, 1)
 	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
+}
+
+func TestProvisionWIF_RepoScoped_RejectsInvalidRepo(t *testing.T) {
+	tests := []struct {
+		name, repo, errContains string
+	}{
+		{"no slash", "just-a-name", "owner/repo format"},
+		{"empty owner", "/repo", "owner/repo format"},
+		{"empty repo", "owner/", "owner/repo format"},
+		{"quotes in owner", "owner's/repo", "invalid repo owner"},
+		{"backslash in repo", `owner/repo\`, "must contain only"},
+		{"spaces in repo", "owner/my repo", "must contain only"},
+		{"underscore in owner", "_owner/repo", "invalid repo owner"},
+		{"dot in owner", "owner.name/repo", "invalid repo owner"},
+		{"dot as repo", "owner/.", "cannot be"},
+		{"dotdot as repo", "owner/..", "cannot be"},
+		{"dot as owner", "./repo", "invalid repo owner"},
+		{"double-hyphen in owner", "org--name/repo", "invalid repo owner"},
+		{"git suffix", "owner/repo.git", "cannot end with"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			p := NewProvisioner(Config{
+				ProjectID:  "my-project",
+				GitHubOrgs: []string{"acme"},
+				Repo:       tt.repo,
+			}, fake)
+			_, err := p.ProvisionWIF(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+			assert.NotContains(t, fake.calls, "GetProjectNumber")
+		})
+	}
+}
+
+func TestProvisionWIF_OrgScoped_MergesExistingOrgs(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner in ['beta', 'gamma']",
+	}
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	assert.Equal(t, "assertion.repository_owner in ['acme', 'beta', 'gamma']",
+		fake.lastWIFProviderConfig.AttributeCondition)
+
+	// IAM binding should only be for the installing org, not the merged ones.
+	require.Len(t, fake.projectIAMBindings, 1)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
+}
+
+func TestProvisionWIF_OrgScoped_GetProviderError_FailsToPreventClobber(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetWIFProvider"] = fmt.Errorf("transient error")
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
+}
+
+func TestParseConditionOrgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		want      []string
+	}{
+		{"single org", "assertion.repository_owner == 'acme'", []string{"acme"}},
+		{"multiple orgs", "assertion.repository_owner in ['alpha', 'beta', 'gamma']", []string{"alpha", "beta", "gamma"}},
+		{"legacy repo-scoped", "assertion.repository == 'acme/.fullsend'", []string{"acme"}},
+		{"mixed case normalized", "assertion.repository_owner in ['AcMe', 'BETA']", []string{"acme", "beta"}},
+		{"empty condition", "", nil},
+		{"no quoted orgs", "assertion.repository_owner == true", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseConditionOrgs(tc.condition)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestBuildAttributeCondition(t *testing.T) {

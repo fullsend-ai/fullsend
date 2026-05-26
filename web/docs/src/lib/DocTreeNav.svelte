@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ManifestNode } from "virtual:fullsend-docs";
   import DocTreeNav from "./DocTreeNav.svelte";
+  import { highlightSegments } from "./filterTree";
   import { navigateToRouteKey } from "./routing";
 
   interface Props {
@@ -13,6 +14,8 @@
     outlineSessionEpoch?: number;
     /** POSIX path segments for this level’s parent (e.g. `guides/admin`). */
     parentDirPath?: string;
+    forceExpandAll?: boolean;
+    filterQuery?: string;
   }
 
   let {
@@ -20,6 +23,8 @@
     activeRouteKey,
     outlineSessionEpoch = 0,
     parentDirPath = "",
+    forceExpandAll = false,
+    filterQuery = "",
   }: Props = $props();
 
   /** Bumps when a folder is toggled so `isExpanded` re-reads sessionStorage. */
@@ -57,7 +62,7 @@
     <li class="doc-tree-item">
       {#if node.type === "dir"}
         {@const dirPath = parentDirPath ? `${parentDirPath}/${node.name}` : node.name}
-        {@const expanded = isExpanded(dirPath)}
+        {@const expanded = forceExpandAll || isExpanded(dirPath)}
         {@const subId = childListId(dirPath)}
         <div class="doc-tree-folder" data-doc-tree-dir={dirPath}>
           <button
@@ -100,7 +105,7 @@
                 </svg>
               {/if}
             </span>
-            <span class="doc-tree-folder-label">{node.name}</span>
+            <span class="doc-tree-folder-label">{#each highlightSegments(node.name, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
           </button>
           {#if expanded}
             <div id={subId} class="doc-tree-folder-children">
@@ -109,6 +114,8 @@
                 {activeRouteKey}
                 {outlineSessionEpoch}
                 parentDirPath={dirPath}
+                {forceExpandAll}
+                {filterQuery}
               />
             </div>
           {/if}
@@ -130,7 +137,7 @@
               />
             </svg>
           </span>
-          <span class="doc-tree-link-text">{node.title}</span>
+          <span class="doc-tree-link-text">{#each highlightSegments(node.title, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
         </button>
       {/if}
     </li>

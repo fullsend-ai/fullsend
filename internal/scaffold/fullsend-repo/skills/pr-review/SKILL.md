@@ -26,16 +26,21 @@ Follow these steps in order. Do not skip steps.
 
 Determine which PR to review:
 
-- If a PR number, URL, or branch name was provided, use it.
-- If none was provided, fall back to the current branch:
+- If `PR_NUMBER` and `REPO_FULL_NAME` are set in the environment, use
+  them (the harness always provides these).
+- If a PR URL was provided, extract the number and repo from the URL.
+- If none was provided, stop and report the failure rather than guessing.
+
+Fetch the PR head SHA:
 
 ```bash
-gh pr view --json number,headRefName,headRefOid
+PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
+HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 ```
 
-Record the **PR head SHA** (`headRefOid`). You will include it in the
-review comment and in the `gh pr review` invocation. This SHA pins the
-review to the exact commit evaluated.
+Record the **PR head SHA**. You will include it in the review comment
+and in the result JSON. This SHA pins the review to the exact commit
+evaluated.
 
 If no PR can be identified, stop and report the failure rather than
 guessing.
@@ -45,13 +50,13 @@ guessing.
 Retrieve PR metadata and the full diff:
 
 ```bash
-# PR metadata: title, body, author, labels, linked issues
-gh pr view <number> --json title,body,author,labels,closingIssuesReferences
+# PR metadata: title, body, author, labels
+PR_META=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 
-# Pre-check: size the PR before fetching the diff
-PR_STATS=$(gh pr view <number> --json changedFiles,additions,deletions,files)
-FILE_COUNT=$(echo "$PR_STATS" | jq '.changedFiles')
-LINE_COUNT=$(echo "$PR_STATS" | jq '.additions + .deletions')
+# PR files list (paginated — loop if needed)
+PR_FILES=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100")
+FILE_COUNT=$(echo "$PR_FILES" | jq 'length')
+LINE_COUNT=$(echo "$PR_FILES" | jq '[.[].additions + .[].deletions] | add')
 ```
 
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
@@ -72,7 +77,11 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 If the PR body references linked issues, fetch them for intent context:
 
 ```bash
-gh issue view <issue-number> --json title,body,comments
+# Fetch issue metadata
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
+
+# Fetch issue comments
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 ```
 
 The PR description is a starting point, not a source of truth. Do not
@@ -96,8 +105,8 @@ If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
 changed since the prior review:
 
 ```bash
-# REPO_FULL_NAME is set in env/review.env
-head_SHA=$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)
+# REPO_FULL_NAME and PR_NUMBER are set in env/review.env
+head_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" --jq '.head.sha')
 COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
 TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
 FILE_COUNT=$(echo "$COMPARE" | jq '.files | length')
@@ -183,6 +192,7 @@ Protected paths (kept in sync with `post-review.sh`):
 - `.claude/`
 - `agents/`
 - `harness/`
+- `plugins/`
 - `policies/`
 - `scripts/`
 - `api-servers/`
@@ -231,9 +241,17 @@ and re-evaluate the overall outcome.
 
 Compose the review comment using this structure:
 
-```markdown
-<!-- **Head SHA:** <sha> -->
+The first line must be an HTML comment embedding the head SHA.
+Construct it by concatenating: the HTML comment open delimiter,
+a space, `**Head SHA:**`, a space, the SHA value, a space, and
+the HTML comment close delimiter. For example, if the SHA were
+`abc123`, the line would read (with no line break):
 
+    [open] **Head SHA:** abc123 [close]
+
+where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
+
+```markdown
 ## Review
 
 ### Findings
@@ -278,9 +296,11 @@ info-level finding in the review output:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
   This review treats all findings as first-time assessments.
 
-Map the outcome to an action value:
+Map the outcome to an action value. `action`, `pr_number`, and `repo`
+are always required (see the agent definition for the full schema).
+The table below lists the **additional** required fields per action:
 
-| Outcome            | Action              | Required fields                    |
+| Outcome            | Action              | Additional required fields         |
 |--------------------|---------------------|------------------------------------|
 | approve            | `approve`           | `body`, `head_sha`; include `findings[]` when low/info findings are actionable follow-up work |
 | request-changes    | `request-changes`   | `body`, `head_sha`, `findings[]`   |
@@ -290,88 +310,19 @@ Map the outcome to an action value:
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 
-Write the result as JSON. Do NOT call `gh pr review` — the post-script
-handles all GitHub mutations. The JSON shape varies by action.
+Write the result to `$FULLSEND_OUTPUT_DIR/agent-result.json` following
+the output schema in the agent definition (`agents/review.md`). Do NOT
+call `gh pr review` — the post-script handles all GitHub mutations.
 
-For `approve` with no actionable findings, or for `comment`:
-
-```bash
-jq -n \
-  --arg action "<action>" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-For `approve` with actionable low/info findings, include structured
-findings alongside the body. Only include findings that are concrete
-follow-up work; set `actionable: true` on those findings.
+After writing the file, validate it before exiting:
 
 ```bash
-jq -n \
-  --arg action "approve" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
-For `request-changes` or `reject`, include structured findings alongside
-the body:
-
-```bash
-jq -n \
-  --arg action "request-changes" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-```bash
-jq -n \
-  --arg action "reject" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-Each finding object has: `severity` (critical/high/medium/low/info),
-`category`, `file`, `line` (optional), `description`, `remediation`
-(optional), and `actionable` (optional boolean). For approved reviews,
-only low/info findings with `actionable: true` become follow-up issues.
-
-For `failure`, provide the reason — body is optional:
-
-```bash
-jq -n \
-  --arg action "failure" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg reason "<reason>" \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    reason: $reason}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-Exit after writing the file.
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
 
 #### Interactive mode (`$FULLSEND_OUTPUT_DIR` is not set)
 
@@ -422,7 +373,7 @@ wins.
   skills first.** Partial reviews miss context and produce unreliable
   verdicts.
 - **Always include the PR head SHA in a hidden HTML comment.** The
-  SHA must appear as `<!-- **Head SHA:** <sha> -->` so the re-review
+  SHA must appear in the format described in step 6 so the re-review
   anchoring script can extract it, but it must not be visible to
   reviewers.
 - **Report failure rather than posting a partial review.** If you cannot

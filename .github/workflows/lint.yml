@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -27,23 +27,63 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7.6.0
 
+      - name: Install pre-commit and test dependencies
+        run: uv pip install --system pre-commit jsonschema
+
       - name: Install lychee
         run: |
           curl -sSfL "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/lychee.tar.gz
           echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum -c
           tar xzf /tmp/lychee.tar.gz -C /usr/local/bin --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
 
-      - name: Install pre-commit
-        run: uv pip install --system pre-commit
+      - run: make test
 
-      - name: Run pre-commit (skip ty)
-        run: SKIP=ty pre-commit run --all-files
+  commit-lint:
+    # On pull_request: lint the PR title (which becomes the merge commit
+    # subject on squash-merge). On push/merge_group: lint each commit.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
 
-      - name: Run ty check
-        run: uvx ty check hack/
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.6.0
 
-      - name: Run ADR linting
-        run: make lint
+      - name: Lint PR title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "${PR_TITLE}" > /tmp/pr-title.txt
+          uvx --from gitlint gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
+
+      - name: Lint commits
+        if: github.event_name != 'pull_request'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "${EVENT_NAME}" = "push" ]; then
+            RANGE="${PUSH_BEFORE}..${PUSH_AFTER}"
+          else
+            RANGE="${MQ_BASE}..${MQ_HEAD}"
+          fi
+
+          FAILED=false
+          for sha in $(git rev-list --no-merges "${RANGE}"); do
+            git log --format='%s' -1 "${sha}" > /tmp/commit-msg.txt
+            if ! uvx --from gitlint gitlint --config .gitlint --ignore B6 --msg-filename /tmp/commit-msg.txt; then
+              echo "::error::Commit ${sha} does not follow Conventional Commits format"
+              FAILED=true
+            fi
+          done
+          if ${FAILED}; then
+            exit 1
+          fi
 
   web:
     runs-on: ubuntu-latest

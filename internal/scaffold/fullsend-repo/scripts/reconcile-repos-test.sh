@@ -24,7 +24,7 @@ repos:
     enabled: true
 EOF
 
-cat > "${CONFIG_DIR}/templates/shim-workflow.yaml" <<'EOF'
+cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'EOF'
 fresh shim template
 EOF
 
@@ -74,43 +74,72 @@ if [[ "\$1" != "api" ]]; then
   exit 1
 fi
 
-endpoint="\$2"
+# Extract --jq filter if present.
+jq_filter=""
+shift  # consume "api"
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) shift 2 ;;  # consume --input -
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+json=""
+rc=0
 case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    # Variable not found — 404.
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
   repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
-    echo "c3RhbGUgc2hpbSB0ZW1wbGF0ZQo="
+    json='{"content":"c3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"file-sha"}'
     ;;
   repos/test-org/test-repo)
-    echo "main"
+    json='{"default_branch":"main","private":false}'
     ;;
   repos/test-org/test-repo/git/ref/heads/main)
-    echo "base-sha"
+    json='{"object":{"sha":"base-sha"}}'
     ;;
   repos/test-org/test-repo/git/commits/base-sha)
-    echo "base-tree-sha"
+    json='{"tree":{"sha":"base-tree-sha"}}'
     ;;
   repos/test-org/test-repo/git/blobs)
-    echo "blob-sha"
+    json='{"sha":"blob-sha"}'
     ;;
   repos/test-org/test-repo/git/trees)
-    echo "tree-sha"
+    json='{"sha":"tree-sha"}'
     ;;
   repos/test-org/test-repo/git/commits)
-    echo "desired-commit-sha"
+    json='{"sha":"desired-commit-sha"}'
     ;;
   repos/test-org/test-repo/git/refs)
-    exit 1
+    rc=1
     ;;
   repos/test-org/test-repo/git/refs/heads/fullsend/onboard)
-    exit 0
+    rc=0
     ;;
   repos/test-org/test-repo/git/refs/heads/fullsend/offboard)
-    exit 0
+    rc=0
     ;;
   *)
     echo "unexpected gh api endpoint: \$endpoint" >&2
     exit 1
     ;;
 esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
 EOF
 chmod +x "${MOCK_BIN}/gh"
 

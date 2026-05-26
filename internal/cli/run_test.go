@@ -81,7 +81,7 @@ func TestRunCommand_HasTargetRepoFlag(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_Basic(t *testing.T) {
-	cmd := buildClaudeCommand("hello-world", "", "/tmp/workspace/repo", nil)
+	cmd := buildClaudeCommand("hello-world", "", "/tmp/workspace/repo", nil, "")
 	assert.Contains(t, cmd, "cd /tmp/workspace/repo")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 	assert.NotContains(t, cmd, "--model")
@@ -89,19 +89,19 @@ func TestBuildClaudeCommand_Basic(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_WithModel(t *testing.T) {
-	cmd := buildClaudeCommand("hello-world", "sonnet", "/tmp/workspace/repo", nil)
+	cmd := buildClaudeCommand("hello-world", "sonnet", "/tmp/workspace/repo", nil, "")
 	assert.Contains(t, cmd, "--model 'sonnet'")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 }
 
 func TestBuildClaudeCommand_EscapesQuotes(t *testing.T) {
-	cmd := buildClaudeCommand("test'name", "", "/tmp/workspace/repo", nil)
+	cmd := buildClaudeCommand("test'name", "", "/tmp/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "'test'name'")
 	assert.Contains(t, cmd, "'test'\\''name'")
 }
 
 func TestBuildClaudeCommand_WithPluginDirs(t *testing.T) {
-	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/claude-config/plugins/gopls-lsp"})
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/claude-config/plugins/gopls-lsp"}, "")
 	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
 }
 
@@ -109,19 +109,65 @@ func TestBuildClaudeCommand_MultiplePluginDirs(t *testing.T) {
 	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{
 		"/tmp/claude-config/plugins/gopls-lsp",
 		"/tmp/claude-config/plugins/other-lsp",
-	})
+	}, "")
 	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
 	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/other-lsp'")
 }
 
 func TestBuildClaudeCommand_PluginDirEscapesQuotes(t *testing.T) {
-	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/path'with'quotes"})
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/path'with'quotes"}, "")
 	assert.Contains(t, cmd, "--plugin-dir '/tmp/path'\\''with'\\''quotes'")
 }
 
 func TestBuildClaudeCommand_NoPlugins(t *testing.T) {
-	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil)
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "--plugin-dir")
+}
+
+func TestBuildClaudeCommand_DebugAll(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil, "*")
+	assert.Contains(t, cmd, "--debug-file '/tmp/workspace/claude-debug.log'")
+	assert.NotContains(t, cmd, "--debug '")
+}
+
+func TestBuildClaudeCommand_DebugFiltered(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil, "api,hooks")
+	assert.Contains(t, cmd, "--debug-file '/tmp/workspace/claude-debug.log'")
+	assert.Contains(t, cmd, "--debug 'api,hooks'")
+}
+
+func TestBuildClaudeCommand_DebugDisabled(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil, "")
+	assert.NotContains(t, cmd, "--debug-file")
+	assert.NotContains(t, cmd, "--debug")
+}
+
+func TestBuildClaudeCommand_DebugEscapesQuotes(t *testing.T) {
+	cmd := buildClaudeCommand("agent", "", "/tmp/workspace/repo", nil, "api'hooks")
+	assert.Contains(t, cmd, "--debug 'api'\\''hooks'")
+}
+
+func TestBuildClaudeCommand_NoDoubleSpaces(t *testing.T) {
+	tests := []struct {
+		name       string
+		agentName  string
+		model      string
+		pluginDirs []string
+		debug      string
+	}{
+		{"no optional flags", "agent", "", nil, ""},
+		{"model only", "agent", "sonnet", nil, ""},
+		{"plugins only", "agent", "", []string{"/tmp/plugins/gopls"}, ""},
+		{"debug only", "agent", "", nil, "*"},
+		{"debug filtered", "agent", "", nil, "api,hooks"},
+		{"all flags", "agent", "sonnet", []string{"/tmp/plugins/gopls", "/tmp/plugins/other"}, "api,hooks"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := buildClaudeCommand(tc.agentName, tc.model, "/tmp/workspace/repo", tc.pluginDirs, tc.debug)
+			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
+		})
+	}
 }
 
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {

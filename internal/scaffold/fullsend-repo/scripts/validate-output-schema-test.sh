@@ -18,6 +18,7 @@ run_test() {
   local test_name="$1"
   local json_content="$2"
   local expect_pass="$3"  # "true" or "false"
+  local expect_output="${4:-}"  # optional: substring that must appear in stdout
 
   local test_dir="${TMPDIR}/${test_name}"
   mkdir -p "${test_dir}/output"
@@ -27,15 +28,27 @@ run_test() {
   FULLSEND_OUTPUT_SCHEMA="${SCHEMA}" \
     bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
+  local passed=true
   if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
     echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
-    cat "${TMPDIR}/stdout.log"
-    FAILURES=$((FAILURES + 1))
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
   elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
     echo "FAIL: ${test_name} — expected FAIL but got PASS"
-    FAILURES=$((FAILURES + 1))
-  else
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
     echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
   fi
 }
 
@@ -91,6 +104,7 @@ run_test_custom_filename() {
   local output_file="$3"
   local schema="$4"
   local expect_pass="$5"
+  local expect_output="${6:-}"  # optional: substring that must appear in stdout
 
   local test_dir="${TMPDIR}/${test_name}"
   mkdir -p "${test_dir}/output"
@@ -100,15 +114,27 @@ run_test_custom_filename() {
   FULLSEND_OUTPUT_SCHEMA="${schema}" FULLSEND_OUTPUT_FILE="${output_file}" \
     bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
+  local passed=true
   if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
     echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
-    cat "${TMPDIR}/stdout.log"
-    FAILURES=$((FAILURES + 1))
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
   elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
     echo "FAIL: ${test_name} — expected FAIL but got PASS"
-    FAILURES=$((FAILURES + 1))
-  else
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
     echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
   fi
 }
 
@@ -139,6 +165,54 @@ run_test_custom_filename "review-finding-additional-property-rejected" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+# Helper for custom-filename tests that also assert output content.
+run_test_custom_filename_output() {
+  local test_name="$1"
+  local json_content="$2"
+  local output_file="$3"
+  local schema="$4"
+  local expect_pass="$5"
+  local expect_output="$6"
+
+  local test_dir="${TMPDIR}/${test_name}"
+  mkdir -p "${test_dir}/output"
+  echo "${json_content}" > "${test_dir}/output/$(basename "${output_file}")"
+
+  local exit_code=0
+  FULLSEND_OUTPUT_SCHEMA="${schema}" FULLSEND_OUTPUT_FILE="${output_file}" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  local passed=true
+  if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    passed=false
+  elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected FAIL but got PASS"
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_test_custom_filename_output "nested-additional-property-shows-allowed" \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "allowed properties: actionable, category, description, file, line, remediation, severity"
+
 # --- Structural failures ---
 
 run_test "missing-action" \
@@ -160,6 +234,62 @@ run_test "invalid-json" \
 run_test "additional-properties-rejected" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false"
+
+# --- Allowed-properties output tests ---
+
+# Helper that asserts both exit code and that stdout contains a required string.
+run_test_output() {
+  local test_name="$1"
+  local json_content="$2"
+  local expect_pass="$3"  # "true" or "false"
+  local expect_output="$4"  # substring that must appear in stdout
+
+  local test_dir="${TMPDIR}/${test_name}"
+  mkdir -p "${test_dir}/output"
+  echo "${json_content}" > "${test_dir}/output/agent-result.json"
+
+  local exit_code=0
+  FULLSEND_OUTPUT_SCHEMA="${SCHEMA}" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  local passed=true
+  if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    passed=false
+  elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected FAIL but got PASS"
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    cat "${TMPDIR}/stdout.log" | head -10
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_test_output "additional-properties-shows-allowed" \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  "false" \
+  "allowed properties:"
+
+run_test_output "additional-properties-lists-known-keys" \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  "false" \
+  "action, blocked_by, clarity_scores, comment, duplicate_of, label_actions, reasoning, triage_summary"
+
+run_test_output "valid-output-no-allowed-line" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
+  "true" \
+  ""
 
 run_test "invalid-category-rejected" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"invented-category","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done."}' \

@@ -18,8 +18,7 @@ Issue filed → Triage → ready-to-code → Code Agent → PR opened → Review
                 │                          └── changes requested (planned) ─┘
                 ├── blocked → waiting for dependency
                 ├── duplicate → closed
-                ├── not-ready → waiting for info
-                └── not-reproducible → human intervention
+                └── needs-info → waiting for info
 ```
 
 > **Note:** The automated rework loop (Review → Code Agent on "changes requested") is not yet implemented. Today, a "changes requested" outcome requires human intervention. The planned [fix agent (#197)](https://github.com/fullsend-ai/fullsend/issues/197) will automate this loop.
@@ -43,9 +42,10 @@ These labels track where an issue is in the pipeline:
 |-------|---------|-------------------|
 | `blocked` | Progress depends on another issue or PR | Triage comment links to the blocker; re-triage on edit checks if blocker is resolved |
 | `duplicate` | Same issue already tracked elsewhere | Issue closed, link to canonical issue |
-| `not-ready` | Missing information | Triage comment explains what's needed; add a comment or edit the issue body to fix |
-| `not-reproducible` | Bug couldn't be reproduced in the sandbox | Human intervention required; triage comment documents what was tried |
-| `ready-to-code` | Triage passed | Code agent picks it up |
+| `needs-info` | Missing information | Triage comment explains what's needed; add a comment or edit the issue body to fix |
+| `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
+| `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
+| `ready-to-code` | Triage passed (bug, docs, performance) | Code agent picks it up |
 | `ready-for-review` | PR ready for review (manual trigger) | Review agents evaluate the PR |
 | `ready-for-merge` | All reviewers unanimously approved | PR can be merged per governance policy |
 | `requires-manual-review` | Reviewers disagreed or flagged security concerns | Human must decide |
@@ -103,10 +103,9 @@ The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
 2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a blocker is found, it labels `blocked` and posts a comment linking to the blocking issue or PR. On re-triage, it checks whether existing blockers have been resolved.
-3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `not-ready` and posts a comment explaining what's missing.
-4. **Attempts reproduction.** Runs the reported steps in an isolated sandbox. If the bug cannot be reproduced, it labels `not-reproducible` and posts a detailed comment documenting what was tried.
-5. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
-6. **Hands off.** Labels `ready-to-code` with a summary comment.
+3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
+4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
+5. **Hands off.** Labels `ready-to-code` with a summary comment.
 
 **If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears all previous labels and starts from scratch.
 

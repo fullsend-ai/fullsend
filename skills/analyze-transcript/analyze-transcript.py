@@ -8,6 +8,7 @@ import signal
 import sys
 from collections import Counter
 from datetime import datetime
+from typing import TypedDict
 
 # Prevent BrokenPipeError when output is piped through head/tail.
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -243,8 +244,13 @@ def cmd_conversation(args):
                         print()
 
 
+class ToolStats(TypedDict):
+    count: int
+    lines: list[int]
+
+
 def cmd_tools(args):
-    tool_data = {}
+    tool_data: dict[str, ToolStats] = {}
 
     for i, role, msg, _raw in iter_messages(args.file, args.line_range):
         if role != "assistant":

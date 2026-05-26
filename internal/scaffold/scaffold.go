@@ -20,6 +20,7 @@ func FullsendRepoFile(path string) ([]byte, error) {
 // embed.FS does not preserve permission bits, so we track them here.
 // TestFileModeMatchesFilesystem verifies this set stays in sync.
 var executableFiles = map[string]struct{}{
+	"scripts/extract-transcript-error.sh":    {},
 	"scripts/post-code.sh":                   {},
 	"scripts/post-prioritize.sh":             {},
 	"scripts/post-retro.sh":                  {},
@@ -36,7 +37,7 @@ var executableFiles = map[string]struct{}{
 	"scripts/setup-prioritize.sh":            {},
 	"scripts/pre-retro.sh":                   {},
 	"scripts/validate-output-schema.sh":      {},
-	"scripts/extract-transcript-error.sh":    {},
+	"scripts/fullsend-check-output":          {},
 	"scripts/validate-output-schema-test.sh": {},
 	"scripts/validate-source-repo.sh":        {},
 }
@@ -57,6 +58,7 @@ var layeredDirs = []string{
 	"skills/",
 	"schemas/",
 	"harness/",
+	"plugins/",
 	"policies/",
 	"scripts/",
 	"env/",

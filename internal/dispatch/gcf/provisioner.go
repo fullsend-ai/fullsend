@@ -66,6 +66,9 @@ func DefaultFunctionSourceDir() string {
 // hyphens, cannot start or end with a hyphen, max 39 characters.
 var githubOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`)
 
+// githubRepoSlugPattern validates a single GitHub repository name component.
+var githubRepoSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,100}$`)
+
 // gcpProjectIDPattern validates GCP project IDs (6-30 chars).
 var gcpProjectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
@@ -643,23 +646,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		return nil, fmt.Errorf("function %s not found — cannot use --skip-mint-deploy without an existing deployment", functionName)
 	}
 
-	// Step 1: Get project number (always needed for WIF).
-	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("getting project number: %w", err)
-	}
-
-	// Step 2: Create/verify service account.
+	// Step 1: Create/verify service account.
 	if err := p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, saName, "Fullsend token mint Cloud Function"); err != nil {
 		return nil, fmt.Errorf("creating service account: %w", err)
 	}
 
-	// Step 3: Create/verify WIF pool.
-	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
-		return nil, fmt.Errorf("creating WIF pool: %w", err)
-	}
-
-	// Step 4: Create/verify WIF provider with merged org list.
+	// Step 2: Create/verify WIF pool + provider with merged org list.
 	for _, org := range p.cfg.GitHubOrgs {
 		if strings.ContainsAny(org, `'"`) {
 			return nil, fmt.Errorf("invalid GitHub org name %q: contains quotes", org)
@@ -672,37 +664,14 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	installingOrgs := make([]string, len(p.cfg.GitHubOrgs))
 	copy(installingOrgs, p.cfg.GitHubOrgs)
 
-	// Merge with existing WIF provider orgs if provider already exists.
-	// Use a local variable to avoid mutating p.cfg.GitHubOrgs.
-	allOrgs := make([]string, len(p.cfg.GitHubOrgs))
-	copy(allOrgs, p.cfg.GitHubOrgs)
-	existingProvider, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
-	if getErr == nil && existingProvider != nil {
-		existingOrgs := parseConditionOrgs(existingProvider.AttributeCondition)
-		seen := make(map[string]bool)
-		for _, org := range allOrgs {
-			seen[org] = true
-		}
-		for _, org := range existingOrgs {
-			if !seen[org] {
-				allOrgs = append(allOrgs, org)
-				seen[org] = true
-			}
-		}
-		sort.Strings(allOrgs)
+	wifResult, err := p.ensureWIFPoolAndProvider(ctx, installingOrgs)
+	if err != nil {
+		return nil, err
 	}
+	projectNumber := wifResult.projectNumber
+	allOrgs := wifResult.allOrgs
 
-	attrCondition := buildAttributeCondition(allOrgs)
-	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
-		IssuerURI:          oidcIssuer,
-		AttributeCondition: attrCondition,
-		AllowedAudiences:   audiences,
-	}); err != nil {
-		return nil, fmt.Errorf("creating WIF provider: %w", err)
-	}
-
-	// Step 4b: Grant Vertex AI access to each installing org's .fullsend repo
+	// Step 3: Grant Vertex AI access to each installing org's .fullsend repo
 	// at the project level (direct WIF — no intermediate service account).
 	// IAM policy changes can take up to 7 minutes to propagate.
 	for _, org := range installingOrgs {
@@ -1054,6 +1023,11 @@ const fullsendRepoSuffix = "/.fullsend"
 // parseConditionOrgs extracts GitHub org names from a WIF attribute condition.
 // Supports both the current org-scoped ("assertion.repository_owner == 'org'")
 // and legacy repo-scoped ("assertion.repository == 'org/.fullsend'") formats.
+//
+// The parser splits on single quotes and filters with githubOrgPattern, so it
+// assumes conditions contain only org names as quoted values. If conditions are
+// ever extended with additional CEL clauses containing non-org quoted values,
+// this parser must be updated to avoid false-positive extraction.
 func parseConditionOrgs(condition string) []string {
 	var orgs []string
 	for _, part := range strings.Split(condition, "'") {
@@ -1064,13 +1038,76 @@ func parseConditionOrgs(condition string) []string {
 		if strings.HasSuffix(part, fullsendRepoSuffix) {
 			org := strings.TrimSuffix(part, fullsendRepoSuffix)
 			if githubOrgPattern.MatchString(org) {
-				orgs = append(orgs, org)
+				orgs = append(orgs, strings.ToLower(org))
 			}
 		} else if githubOrgPattern.MatchString(part) {
-			orgs = append(orgs, part)
+			orgs = append(orgs, strings.ToLower(part))
 		}
 	}
 	return orgs
+}
+
+type wifMergeResult struct {
+	projectNumber string
+	allOrgs       []string
+}
+
+// ensureWIFPoolAndProvider creates or updates the WIF pool and provider,
+// merging the installing orgs with any existing orgs in the provider's
+// attribute condition.
+//
+// WARNING: read-modify-write without locking — concurrent installs
+// targeting the same WIF provider can race, causing one update to
+// overwrite the other. Run installs sequentially when sharing a WIF
+// provider, or accept that a lost update will be corrected on the next run.
+func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOrgs []string) (*wifMergeResult, error) {
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("getting project number: %w", err)
+	}
+
+	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+		return nil, fmt.Errorf("creating WIF pool: %w", err)
+	}
+
+	allOrgs := make([]string, len(installingOrgs))
+	for i, org := range installingOrgs {
+		allOrgs[i] = strings.ToLower(org)
+	}
+	existingProvider, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+	if getErr != nil {
+		// A non-nil error means "unknown state" — proceeding would risk
+		// overwriting existing orgs (the exact clobber this helper prevents).
+		// Note: GetWIFProvider returns (nil, nil) for 404 (provider does not
+		// exist yet), so a non-nil error is always a real failure.
+		return nil, fmt.Errorf("reading existing WIF provider for merge: %w", getErr)
+	}
+	if existingProvider != nil {
+		existingOrgs := parseConditionOrgs(existingProvider.AttributeCondition)
+		merged := make(map[string]bool)
+		for _, org := range allOrgs {
+			merged[org] = true
+		}
+		for _, org := range existingOrgs {
+			if !merged[org] {
+				allOrgs = append(allOrgs, org)
+				merged[org] = true
+			}
+		}
+	}
+	sort.Strings(allOrgs)
+
+	attrCondition := buildAttributeCondition(allOrgs)
+	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+		IssuerURI:          oidcIssuer,
+		AttributeCondition: attrCondition,
+		AllowedAudiences:   audiences,
+	}); err != nil {
+		return nil, fmt.Errorf("creating WIF provider: %w", err)
+	}
+
+	return &wifMergeResult{projectNumber: projectNumber, allOrgs: allOrgs}, nil
 }
 
 // waitForReady polls the function until it responds with 200 OK, ensuring
@@ -1139,7 +1176,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	orgs := make([]string, len(p.cfg.GitHubOrgs))
 	seen := make(map[string]bool)
 	for i, org := range p.cfg.GitHubOrgs {
-		if !githubOrgPattern.MatchString(org) {
+		if !githubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
 			return "", fmt.Errorf("invalid GitHub org name: %q", org)
 		}
 		lower := strings.ToLower(org)
@@ -1150,42 +1187,66 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		orgs[i] = lower
 	}
 
-	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-	if err != nil {
-		return "", fmt.Errorf("getting project number: %w", err)
-	}
-
-	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
-		return "", fmt.Errorf("creating WIF pool: %w", err)
-	}
-
-	var attrCondition string
+	var projectNumber string
+	providerID := p.cfg.WIFProvider
+	repo := strings.ToLower(p.cfg.Repo)
 	if p.cfg.Repo != "" {
-		parts := strings.SplitN(p.cfg.Repo, "/", 2)
-		p.cfg.WIFProvider = BuildRepoProviderID(parts[0], parts[1])
-		attrCondition = fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
+		// Repo-scoped: dedicated provider per repo, no org merge.
+		// Each repo gets a unique provider ID (via BuildRepoProviderID),
+		// so no risk of clobbering another repo's WIF condition.
+		parts := strings.SplitN(repo, "/", 2)
+		origParts := strings.SplitN(p.cfg.Repo, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
+		}
+		if !githubOrgPattern.MatchString(parts[0]) || strings.Contains(parts[0], "--") {
+			return "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", origParts[0])
+		}
+		if !githubRepoSlugPattern.MatchString(parts[1]) {
+			return "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", origParts[1])
+		}
+		if parts[1] == "." || parts[1] == ".." {
+			return "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", origParts[1])
+		}
+		if strings.HasSuffix(parts[1], ".git") {
+			return "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", origParts[1])
+		}
+		var err error
+		projectNumber, err = p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+		if err != nil {
+			return "", fmt.Errorf("getting project number: %w", err)
+		}
+		if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+			return "", fmt.Errorf("creating WIF pool: %w", err)
+		}
+		providerID = BuildRepoProviderID(parts[0], parts[1])
+		attrCondition := fmt.Sprintf("assertion.repository == '%s'", repo)
+		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
+		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
+			IssuerURI:          oidcIssuer,
+			AttributeCondition: attrCondition,
+			AllowedAudiences:   audiences,
+		}); err != nil {
+			return "", fmt.Errorf("creating WIF provider: %w", err)
+		}
 	} else {
-		attrCondition = buildAttributeCondition(orgs)
-	}
-
-	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
-		IssuerURI:          oidcIssuer,
-		AttributeCondition: attrCondition,
-		AllowedAudiences:   audiences,
-	}); err != nil {
-		return "", fmt.Errorf("creating WIF provider: %w", err)
+		// Org-scoped: shared helper merges with existing orgs.
+		wifResult, err := p.ensureWIFPoolAndProvider(ctx, orgs)
+		if err != nil {
+			return "", err
+		}
+		projectNumber = wifResult.projectNumber
 	}
 
 	// IAM policy changes can take up to 7 minutes to propagate.
 	// Workflows that rely on these bindings may fail during that window.
 	if p.cfg.Repo != "" {
 		principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
-			projectNumber, p.cfg.WIFPoolName, p.cfg.Repo)
+			projectNumber, p.cfg.WIFPoolName, repo)
 		if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
-			return "", fmt.Errorf("granting Vertex AI access for repo %s: %w", p.cfg.Repo, err)
+			return "", fmt.Errorf("granting Vertex AI access for repo %s: %w", repo, err)
 		}
-		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", p.cfg.Repo)
+		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", repo)
 	} else {
 		for _, org := range orgs {
 			principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s/.fullsend",
@@ -1198,7 +1259,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	}
 
 	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-		projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+		projectNumber, p.cfg.WIFPoolName, providerID)
 
 	return wifProvider, nil
 }

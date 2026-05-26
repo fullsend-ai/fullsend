@@ -149,25 +149,92 @@ func TestOsRootContainment(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSanitizeDownload_RemovesSymlinks(t *testing.T) {
+func TestSanitizeDownload_RemovesAbsoluteSymlinks(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create a regular file.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "real.txt"), []byte("ok"), 0o644))
-
-	// Create a symlink (dangling is fine — we just need it to exist).
 	require.NoError(t, os.Symlink("/nonexistent/target", filepath.Join(dir, "danger")))
 
 	err := sanitizeDownload(dir)
 	require.NoError(t, err)
 
-	// Regular file should survive.
 	_, err = os.Stat(filepath.Join(dir, "real.txt"))
 	assert.NoError(t, err)
 
-	// Symlink should be removed.
 	_, err = os.Lstat(filepath.Join(dir, "danger"))
-	assert.True(t, os.IsNotExist(err), "symlink should have been removed")
+	assert.True(t, os.IsNotExist(err), "absolute symlink should have been removed")
+}
+
+func TestSanitizeDownload_KeepsRelativeSymlinksInsideRepo(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "target.txt"), []byte("ok"), 0o644))
+	// Relative symlink: sub/link -> ../target.txt (stays inside dir)
+	require.NoError(t, os.Symlink("../target.txt", filepath.Join(dir, "sub", "link")))
+
+	err := sanitizeDownload(dir)
+	require.NoError(t, err)
+
+	_, err = os.Lstat(filepath.Join(dir, "sub", "link"))
+	assert.NoError(t, err, "relative in-repo symlink should be preserved")
+}
+
+func TestSanitizeDownload_RemovesSymlinkChainEscape(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "real"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
+	// dirlink -> ../real: relative, inside repo — sanitizeDownload keeps it.
+	require.NoError(t, os.Symlink("../real", filepath.Join(dir, "sub", "dirlink")))
+	// escape -> "sub/dirlink/../../etc/passwd":
+	//   filepath.Clean sees: dir/sub/dirlink/../../etc/passwd → dir/etc/passwd (inside, passes textual check)
+	//   EvalSymlinks follows: sub/dirlink → dir/real → ../../etc/passwd → outside dir (escapes)
+	require.NoError(t, os.Symlink("sub/dirlink/../../etc/passwd", filepath.Join(dir, "escape")))
+
+	err := sanitizeDownload(dir)
+	require.NoError(t, err)
+
+	_, err = os.Lstat(filepath.Join(dir, "sub", "dirlink"))
+	assert.NoError(t, err, "in-repo dirlink should be preserved")
+
+	_, err = os.Lstat(filepath.Join(dir, "escape"))
+	assert.True(t, os.IsNotExist(err), "symlink-chain escape should be removed")
+}
+
+func TestSanitizeDownload_RemovesRelativeSymlinksEscapingRepo(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
+	// Relative symlink that traverses above dir root.
+	require.NoError(t, os.Symlink("../../etc/passwd", filepath.Join(dir, "sub", "escape")))
+
+	err := sanitizeDownload(dir)
+	require.NoError(t, err)
+
+	_, err = os.Lstat(filepath.Join(dir, "sub", "escape"))
+	assert.True(t, os.IsNotExist(err), "escaping relative symlink should have been removed")
+}
+
+func TestSanitizeDownload_RemovesDirSymlinkIndirection(t *testing.T) {
+	repo := t.TempDir()
+
+	// Place a secret file outside the repo root.
+	secret := filepath.Join(filepath.Dir(repo), "secret")
+	require.NoError(t, os.WriteFile(secret, []byte("leaked"), 0o644))
+	t.Cleanup(func() { os.Remove(secret) })
+
+	// d/x is a directory symlink to "." — relative, inside repo, so kept.
+	// e targets "d/x/../../secret" which textually cleans to repo/secret (inside),
+	// but on the filesystem d/x resolves to d/, so ../../secret escapes.
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "d"), 0o755))
+	require.NoError(t, os.Symlink(".", filepath.Join(repo, "d", "x")))
+	require.NoError(t, os.Symlink("d/x/../../secret", filepath.Join(repo, "e")))
+
+	require.NoError(t, sanitizeDownload(repo))
+
+	_, err := os.Lstat(filepath.Join(repo, "e"))
+	assert.True(t, os.IsNotExist(err), "dir-symlink indirection escape should have been removed")
 }
 
 func TestSanitizeDownload_RemovesGitHooks(t *testing.T) {
@@ -243,4 +310,78 @@ func TestSanitizeDownload_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	err := sanitizeDownload(dir)
 	assert.NoError(t, err)
+}
+
+func TestEffectiveReadyTimeout_Default(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "")
+	got := effectiveReadyTimeout(0)
+	assert.Equal(t, readyTimeout, got)
+}
+
+func TestEffectiveReadyTimeout_Override(t *testing.T) {
+	got := effectiveReadyTimeout(90 * time.Second)
+	assert.Equal(t, 90*time.Second, got)
+}
+
+func TestEffectiveReadyTimeout_EnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "180s")
+	got := effectiveReadyTimeout(0)
+	assert.Equal(t, 180*time.Second, got)
+}
+
+func TestEffectiveReadyTimeout_OverrideTakesPrecedenceOverEnv(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "180s")
+	got := effectiveReadyTimeout(90 * time.Second)
+	assert.Equal(t, 90*time.Second, got)
+}
+
+func TestEffectiveReadyTimeout_InvalidEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "not-a-duration")
+	got := effectiveReadyTimeout(0)
+	assert.Equal(t, readyTimeout, got)
+}
+
+func TestEffectiveReadyTimeout_NegativeEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "-30s")
+	got := effectiveReadyTimeout(0)
+	assert.Equal(t, readyTimeout, got)
+}
+
+func TestCreateWithRetry_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 1, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox creation failed after 1 attempts")
+}
+
+func TestCreateWithRetry_ZeroAttempts(t *testing.T) {
+	err := CreateWithRetry("test-sandbox", nil, "", "", 0, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
+}
+
+func TestCreateWithRetry_NegativeAttempts(t *testing.T) {
+	err := CreateWithRetry("test-sandbox", nil, "", "", -1, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
+}
+
+func TestEffectiveReadyTimeout_CappedAtMax(t *testing.T) {
+	got := effectiveReadyTimeout(999 * time.Second)
+	assert.Equal(t, maxReadyTimeout, got)
+}
+
+func TestEffectiveReadyTimeout_EnvVarCappedAtMax(t *testing.T) {
+	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "1h")
+	got := effectiveReadyTimeout(0)
+	assert.Equal(t, maxReadyTimeout, got)
+}
+
+func TestUploadDir_OpenshellNotInPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", "")
+
+	err := UploadDir("test-sandbox", dir, "/tmp/workspace/repo")
+	assert.Error(t, err)
 }

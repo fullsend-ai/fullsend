@@ -66,6 +66,7 @@ REVIEW_PROTECTED_PATHS=(
   ".claude/"
   "agents/"
   "harness/"
+  "plugins/"
   "policies/"
   "scripts/"
   "api-servers/"

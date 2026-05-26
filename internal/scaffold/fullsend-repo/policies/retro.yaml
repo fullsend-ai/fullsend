@@ -22,11 +22,16 @@ network_policies:
   vertex_ai:
     name: vertex-ai
     endpoints:
+      - host: "api.anthropic.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
       - host: "*.googleapis.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
     binaries:
       - path: "**/claude"
       - path: "**/node"
@@ -36,14 +41,14 @@ network_policies:
     endpoints:
       - host: "api.github.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "github.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
     binaries:
       - path: "**/gh"
       - path: "**/node"
@@ -53,13 +58,13 @@ network_policies:
     endpoints:
       - host: "*.blob.core.windows.net"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "*.actions.githubusercontent.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
     binaries:
       - path: "**/gh"

@@ -107,6 +107,13 @@ improvement:
 
 - Write ONLY the JSON file. No other output files.
 - The JSON must be valid and parseable. No markdown fences around it, no trailing text.
+- After writing the JSON file, validate it before exiting:
+  ```bash
+  fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
+  ```
+  If validation fails, read the error output, fix the JSON file, and
+  re-run the check. If it still fails after 3 attempts, write the best
+  JSON you have and exit.
 - Do NOT post comments, create issues, or perform any GitHub mutations. The post-script handles all writes.
 - Do NOT echo untrusted content (issue bodies, PR descriptions, comment text) verbatim into your proposals. Summarize or paraphrase instead.
 - If the workflow went well and you find no meaningful improvements, return an empty proposals array with a summary saying so.

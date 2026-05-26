@@ -14,27 +14,27 @@ on:
   workflow_call:
     inputs:
       event_action:
-        description: 'The event action (github.event.action) forwarded by the shim'
+        description: "The event action (github.event.action) forwarded by the shim"
         required: true
         type: string
       install_mode:
-        description: 'Installation mode: per-repo (default) or per-org'
+        description: "Installation mode: per-repo (default) or per-org"
         required: false
         type: string
-        default: 'per-repo'
+        default: "per-repo"
       mint_url:
-        description: 'Token mint URL for OIDC token exchange'
+        description: "Token mint URL for OIDC token exchange"
         required: true
         type: string
       gcp_region:
-        description: 'GCP region for Vertex AI'
+        description: "GCP region for Vertex AI"
         required: true
         type: string
       fullsend_version:
-        description: 'Fullsend CLI version to use'
+        description: "Fullsend CLI version to use"
         required: false
         type: string
-        default: 'latest'
+        default: "latest"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -49,7 +49,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.route.outputs.stage }}
+      stage: ${{ steps.role-check.outputs.skipped == 'true' && '' || steps.route.outputs.stage }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -152,7 +152,7 @@ jobs:
                   fi
                   ;;
                 *)
-                  if has_label "needs-info" && ! has_label "type/feature"; then
+                  if has_label "needs-info" && ! has_label "feature"; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
                         STAGE="triage"
@@ -251,6 +251,7 @@ jobs:
           fi
 
       - name: Check role is enabled
+        id: role-check
         if: steps.route.outputs.stage != ''
         env:
           STAGE: ${{ steps.route.outputs.stage }}
@@ -261,17 +262,18 @@ jobs:
           fi
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code|fix) STAGE_ROLE="coder" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
           ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
-            echo "::error::Stage '$STAGE' (role: $STAGE_ROLE) is not in configured roles — dispatch blocked"
-            exit 1
+            echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in configured roles"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
       - name: Block fork PRs for fix stage
-        if: steps.route.outputs.stage == 'fix' && github.event.issue.pull_request
+        if: steps.route.outputs.stage == 'fix' && steps.role-check.outputs.skipped != 'true' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -333,7 +335,6 @@ jobs:
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
 
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   code:
@@ -353,7 +354,6 @@ jobs:
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
 
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   review:
@@ -372,7 +372,6 @@ jobs:
       fullsend_version: ${{ inputs.fullsend_version }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
 
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
@@ -394,7 +393,6 @@ jobs:
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
 
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   retro:
@@ -413,6 +411,5 @@ jobs:
       fullsend_version: ${{ inputs.fullsend_version }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
 
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

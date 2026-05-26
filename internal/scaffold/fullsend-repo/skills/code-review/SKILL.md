@@ -90,6 +90,21 @@ dimension carry over to another — each requires its own scrutiny.
 - Privilege escalation: can a lower-privilege principal gain
   higher-privilege access through the changed code?
 - Injection vulnerabilities: SQL, command, LDAP, path traversal.
+- **Permission manifest changes:** If the diff modifies any file that
+  declares or scopes permissions — GitHub App manifests, token
+  downscoping maps, OAuth scope lists, IAM/RBAC policies, Kubernetes
+  RBAC, or workflow `permissions:` blocks — always produce a finding,
+  even if the change appears internally consistent. Evaluate:
+  (a) does the new permission grant capabilities beyond the stated use
+  case? (b) is there a least-privilege alternative that achieves the
+  same goal? (c) is there a linked issue or ADR explicitly authorizing
+  the expansion? A permission expansion without explicit justification
+  must be at least **high** severity. A reduction in permissions is
+  still a finding (info) confirming the change is intentional.
+
+  Examples of permission-declaring files: GitHub App manifest JSON,
+  `permissions:` blocks in `.github/workflows/*.yml`, token scoping
+  maps, IAM policy JSON/YAML, Kubernetes `Role`/`ClusterRole` YAML.
 
 #### Content security
 
@@ -197,7 +212,8 @@ Then determine the overall outcome:
 - **Low** or **info** findings only (no medium+) -> `approve` (attach
   findings as comments in the review body so the author sees them, but
   do not block the PR). Preserve concrete follow-up work in the structured
-  output with `actionable: true` so the post-script can create follow-up issues.
+  output with `actionable: true` (follow-up issue creation is temporarily
+  disabled pending #1137, but the field is retained for when it is re-enabled).
 - No findings -> `approve`
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought -> `reject`.

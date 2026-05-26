@@ -142,6 +142,16 @@ Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` with this s
 
 **Schema is strict.** The top-level object allows ONLY `summary` and `proposals` — no additional properties. Each proposal object allows ONLY the six fields shown above. The harness validates against `$FULLSEND_OUTPUT_SCHEMA` with `"additionalProperties": false` at both levels. Do not add fields like `timeline`, `metadata`, `workflow_quality`, or `originating_url`.
 
+After writing the file, validate it before exiting:
+
+```bash
+fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
+
 ### Writing good proposals
 
 - **what_happened:** Tell the story chronologically. Link to specific workflow runs, log lines, PR comments, and review verdicts. Use markdown links.

@@ -44,7 +44,7 @@ Three coordinated changes, applied uniformly to both installation modes
 
 **A. Customizations live in `customized/`.** The scaffold installs a
 `customized/` directory with empty subdirs (`agents/`, `skills/`, `schemas/`,
-`harness/`, `policies/`, `scripts/`, `env/`) containing `.gitkeep` files. The
+`harness/`, `plugins/`, `policies/`, `scripts/`, `env/`) containing `.gitkeep` files. The
 location differs by install mode:
 
 - **Per-org** (`fullsend admin install <org>`): `customized/` in the org-level
@@ -72,7 +72,7 @@ The harness sees a single flat workspace in both modes — no changes to
 
 **C. Scaffold stops writing upstream defaults.** `WalkFullsendRepo` skips files
 in layered directories (`agents/`, `skills/`, `schemas/`, `harness/`,
-`policies/`, `scripts/`, `env/`) and upstream-only directories (`.github/actions/`,
+`plugins/`, `policies/`, `scripts/`, `env/`) and upstream-only directories (`.github/actions/`,
 `.github/scripts/`). The installer writes only mode-specific files and
 `customized/` gitkeeps. `CustomizedDirs()` returns paths for per-org installs;
 `PerRepoCustomizedDirs()` returns `.fullsend/customized/` paths for per-repo
@@ -84,8 +84,8 @@ File categories after this change:
 
 - **Org-only** (~11 files): `dispatch.yml`, thin callers, shim template,
   `AGENTS.md` — always installed, never overwritten by upstream.
-- **Org overrides** (7 `.gitkeep` files):
-  `customized/{agents,skills,schemas,harness,policies,scripts,env}/` —
+- **Org overrides** (8 `.gitkeep` files):
+  `customized/{agents,skills,schemas,harness,plugins,policies,scripts,env}/` —
   scaffold creates the structure, orgs add real files.
 - **Upstream defaults** (~60 files): agents, skills, schemas, harness,
   policies, scripts, env — authoritative in `fullsend-ai/fullsend`, provided
@@ -97,8 +97,8 @@ File categories after this change:
 
 - **Repo scaffolding** (~2 files): `.github/workflows/fullsend.yaml` (shim
   workflow), `.fullsend/config.yaml` (per-repo config).
-- **Repo overrides** (7 `.gitkeep` files):
-  `.fullsend/customized/{agents,skills,schemas,harness,policies,scripts,env}/` —
+- **Repo overrides** (8 `.gitkeep` files):
+  `.fullsend/customized/{agents,skills,schemas,harness,plugins,policies,scripts,env}/` —
   scaffold creates the structure, repo owners add real files.
 - **Upstream defaults** and **Upstream infrastructure**: same as per-org — provided
   at runtime, never committed to the repo.

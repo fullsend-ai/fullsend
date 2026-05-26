@@ -1,0 +1,9 @@
+[general]
+# Enable conventional commits title check
+contrib=CT1
+
+# Conventional commit types allowed in this repo.
+# Matches the types documented in CONTRIBUTING.md and parsed by
+# GoReleaser for release notes.
+[contrib-title-conventional-commits]
+types=feat,fix,refactor,docs,test,chore,ci,perf

@@ -1420,6 +1420,7 @@ If a skill references `policy: rust-sandbox@v2` (a name+version, not a URL), how
 
 ## Related Documents
 
+- **[Implementation Plan](universal-harness-access-implementation.md)** — Phased PR breakdown for Phase 1 (MVP)
 - **[ADR-0024: Harness Definitions](../ADRs/0024-harness-definitions.md)** — Current harness schema and resolution logic
 - **[ADR-0022: Output Schema Enforcement](../ADRs/0022-harness-level-output-schema-enforcement.md)** — Security validation of agent output
 - **[ADR-0017: Credential Isolation](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)** — Sandbox security model
