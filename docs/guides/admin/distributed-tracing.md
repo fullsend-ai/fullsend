@@ -197,6 +197,82 @@ gcloud compute ssh mlflow --zone=us-east4-c --tunnel-through-iap \
   --project=it-gcp-konflux-dev-fullsend
 ```
 
+## Live deployment example
+
+The [`ascerra-feature-evals/features`](https://github.com/ascerra-feature-evals/features)
+repo runs a full telemetry-enabled pipeline. This section shows how the
+pieces fit together in practice.
+
+### Trace flow across GitHub Actions
+
+```
+  GitHub event (issue opened, PR pushed, slash command)
+       │
+       ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  fullsend shim  (fullsend.yaml)                                    │
+  │  Routes event → reusable-dispatch.yml → reusable-{stage}.yml       │
+  │  Concurrency: one dispatch per issue/PR at a time                  │
+  └──────────────────────┬──────────────────────────────────────────────┘
+                         │ workflow_call
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Agent stage  (Triage / Code / Review / Fix / Retro)                │
+  │                                                                      │
+  │  1. Mint scoped token (OIDC → token mint → GitHub App install token) │
+  │  2. Setup GCP + agent env                                            │
+  │  3. Read TRACEPARENT from issue/PR (prior stage wrote it)            │
+  │  4. fullsend run {stage}                                             │
+  │     ├─ FULLSEND_TELEMETRY=1                                          │
+  │     ├─ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT → MLflow                  │
+  │     ├─ Produces run-events.jsonl + run-summary.json                  │
+  │     └─ Exports OTEL spans with gen_ai.* attrs                        │
+  │  5. Post TRACEPARENT to issue/PR for next stage                      │
+  │  6. Export transcript → OTEL child spans (LLM turns)                 │
+  │  7. Upload artifacts                                                 │
+  └──────────────────────┬──────────────────────────────────────────────┘
+                         │ workflow_run (completed)
+                         ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Send Telemetry  (send-telemetry.yml)                                │
+  │  Post-hoc enrichment — reads GHA jobs API, constructs additional     │
+  │  OTEL spans for workflow-level timing (queue wait, setup overhead),  │
+  │  exports to Phoenix/MLflow.                                          │
+  └──────────────────────────────────────────────────────────────────────┘
+```
+
+### Telemetry test workflows
+
+The repo includes standalone telemetry test workflows that build the CLI
+from the `distributed-tracing` branch and run each stage with full tracing
+enabled:
+
+- `triage-telemetry.yml` — dispatched via `workflow_dispatch` with an issue
+  number, runs triage with `TRACEPARENT` propagation
+- `code-telemetry.yml` — same pattern for the code agent
+- `review-telemetry.yml` — same pattern for the review agent
+
+Each workflow:
+
+1. Builds the telemetry-enabled `fullsend` binary from source
+2. Reads `TRACEPARENT` from the issue (written by a prior stage)
+3. Runs `fullsend run` with `FULLSEND_TELEMETRY=1` and
+   `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` pointed at MLflow
+4. Posts the new `TRACEPARENT` back to the issue for the next stage
+5. Exports Claude Code transcript JSONL as child OTEL spans
+
+### Example runs
+
+Recent successful runs from
+[ascerra-feature-evals/features/actions](https://github.com/ascerra-feature-evals/features/actions):
+
+| Stage | Run ID | Link |
+|-------|--------|------|
+| Triage (telemetry test) | 26427579796 | [view](https://github.com/ascerra-feature-evals/features/actions/runs/26427579796) |
+| Code (telemetry test) | 26427580136 | [view](https://github.com/ascerra-feature-evals/features/actions/runs/26427580136) |
+| Review (via fullsend dispatch) | 26427737042 | [view](https://github.com/ascerra-feature-evals/features/actions/runs/26427737042) |
+| Send Telemetry (post-hoc enrichment) | 26427875956 | [view](https://github.com/ascerra-feature-evals/features/actions/runs/26427875956) |
+
 ## Other backends for evaluation
 
 | Backend | Strengths | Setup |
