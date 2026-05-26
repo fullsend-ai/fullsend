@@ -276,6 +276,29 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
+	// Build diffHunks early so we can recalculate the verdict before
+	// stale-review cleanup uses the event.
+	var diffHunks map[string][][2]int
+	if fileDiffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr); err != nil {
+		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", err))
+	} else if len(fileDiffs) == 0 {
+		printer.StepInfo("PR file list is empty, inline comments disabled")
+	} else {
+		diffHunks = make(map[string][][2]int, len(fileDiffs))
+		for _, f := range fileDiffs {
+			diffHunks[f.Path] = parseDiffLineRanges(f.Patch)
+		}
+	}
+
+	// Recalculate verdict: out-of-diff findings must not escalate the
+	// review to REQUEST_CHANGES. See #1446.
+	adjusted := recalculateVerdict(action, findings, diffHunks)
+	if adjusted != action {
+		printer.StepWarn(fmt.Sprintf("Verdict downgraded from %s to %s: no high/critical in-diff findings", action, adjusted))
+		action = adjusted
+		event, _ = reviewActionToEvent(action)
+	}
+
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
 		printer.StepInfo("Could not determine authenticated user, skipping stale review cleanup")
@@ -289,18 +312,6 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	if event == "COMMENT" {
 		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
 		return nil
-	}
-
-	var diffHunks map[string][][2]int
-	if fileDiffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr); err != nil {
-		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", err))
-	} else if len(fileDiffs) == 0 {
-		printer.StepInfo("PR file list is empty, inline comments disabled")
-	} else {
-		diffHunks = make(map[string][][2]int, len(fileDiffs))
-		for _, f := range fileDiffs {
-			diffHunks[f.Path] = parseDiffLineRanges(f.Patch)
-		}
 	}
 
 	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
@@ -365,6 +376,37 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 		})
 	}
 	return comments, fileFiltered, lineFiltered
+}
+
+// recalculateVerdict downgrades a request-changes or reject verdict to
+// approve when no high or critical severity findings target files in the
+// PR diff. Findings with no file path are treated conservatively as
+// in-diff. When diffHunks is nil (diff info unavailable), the original
+// verdict is preserved unchanged.
+func recalculateVerdict(action string, findings []ReviewFinding, diffHunks map[string][][2]int) string {
+	lower := strings.ToLower(action)
+	if lower != "request-changes" && lower != "reject" {
+		return action
+	}
+	if diffHunks == nil {
+		return action
+	}
+
+	for _, f := range findings {
+		sev := strings.ToLower(f.Severity)
+		if sev != "high" && sev != "critical" {
+			continue
+		}
+		// No file path → conservative: treat as in-diff.
+		if f.File == "" {
+			return action
+		}
+		if _, inDiff := diffHunks[f.File]; inDiff {
+			return action
+		}
+	}
+
+	return "approve"
 }
 
 // formatFindingComment renders a single review finding as a Markdown

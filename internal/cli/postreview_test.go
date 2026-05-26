@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
+	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
@@ -848,6 +848,190 @@ func TestSubmitFormalReview_EmptyPRFileDiffListFallsBack(t *testing.T) {
 	require.Len(t, fc.CreatedReviews, 1)
 	require.Len(t, fc.CreatedReviews[0].Comments, 1, "comments pass through unfiltered when PR file list is empty")
 	assert.Contains(t, out.String(), "PR file list is empty")
+}
+
+func TestRecalculateVerdict(t *testing.T) {
+	diffHunks := map[string][][2]int{
+		"changed.go": {{1, 50}},
+	}
+
+	tests := []struct {
+		name     string
+		action   string
+		findings []ReviewFinding
+		hunks    map[string][][2]int
+		want     string
+	}{
+		{
+			name:   "all high findings out of diff downgrades to approve",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "SPEC.md", Line: 1, Severity: "high", Category: "docs"},
+				{File: "README.md", Line: 5, Severity: "high", Category: "docs"},
+			},
+			hunks: diffHunks,
+			want:  "approve",
+		},
+		{
+			name:   "low in-diff finding only downgrades to approve",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "SPEC.md", Line: 1, Severity: "high", Category: "docs"},
+				{File: "changed.go", Line: 10, Severity: "low", Category: "style"},
+			},
+			hunks: diffHunks,
+			want:  "approve",
+		},
+		{
+			name:   "high in-diff finding keeps request-changes",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "SPEC.md", Line: 1, Severity: "high", Category: "docs"},
+				{File: "changed.go", Line: 10, Severity: "high", Category: "bug"},
+			},
+			hunks: diffHunks,
+			want:  "request-changes",
+		},
+		{
+			name:   "critical in-diff finding keeps request-changes",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "changed.go", Line: 10, Severity: "critical", Category: "security"},
+			},
+			hunks: diffHunks,
+			want:  "request-changes",
+		},
+		{
+			name:     "all findings out of diff downgrades to approve",
+			action:   "request-changes",
+			findings: []ReviewFinding{},
+			hunks:    diffHunks,
+			want:     "approve",
+		},
+		{
+			name:   "nil diffHunks preserves verdict (conservative)",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "any.go", Line: 1, Severity: "high", Category: "bug"},
+			},
+			hunks: nil,
+			want:  "request-changes",
+		},
+		{
+			name:   "approve action unchanged",
+			action: "approve",
+			findings: []ReviewFinding{
+				{File: "not-in-diff.go", Line: 1, Severity: "high", Category: "bug"},
+			},
+			hunks: diffHunks,
+			want:  "approve",
+		},
+		{
+			name:   "comment action unchanged",
+			action: "comment",
+			findings: []ReviewFinding{
+				{File: "not-in-diff.go", Line: 1, Severity: "high", Category: "bug"},
+			},
+			hunks: diffHunks,
+			want:  "comment",
+		},
+		{
+			name:   "reject action downgrades to approve when out of diff",
+			action: "reject",
+			findings: []ReviewFinding{
+				{File: "not-in-diff.go", Line: 1, Severity: "high", Category: "bug"},
+			},
+			hunks: diffHunks,
+			want:  "approve",
+		},
+		{
+			name:   "finding with no file treated as in-diff (conservative)",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "", Line: 0, Severity: "high", Category: "security"},
+			},
+			hunks: diffHunks,
+			want:  "request-changes",
+		},
+		{
+			name:   "mix of in-diff high and out-of-diff high keeps verdict",
+			action: "request-changes",
+			findings: []ReviewFinding{
+				{File: "not-in-diff.go", Line: 1, Severity: "high", Category: "docs"},
+				{File: "changed.go", Line: 10, Severity: "high", Category: "bug"},
+			},
+			hunks: diffHunks,
+			want:  "request-changes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := recalculateVerdict(tt.action, tt.findings, tt.hunks)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSubmitFormalReview_DowngradesVerdictForOutOfDiffFindings(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "changed.go", Patch: "@@ -1,5 +1,10 @@ package main"},
+		},
+	}
+	// Pre-existing CHANGES_REQUESTED review should be dismissed on downgrade.
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "CHANGES_REQUESTED", Body: "old"},
+		},
+	}
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	// Two high findings in files NOT in the PR diff, one low in-diff.
+	findings := []ReviewFinding{
+		{File: "SPEC.md", Line: 5, Severity: "high", Category: "stale-docs", Description: "Stale spec"},
+		{File: "README.md", Line: 10, Severity: "high", Category: "stale-docs", Description: "Stale readme"},
+		{File: "changed.go", Line: 3, Severity: "low", Category: "style", Description: "Minor style"},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
+	require.NoError(t, err)
+
+	// Verdict should be downgraded to APPROVE.
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Equal(t, "APPROVE", fc.CreatedReviews[0].Event)
+	assert.Contains(t, out.String(), "Verdict downgraded from request-changes to approve")
+
+	// Stale CHANGES_REQUESTED should be dismissed since the new event is APPROVE.
+	require.Len(t, fc.DismissedReviews, 1)
+	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
+}
+
+func TestSubmitFormalReview_KeepsVerdictForInDiffHighFindings(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "changed.go", Patch: "@@ -1,5 +1,10 @@ package main"},
+		},
+	}
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{File: "SPEC.md", Line: 5, Severity: "high", Category: "stale-docs", Description: "Stale spec"},
+		{File: "changed.go", Line: 3, Severity: "high", Category: "bug", Description: "Real bug"},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[0].Event)
+	assert.NotContains(t, out.String(), "Verdict downgraded")
 }
 
 func TestFormatFindingComment(t *testing.T) {
