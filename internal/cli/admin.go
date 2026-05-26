@@ -309,7 +309,7 @@ Inference authentication:
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			printer.Banner()
+			printer.Banner(Version())
 			printer.Blank()
 			printer.Header("Installing fullsend for " + org)
 			printer.Blank()
@@ -603,7 +603,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	client := gh.New(token)
 	printer := ui.New(os.Stdout)
 
-	printer.Banner()
+	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Installing per-repo fullsend for " + repoFullName)
 	printer.Blank()
@@ -1048,7 +1048,7 @@ func newUninstallCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			printer.Banner()
+			printer.Banner(Version())
 			printer.Blank()
 			printer.Header("Uninstalling fullsend from " + org)
 			printer.Blank()
@@ -1096,7 +1096,7 @@ func newAnalyzeCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			printer.Banner()
+			printer.Banner(Version())
 			printer.Blank()
 			printer.Header("Analyzing fullsend installation for " + org)
 			printer.Blank()
@@ -2090,7 +2090,7 @@ func newDisableReposCmd() *cobra.Command {
 // The yolo parameter is accepted for signature compatibility with reposRunFunc but is unused
 // since enable has no destructive operations that require confirmation.
 func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error {
-	printer.Banner()
+	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Enabling repositories for " + org)
 	printer.Blank()
@@ -2203,7 +2203,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 
 // runDisableRepos disables the specified repositories from fullsend enrollment.
 func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error {
-	printer.Banner()
+	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Disabling repositories for " + org)
 	printer.Blank()
