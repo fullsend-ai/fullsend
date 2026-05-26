@@ -8,7 +8,7 @@ Structure decided in [ADR 0023](../ADRs/0023-user-documentation-structure.md).
 
 Guides for org administrators who install, configure, and manage fullsend.
 
-- [How to install fullsend](admin/install.md) - A simplified version of the installation guide.
+- [How to install fullsend](admin/install.md) — A simplified version of the installation guide.
 - [Installing fullsend](admin/installation.md) — Set up fullsend in a GitHub organization from scratch (see [#328](https://github.com/fullsend-ai/fullsend/pull/328))
 - [Enabling fullsend on private repositories](admin/private-repositories.md) — Additional guardrails and configuration for private repos
 

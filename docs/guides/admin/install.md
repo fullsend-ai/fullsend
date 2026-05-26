@@ -7,7 +7,8 @@ We recommend using repository mode as it is simpler.
 
 Note: this guide is not intended to be a reference for the installation parameters.
 It is intended to a be simplified version to help you get started and that covers most
-of use cases. For a detailed refernce of the install command check [/reference/install.md].
+of use cases. For a detailed reference of the install command check
+[the full install guide](installation.md).
 
 ## Google Cloud Platform (GCP) Project
 
@@ -55,7 +56,7 @@ export GCP_PROJECT="<your-gcp-project-slug>"
 
 <!-- TODO: --mint-url and --skip-mint-check will be the default in the future so they will need to be removed from here -->
 ```bash
-fullsend admin install $ORG_NAME/$REPO_NAME --inference-project $GCP_PROJECT_NAME --mint-url=https://fullsend-mint-gljhbkcloq-uc.a.run.app --skip-mint-check
+fullsend admin install $ORG_NAME/$REPO_NAME --inference-project $GCP_PROJECT --mint-url=https://fullsend-mint-gljhbkcloq-uc.a.run.app --skip-mint-check
 ```
 
 This creates the appropriate secrets, variables and files in your repository.
@@ -64,10 +65,10 @@ This creates the appropriate secrets, variables and files in your repository.
 
 <!-- TODO: --mint-url and --skip-mint-check will be the default in the future so they will need to be removed from here -->
 ```bash
-fullsend admin install $ORG_NAME --inference-project $GCP_PROJECT_NAME --mint-url=https://fullsend-mint-gljhbkcloq-uc.a.run.app --skip-mint-check --enroll-none
+fullsend admin install $ORG_NAME --inference-project $GCP_PROJECT --mint-url=https://fullsend-mint-gljhbkcloq-uc.a.run.app --skip-mint-check --enroll-none
 ```
 
-This creates the appropriate secrets, variables and files in your organization and provides.
+This creates the appropriate secrets, variables and files in your organization and repositories.
 After installing, enroll the repositories you want with:
 
 ```bash
