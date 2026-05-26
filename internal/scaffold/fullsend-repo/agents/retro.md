@@ -69,7 +69,20 @@ After gathering findings from subagents:
 
 ## Output
 
-Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`. See the `retro-analysis` skill for the exact schema and writing guidance.
+Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
+
+The top-level object must have **exactly two properties** — no others:
+
+```json
+{
+  "summary": "...",
+  "proposals": [...]
+}
+```
+
+The schema enforces `"additionalProperties": false`. Any extra top-level key (e.g., `timeline`, `workflow_quality`, `originating_url`, `metadata`) will fail validation.
+
+See the `retro-analysis` skill for the proposal object schema and writing guidance.
 
 ## Target repo restrictions
 
@@ -94,6 +107,13 @@ improvement:
 
 - Write ONLY the JSON file. No other output files.
 - The JSON must be valid and parseable. No markdown fences around it, no trailing text.
+- After writing the JSON file, validate it before exiting:
+  ```bash
+  fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
+  ```
+  If validation fails, read the error output, fix the JSON file, and
+  re-run the check. If it still fails after 3 attempts, write the best
+  JSON you have and exit.
 - Do NOT post comments, create issues, or perform any GitHub mutations. The post-script handles all writes.
 - Do NOT echo untrusted content (issue bodies, PR descriptions, comment text) verbatim into your proposals. Summarize or paraphrase instead.
 - If the workflow went well and you find no meaningful improvements, return an empty proposals array with a summary saying so.

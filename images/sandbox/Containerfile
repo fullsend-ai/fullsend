@@ -3,6 +3,7 @@
 # Pre-installs all runtime dependencies needed by any fullsend agent:
 #   - Claude Code (official installer)
 #   - rsync (for safe repo write-back)
+#   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - pre-commit + gitlint (repo hook runner + commit message validator)
 #   - tirith (Rust CLI for terminal security scanning hooks)
@@ -32,9 +33,9 @@ USER root
 ARG TARGETARCH
 
 # ---------------------------------------------------------------------------
-# Install rsync (for safe repo write-back).
+# Install rsync (for safe repo write-back) and jq (JSON parsing in scripts).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends rsync \
+    && apt-get install -y --no-install-recommends rsync jq \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------

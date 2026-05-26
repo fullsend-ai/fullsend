@@ -73,9 +73,10 @@ remove_label() {
 }
 
 # Control labels managed by the triage pipeline. The post script refuses to
-# add or remove these via label_actions (same set that pre-triage.sh resets,
-# plus blocked and triaged).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "not-ready" "not-reproducible" "type/feature" "blocked" "triaged")
+# add or remove these via label_actions. This list covers labels that the
+# pipeline itself applies (pre-triage.sh resets the first four; the action
+# handlers apply blocked/triaged/feature).
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged")
 
 is_control_label() {
   local label="$1"
@@ -161,6 +162,11 @@ case "${ACTION}" in
       bug|documentation|performance)
         echo "Applying ready-to-code label (${CATEGORY})..."
         add_label "ready-to-code"
+        ;;
+      feature)
+        echo "Applying feature + triaged labels..."
+        add_label "feature"
+        add_label "triaged"
         ;;
       *)
         echo "Applying triaged label (${CATEGORY})..."

@@ -72,6 +72,11 @@ triggered this fix run (e.g., `"orgname-review[bot]"` for bot-triggered,
 triggers. When triggered by a human (username doesn't end in `[bot]`), the
 `HUMAN_INSTRUCTION` environment variable contains the instruction text.
 
+**Important:** `TRIGGER_SOURCE` is a GitHub username — not the value you
+write to `fix-result.json`. The `trigger_source` field in structured output
+must be normalized to `"bot"` or `"human"` (the schema enum). Map it:
+if the username ends in `[bot]`, use `"bot"`; otherwise use `"human"`.
+
 ## Zero-trust principle
 
 You do not trust the review agent's analysis unconditionally. The review
@@ -117,6 +122,16 @@ documents your actions on every review finding. The `fix-review` skill
 describes the schema. The post-script reads this file to post a summary
 comment on the PR. Without this file, the post-script cannot communicate
 your work back to the reviewer.
+
+After writing the file, validate it before exiting:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/fix-result.json"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
 
 ## Failure handling
 

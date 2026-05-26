@@ -68,6 +68,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"harness/triage.yaml",
 		"harness/code.yaml",
 		"policies/triage.yaml",
+		"plugins/gopls-lsp/plugin.json",
 		"policies/code.yaml",
 		"schemas/triage-result.schema.json",
 		"scripts/post-triage.sh",
@@ -78,6 +79,7 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/post-code.sh",
 		"scripts/reconcile-repos.sh",
 		"scripts/validate-output-schema.sh",
+		"scripts/fullsend-check-output",
 		"scripts/validate-source-repo.sh",
 		"skills/code-implementation/SKILL.md",
 		"skills/issue-labels/SKILL.md",
@@ -196,7 +198,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "pull_request_review")
 	assert.Contains(t, s, "changes_requested")
 	assert.Contains(t, s, "needs-info")
-	assert.Contains(t, s, "type/feature")
+	assert.Contains(t, s, `! has_label "feature"`)
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
@@ -269,6 +271,7 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 		"skills/",
 		"schemas/",
 		"harness/",
+		"plugins/",
 		"policies/",
 		"scripts/",
 		"env/",
@@ -292,6 +295,7 @@ func TestCustomizedDirsInstalled(t *testing.T) {
 		"customized/skills/.gitkeep":   false,
 		"customized/schemas/.gitkeep":  false,
 		"customized/harness/.gitkeep":  false,
+		"customized/plugins/.gitkeep":  false,
 		"customized/policies/.gitkeep": false,
 		"customized/scripts/.gitkeep":  false,
 		"customized/env/.gitkeep":      false,

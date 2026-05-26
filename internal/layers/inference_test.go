@@ -114,22 +114,42 @@ func TestInferenceLayer_Install_SecretWriteError(t *testing.T) {
 	assert.Contains(t, err.Error(), "permission denied")
 }
 
-func TestInferenceLayer_Install_SkipsWhenSecretsExist(t *testing.T) {
+func TestInferenceLayer_Install_ProvisionErrorWithExistingSecrets(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_WIF_PROVIDER"] = true
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
 	provider := vertexProvider()
-	layer, buf := newInferenceLayer(t, client, provider)
+	provider.err = errors.New("gcp auth failed")
+	provider.secrets = nil
+	layer, _ := newInferenceLayer(t, client, provider)
+
+	err := layer.Install(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gcp auth failed")
+	assert.Empty(t, client.CreatedSecrets)
+}
+
+func TestInferenceLayer_Install_OverwritesExistingSecrets(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_WIF_PROVIDER"] = true
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
+	provider := vertexProvider()
+	layer, _ := newInferenceLayer(t, client, provider)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// Should not have created any new secrets.
-	assert.Empty(t, client.CreatedSecrets)
-	// Should indicate skipping in output.
-	assert.Contains(t, buf.String(), "already provisioned")
+	// Secrets should be written unconditionally (upsert).
+	require.Len(t, client.CreatedSecrets, 2)
 
-	// Variables should still have been written (always runs).
+	secretMap := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretMap[s.Name] = s.Value
+	}
+	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/gh", secretMap["FULLSEND_GCP_WIF_PROVIDER"])
+	assert.Equal(t, "my-project", secretMap["FULLSEND_GCP_PROJECT_ID"])
+
+	// Variables should also have been written.
 	require.Len(t, client.Variables, 1)
 	assert.Equal(t, "FULLSEND_GCP_REGION", client.Variables[0].Name)
 }

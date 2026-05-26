@@ -238,6 +238,15 @@ func TestValidateRunnerEnv_LiteralValue(t *testing.T) {
 	require.NoError(t, h.ValidateRunnerEnv())
 }
 
+func TestValidateRunnerEnv_EmptyVarAllowed(t *testing.T) {
+	t.Setenv("EMPTY_ALLOWED_VAR", "")
+	h := &Harness{
+		Agent:     "test.md",
+		RunnerEnv: map[string]string{"KEY": "${EMPTY_ALLOWED_VAR}"},
+	}
+	require.NoError(t, h.ValidateRunnerEnv())
+}
+
 // --- Security config tests ---
 
 func TestSecurityEnabled_Default(t *testing.T) {
@@ -479,6 +488,61 @@ func TestValidate_NegativeTimeout(t *testing.T) {
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout_minutes must be non-negative")
+}
+
+func TestValidate_NegativeSandboxTimeout(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: -1}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
+}
+
+func TestValidate_SandboxTimeoutTooSmall(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 10}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
+}
+
+func TestValidate_SandboxTimeoutTooLarge(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 601}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
+}
+
+func TestValidate_SandboxTimeoutAtMin(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 30}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_SandboxTimeoutAtMax(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 600}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_ZeroSandboxTimeout(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 0}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_PositiveSandboxTimeout(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 180}
+	require.NoError(t, h.Validate())
+}
+
+func TestLoad_SandboxTimeoutField(t *testing.T) {
+	content := `
+agent: agents/test.md
+sandbox_timeout_seconds: 180
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 180, h.SandboxTimeoutSeconds)
 }
 
 func TestLoad_ModelField(t *testing.T) {

@@ -171,7 +171,7 @@ This is the key new artifact, published in `fullsend-ai/fullsend/.github/workflo
 
 The routing logic (identical to per-org `dispatch.yml`) maps:
 - `issues` + `labeled` → stage based on label name (`ready-to-code` → code, `ready-for-review` → review)
-- `issue_comment` + slash commands → `/triage`, `/code`, `/review`, `/fix`, `/retro`
+- `issue_comment` + slash commands → `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
 - `issue_comment` + `needs-info` label (non-command) → auto-triage
 - `pull_request_target` + `opened`/`synchronize`/`ready_for_review` → review
 - `pull_request_target` + `closed` → retro
@@ -217,7 +217,7 @@ Per-repo maps to these profiles:
 | **Self-managed** | Per-repo user deploys own mint + own Apps | `fullsend admin install owner/repo --mint-project=my-proj` creates everything |
 
 **SaaS profile (default)**: The simplest path. Shared public Apps
-(`fullsend-triage`, `fullsend-coder`, `fullsend-review`) are pre-created
+(`fullsend-ai-triage`, `fullsend-ai-coder`, `fullsend-ai-review`) are pre-created
 by the platform operator and installed on the per-repo user's repo (requires
 org admin approval). The `mint-token` composite action exchanges a GitHub
 OIDC token for a scoped installation token — no PEMs, client IDs, or App
@@ -229,9 +229,10 @@ Apps ([ADR 0007](0007-per-role-github-apps.md)), but user-owned. The user
 deploys their own mint and creates their own Apps via `fullsend admin
 install owner/repo --mint-project=my-proj`.
 
-The mint's `job_workflow_ref` validation accepts both patterns:
-- `{org}/.fullsend/.github/workflows/*.yml@*` (per-org)
-- `fullsend-ai/fullsend/.github/workflows/reusable-*.yml@*` (per-repo)
+The mint's `job_workflow_ref` validation accepts three patterns:
+- `{org}/.fullsend/.github/workflows/*.yml@*` (per-org shim workflows)
+- `fullsend-ai/fullsend/.github/workflows/reusable-*.yml@*` (upstream reusable workflows called via `workflow_call`)
+- `{owner}/{repo}/.github/workflows/*.yml@*` where `{owner}/{repo}` is registered in `PER_REPO_WIF_REPOS` (per-repo workflows running directly via `workflow_dispatch`)
 
 The `repository_owner` claim scopes tokens to the calling org/user.
 `ALLOWED_ORGS` on the mint controls which orgs may request tokens.
@@ -262,7 +263,7 @@ Shared flags (valid for both per-org and per-repo):
 - `--public` — create public unlisted GitHub Apps (for multi-org)
 - `--mint-provider` — token mint provider backend (default: `gcf`)
 - `--mint-source-dir` — path to mint function source directory
-- `--app-set` — app set name prefix for GitHub Apps (default: `fullsend`)
+- `--app-set` — app set name prefix for GitHub Apps (default: `fullsend-ai`)
 
 Per-org-only flags (`--vendor-fullsend-binary`, `--enroll-all`, `--enroll-none`) are rejected when an `owner/repo` argument is given. All other flags are shared between per-org and per-repo modes — per-repo can create GitHub Apps, deploy a mint, and manage public apps when existing infrastructure is not found.
 

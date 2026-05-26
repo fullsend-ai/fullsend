@@ -50,7 +50,7 @@ Read-only. The retro agent needs:
 - No filesystem write capability
 - No push/commit capability
 
-Write credentials are held only by the post-script, outside the sandbox, consistent with ADR 0017 (credential isolation).
+The sandbox and post-script share a single minted token with `issues:write` and `pull_requests:read`. The sandbox uses it for read operations (`gh run view`, `gh pr view`); the post-script uses it to file issues and post comments.
 
 ## Input Assembly
 
@@ -152,7 +152,7 @@ How to know the change had the desired effect. Measurable or observable outcomes
 The post-script reads the proposal files from the output directory and:
 
 1. **Files a GitHub issue** for each proposal in the `target_repo` specified in the frontmatter, using `gh issue create`
-2. **Posts a summary comment** on the originating PR or issue using `gh issue comment <number>`, linking to all filed issues. This works for both PRs and issues since GitHub treats PR comments as issue comments.
+2. **Posts a summary comment** on the originating PR or issue using the REST Issues API (`POST /repos/{owner}/{repo}/issues/{number}/comments` via `gh api`), linking to all filed issues. This endpoint only requires `issues:write` and works for both PRs and issues since GitHub treats PRs as issues in the REST API.
 
 ## Dispatch Integration
 
@@ -184,7 +184,7 @@ A standard dispatch workflow that runs `fullsend run retro` with the provided in
 - **Credential isolation (ADR 0017):** Write credentials (`gh` token with issue-create and comment permissions) are held only by the post-script, outside the sandbox.
 - **Unidirectional control flow (ADR 0016):** The retro agent proposes changes via issues. Changes go through standard review (CODEOWNERS, human approval) and take effect in future invocations, never the current one.
 - **Adversarial feedback risk:** A malicious reviewer could post `/fs-retro` with misleading context to bias the retro agent's proposals. The mitigation is the same human approval gate on the resulting issues — a proposal only takes effect if a maintainer approves and merges the change.
-- **Per-role GitHub App (ADR 0007):** The retro agent gets its own GitHub App with scoped permissions: read access to repos, issues, PRs, workflow runs, and artifacts; write access limited to creating issues and posting comments.
+- **Per-role GitHub App (ADR 0007):** The retro agent gets its own GitHub App with scoped permissions: read access to repos, PRs, workflow runs, and artifacts; write access to issues only. The post-script uses the REST Issues API (`POST /repos/{owner}/{repo}/issues/{number}/comments`) to comment on PRs, which requires only `issues: write` — avoiding `pull_requests: write` and the broader capabilities it grants.
 
 ## Architectural Constraints
 

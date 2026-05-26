@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -383,8 +384,8 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 
 	expected := []string{
 		"GetFunction", // auto-routing check (no existing function → full deploy)
-		"GetProjectNumber",
 		"CreateServiceAccount",
+		"GetProjectNumber",
 		"CreateWIFPool",
 		"GetWIFProvider",
 		"CreateWIFProvider",
@@ -1202,6 +1203,23 @@ func TestProvisioner_Provision_CreateWIFProviderError(t *testing.T) {
 	assert.Contains(t, err.Error(), "provider error")
 }
 
+func TestProvisioner_Provision_GetWIFProviderError_FailsFast(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetWIFProvider"] = fmt.Errorf("transient error")
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "test-project-id",
+		GitHubOrgs:        []string{"org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
+}
+
 func TestProvisioner_Provision_CreateSecretError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetSecret"] = ErrSecretNotFound
@@ -1369,10 +1387,94 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 	assert.NotContains(t, names, ".hidden")
 }
 
-func TestBundleFunctionSource_EmptyPath(t *testing.T) {
-	_, err := bundleFunctionSource("")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "function source directory not configured")
+func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
+	data, err := bundleFunctionSource("")
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	assert.Contains(t, names, "go.mod")
+	assert.Contains(t, names, "main.go")
+	assert.Contains(t, names, "go.sum")
+	assert.NotContains(t, names, "main_test.go")
+}
+
+func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
+	data, err := bundleFunctionSource("/nonexistent/path/to/mint")
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	assert.Contains(t, names, "go.mod")
+	assert.Contains(t, names, "go.sum")
+	assert.Contains(t, names, "main.go")
+}
+
+func TestBundleEmbeddedMintSource(t *testing.T) {
+	data, err := bundleEmbeddedMintSource()
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	assert.Contains(t, names, "go.mod")
+	assert.Contains(t, names, "go.sum")
+	assert.Contains(t, names, "main.go")
+	assert.Len(t, names, 3)
+}
+
+func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
+	// origDir is internal/mint/ relative to this test's package (internal/dispatch/gcf/).
+	origDir := filepath.Join("..", "..", "mint")
+	entries, err := os.ReadDir(origDir)
+	if os.IsNotExist(err) {
+		t.Skipf("original mint source not available at %s (running outside repo)", origDir)
+	}
+	require.NoError(t, err, "reading original mint dir")
+
+	// Check that every embedded file matches its original.
+	for embeddedName, realName := range embeddedMintFiles {
+		orig, err := os.ReadFile(filepath.Join(origDir, realName))
+		require.NoError(t, err, "reading original %s", realName)
+
+		embedded, err := embeddedMintSource.ReadFile("mintsrc/" + embeddedName)
+		require.NoError(t, err, "reading embedded %s", embeddedName)
+
+		assert.Equal(t, string(orig), string(embedded),
+			"mintsrc/%s is out of sync with internal/mint/%s — copy to internal/dispatch/gcf/mintsrc/%s to update",
+			embeddedName, realName, embeddedName)
+	}
+
+	// Check that no deployable files in internal/mint/ are missing from the embed map.
+	knownReals := make(map[string]bool)
+	for _, realName := range embeddedMintFiles {
+		knownReals[realName] = true
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		if !knownReals[entry.Name()] {
+			t.Errorf("internal/mint/%s exists but is not in embeddedMintFiles — add it to mintsrc/ with .embed suffix", entry.Name())
+		}
+	}
 }
 
 // --- multi-org tests ---
@@ -1710,6 +1812,49 @@ func TestProvisionWIF_RepoScoped(t *testing.T) {
 	assert.NotContains(t, fake.calls, "GetWIFProvider")
 }
 
+func TestProvisionWIF_RepoScoped_LowercasesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "Acme/Widget",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/widget")
+	assert.Equal(t, "Acme/Widget", p.cfg.Repo, "ProvisionWIF should not mutate p.cfg.Repo")
+}
+
+func TestProvisionWIF_RepoScoped_DotPrefixRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"nonflux"},
+		Repo:       "nonflux/.fullsend",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository == 'nonflux/.fullsend'", fake.lastWIFProviderConfig.AttributeCondition)
+}
+
+func TestProvisionWIF_RepoScoped_ErrorPreservesOriginalCase(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "Owner.Name/Repo",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Owner.Name", "error should show original casing, not lowercased")
+}
+
 func TestProvisionWIF_RepoScoped_DoesNotTouchSharedProvider(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.wifProvider = &WIFProviderInfo{
@@ -1742,6 +1887,96 @@ func TestProvisionWIF_OrgScoped_Unchanged(t *testing.T) {
 	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
 	require.Len(t, fake.projectIAMBindings, 1)
 	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
+}
+
+func TestProvisionWIF_RepoScoped_RejectsInvalidRepo(t *testing.T) {
+	tests := []struct {
+		name, repo, errContains string
+	}{
+		{"no slash", "just-a-name", "owner/repo format"},
+		{"empty owner", "/repo", "owner/repo format"},
+		{"empty repo", "owner/", "owner/repo format"},
+		{"quotes in owner", "owner's/repo", "invalid repo owner"},
+		{"backslash in repo", `owner/repo\`, "must contain only"},
+		{"spaces in repo", "owner/my repo", "must contain only"},
+		{"underscore in owner", "_owner/repo", "invalid repo owner"},
+		{"dot in owner", "owner.name/repo", "invalid repo owner"},
+		{"dot as repo", "owner/.", "cannot be"},
+		{"dotdot as repo", "owner/..", "cannot be"},
+		{"dot as owner", "./repo", "invalid repo owner"},
+		{"double-hyphen in owner", "org--name/repo", "invalid repo owner"},
+		{"git suffix", "owner/repo.git", "cannot end with"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			p := NewProvisioner(Config{
+				ProjectID:  "my-project",
+				GitHubOrgs: []string{"acme"},
+				Repo:       tt.repo,
+			}, fake)
+			_, err := p.ProvisionWIF(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+			assert.NotContains(t, fake.calls, "GetProjectNumber")
+		})
+	}
+}
+
+func TestProvisionWIF_OrgScoped_MergesExistingOrgs(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner in ['beta', 'gamma']",
+	}
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	assert.Equal(t, "assertion.repository_owner in ['acme', 'beta', 'gamma']",
+		fake.lastWIFProviderConfig.AttributeCondition)
+
+	// IAM binding should only be for the installing org, not the merged ones.
+	require.Len(t, fake.projectIAMBindings, 1)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
+}
+
+func TestProvisionWIF_OrgScoped_GetProviderError_FailsToPreventClobber(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetWIFProvider"] = fmt.Errorf("transient error")
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
+}
+
+func TestParseConditionOrgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		want      []string
+	}{
+		{"single org", "assertion.repository_owner == 'acme'", []string{"acme"}},
+		{"multiple orgs", "assertion.repository_owner in ['alpha', 'beta', 'gamma']", []string{"alpha", "beta", "gamma"}},
+		{"legacy repo-scoped", "assertion.repository == 'acme/.fullsend'", []string{"acme"}},
+		{"mixed case normalized", "assertion.repository_owner in ['AcMe', 'BETA']", []string{"acme", "beta"}},
+		{"empty condition", "", nil},
+		{"no quoted orgs", "assertion.repository_owner == true", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseConditionOrgs(tc.condition)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestBuildAttributeCondition(t *testing.T) {
@@ -1792,12 +2027,13 @@ func TestProvisioner_ImplementsDispatcher(t *testing.T) {
 }
 
 func TestCopyAgentPEM_CopiesSecret(t *testing.T) {
+	fakePEM := []byte("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...\n-----END RSA PRIVATE KEY-----")
 	fake := newFakeGCFClient()
 	fake.secrets = map[string]bool{
 		"fullsend-srcorg--triage-app-pem": true,
 	}
 	fake.secretData = map[string][]byte{
-		"fullsend-srcorg--triage-app-pem": []byte("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"),
+		"fullsend-srcorg--triage-app-pem": fakePEM,
 	}
 	fake.errs["GetSecret"] = nil
 
@@ -1806,10 +2042,7 @@ func TestCopyAgentPEM_CopiesSecret(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, fake.secrets["fullsend-dstorg--triage-app-pem"])
-	assert.Equal(t,
-		[]byte("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"),
-		fake.secretData["fullsend-dstorg--triage-app-pem"],
-	)
+	assert.Equal(t, fakePEM, fake.secretData["fullsend-dstorg--triage-app-pem"])
 }
 
 func TestCopyAgentPEM_DestinationExists_EnsuresIAM(t *testing.T) {

@@ -21,11 +21,16 @@ network_policies:
   vertex_ai:
     name: vertex-ai
     endpoints:
+      - host: "api.anthropic.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
       - host: "*.googleapis.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
     binaries:
       - path: "**/claude"
       - path: "**/node"
@@ -35,14 +40,14 @@ network_policies:
     endpoints:
       - host: "api.github.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
       - host: "github.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
     binaries:
       - path: "**/gh"
       - path: "**/git"
@@ -54,19 +59,19 @@ network_policies:
     endpoints:
       - host: "github.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "objects.githubusercontent.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "release-assets.githubusercontent.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
     binaries:
       - path: "**/pre-commit"
 
@@ -75,34 +80,34 @@ network_policies:
     endpoints:
       - host: "registry.npmjs.org"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "pypi.org"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "files.pythonhosted.org"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "proxy.golang.org"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "sum.golang.org"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
       - host: "storage.googleapis.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-only
     binaries:
       - path: "**/npm"
       - path: "**/node"

@@ -1438,6 +1438,61 @@ func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo stri
 	return pr.Head.SHA, nil
 }
 
+// ListPullRequestFiles returns the file paths changed by a pull request.
+// GitHub caps PR file lists at 3000 files total regardless of pagination.
+func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	var files []string
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull request files page %d: %w", page, err)
+		}
+		var raw []struct {
+			Filename string `json:"filename"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding pull request files page %d: %w", page, err)
+		}
+		for _, f := range raw {
+			files = append(files, f.Filename)
+		}
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return files, nil
+}
+
+// ListPullRequestFileDiffs returns the files changed by a pull request
+// along with their unified diff patches. Same API endpoint as
+// ListPullRequestFiles but also extracts the patch field.
+func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestFileDiff, error) {
+	var files []forge.PullRequestFileDiff
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list pull request file diffs page %d: %w", page, err)
+		}
+		var raw []struct {
+			Filename string `json:"filename"`
+			Patch    string `json:"patch"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decoding pull request file diffs page %d: %w", page, err)
+		}
+		for _, f := range raw {
+			files = append(files, forge.PullRequestFileDiff{
+				Path:  f.Filename,
+				Patch: f.Patch,
+			})
+		}
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return files, nil
+}
+
 // CreatePullRequestReview submits a formal review on a pull request.
 // The event must be one of: APPROVE, REQUEST_CHANGES, COMMENT.
 // When commitSHA is non-empty it is sent as commit_id, pinning the

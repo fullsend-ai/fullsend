@@ -27,8 +27,18 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+)
+
+const (
+	claudeDebugLog = "claude-debug.log"
+
+	// maxContextScanDepth is the maximum directory depth for scanning context
+	// files. Shared between host-side (scanRepoContextFiles) and sandbox-side
+	// (buildScanContextCommand) scans to ensure parity.
+	maxContextScanDepth = 5
 )
 
 func newRunCmd() *cobra.Command {
@@ -38,6 +48,7 @@ func newRunCmd() *cobra.Command {
 	var fullsendBinary string
 	var envFiles []string
 	var noPostScript bool
+	var debugFilter string
 
 	cmd := &cobra.Command{
 		Use:   "run <agent-name>",
@@ -47,7 +58,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, printer)
+			return runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, printer)
 		},
 	}
 
@@ -57,13 +68,15 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
 	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "load environment variables from a dotenv file (repeatable)")
 	cmd.Flags().BoolVar(&noPostScript, "no-post-script", false, "skip post-script execution (agent still runs full inference)")
+	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable Claude Code debug logging with optional category filter (e.g. "api,hooks")`)
+	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
 }
 
-func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, printer *ui.Printer) (runErr error) {
+func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, printer *ui.Printer) (runErr error) {
 	printer.Banner()
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -110,7 +123,13 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		}
 		return os.Getenv(key)
 	}
-	if err := h.ValidateRunnerEnvWith(expander); err != nil {
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return absFullsendDir, true
+		}
+		return os.LookupEnv(key)
+	}
+	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
@@ -180,14 +199,14 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	}
 	printer.StepDone(fmt.Sprintf("openshell available (%.1fs)", time.Since(openshellStart).Seconds()))
 
-	// 2a. Ensure a gateway is running.
+	// 2a. Check that a gateway is running.
 	gatewayStart := time.Now()
-	printer.StepStart("Ensuring gateway")
-	if err := sandbox.EnsureGateway(); err != nil {
-		printer.StepFail("Failed to start gateway")
-		return fmt.Errorf("starting gateway: %w", err)
+	printer.StepStart("Checking gateway")
+	if err := sandbox.CheckGateway(); err != nil {
+		printer.StepFail("Gateway not running")
+		return fmt.Errorf("gateway check failed: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Gateway ready (%.1fs)", time.Since(gatewayStart).Seconds()))
+	printer.StepDone(fmt.Sprintf("Gateway available (%.1fs)", time.Since(gatewayStart).Seconds()))
 
 	// 2b. Ensure providers exist on the gateway (if any declared).
 	if len(h.Providers) > 0 {
@@ -228,7 +247,8 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
 
-	if err := sandbox.Create(sandboxName, h.Providers, h.Image, h.Policy); err != nil {
+	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
+	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
@@ -314,11 +334,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	// 8. Make project code available (copy repo root into a named subdirectory).
 	copyStart := time.Now()
 	printer.StepStart("Copying project code into sandbox")
-	mkRepoCmd := fmt.Sprintf("mkdir -p %s", repoDir)
-	if _, _, _, err := sandbox.Exec(sandboxName, mkRepoCmd, 10*time.Second); err != nil {
-		return fmt.Errorf("creating repo dir in sandbox: %w", err)
-	}
-	if err := sandbox.Upload(sandboxName, repoSrc+"/.", repoDir+"/"); err != nil {
+	if err := sandbox.UploadDir(sandboxName, repoSrc, repoDir); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
 	}
@@ -421,7 +437,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 	for _, p := range h.Plugins {
 		pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", sandbox.SandboxClaudeConfig, filepath.Base(p)))
 	}
-	claudeCmd := buildClaudeCommand(agentBaseName, h.Model, repoDir, pluginDirs)
+	claudeCmd := buildClaudeCommand(agentBaseName, h.Model, repoDir, pluginDirs, debug)
 
 	timeout := time.Duration(h.TimeoutMinutes) * time.Minute
 	if timeout == 0 {
@@ -536,15 +552,30 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 			printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
 		}
 
-		// 9d. Extract target repo back to host. SafeDownload removes symlinks
-		// and .git/hooks/ after download to prevent sandbox escape.
+		// Extract debug log if --debug was enabled.
+		if debug != "" {
+			debugDst := filepath.Join(iterDir, claudeDebugLog)
+			if err := sandbox.DownloadFile(sandboxName, sandbox.SandboxWorkspace+"/"+claudeDebugLog, debugDst); err != nil {
+				printer.StepWarn("Failed to extract debug log: " + err.Error())
+			} else {
+				printer.StepInfo("Extracted claude-debug.log")
+			}
+		}
+
+		// 9d. Extract target repo back to host. SafeDownload removes dangerous
+		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
+		if clearErr := os.RemoveAll(repoSrc); clearErr != nil {
+			return fmt.Errorf("clearing local repo %s before extraction: %w", repoSrc, clearErr)
+		}
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, repoDir, repoSrc); err != nil {
-			printer.StepWarn("Failed to extract target repo: " + err.Error())
-		} else {
-			printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", repoSrc, time.Since(repoExtractStart).Seconds()))
+			if es := extractTranscriptErrors(iterTranscriptDir); len(es) > 0 {
+				emitTranscriptErrors(os.Stderr, es)
+			}
+			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
+		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", repoSrc, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
@@ -759,6 +790,35 @@ func bootstrapSandbox(sandboxName, repoDir, fullsendBinary string, h *harness.Ha
 		}
 	}
 
+	// Copy the self-check script into the sandbox so agents can validate
+	// output JSON against their schema before finishing. See #1107.
+	checkScript, err := scaffold.FullsendRepoFile("scripts/fullsend-check-output")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: could not load self-check script: %v\n", err)
+	} else if err := func() error {
+		tmpCheck, err := os.CreateTemp("", "fullsend-check-output-*")
+		if err != nil {
+			return fmt.Errorf("creating temp file: %w", err)
+		}
+		defer os.Remove(tmpCheck.Name())
+		if _, err := tmpCheck.Write(checkScript); err != nil {
+			tmpCheck.Close()
+			return fmt.Errorf("writing temp file: %w", err)
+		}
+		tmpCheck.Close()
+		// Safe: remoteBin is built from the SandboxWorkspace constant.
+		remoteBin := fmt.Sprintf("%s/bin/fullsend-check-output", sandbox.SandboxWorkspace)
+		if err := sandbox.Upload(sandboxName, tmpCheck.Name(), remoteBin); err != nil {
+			return fmt.Errorf("uploading to sandbox: %w", err)
+		}
+		if _, _, _, err := sandbox.Exec(sandboxName, fmt.Sprintf("chmod +x %s", remoteBin), 10*time.Second); err != nil {
+			return fmt.Errorf("chmod: %w", err)
+		}
+		return nil
+	}(); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: could not install self-check script: %v\n", err)
+	}
+
 	// Scan plugin definitions for injection before copying into sandbox.
 	if scanPipeline != nil {
 		for _, pluginPath := range h.Plugins {
@@ -830,6 +890,28 @@ func bootstrapEnv(sandboxName, repoDir string, h *harness.Harness) error {
 	lines = append(lines, fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s", sandbox.SandboxClaudeConfig))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_TARGET_REPO_DIR=%s", repoDir))
+
+	// Expose output schema and expected filename inside the sandbox so
+	// agents can self-check output with fullsend-check-output. See #1107.
+	remoteSchemaPath := sandbox.SandboxWorkspace + "/.fullsend/output-schema.json"
+	if schemaHost, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && schemaHost != "" {
+		if _, statErr := os.Stat(schemaHost); statErr != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: schema file not found on host: %s\n", schemaHost)
+		} else {
+			mkdirCmd := fmt.Sprintf("mkdir -p %s/.fullsend", sandbox.SandboxWorkspace)
+			if _, _, _, execErr := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); execErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: could not create .fullsend dir for schema: %v\n", execErr)
+			} else if uploadErr := sandbox.Upload(sandboxName, schemaHost, remoteSchemaPath); uploadErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: could not upload output schema: %v\n", uploadErr)
+			} else {
+				// Safe: remoteSchemaPath is built from the SandboxWorkspace constant.
+				lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_SCHEMA=%s", remoteSchemaPath))
+			}
+		}
+	}
+	if outputFile, ok := h.RunnerEnv["FULLSEND_OUTPUT_FILE"]; ok && outputFile != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_FILE='%s'", strings.ReplaceAll(outputFile, "'", "'\\''")))
+	}
 
 	// Source all env files from .env.d/ (populated by host_files with expand: true).
 	lines = append(lines, fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace))
@@ -1068,39 +1150,47 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 	return nil
 }
 
-func buildClaudeCommand(agentName, model, repoDir string, pluginDirs []string) string {
+func buildClaudeCommand(agentName, model, repoDir string, pluginDirs []string, debug string) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 
 	// Defense-in-depth: escape single quotes even though Validate() rejects them.
 	safe := strings.ReplaceAll(agentName, "'", "'\\''")
 
-	modelFlag := ""
-	if model != "" {
-		modelFlag = fmt.Sprintf("--model '%s' ", strings.ReplaceAll(model, "'", "'\\''"))
-	}
-
-	var pluginDirParts []string
-	for _, pd := range pluginDirs {
-		pluginDirParts = append(pluginDirParts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
-	}
-	pluginDirFlags := ""
-	if len(pluginDirParts) > 0 {
-		pluginDirFlags = strings.Join(pluginDirParts, " ") + " "
-	}
-
-	return fmt.Sprintf(
+	// Collect all command parts into a slice and join with spaces so that
+	// individual flags don't need to embed trailing whitespace.
+	parts := []string{
+		fmt.Sprintf("cd %s && . %s && claude", repoDir, envFile),
+		"--print",
+		"--verbose",
 		// --verbose increases log output in the job log. If artifact upload is
 		// added to this workflow, consider whether verbose output should be
 		// redacted or made conditional via an env var.
-		"cd %s && . %s && claude --print --verbose --output-format stream-json %s%s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
-		repoDir, envFile, modelFlag, pluginDirFlags, safe,
-	)
-}
+		"--output-format stream-json",
+	}
 
-// maxContextScanDepth is the maximum directory depth for scanning context
-// files. Shared between host-side (scanRepoContextFiles) and sandbox-side
-// (buildScanContextCommand) scans to ensure parity.
-const maxContextScanDepth = 5
+	if debug != "" {
+		parts = append(parts, fmt.Sprintf("--debug-file '%s/%s'", sandbox.SandboxWorkspace, claudeDebugLog))
+		if debug != "*" {
+			parts = append(parts, fmt.Sprintf("--debug '%s'", strings.ReplaceAll(debug, "'", "'\\''")))
+		}
+	}
+
+	if model != "" {
+		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(model, "'", "'\\''")))
+	}
+
+	for _, pd := range pluginDirs {
+		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
+	}
+
+	parts = append(parts,
+		fmt.Sprintf("--agent '%s'", safe),
+		"--dangerously-skip-permissions",
+		"'Run the agent task'",
+	)
+
+	return strings.Join(parts, " ")
+}
 
 // buildScanContextCommand builds the command to run `fullsend scan context`
 // inside the sandbox. It finds known context files (including SKILL.md in

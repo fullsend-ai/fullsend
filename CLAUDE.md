@@ -11,9 +11,18 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience is any contributor community considering autonomous agents — keep language accessible, avoid presuming solutions.
 - Always run `make lint` before submitting changes and fix any failures.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages. See [CONTRIBUTING.md](CONTRIBUTING.md#commit-messages) for the full specification. This is critical — GoReleaser uses commit prefixes to generate release notes.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 
 ## Go code
+
+**Mint function:** The mint Cloud Function source lives in two places that must stay in sync:
+- `internal/mint/main.go` — the source of truth (has its own `go.mod`, tests run from `internal/mint/`)
+- `internal/dispatch/gcf/mintsrc/main.go.embed` — the embedded copy deployed as a GCP Cloud Function
+
+When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
+
+**Forge abstraction:** All git forge operations must go through the `forge.Client` interface in `internal/forge/forge.go`. Do not use `exec.Command("gh", ...)` or direct GitHub API calls outside `internal/forge/github/`. See [AGENTS.md](AGENTS.md#forge-abstraction) for details.
 
 When making changes to Go code under `cmd/` or `internal/`:
 
@@ -28,6 +37,7 @@ The e2e tests require GitHub credentials. There are three ways to provide them:
 - **`E2E_GITHUB_PASSWORD` env var:** Set directly with the password.
 - **`E2E_GITHUB_PASSWORD_FILE` env var:** Set to a file path containing the password (used in devaipod environments where secrets are mounted as files).
 - **`E2E_GITHUB_SESSION_FILE` env var:** Set to a pre-exported Playwright session file (skips login).
+- **`E2E_GITHUB_TOTP_SECRET` env var:** Optional. The TOTP secret (base32) for the test account's 2FA. Required only when the test account has 2FA enabled — used during session export and sudo confirmation.
 
 If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
 

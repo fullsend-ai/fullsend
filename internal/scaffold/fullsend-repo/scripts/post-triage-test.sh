@@ -145,6 +145,10 @@ run_test "sufficient-feature-gets-triaged" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
+run_test "sufficient-feature-gets-feature-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature --silent"
+
 run_test "sufficient-other-gets-triaged" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc"},"comment":"## Triage Summary\n\nMisc."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
@@ -231,6 +235,10 @@ run_test "label-actions-applied" \
 run_test_stdout "label-actions-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
+
+run_test_stdout "label-actions-feature-control-label-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set feature label.","actions":[{"action":"add","label":"feature"}]}}' \
+  "::warning::Refused to add control label 'feature' -- control labels are managed by the triage pipeline"
 
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \

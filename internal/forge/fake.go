@@ -136,6 +136,12 @@ type FakeClient struct {
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
+	// Pull request files for ListPullRequestFiles.
+	PRFiles map[string][]string // key: "owner/repo/number"
+
+	// Pull request file diffs for ListPullRequestFileDiffs.
+	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
+
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
@@ -535,6 +541,10 @@ func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, valu
 		Name:  name,
 		Value: value,
 	})
+	if f.Secrets == nil {
+		f.Secrets = make(map[string]bool)
+	}
+	f.Secrets[owner+"/"+repo+"/"+name] = true
 	return nil
 }
 
@@ -794,6 +804,36 @@ func (f *FakeClient) GetPullRequestHeadSHA(_ context.Context, _, _ string, _ int
 		return "", e
 	}
 	return f.PullRequestHeadSHA, nil
+}
+
+func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string, number int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestFiles"); e != nil {
+		return nil, e
+	}
+	if f.PRFiles != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if files, ok := f.PRFiles[key]; ok {
+			return files, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestFileDiffs"); e != nil {
+		return nil, e
+	}
+	if f.PRFileDiffs != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if files, ok := f.PRFileDiffs[key]; ok {
+			return files, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error {

@@ -7,6 +7,9 @@
 //   - E2E_GITHUB_USERNAME: GitHub username
 //   - E2E_GITHUB_PASSWORD: GitHub password (use `pass` or similar)
 //
+// Optional environment variables:
+//   - E2E_GITHUB_TOTP_SECRET: Base32-encoded TOTP secret for 2FA accounts
+//
 // Output is written to E2E_GITHUB_SESSION_FILE (default: .playwright/session.json).
 package main
 
@@ -17,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/e2e/internal/otp"
 	"github.com/playwright-community/playwright-go"
 )
 
@@ -26,6 +30,7 @@ func main() {
 	if username == "" || password == "" {
 		log.Fatal("Set E2E_GITHUB_USERNAME and E2E_GITHUB_PASSWORD")
 	}
+	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
 
 	outFile := os.Getenv("E2E_GITHUB_SESSION_FILE")
 	if outFile == "" {
@@ -89,7 +94,25 @@ func main() {
 		log.Fatalf("post-login navigation: %v (url: %s)", err, page.URL())
 	}
 
+	// Handle 2FA if the account has TOTP enabled.
 	url := page.URL()
+	if strings.Contains(url, "/two-factor") || strings.Contains(url, "/2fa") {
+		if totpSecret == "" {
+			log.Fatalf("2FA page detected at %s but E2E_GITHUB_TOTP_SECRET is not set", url)
+		}
+		fmt.Println("2FA page detected, entering TOTP code...")
+
+		handled, err := otp.EnterTOTPCode(page, totpSecret, log.Printf)
+		if err != nil {
+			log.Fatalf("TOTP submission failed: %v", err)
+		}
+		if !handled {
+			log.Fatalf("2FA page detected but TOTP input not found at %s", url)
+		}
+
+		url = page.URL()
+	}
+
 	if strings.Contains(url, "/login") || strings.Contains(url, "/session") {
 		log.Fatalf("login failed, still at: %s", url)
 	}

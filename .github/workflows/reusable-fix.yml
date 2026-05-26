@@ -81,7 +81,7 @@ jobs:
             exit 1
           fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness policies scripts env"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p "${dir}"
@@ -238,7 +238,7 @@ jobs:
           echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
           echo "iteration=${ITERATION}" >> "${GITHUB_OUTPUT}"
 
-      - name: Check fullsend-no-fix label
+      - name: Check fix eligibility
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
@@ -246,11 +246,23 @@ jobs:
           SOURCE_REPO: ${{ inputs.source_repo }}
         run: |
           if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
-            HAS_NO_FIX=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
-              --json labels --jq '[.labels[].name] | any(. == "fullsend-no-fix")' 2>/dev/null || echo "false")
+            PR_INFO=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
+              --json labels,author --jq '{labels: [.labels[].name], author: .author.login}' 2>/dev/null \
+              || echo '{"labels":[],"author":""}')
+
+            HAS_NO_FIX=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-no-fix")')
             if [[ "${HAS_NO_FIX}" == "true" ]]; then
               echo "::warning::PR #${PR_NUM} has 'fullsend-no-fix' label — skipping bot-triggered fix"
               exit 1
+            fi
+
+            PR_AUTHOR=$(echo "${PR_INFO}" | jq -r '.author')
+            if [[ ! "${PR_AUTHOR}" =~ \[bot\]$ ]]; then
+              HAS_FIX_LABEL=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-fix")')
+              if [[ "${HAS_FIX_LABEL}" != "true" ]]; then
+                echo "::warning::Human-authored PR #${PR_NUM} without 'fullsend-fix' label — skipping bot-triggered fix"
+                exit 1
+              fi
             fi
           fi
 

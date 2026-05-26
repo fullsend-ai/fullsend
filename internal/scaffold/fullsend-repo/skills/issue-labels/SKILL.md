@@ -19,9 +19,7 @@ your `label_actions` output -- the post script will refuse them:
 - `needs-info`
 - `ready-to-code`
 - `duplicate`
-- `not-ready`
-- `not-reproducible`
-- `type/feature`
+- `feature`
 - `blocked`
 - `triaged`
 

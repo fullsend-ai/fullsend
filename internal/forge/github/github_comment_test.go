@@ -477,6 +477,34 @@ func TestCreatePullRequestReview_WithInlineComments(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestListPullRequestFileDiffs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/5/files", r.URL.Path)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"filename": "main.go",
+				"patch":    "@@ -10,5 +10,7 @@ func main() {\n context\n+added line",
+			},
+			{
+				"filename": "binary.png",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	files, err := client.ListPullRequestFileDiffs(context.Background(), "owner", "repo", 5)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	assert.Equal(t, "main.go", files[0].Path)
+	assert.Contains(t, files[0].Patch, "@@ -10,5 +10,7 @@")
+	assert.Equal(t, "binary.png", files[1].Path)
+	assert.Empty(t, files[1].Patch)
+}
+
 func TestListPullRequestReviews(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)

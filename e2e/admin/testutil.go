@@ -44,6 +44,7 @@ var defaultRoles = []string{"fullsend", "triage", "coder", "review"}
 type envConfig struct {
 	sessionFile string
 	password    string
+	totpSecret  string
 	lockTimeout time.Duration
 }
 
@@ -62,6 +63,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	password := os.Getenv("E2E_GITHUB_PASSWORD")
+	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
 
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
@@ -75,6 +77,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 	return envConfig{
 		sessionFile: sessionFile,
 		password:    password,
+		totpSecret:  totpSecret,
 		lockTimeout: lockTimeout,
 	}
 }

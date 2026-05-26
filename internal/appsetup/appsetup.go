@@ -239,7 +239,53 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 		if err := s.ensureInstalled(ctx, org, recovered.Slug); err != nil {
 			return nil, fmt.Errorf("ensuring installation: %w", err)
 		}
+		// Resolve AppID from the installation so ROLE_APP_IDS gets updated.
+		if recovered.AppID == 0 {
+			inst, found, err := s.findExistingInstallation(ctx, org, role, recovered.Slug)
+			if err != nil {
+				return nil, fmt.Errorf("looking up recovered app installation: %w", err)
+			}
+			if !found {
+				return nil, fmt.Errorf("recovered app %s was installed but not found in installations list", recovered.Slug)
+			}
+			recovered.AppID = inst.AppID
+		}
 		return recovered, nil
+	}
+
+	// Check if the app already exists globally before creating a new one.
+	// Public apps (e.g. fullsend-ai-triage) are owned by another org and
+	// just need to be installed — not re-created via the manifest flow.
+	// When --public was passed, install without prompting. Otherwise, ask
+	// the user to confirm so they don't accidentally create a duplicate.
+	clientID, lookupErr := s.client.GetAppClientID(ctx, slug)
+	if lookupErr != nil && !forge.IsNotFound(lookupErr) {
+		return nil, fmt.Errorf("checking existing app %s: %w", slug, lookupErr)
+	}
+	if lookupErr == nil {
+		if !s.publicApps {
+			s.ui.StepInfo(fmt.Sprintf("Found existing app: %s", slug))
+			install, confirmErr := s.prompter.Confirm(fmt.Sprintf("App %s already exists — install it into %s?", slug, org))
+			if confirmErr != nil {
+				return nil, fmt.Errorf("confirming app install: %w", confirmErr)
+			}
+			if !install {
+				return nil, fmt.Errorf("app %s already exists; use --public to install it, or choose a different --app-set", slug)
+			}
+		}
+		if err := s.ensureInstalled(ctx, org, slug); err != nil {
+			return nil, fmt.Errorf("ensuring installation of public app %s: %w", slug, err)
+		}
+		inst, found, err := s.findExistingInstallation(ctx, org, role, slug)
+		if err != nil {
+			return nil, fmt.Errorf("looking up installed public app: %w", err)
+		}
+		if !found {
+			return nil, fmt.Errorf("public app %s was installed but not found in installations list", slug)
+		}
+		s.checkPermissions(inst, org, role)
+		s.ui.StepDone(fmt.Sprintf("Reusing public app %s (ID: %d)", slug, inst.AppID))
+		return &AppCredentials{AppID: inst.AppID, Slug: slug, Name: slug, ClientID: clientID}, nil
 	}
 
 	// No existing app found — run the manifest flow.
@@ -822,9 +868,16 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 }
 
 // DefaultAppSet is the default app set prefix for GitHub Apps.
-// Orgs that created apps under a different prefix (e.g., "fullsend-ai")
-// pass --app-set explicitly.
-const DefaultAppSet = "fullsend"
+// The official GitHub Apps maintained by the fullsend-ai organization use
+// the "fullsend-ai" prefix (fullsend-ai-fullsend, fullsend-ai-coder, etc.).
+// Orgs that created apps under a different prefix (e.g., "fullsend")
+// must pass --app-set explicitly.
+const DefaultAppSet = "fullsend-ai"
+
+// LegacyAppSets lists app-set prefixes used by previous fullsend versions.
+// During uninstall, these are checked in addition to the current default so
+// that apps created under an older naming convention are not silently skipped.
+var LegacyAppSets = []string{"fullsend"}
 
 // AppSlug returns the conventional app slug for a given app set and role.
 func AppSlug(appSet, role string) string {

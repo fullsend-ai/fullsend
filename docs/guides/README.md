@@ -9,12 +9,14 @@ Structure decided in [ADR 0023](../ADRs/0023-user-documentation-structure.md).
 Guides for org administrators who install, configure, and manage fullsend.
 
 - [Installing fullsend](admin/installation.md) — Set up fullsend in a GitHub organization from scratch (see [#328](https://github.com/fullsend-ai/fullsend/pull/328))
+- [Enabling fullsend on private repositories](admin/private-repositories.md) — Additional guardrails and configuration for private repos
 
 ## User guides
 
 Guides for developers working in repositories where fullsend is active.
 
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
+- [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
 
 ## Development
 

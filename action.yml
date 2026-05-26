@@ -19,10 +19,10 @@ inputs:
     default: latest
   fullsend-dir:
     description: Path to fullsend config directory (default GITHUB_WORKSPACE).
-    default: ''
+    default: ""
   target-repo:
     description: Path to target repo checkout (default GITHUB_WORKSPACE/target-repo).
-    default: ''
+    default: ""
   github_token:
     description: >-
       GitHub token for authenticated API calls (avoids 60 req/hour unauthenticated rate limit).
@@ -129,27 +129,119 @@ runs:
       shell: bash
       run: fullsend --version
 
-    - name: Install OpenShell
+    - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+    - name: Set OpenShell version
+      shell: bash
+      run: echo "OPENSHELL_VERSION=0.0.38" >> "${GITHUB_ENV}"
+
+    - name: Install OpenShell CLI
+      shell: bash
+      run: |
+        uv tool install openshell==${OPENSHELL_VERSION}
+        openshell --version
+
+    - name: Download openshell-gateway
       shell: bash
       run: |
         set -euo pipefail
-        max_attempts=3
-        attempt=1
-        delay=5
+
+        arch="$(uname -m)"
+        case "${arch}" in
+          x86_64) ;;
+          aarch64|arm64) arch=aarch64 ;;
+          *) echo "::error::Unsupported architecture for openshell-gateway: ${arch}"; exit 1 ;;
+        esac
+
+        GATEWAY_ASSET="openshell-gateway-${arch}-unknown-linux-gnu.tar.gz"
+        GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/${GATEWAY_ASSET}"
+        max_attempts=3; attempt=1; delay=5
         while true; do
-          if curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.0.36/install.sh | OPENSHELL_VERSION=v0.0.36 sh; then
-            break
-          fi
+          if curl -fsSL "${GATEWAY_URL}" -o "/tmp/${GATEWAY_ASSET}"; then break; fi
           if (( attempt >= max_attempts )); then
-            echo "::error::OpenShell install failed after ${max_attempts} attempts"
+            echo "::error::Gateway download failed after ${max_attempts} attempts"
             exit 1
           fi
-          echo "::warning::OpenShell install attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
-          sleep "${delay}"
-          (( attempt++ ))
-          (( delay *= 3 ))
+          echo "::warning::Gateway download attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
+          sleep "${delay}"; (( attempt++ )); (( delay *= 3 ))
         done
-        openshell --version
+        tar xzf "/tmp/${GATEWAY_ASSET}" -C "${RUNNER_TEMP}/fullsend"
+        rm -f "/tmp/${GATEWAY_ASSET}"
+
+    - name: Install Podman
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y podman
+        podman --version
+
+    - name: Configure rootless Podman
+      shell: bash
+      run: |
+        test -f /sys/fs/cgroup/cgroup.controllers || { echo "::error::cgroups v2 required"; exit 1; }
+        whoami_user="$(whoami)"
+        grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+        podman system migrate
+        podman info
+
+    - name: Start Podman API service
+      shell: bash
+      run: |
+        SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+        if [ ! -S "${SOCKET_PATH}" ]; then
+          mkdir -p "$(dirname "${SOCKET_PATH}")"
+          podman system service --time=0 "unix://${SOCKET_PATH}" &
+          for i in $(seq 1 30); do
+            [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+        fi
+        echo "Podman API service ready at ${SOCKET_PATH}"
+
+    - name: Start openshell-gateway
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        GATEWAY_LOG="${GITHUB_WORKSPACE}/output/openshell-gateway.log"
+        mkdir -p "${GITHUB_WORKSPACE}/output"
+
+        export OPENSHELL_SSH_HANDSHAKE_SECRET="ci-$(openssl rand -hex 16)"
+        echo "::add-mask::${OPENSHELL_SSH_HANDSHAKE_SECRET}"
+        # Version-tagged images start at 0.0.41; for 0.0.38 use the release commit SHA.
+        # TODO: pass via --podman-supervisor-image flag when one exists (Docker driver has --docker-supervisor-image).
+        export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dfd47683e7da4f1a4a8fa5d77f92d3696e6a41f9"
+
+        "${RUNNER_TEMP}/fullsend/openshell-gateway" \
+          --bind-address 0.0.0.0 \
+          --health-port 8081 \
+          --drivers podman \
+          --disable-tls \
+          --db-url "sqlite:/tmp/gateway.db?mode=rwc" \
+          >"${GATEWAY_LOG}" 2>&1 &
+
+        for i in $(seq 1 30); do
+          curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 && break
+          sleep 2
+        done
+        curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 || {
+          echo "::error::Gateway health check failed after 60s"
+          echo "::group::Gateway logs"
+          cat "${GATEWAY_LOG}" 2>/dev/null || echo "(no log file)"
+          echo "::endgroup::"
+          exit 1
+        }
+
+        openshell gateway add http://127.0.0.1:8080 --local --name local
+        openshell gateway select local
+
+    - name: Pre-pull sandbox image
+      shell: bash
+      run: |
+        IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
+        echo "Pre-pulling sandbox image: ${IMAGE}"
+        timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
 
     - name: Install validation dependencies
       shell: bash

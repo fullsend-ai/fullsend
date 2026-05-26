@@ -52,7 +52,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 			t.Logf("[cleanup] App %s not found or could not delete: %v", slug, delErr)
 		}
 
-		newSlug := appsetup.AppSlug(appsetup.DefaultAppSet, role) // current convention: fullsend-triage, etc.
+		newSlug := appsetup.AppSlug(appsetup.DefaultAppSet, role) // current convention: fullsend-ai-triage, etc.
 		if newSlug != slug {
 			t.Logf("[cleanup] Attempting to delete app %s (if it exists)", newSlug)
 			if delErr := deleteAppViaPlaywright(page, newSlug, t.Logf, screenshotDir); delErr != nil {
@@ -77,7 +77,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, page playwr
 		for _, inst := range installations {
 			// Safe: testOrg is a dedicated E2E org with no production apps.
 			isStale := strings.HasPrefix(inst.AppSlug, testOrg+"-") || // v6: halfsend-*
-				strings.HasPrefix(inst.AppSlug, appsetup.DefaultAppSet+"-") || // current: fullsend-*
+				strings.HasPrefix(inst.AppSlug, appsetup.DefaultAppSet+"-") || // current: fullsend-ai-*
 				strings.HasPrefix(inst.AppSlug, "fullsend-") // legacy: fullsend-triage, fullsend-halfsend-*, etc.
 			if isStale {
 				t.Logf("[cleanup] Deleting stale installed app: %s", inst.AppSlug)

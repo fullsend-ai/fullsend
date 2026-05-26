@@ -2,12 +2,11 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,22 +18,19 @@ import (
 )
 
 const reviewMarker = "<!-- fullsend:review-agent -->"
-const reviewFollowupSummaryMarker = "<!-- fullsend:review-follow-ups -->"
-const reviewFollowupIssueMarkerPrefix = "<!-- fullsend:review-follow-up:"
-const maxReviewFollowUpIssues = 3
 
 var hexSHARe = regexp.MustCompile(`^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$`)
 var reasonRe = regexp.MustCompile(`^[a-zA-Z0-9_-]*$`)
+var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
 func newPostReviewCmd() *cobra.Command {
 	var (
-		repo              string
-		pr                int
-		result            string
-		token             string
-		headSHA           string
-		dryRun            bool
-		maxFollowUpIssues int
+		repo    string
+		pr      int
+		result  string
+		token   string
+		headSHA string
+		dryRun  bool
 	)
 
 	cmd := &cobra.Command{
@@ -69,10 +65,6 @@ has moved, a stale-head failure is posted instead.`,
 			if pr <= 0 {
 				return fmt.Errorf("--pr must be a positive integer, got %d", pr)
 			}
-			if err := validateMaxReviewFollowUpIssues(maxFollowUpIssues, "--max-follow-up-issues"); err != nil {
-				return err
-			}
-
 			parts := strings.SplitN(repo, "/", 2)
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 				return fmt.Errorf("--repo must be in owner/repo format, got %q", repo)
@@ -132,7 +124,7 @@ has moved, a stale-head failure is posted instead.`,
 				return err
 			}
 
-			return postApprovedFollowUpIssues(cmd.Context(), client, owner, repoName, pr, parsed, dryRun, maxFollowUpIssues, printer)
+			return postApprovedFollowUpIssues(cmd.Context(), owner, repoName, pr, parsed, printer)
 		},
 	}
 
@@ -142,7 +134,6 @@ has moved, a stale-head failure is posted instead.`,
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
-	cmd.Flags().IntVar(&maxFollowUpIssues, "max-follow-up-issues", maxReviewFollowUpIssues, "maximum number of review follow-up issues to create after an approval (0 disables creation; max 3)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("pr")
 
@@ -300,7 +291,26 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
-	inlineComments := findingsToReviewComments(findings)
+	var diffHunks map[string][][2]int
+	if fileDiffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr); err != nil {
+		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", err))
+	} else if len(fileDiffs) == 0 {
+		printer.StepInfo("PR file list is empty, inline comments disabled")
+	} else {
+		diffHunks = make(map[string][][2]int, len(fileDiffs))
+		for _, f := range fileDiffs {
+			diffHunks[f.Path] = parseDiffLineRanges(f.Patch)
+		}
+	}
+
+	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+
+	if fileFiltered > 0 {
+		printer.StepWarn(fmt.Sprintf("%d finding(s) omitted: file not in PR diff", fileFiltered))
+	}
+	if lineFiltered > 0 {
+		printer.StepWarn(fmt.Sprintf("%d finding(s) omitted: line not in any diff hunk", lineFiltered))
+	}
 
 	var reviewBody string
 	if event == "REQUEST_CHANGES" {
@@ -324,11 +334,29 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // findingsToReviewComments converts review findings with file and line
 // locations into inline review comments. Findings without a file path
 // or line number are omitted — they remain in the sticky comment body.
-func findingsToReviewComments(findings []ReviewFinding) []forge.ReviewComment {
+// When diffHunks is non-nil, findings referencing files outside the PR
+// diff or lines outside any diff hunk are omitted to avoid GitHub 422
+// errors. Files with empty hunk lists (binary files, truncated patches)
+// skip line-level filtering — the file is known to be in the diff but
+// hunk coverage is unavailable. Returns the comments and counts of
+// findings dropped for each reason (file not in diff, line not in hunk).
+func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
 	var comments []forge.ReviewComment
+	var fileFiltered, lineFiltered int
 	for _, f := range findings {
 		if f.File == "" || f.Line <= 0 {
 			continue
+		}
+		if diffHunks != nil {
+			hunks, fileInDiff := diffHunks[f.File]
+			if !fileInDiff {
+				fileFiltered++
+				continue
+			}
+			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
+				lineFiltered++
+				continue
+			}
 		}
 		comments = append(comments, forge.ReviewComment{
 			Path: f.File,
@@ -336,7 +364,7 @@ func findingsToReviewComments(findings []ReviewFinding) []forge.ReviewComment {
 			Body: formatFindingComment(f),
 		})
 	}
-	return comments
+	return comments, fileFiltered, lineFiltered
 }
 
 // formatFindingComment renders a single review finding as a Markdown
@@ -353,237 +381,51 @@ func formatFindingComment(f ReviewFinding) string {
 	return b.String()
 }
 
-type reviewFollowupIssue struct {
-	finding ReviewFinding
-	issue   *forge.Issue
-	created bool
+// parseDiffLineRanges extracts new-file line ranges from unified diff
+// hunk headers. Each returned [2]int is an inclusive [start, end] range
+// of lines on the right (new) side of the diff that can receive inline
+// comments.
+func parseDiffLineRanges(patch string) [][2]int {
+	var ranges [][2]int
+	for _, line := range strings.Split(patch, "\n") {
+		if !strings.HasPrefix(line, "@@") {
+			continue
+		}
+		m := hunkHeaderRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		start, _ := strconv.Atoi(m[1])
+		size := 1
+		if m[2] != "" {
+			size, _ = strconv.Atoi(m[2])
+		}
+		if size == 0 {
+			continue
+		}
+		ranges = append(ranges, [2]int{start, start + size - 1})
+	}
+	return ranges
 }
 
-// postApprovedFollowUpIssues creates GitHub issues for actionable low/info
-// findings after an approval. Blocking and comment-only findings stay in the
-// review itself; this path only preserves non-blocking work that would
-// otherwise disappear after merge.
-func postApprovedFollowUpIssues(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, dryRun bool, maxFollowUpIssues int, printer *ui.Printer) error {
+// lineInHunks returns true if line falls within any of the given ranges.
+func lineInHunks(line int, hunks [][2]int) bool {
+	for _, h := range hunks {
+		if line >= h[0] && line <= h[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// postApprovedFollowUpIssues is disabled pending #1137. Follow-up issues
+// should only be created after the PR merges, not while it is still open.
+func postApprovedFollowUpIssues(_ context.Context, _, _ string, _ int, parsed ReviewResult, printer *ui.Printer) error {
 	if strings.ToLower(parsed.Action) != "approve" {
 		return nil
 	}
-	if err := validateMaxReviewFollowUpIssues(maxFollowUpIssues, "max follow-up issues"); err != nil {
-		return err
-	}
-
-	actionable := actionableApprovedFindings(parsed.Findings)
-	if len(actionable) == 0 {
-		return nil
-	}
-
-	if dryRun {
-		toCreate := min(len(actionable), maxFollowUpIssues)
-		skipped := len(actionable) - toCreate
-		if maxFollowUpIssues == 0 {
-			printer.StepInfo(fmt.Sprintf("Dry run — review follow-up issue creation disabled; would skip %d actionable finding(s)", len(actionable)))
-		} else if skipped > 0 {
-			printer.StepInfo(fmt.Sprintf("Dry run — would create up to %d review follow-up issue(s) and skip %d due to cap", toCreate, skipped))
-		} else {
-			printer.StepInfo(fmt.Sprintf("Dry run — would create %d review follow-up issue(s)", toCreate))
-		}
-		return nil
-	}
-
-	markers := make(map[string]ReviewFinding, len(actionable))
-	for _, finding := range actionable {
-		markers[reviewFollowupIssueMarker(owner, repo, finding)] = finding
-	}
-
-	printer.StepStart("Checking for existing review follow-up issues")
-	openIssues, err := client.ListOpenIssues(ctx, owner, repo, "type/chore")
-	if err != nil {
-		return fmt.Errorf("listing open issues for review follow-up duplicate detection: %w", err)
-	}
-	existingByMarker := map[string]forge.Issue{}
-	for _, issue := range openIssues {
-		for marker := range markers {
-			if strings.Contains(issue.Body, marker) {
-				if existing, ok := existingByMarker[marker]; ok {
-					printer.StepWarn(fmt.Sprintf("Duplicate review follow-up marker found in issues #%d and #%d; reusing #%d", existing.Number, issue.Number, existing.Number))
-					continue
-				}
-				existingByMarker[marker] = issue
-			}
-		}
-	}
-	printer.StepDone("Duplicate check complete")
-
-	results := make([]reviewFollowupIssue, 0, len(actionable))
-	createdCount := 0
-	skippedCount := 0
-	for _, finding := range actionable {
-		marker := reviewFollowupIssueMarker(owner, repo, finding)
-		if issue, ok := existingByMarker[marker]; ok {
-			issueCopy := issue
-			results = append(results, reviewFollowupIssue{
-				finding: finding,
-				issue:   &issueCopy,
-				created: false,
-			})
-			continue
-		}
-		if createdCount >= maxFollowUpIssues {
-			skippedCount++
-			continue
-		}
-
-		title := reviewFollowupIssueTitle(pr, finding)
-		body := reviewFollowupIssueBody(owner, repo, pr, finding, marker)
-		printer.StepStart("Creating review follow-up issue")
-		issue, err := client.CreateIssue(ctx, owner, repo, title, body, "type/chore")
-		if err != nil {
-			return fmt.Errorf("creating review follow-up issue for %s: %w", reviewFindingLocation(finding), err)
-		}
-		printer.StepDone(fmt.Sprintf("Created follow-up issue #%d", issue.Number))
-		results = append(results, reviewFollowupIssue{
-			finding: finding,
-			issue:   issue,
-			created: true,
-		})
-		createdCount++
-	}
-	if skippedCount > 0 {
-		printer.StepInfo(fmt.Sprintf("Review follow-up issue cap reached (%d); skipped %d actionable finding(s)", maxFollowUpIssues, skippedCount))
-	}
-
-	return postReviewFollowupSummary(ctx, client, owner, repo, pr, results, skippedCount, maxFollowUpIssues, printer)
-}
-
-func validateMaxReviewFollowUpIssues(value int, name string) error {
-	if value < 0 || value > maxReviewFollowUpIssues {
-		return fmt.Errorf("%s must be between 0 and %d, got %d", name, maxReviewFollowUpIssues, value)
-	}
+	printer.StepInfo("Review follow-up issue creation is temporarily disabled (#1137)")
 	return nil
-}
-
-func actionableApprovedFindings(findings []ReviewFinding) []ReviewFinding {
-	actionable := make([]ReviewFinding, 0, len(findings))
-	for _, finding := range findings {
-		severity := strings.ToLower(finding.Severity)
-		if finding.Actionable && (severity == "low" || severity == "info") {
-			actionable = append(actionable, finding)
-		}
-	}
-	return actionable
-}
-
-func postReviewFollowupSummary(ctx context.Context, client forge.Client, owner, repo string, pr int, results []reviewFollowupIssue, skippedCount, maxFollowUpIssues int, printer *ui.Printer) error {
-	if len(results) == 0 && skippedCount == 0 {
-		return nil
-	}
-
-	var created []reviewFollowupIssue
-	var existing []reviewFollowupIssue
-	for _, result := range results {
-		if result.created {
-			created = append(created, result)
-		} else {
-			existing = append(existing, result)
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString("## Review follow-ups\n\n")
-	if skippedCount > 0 {
-		if maxFollowUpIssues == 0 {
-			fmt.Fprintf(&b, "**Warning:** follow-up issue creation is disabled, so %d actionable non-blocking finding(s) were not filed.\n\n", skippedCount)
-		} else {
-			fmt.Fprintf(&b, "**Warning:** follow-up issue creation is capped at %d per review run; %d actionable non-blocking finding(s) were not filed.\n\n", maxFollowUpIssues, skippedCount)
-		}
-	}
-	if len(created) > 0 {
-		b.WriteString("Created follow-up issues for actionable non-blocking review findings:\n\n")
-		for _, result := range created {
-			fmt.Fprintf(&b, "- [#%d](%s) — %s\n", result.issue.Number, result.issue.URL, reviewFindingSummary(result.finding))
-		}
-	}
-	if len(existing) > 0 {
-		if len(created) > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString("Existing follow-up issues already track these findings:\n\n")
-		for _, result := range existing {
-			fmt.Fprintf(&b, "- [#%d](%s) — %s\n", result.issue.Number, result.issue.URL, reviewFindingSummary(result.finding))
-		}
-	}
-
-	cfg := sticky.Config{Marker: reviewFollowupSummaryMarker}
-	if _, err := sticky.Post(ctx, client, owner, repo, pr, b.String(), cfg, printer); err != nil {
-		return fmt.Errorf("posting review follow-up summary: %w", err)
-	}
-	return nil
-}
-
-func reviewFollowupIssueTitle(pr int, finding ReviewFinding) string {
-	summary := reviewFindingSummary(finding)
-	if summary == "" {
-		summary = "actionable review finding"
-	}
-	return fmt.Sprintf("Follow-up from PR #%d: %s", pr, truncate(summary, 88))
-}
-
-func reviewFollowupIssueBody(owner, repo string, pr int, finding ReviewFinding, marker string) string {
-	var b strings.Builder
-	b.WriteString(marker)
-	b.WriteString("\n\n")
-	b.WriteString("## Review follow-up\n\n")
-	fmt.Fprintf(&b, "- PR: https://github.com/%s/%s/pull/%d\n", owner, repo, pr)
-	fmt.Fprintf(&b, "- Severity: `%s`\n", finding.Severity)
-	fmt.Fprintf(&b, "- Category: `%s`\n", finding.Category)
-	fmt.Fprintf(&b, "- Location: `%s`\n", reviewFindingLocation(finding))
-	b.WriteString("\n## Finding\n\n")
-	b.WriteString(strings.TrimSpace(finding.Description))
-	if finding.Remediation != "" {
-		b.WriteString("\n\n## Suggested remediation\n\n")
-		b.WriteString(strings.TrimSpace(finding.Remediation))
-	}
-	b.WriteString("\n\n---\n")
-	b.WriteString("_Generated by the fullsend review agent from an approved PR. The PR was approved because this finding was non-blocking, but it was marked actionable so it is tracked separately._\n")
-	return b.String()
-}
-
-func reviewFollowupIssueMarker(owner, repo string, finding ReviewFinding) string {
-	hash := sha256.New()
-	fmt.Fprintf(hash, "%s/%s\n%s\n%s\n%s\n%d\n%s\n", owner, repo, strings.ToLower(finding.Severity), finding.Category, finding.File, finding.Line, compactWhitespace(finding.Description))
-	return reviewFollowupIssueMarkerPrefix + hex.EncodeToString(hash.Sum(nil)) + " -->"
-}
-
-func reviewFindingLocation(finding ReviewFinding) string {
-	if finding.Line > 0 {
-		return fmt.Sprintf("%s:%d", finding.File, finding.Line)
-	}
-	return finding.File
-}
-
-func reviewFindingSummary(finding ReviewFinding) string {
-	summary := compactWhitespace(finding.Description)
-	if summary != "" {
-		return summary
-	}
-	return compactWhitespace(finding.Category)
-}
-
-func compactWhitespace(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	if max <= 0 {
-		return ""
-	}
-	if max <= 3 {
-		return string(runes[:max])
-	}
-	return strings.TrimSpace(string(runes[:max-3])) + "..."
 }
 
 // dismissStaleRequestChanges dismisses the most recent CHANGES_REQUESTED

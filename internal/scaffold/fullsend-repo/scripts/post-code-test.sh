@@ -324,6 +324,200 @@ run_noop_test "proceed-feature-branch-with-changes" \
 run_noop_test "noop-on-main-with-changes" \
   "main" "src/widget.go" "noop:branch"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the stale branch cleanup decision logic from
+# post-code.sh section 7a. Given whether a remote branch exists and whether
+# an open PR references it, returns the action the script would take.
+# ---------------------------------------------------------------------------
+decide_stale_branch_action() {
+  local remote_ref="$1"   # non-empty if remote branch exists
+  local open_pr_num="$2"  # non-empty if an open PR uses the branch
+
+  if [ -z "${remote_ref}" ]; then
+    echo "skip:no-remote-branch"
+    return 0
+  fi
+
+  if [ -z "${open_pr_num}" ]; then
+    echo "delete:stale-branch"
+    return 0
+  fi
+
+  echo "keep:open-pr:${open_pr_num}"
+  return 0
+}
+
+run_stale_branch_test() {
+  local test_name="$1"
+  local remote_ref="$2"
+  local open_pr_num="$3"
+  local expected_prefix="$4"
+
+  local actual
+  actual="$(decide_stale_branch_action "${remote_ref}" "${open_pr_num}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  remote_ref:      '${remote_ref}'"
+    echo "  open_pr_num:     '${open_pr_num}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Stale branch cleanup test cases ---
+
+# No remote branch → skip (normal first push)
+run_stale_branch_test "no-remote-branch" \
+  "" "" "skip:no-remote-branch"
+
+# Remote branch exists, no open PR → delete stale branch
+run_stale_branch_test "stale-branch-no-pr" \
+  "abc123 refs/heads/agent/42-fix-widget" "" "delete:stale-branch"
+
+# Remote branch exists, open PR → keep branch (push will update PR)
+run_stale_branch_test "branch-with-open-pr" \
+  "abc123 refs/heads/agent/42-fix-widget" "99" "keep:open-pr"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the push retry logic from post-code.sh
+# section 7b. Given a push exit code and output, returns the action.
+# ---------------------------------------------------------------------------
+decide_push_retry() {
+  local push_rc="$1"
+  local push_output="$2"
+
+  if [ "${push_rc}" -eq 0 ]; then
+    echo "success"
+    return 0
+  fi
+
+  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    echo "retry:force-with-lease"
+    return 0
+  fi
+
+  echo "fail:unexpected-error"
+  return 0
+}
+
+run_push_retry_test() {
+  local test_name="$1"
+  local push_rc="$2"
+  local push_output="$3"
+  local expected_prefix="$4"
+
+  local actual
+  actual="$(decide_push_retry "${push_rc}" "${push_output}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  push_rc:         '${push_rc}'"
+    echo "  push_output:     '${push_output}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Push retry test cases ---
+
+# Successful push → no retry needed
+run_push_retry_test "push-success" \
+  "0" "Everything up-to-date" "success"
+
+# Non-fast-forward error → retry with --force-with-lease
+run_push_retry_test "push-non-fast-forward" \
+  "1" "error: failed to push some refs: non-fast-forward" "retry:force-with-lease"
+
+# Rejected error → retry with --force-with-lease
+run_push_retry_test "push-rejected" \
+  "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
+
+# Unknown error → fail
+run_push_retry_test "push-unexpected-error" \
+  "1" "fatal: repository not found" "fail:unexpected-error"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the error reporting comment builder from
+# post-code.sh. Verifies the comment body contains expected content.
+# ---------------------------------------------------------------------------
+build_error_comment() {
+  local exit_code="$1"
+  local repo_full_name="$2"
+  local run_id="$3"
+
+  local run_url="https://github.com/${repo_full_name}/actions/runs/${run_id}"
+  echo "⚠️ **Post-code script failed** (exit code ${exit_code})
+
+The code agent completed, but the post-code script failed while \
+pushing the branch or creating the PR.
+
+**Workflow run:** ${run_url}
+
+Please check the workflow logs for details and retry with \`/fs-code\` \
+if appropriate."
+}
+
+run_error_comment_test() {
+  local test_name="$1"
+  local exit_code="$2"
+  local repo="$3"
+  local run_id="$4"
+  local check_pattern="$5"
+  local expect_present="$6"
+
+  local actual
+  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Error comment test cases ---
+
+run_error_comment_test "error-comment-has-exit-code" \
+  "1" "my-org/my-repo" "12345" \
+  "exit code 1" "yes"
+
+run_error_comment_test "error-comment-has-workflow-link" \
+  "1" "my-org/my-repo" "12345" \
+  "https://github.com/my-org/my-repo/actions/runs/12345" "yes"
+
+run_error_comment_test "error-comment-has-retry-hint" \
+  "1" "my-org/my-repo" "12345" \
+  "/fs-code" "yes"
+
+run_error_comment_test "error-comment-has-warning-emoji" \
+  "1" "my-org/my-repo" "12345" \
+  "⚠️" "yes"
+
 # --- Summary ---
 
 echo ""

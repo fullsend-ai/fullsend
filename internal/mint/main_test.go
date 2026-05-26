@@ -407,6 +407,14 @@ func TestHandler_TooManyRepos(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	want := fmt.Sprintf("max %d", maxRepos)
+	if !strings.Contains(resp["error"], want) {
+		t.Fatalf("expected error to contain %q, got: %s", want, resp["error"])
+	}
 }
 
 func TestHandler_OIDCPrevalidation_BadIssuer(t *testing.T) {
@@ -595,6 +603,117 @@ func TestHandler_OIDCPrevalidation_BadJobWorkflowRef(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoWorkflowRef(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-service")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/my-service/.github/workflows/gh-classify.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	claims, err := h.prevalidateOIDCToken(oidcToken)
+	if err != nil {
+		t.Fatalf("prevalidation should accept registered per-repo workflow ref: %v", err)
+	}
+	if claims.Repository != "test-org/my-service" {
+		t.Fatalf("expected repository test-org/my-service, got %s", claims.Repository)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoUnregistered(t *testing.T) {
+	setMintEnv(t)
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/unregistered-repo",
+		"test-org",
+		"test-org/unregistered-repo/.github/workflows/steal-tokens.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	_, err := h.prevalidateOIDCToken(oidcToken)
+	if err == nil {
+		t.Fatal("prevalidation should reject unregistered per-repo workflow ref")
+	}
+	if !strings.Contains(err.Error(), "registered per-repo repo") {
+		t.Fatalf("expected per-repo rejection error, got: %v", err)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoNonWorkflowPath(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-service")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/my-service/scripts/evil.sh@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	_, err := h.prevalidateOIDCToken(oidcToken)
+	if err == nil {
+		t.Fatal("prevalidation should reject per-repo non-workflow path")
+	}
+	if !strings.Contains(err.Error(), "does not reference a workflow file") {
+		t.Fatalf("expected workflow file error, got: %v", err)
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoCrossRepoRef(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-service,test-org/other-repo")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/other-repo/.github/workflows/evil.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	_, err := h.prevalidateOIDCToken(oidcToken)
+	if err == nil {
+		t.Fatal("prevalidation should reject per-repo token with cross-repo job_workflow_ref")
+	}
+}
+
+func TestHandler_OIDCPrevalidation_PerRepoMixedCase(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "Test-Org/My-Service")
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/my-service",
+		"test-org",
+		"test-org/my-service/.github/workflows/gh-classify.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	claims, err := h.prevalidateOIDCToken(oidcToken)
+	if err != nil {
+		t.Fatalf("prevalidation should accept per-repo ref with case-insensitive matching: %v", err)
+	}
+	if claims.Repository != "test-org/my-service" {
+		t.Fatalf("expected repository test-org/my-service, got %s", claims.Repository)
 	}
 }
 
@@ -1165,6 +1284,155 @@ func TestHandler_MultiOrg_WrongOrg(t *testing.T) {
 	}
 }
 
+// TestHandler_CrossOrgInstallationMismatch reproduces the bug from issue #1321:
+// an agent running in org-a (agentshed) gets a token that can write to repos
+// in org-b (fullsend-ai). This happens when the same GitHub App is installed
+// on both orgs and findInstallation returns an installation belonging to a
+// different org than the OIDC-authenticated org. The mint must reject this.
+func TestHandler_CrossOrgInstallationMismatch(t *testing.T) {
+	t.Setenv("ALLOWED_ORGS", "org-a,org-b")
+	t.Setenv("GCP_PROJECT_NUMBER", "123456")
+	t.Setenv("WIF_POOL_NAME", "test-pool")
+	t.Setenv("WIF_PROVIDER_NAME", "github-oidc")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+	// Same app ID for both orgs (shared GitHub App).
+	t.Setenv("ROLE_APP_IDS", `{"org-a/retro":"999","org-b/retro":"999"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	// OIDC token is from org-a (the requesting org).
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"org-a/.fullsend",
+		"org-a",
+		"org-a/.fullsend/.github/workflows/retro.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	// Simulate GitHub returning an installation belonging to org-b instead
+	// of org-a. This could happen if the App isn't installed on org-a's copy
+	// of the repo, or if GitHub resolves the installation differently.
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/org-a/seshi/installation" && r.Method == http.MethodGet:
+			// GitHub returns an installation, but the account is org-b.
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 77777, Account: struct {
+					Login string `json:"login"`
+				}{Login: "org-b"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/77777/access_tokens") && r.Method == http.MethodPost:
+			// If we get here, the mint failed to catch the org mismatch.
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_CROSS_ORG_TOKEN",
+				ExpiresAt: "2026-05-07T12:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+
+	h := NewHandler(&fakePEMAccessor{
+		pems: map[string][]byte{"org-a/retro": pemData},
+	}, &fakeTokenValidator{})
+	h.githubBaseURL = github.URL
+
+	body := `{"role":"retro","repos":["seshi"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	// The mint MUST reject this — the installation belongs to org-b but the
+	// OIDC token authenticated org-a. A 502 (bad gateway) is appropriate
+	// since the upstream GitHub API returned an unexpected installation.
+	if rec.Code == http.StatusOK {
+		var resp mintResponse
+		json.NewDecoder(rec.Body).Decode(&resp)
+		t.Fatalf("mint should reject cross-org installation mismatch, but returned 200 with token=%s", resp.Token)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for cross-org installation mismatch, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandler_CrossOrgInstallation_SameOrgPasses verifies the positive case:
+// when the installation account matches the OIDC org, minting succeeds.
+func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
+	t.Setenv("ALLOWED_ORGS", "org-a,org-b")
+	t.Setenv("GCP_PROJECT_NUMBER", "123456")
+	t.Setenv("WIF_POOL_NAME", "test-pool")
+	t.Setenv("WIF_PROVIDER_NAME", "github-oidc")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+	t.Setenv("ROLE_APP_IDS", `{"org-a/retro":"999","org-b/retro":"999"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"org-a/.fullsend",
+		"org-a",
+		"org-a/.fullsend/.github/workflows/retro.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/org-a/seshi/installation" && r.Method == http.MethodGet:
+			// Installation correctly belongs to org-a.
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 88888, Account: struct {
+					Login string `json:"login"`
+				}{Login: "org-a"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/88888/access_tokens") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_correct_org_token",
+				ExpiresAt: "2026-05-07T12:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+
+	h := NewHandler(&fakePEMAccessor{
+		pems: map[string][]byte{"org-a/retro": pemData},
+	}, &fakeTokenValidator{})
+	h.githubBaseURL = github.URL
+
+	body := `{"role":"retro","repos":["seshi"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when installation matches OIDC org, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp mintResponse
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Token != "ghs_correct_org_token" {
+		t.Fatalf("expected ghs_correct_org_token, got %s", resp.Token)
+	}
+}
+
 func TestResolveWIFProvider(t *testing.T) {
 	h := &Handler{
 		defaultWIFProvider: "github-oidc",
@@ -1296,6 +1564,42 @@ func TestServeHTTP_PerRepoProvider(t *testing.T) {
 
 	// The fake validator succeeds, so the request proceeds to minting.
 	// We verify the correct provider was resolved.
+	want := buildRepoProviderID("test-org", "integration-service")
+	if tv.lastProvider != want {
+		t.Fatalf("expected provider %q, got %q", want, tv.lastProvider)
+	}
+}
+
+func TestServeHTTP_PerRepoDirectWorkflow(t *testing.T) {
+	setMintEnv(t)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/integration-service")
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tv := &fakeTokenValidator{}
+	h := NewHandler(
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		tv,
+	)
+
+	// Token from a per-repo workflow_dispatch — job_workflow_ref references the
+	// target repo itself, not .fullsend or fullsend-ai/fullsend.
+	oidcToken := makeTestOIDCToken(
+		"https://token.actions.githubusercontent.com",
+		"fullsend-mint",
+		"test-org/integration-service",
+		"test-org",
+		"test-org/integration-service/.github/workflows/gh-classify.yml@refs/heads/main",
+		time.Now().Add(10*time.Minute).Unix(),
+	)
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
 	want := buildRepoProviderID("test-org", "integration-service")
 	if tv.lastProvider != want {
 		t.Fatalf("expected provider %q, got %q", want, tv.lastProvider)

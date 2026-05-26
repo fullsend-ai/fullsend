@@ -33,7 +33,20 @@ Every changed line in your diff must trace directly to the issue scope.
 If your changes make existing code unused, remove the dead code. Do not
 remove pre-existing dead code the issue does not mention.
 
-## 4. Goal-driven execution
+## 4. Commit message format
+
+Use [Conventional Commits](https://www.conventionalcommits.org/). The commit
+subject must start with a type prefix (`feat`, `fix`, `refactor`, `docs`,
+`test`, `chore`, `ci`, `perf`) followed by an optional scope and colon:
+
+```
+<type>(<scope>): <short description>
+```
+
+Check `CONTRIBUTING.md` or `CLAUDE.md` for repo-specific allowed types. When
+reviewing PRs, flag commits or PR titles that do not follow this format.
+
+## 5. Goal-driven execution
 
 Convert the issue into verifiable success criteria before writing code.
 Determine:

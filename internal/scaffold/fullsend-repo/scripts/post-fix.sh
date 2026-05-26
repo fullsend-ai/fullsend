@@ -60,6 +60,7 @@ PROTECTED_PATHS=(
   ".claude/"
   "agents/"
   "harness/"
+  "plugins/"
   "policies/"
   "scripts/"
   "api-servers/"
@@ -71,7 +72,8 @@ PROTECTED_PATHS=(
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 LYCHEE_VERSION="0.24.2"
-LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+LYCHEE_SHA256_AMD64="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+LYCHEE_SHA256_ARM64="91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
 UV_VERSION="0.11.14"
 UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
@@ -174,12 +176,18 @@ fi
 if ! command -v lychee >/dev/null 2>&1; then
   echo "Installing lychee v${LYCHEE_VERSION}..."
   mkdir -p "${HOME}/.local/bin"
+  case "$(uname -m)" in
+    x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
+    aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
+    *) echo "::error::Unsupported architecture for lychee: $(uname -m)"; exit 1 ;;
+  esac
   curl -fsSL \
-    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
     -o /tmp/lychee.tar.gz \
-    && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
-    && rm /tmp/lychee.tar.gz
+    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C /tmp \
+    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" "${HOME}/.local/bin/" \
+    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
@@ -301,7 +309,7 @@ BOT_CAP="${ITERATION_CAP:-5}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
-# autonomous review→fix loop needs human direction. Human-triggered /fix
+# autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
   echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"

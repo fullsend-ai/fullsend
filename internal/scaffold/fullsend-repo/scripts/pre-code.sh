@@ -60,7 +60,7 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
   exit 0
 fi
 
-# Allow override via CODE_FORCE (set when /code --force is used).
+# Allow override via CODE_FORCE (set when /fs-code --force is used).
 if [[ "${CODE_FORCE:-}" == "true" ]]; then
   echo "CODE_FORCE=true — skipping existing-PR check"
   exit 0
@@ -103,7 +103,7 @@ if [[ -n "${HUMAN_PR_LINES}" ]]; then
   COMMENT_BODY="An open PR already addresses this issue — skipping automated implementation.
 ${PR_LIST_MD}
 
-To override, comment \`/code --force\` on this issue.
+To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 

@@ -45,50 +45,33 @@ func (l *InferenceLayer) RequiredScopes(op Operation) []string {
 }
 
 // Install provisions inference credentials and stores them as repo secrets.
-// If all expected secrets already exist, provisioning is skipped to maintain
-// idempotency (avoids unnecessary re-provisioning).
+// Secrets are written unconditionally because the GitHub Secrets API does not
+// expose values, so we cannot detect stale entries. The API PUT is an upsert,
+// making repeated writes safe.
 func (l *InferenceLayer) Install(ctx context.Context) error {
 	if l.provider == nil {
 		l.ui.StepInfo("no inference provider configured, skipping")
 		return nil
 	}
 
-	// Check if secrets already exist to avoid re-provisioning.
-	allExist := true
-	for _, name := range l.provider.SecretNames() {
-		exists, err := l.client.RepoSecretExists(ctx, l.org, forge.ConfigRepoName, name)
-		if err != nil {
-			// Can't verify — proceed with provisioning.
-			allExist = false
-			break
-		}
-		if !exists {
-			allExist = false
-			break
-		}
+	l.ui.StepStart(fmt.Sprintf("provisioning %s credentials", l.provider.Name()))
+
+	secrets, err := l.provider.Provision(ctx)
+	if err != nil {
+		l.ui.StepFail(fmt.Sprintf("failed to provision %s credentials", l.provider.Name()))
+		return fmt.Errorf("provisioning %s: %w", l.provider.Name(), err)
 	}
-	if allExist {
-		l.ui.StepDone(fmt.Sprintf("%s credentials already provisioned, skipping", l.provider.Name()))
-	} else {
-		l.ui.StepStart(fmt.Sprintf("provisioning %s credentials", l.provider.Name()))
 
-		secrets, err := l.provider.Provision(ctx)
-		if err != nil {
-			l.ui.StepFail(fmt.Sprintf("failed to provision %s credentials", l.provider.Name()))
-			return fmt.Errorf("provisioning %s: %w", l.provider.Name(), err)
+	for name, value := range secrets {
+		l.ui.StepStart(fmt.Sprintf("storing %s", name))
+		if err := l.client.CreateRepoSecret(ctx, l.org, forge.ConfigRepoName, name, value); err != nil {
+			l.ui.StepFail(fmt.Sprintf("failed to store %s", name))
+			return fmt.Errorf("creating secret %s: %w", name, err)
 		}
-
-		for name, value := range secrets {
-			l.ui.StepStart(fmt.Sprintf("storing %s", name))
-			if err := l.client.CreateRepoSecret(ctx, l.org, forge.ConfigRepoName, name, value); err != nil {
-				l.ui.StepFail(fmt.Sprintf("failed to store %s", name))
-				return fmt.Errorf("creating secret %s: %w", name, err)
-			}
-			l.ui.StepDone(fmt.Sprintf("stored %s", name))
-		}
-
-		l.ui.StepDone(fmt.Sprintf("%s credentials provisioned", l.provider.Name()))
+		l.ui.StepDone(fmt.Sprintf("stored %s", name))
 	}
+
+	l.ui.StepDone(fmt.Sprintf("%s credentials provisioned", l.provider.Name()))
 
 	// Store non-secret variables (e.g. region). Always run — variables are
 	// cheap to set and idempotent, and may be added after initial install.

@@ -2,6 +2,7 @@
 #
 # Extends the base fullsend sandbox image with tools needed by the code agent:
 #   - Go (compile + test target repos written in Go)
+#   - lychee (markdown link checker for pre-commit hooks)
 #   - scan-secrets (gitleaks wrapper for code-implementation skill)
 #
 # The base image already provides Claude Code, rsync, gitleaks, tirith,
@@ -79,6 +80,29 @@ ENV PATH="/usr/local/go/bin:${PATH}" \
 ARG GOPLS_VERSION=0.18.1
 RUN GOBIN=/usr/local/go/bin go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" \
     && gopls version
+
+# ---------------------------------------------------------------------------
+# lychee — markdown link checker used by pre-commit hooks (lint-md-links).
+# Baked into the image so pre-commit hooks work without network access.
+# The release archive nests the binary under lychee-<target>/.
+# To update: bump LYCHEE_VERSION and LYCHEE_SHA256_{AMD64,ARM64} from:
+#   https://github.com/lycheeverse/lychee/releases
+ARG LYCHEE_VERSION=0.24.2
+ARG LYCHEE_SHA256_AMD64=1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+ARG LYCHEE_SHA256_ARM64=91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c
+RUN case "$TARGETARCH" in \
+      amd64) LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="$LYCHEE_SHA256_AMD64" ;; \
+      arm64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="$LYCHEE_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
+      -o /tmp/lychee.tar.gz \
+    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C /tmp \
+    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" /usr/local/bin/lychee \
+    && chmod +x /usr/local/bin/lychee \
+    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
 
 # ---------------------------------------------------------------------------
 # gitleaks is already installed in the base sandbox image.

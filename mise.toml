@@ -4,7 +4,7 @@
 # Then `cd` into this repo; `node`, `npm`, and `go` come from mise.
 [tools]
 node = "22"
-go = "1.25.8"
+go = "1.26.0"
 
 [env]
 _.file = ".env.local"
