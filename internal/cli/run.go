@@ -1156,35 +1156,40 @@ func buildClaudeCommand(agentName, model, repoDir string, pluginDirs []string, d
 	// Defense-in-depth: escape single quotes even though Validate() rejects them.
 	safe := strings.ReplaceAll(agentName, "'", "'\\''")
 
-	modelFlag := ""
-	if model != "" {
-		modelFlag = fmt.Sprintf("--model '%s' ", strings.ReplaceAll(model, "'", "'\\''"))
-	}
-
-	var pluginDirParts []string
-	for _, pd := range pluginDirs {
-		pluginDirParts = append(pluginDirParts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
-	}
-	pluginDirFlags := ""
-	if len(pluginDirParts) > 0 {
-		pluginDirFlags = strings.Join(pluginDirParts, " ") + " "
-	}
-
-	debugFlags := ""
-	if debug != "" {
-		debugFlags = fmt.Sprintf("--debug-file '%s/%s' ", sandbox.SandboxWorkspace, claudeDebugLog)
-		if debug != "*" {
-			debugFlags += fmt.Sprintf("--debug '%s' ", strings.ReplaceAll(debug, "'", "'\\''"))
-		}
-	}
-
-	return fmt.Sprintf(
+	// Collect all command parts into a slice and join with spaces so that
+	// individual flags don't need to embed trailing whitespace.
+	parts := []string{
+		fmt.Sprintf("cd %s && . %s && claude", repoDir, envFile),
+		"--print",
+		"--verbose",
 		// --verbose increases log output in the job log. If artifact upload is
 		// added to this workflow, consider whether verbose output should be
 		// redacted or made conditional via an env var.
-		"cd %s && . %s && claude --print --verbose --output-format stream-json %s%s%s--agent '%s' --dangerously-skip-permissions 'Run the agent task'",
-		repoDir, envFile, debugFlags, modelFlag, pluginDirFlags, safe,
+		"--output-format stream-json",
+	}
+
+	if debug != "" {
+		parts = append(parts, fmt.Sprintf("--debug-file '%s/%s'", sandbox.SandboxWorkspace, claudeDebugLog))
+		if debug != "*" {
+			parts = append(parts, fmt.Sprintf("--debug '%s'", strings.ReplaceAll(debug, "'", "'\\''")))
+		}
+	}
+
+	if model != "" {
+		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(model, "'", "'\\''")))
+	}
+
+	for _, pd := range pluginDirs {
+		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
+	}
+
+	parts = append(parts,
+		fmt.Sprintf("--agent '%s'", safe),
+		"--dangerously-skip-permissions",
+		"'Run the agent task'",
 	)
+
+	return strings.Join(parts, " ")
 }
 
 // buildScanContextCommand builds the command to run `fullsend scan context`

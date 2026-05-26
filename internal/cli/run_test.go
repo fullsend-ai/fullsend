@@ -147,6 +147,29 @@ func TestBuildClaudeCommand_DebugEscapesQuotes(t *testing.T) {
 	assert.Contains(t, cmd, "--debug 'api'\\''hooks'")
 }
 
+func TestBuildClaudeCommand_NoDoubleSpaces(t *testing.T) {
+	tests := []struct {
+		name       string
+		agentName  string
+		model      string
+		pluginDirs []string
+		debug      string
+	}{
+		{"no optional flags", "agent", "", nil, ""},
+		{"model only", "agent", "sonnet", nil, ""},
+		{"plugins only", "agent", "", []string{"/tmp/plugins/gopls"}, ""},
+		{"debug only", "agent", "", nil, "*"},
+		{"debug filtered", "agent", "", nil, "api,hooks"},
+		{"all flags", "agent", "sonnet", []string{"/tmp/plugins/gopls", "/tmp/plugins/other"}, "api,hooks"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := buildClaudeCommand(tc.agentName, tc.model, "/tmp/workspace/repo", tc.pluginDirs, tc.debug)
+			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
+		})
+	}
+}
+
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
 	dir := t.TempDir()
 	pluginDir := filepath.Join(dir, "gopls-lsp")
