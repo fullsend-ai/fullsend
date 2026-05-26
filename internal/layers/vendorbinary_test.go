@@ -17,7 +17,7 @@ func newVendorBinaryLayer(t *testing.T, client *forge.FakeClient, enabled bool, 
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewVendorBinaryLayer("test-org", client, printer, enabled, vendorFn)
+	layer := NewVendorBinaryLayer("test-org", ".fullsend", client, printer, enabled, vendorFn)
 	return layer, &buf
 }
 
@@ -37,9 +37,10 @@ func TestVendorBinaryLayer_RequiredScopes(t *testing.T) {
 func TestVendorBinaryLayer_EnabledCallsVendorFn(t *testing.T) {
 	client := &forge.FakeClient{}
 	called := false
-	vendorFn := func(ctx context.Context, c forge.Client, p *ui.Printer, org string) error {
+	vendorFn := func(ctx context.Context, c forge.Client, p *ui.Printer, owner, repo string) error {
 		called = true
-		assert.Equal(t, "test-org", org)
+		assert.Equal(t, "test-org", owner)
+		assert.Equal(t, ".fullsend", repo)
 		return nil
 	}
 
@@ -52,7 +53,7 @@ func TestVendorBinaryLayer_EnabledCallsVendorFn(t *testing.T) {
 
 func TestVendorBinaryLayer_EnabledVendorFnError(t *testing.T) {
 	client := &forge.FakeClient{}
-	vendorFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, _ string) error {
+	vendorFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, _, _ string) error {
 		return errors.New("cross-compile failed")
 	}
 
@@ -195,4 +196,88 @@ func TestVendorBinaryLayer_Analyze_Error(t *testing.T) {
 	_, err := layer.Analyze(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking for vendored binary")
+}
+
+// binaryPath tests — per-org vs per-repo path selection.
+
+func TestVendorBinaryLayer_BinaryPath_PerOrg(t *testing.T) {
+	layer, _ := newVendorBinaryLayer(t, &forge.FakeClient{}, false, nil)
+	assert.Equal(t, VendoredBinaryPath, layer.binaryPath())
+}
+
+func TestVendorBinaryLayer_BinaryPath_PerRepo(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewVendorBinaryLayer("test-org", "my-repo", &forge.FakeClient{}, printer, false, nil)
+	assert.Equal(t, VendoredBinaryPathPerRepo, layer.binaryPath())
+}
+
+// Per-repo mode tests — verify correct paths are used for cleanup and analyze.
+
+func TestVendorBinaryLayer_PerRepo_DisabledDeletesBinary(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/my-repo/.fullsend/bin/fullsend": []byte("binary-data"),
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewVendorBinaryLayer("test-org", "my-repo", client, printer, false, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.DeletedFiles, 1)
+	assert.Equal(t, "my-repo", client.DeletedFiles[0].Repo)
+	assert.Equal(t, VendoredBinaryPathPerRepo, client.DeletedFiles[0].Path)
+}
+
+func TestVendorBinaryLayer_PerRepo_Analyze_EnabledPresent(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/my-repo/.fullsend/bin/fullsend": []byte("binary-data"),
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewVendorBinaryLayer("test-org", "my-repo", client, printer, true, nil)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StatusInstalled, report.Status)
+	assert.Contains(t, report.Details, "vendored binary present")
+}
+
+func TestVendorBinaryLayer_PerRepo_Analyze_DisabledPresent(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/my-repo/.fullsend/bin/fullsend": []byte("binary-data"),
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewVendorBinaryLayer("test-org", "my-repo", client, printer, false, nil)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StatusDegraded, report.Status)
+	assert.Contains(t, report.Details, "stale vendored binary present")
+}
+
+func TestVendorBinaryLayer_PerRepo_EnabledCallsVendorFn(t *testing.T) {
+	client := &forge.FakeClient{}
+	called := false
+	vendorFn := func(ctx context.Context, c forge.Client, p *ui.Printer, owner, repo string) error {
+		called = true
+		assert.Equal(t, "test-org", owner)
+		assert.Equal(t, "my-repo", repo)
+		return nil
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewVendorBinaryLayer("test-org", "my-repo", client, printer, true, vendorFn)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+	assert.True(t, called, "vendor function should have been called with per-repo args")
 }

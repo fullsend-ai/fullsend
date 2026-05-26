@@ -56,7 +56,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           echo "${PR_TITLE}" > /tmp/pr-title.txt
-          uvx --from gitlint gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
+          uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
 
       - name: Lint commits
         if: github.event_name != 'pull_request'
@@ -76,7 +76,7 @@ jobs:
           FAILED=false
           for sha in $(git rev-list --no-merges "${RANGE}"); do
             git log --format='%s' -1 "${sha}" > /tmp/commit-msg.txt
-            if ! uvx --from gitlint gitlint --config .gitlint --ignore B6 --msg-filename /tmp/commit-msg.txt; then
+            if ! uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename /tmp/commit-msg.txt; then
               echo "::error::Commit ${sha} does not follow Conventional Commits format"
               FAILED=true
             fi

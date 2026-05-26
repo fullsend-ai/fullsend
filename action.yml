@@ -63,11 +63,19 @@ runs:
         }
 
         # Use vendored binary if present (placed by fullsend admin install --vendor-fullsend-binary).
+        # Per-org mode stores it at bin/fullsend (in .fullsend config repo);
+        # per-repo mode stores it at .fullsend/bin/fullsend (in the target repo).
         # GitHub Contents API does not preserve the executable bit, so check -f not -x.
-        if [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
-          echo "Using vendored fullsend binary from bin/fullsend"
+        VENDORED=""
+        if [[ -f "${GITHUB_WORKSPACE}/.fullsend/bin/fullsend" ]]; then
+          VENDORED="${GITHUB_WORKSPACE}/.fullsend/bin/fullsend"
+        elif [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+          VENDORED="${GITHUB_WORKSPACE}/bin/fullsend"
+        fi
+        if [[ -n "${VENDORED}" ]]; then
+          echo "Using vendored fullsend binary from ${VENDORED#"${GITHUB_WORKSPACE}/"}"
           mkdir -p "${RUNNER_TEMP}/fullsend"
-          cp "${GITHUB_WORKSPACE}/bin/fullsend" "${RUNNER_TEMP}/fullsend/fullsend"
+          cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
           chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
           exit 0
