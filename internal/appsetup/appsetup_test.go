@@ -281,6 +281,114 @@ func TestSetup_ExistingApp_NoSecret(t *testing.T) {
 	assert.Contains(t, err.Error(), "private key")
 }
 
+func TestSetup_ExistingApp_ThirdParty_NoSecret_ReturnsError(t *testing.T) {
+	// A third-party app (owned by another org) is installed but has no
+	// secret. The CLI should NOT enter PEM recovery (which would open a
+	// 404 URL) but instead return a clear error.
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-triage", AppOwnerLogin: "other-org"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-triage": "Iv1.triage123",
+		},
+	}
+	prompter := &fakePrompter{}
+	browser := newFakeBrowser()
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) {
+			return false, nil
+		})
+
+	_, err := s.Run(context.Background(), "myorg", "triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "third-party app")
+	assert.Contains(t, err.Error(), "other-org")
+	// Should NOT have prompted for PEM recovery.
+	assert.False(t, prompter.confirmCalled, "should not prompt for PEM recovery on third-party app")
+	assert.False(t, prompter.readLineCalled, "should not ask for PEM file path on third-party app")
+}
+
+func TestSetup_ExistingApp_ThirdParty_WithSecret_Reuses(t *testing.T) {
+	// A third-party app with a valid secret should be reused normally.
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-triage", AppOwnerLogin: "other-org"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-triage": "Iv1.triage123",
+		},
+	}
+	prompter := &fakePrompter{}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) {
+			return true, nil
+		})
+
+	creds, err := s.Run(context.Background(), "myorg", "triage")
+	require.NoError(t, err)
+	assert.Equal(t, 10, creds.AppID)
+	assert.Equal(t, "fullsend-triage", creds.Slug)
+	assert.Empty(t, creds.PEM, "PEM should be empty to signal reuse")
+}
+
+func TestSetup_ExistingApp_OrgOwned_NoSecret_EntersRecovery(t *testing.T) {
+	// An org-owned app without a secret should enter PEM recovery as before.
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-triage", AppOwnerLogin: "myorg"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-triage": "Iv1.triage123",
+		},
+	}
+	prompter := &fakePrompter{confirmResult: false} // decline recovery
+	browser := newFakeBrowser()
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, browser, printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) {
+			return false, nil
+		})
+
+	_, err := s.Run(context.Background(), "myorg", "triage")
+	require.Error(t, err)
+	// Should have entered recovery (prompted), then failed because user declined.
+	assert.True(t, prompter.confirmCalled, "should prompt for PEM recovery on org-owned app")
+	assert.Contains(t, err.Error(), "private key secret is missing")
+}
+
+func TestIsOrgOwned(t *testing.T) {
+	s := &Setup{}
+
+	t.Run("empty owner is treated as org-owned", func(t *testing.T) {
+		inst := &forge.Installation{AppOwnerLogin: ""}
+		assert.True(t, s.isOrgOwned(inst, "myorg"))
+	})
+
+	t.Run("matching owner is org-owned", func(t *testing.T) {
+		inst := &forge.Installation{AppOwnerLogin: "myorg"}
+		assert.True(t, s.isOrgOwned(inst, "myorg"))
+	})
+
+	t.Run("case-insensitive match", func(t *testing.T) {
+		inst := &forge.Installation{AppOwnerLogin: "MyOrg"}
+		assert.True(t, s.isOrgOwned(inst, "myorg"))
+	})
+
+	t.Run("different owner is third-party", func(t *testing.T) {
+		inst := &forge.Installation{AppOwnerLogin: "other-org"}
+		assert.False(t, s.isOrgOwned(inst, "myorg"))
+	})
+}
+
 func TestSetup_ExistingApp_ClientIDLookupFails(t *testing.T) {
 	client := &forge.FakeClient{
 		Installations: []forge.Installation{

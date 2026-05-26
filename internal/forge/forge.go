@@ -100,10 +100,11 @@ type PullRequestFileDiff struct {
 
 // Installation represents an app installation on an org.
 type Installation struct {
-	ID          int
-	AppID       int
-	AppSlug     string
-	Permissions map[string]string
+	ID            int
+	AppID         int
+	AppSlug       string
+	AppOwnerLogin string // GitHub login of the app owner (org or user)
+	Permissions   map[string]string
 }
 
 // TreeFile represents a file to be committed via the Git Trees API.

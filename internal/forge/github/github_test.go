@@ -502,8 +502,14 @@ func TestListOrgInstallations(t *testing.T) {
 
 		json.NewEncoder(w).Encode(map[string]any{
 			"installations": []map[string]any{
-				{"id": 1, "app_id": 100, "app_slug": "myorg-fullsend"},
-				{"id": 2, "app_id": 200, "app_slug": "myorg-triage"},
+				{
+					"id": 1, "app_id": 100, "app_slug": "myorg-fullsend",
+					"app": map[string]any{"owner": map[string]any{"login": "myorg"}},
+				},
+				{
+					"id": 2, "app_id": 200, "app_slug": "myorg-triage",
+					"app": map[string]any{"owner": map[string]any{"login": "other-org"}},
+				},
 			},
 		})
 	}))
@@ -515,7 +521,9 @@ func TestListOrgInstallations(t *testing.T) {
 	require.Len(t, installs, 2)
 	assert.Equal(t, 1, installs[0].ID)
 	assert.Equal(t, "myorg-fullsend", installs[0].AppSlug)
+	assert.Equal(t, "myorg", installs[0].AppOwnerLogin)
 	assert.Equal(t, 200, installs[1].AppID)
+	assert.Equal(t, "other-org", installs[1].AppOwnerLogin)
 }
 
 func TestAPIError(t *testing.T) {

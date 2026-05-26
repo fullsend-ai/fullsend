@@ -486,6 +486,18 @@ func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string) (string,
 	return pemStr, nil
 }
 
+// isOrgOwned checks whether the app is owned by the given org. Third-party
+// apps (owned by another org or user) cannot have their private keys managed
+// from this org's developer settings — the settings URL returns 404.
+// If AppOwnerLogin is empty (e.g., the API didn't return it), we assume
+// org-owned to preserve backwards compatibility.
+func (s *Setup) isOrgOwned(inst *forge.Installation, org string) bool {
+	if inst.AppOwnerLogin == "" {
+		return true
+	}
+	return strings.EqualFold(inst.AppOwnerLogin, org)
+}
+
 // isAppIDStale checks whether the live installation's app ID differs from the
 // stored ROLE_APP_IDS value, indicating the app was deleted and recreated.
 func (s *Setup) isAppIDStale(org, role string, liveID int) bool {
@@ -544,6 +556,20 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 			s.ui.StepWarn(fmt.Sprintf(
 				"App %s was recreated (ID changed) — stored key is invalid",
 				inst.AppSlug))
+		}
+
+		// If the app is a third-party app (owned by another org), PEM
+		// recovery is impossible — the org doesn't have access to the
+		// app's developer settings page.
+		if !s.isOrgOwned(inst, org) {
+			return nil, fmt.Errorf(
+				"app %s is a third-party app (owned by %q, not %q) and cannot be "+
+					"managed from this org's developer settings; "+
+					"either install org-owned apps via the manifest flow "+
+					"('fullsend admin install') or contact the app owner "+
+					"to obtain the private key",
+				inst.AppSlug, inst.AppOwnerLogin, org,
+			)
 		}
 
 		// Secret doesn't exist or is stale — try to recover by generating a new key.
