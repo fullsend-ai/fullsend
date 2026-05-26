@@ -22,6 +22,8 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 
 When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
 
+**Forge abstraction:** All git forge operations must go through the `forge.Client` interface in `internal/forge/forge.go`. Do not use `exec.Command("gh", ...)` or direct GitHub API calls outside `internal/forge/github/`. See [AGENTS.md](AGENTS.md#forge-abstraction) for details.
+
 When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
