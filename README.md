@@ -42,6 +42,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [konflux-ci](docs/problems/applied/konflux-ci/) — Kubernetes-native CI/CD platform (the original proving ground)
 - **[docs/plans/](docs/plans/)** — Implementation plans for accepted or in-progress designs:
   - [Universal Harness Access](docs/plans/universal-harness-access.md) — Making harnesses and agents universally accessible via URLs and paths, enabling community sharing and composability
+  - [Universal Harness Access — Implementation](docs/plans/universal-harness-access-implementation.md) — Phased PR breakdown for ADR-0038 Phase 1 (MVP)
   - [Agent Execution Environment](docs/plans/agent-execution-environment.md) — Sandbox and runtime environment for agent execution
   - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
   - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
