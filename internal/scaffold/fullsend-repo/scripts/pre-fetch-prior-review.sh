@@ -23,7 +23,7 @@ COMMENT_JSON=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUM}/comments" \
   2>/dev/null || echo "")
 
 if [[ -z "${COMMENT_JSON}" || "${COMMENT_JSON}" == "null" ]]; then
-    echo "No prior review found (first review)"
+    echo "No prior review comment found for bot=${REVIEW_BOT} (first review or comment not yet posted)"
     : > "${PRIOR_FILE}"  # truncate to 0 bytes
     # shellcheck disable=SC2129
     echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT}"
@@ -34,6 +34,7 @@ fi
 
 # Previous review exists — extract ID
 COMMENT_ID="$(echo "${COMMENT_JSON}" | jq -r '.id')"
+echo "Found prior review comment id=${COMMENT_ID}"
 
 # Validate that the comment was created by the expected GitHub App.
 # The REST API does not expose comment edit history — we can verify
@@ -78,10 +79,16 @@ echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT}"
 if [[ "${BYTE_COUNT}" -gt 1 ]]; then
     # Extract SHA from current section only (before sticky history sentinels)
     CURRENT_SECTION="$(awk '/<!-- sticky:history-start -->/{exit} {print}' "${PRIOR_FILE}")"
+    # Use || true to prevent grep exit-1 (no match) from crashing the
+    # script under set -euo pipefail.
     PRIOR_SHA="$(echo "${CURRENT_SECTION}" \
-        | grep -oP '(?<=\*\*Head SHA:\*\* )[0-9a-f]{7,64}' | head -1)"
+        | grep -oP '(?<=\*\*Head SHA:\*\* )[0-9a-f]{7,64}' | head -1 || true)"
     echo "prior_sha=${PRIOR_SHA}" >> "${GITHUB_OUTPUT}"
-    echo "Prior review SHA: ${PRIOR_SHA:-none}"
+    if [[ -n "${PRIOR_SHA}" ]]; then
+        echo "Prior review SHA: ${PRIOR_SHA}"
+    else
+        echo "::warning::Prior review comment ${COMMENT_ID} has no Head SHA marker in current section — incremental review disabled"
+    fi
 else
     echo "No usable prior review content"
     echo "prior_sha=" >> "${GITHUB_OUTPUT}"
