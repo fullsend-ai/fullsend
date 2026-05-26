@@ -56,17 +56,17 @@ _STRUCTURAL_PATTERNS: list[tuple[str, re.Pattern]] = [
         "env_secret",
         re.compile(
             r"(?:^|\s)(?:export\s+)?(?:"
-            r"[A-Z_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|CREDENTIAL|API_KEY|APIKEY|AUTH)"
-            r"[A-Z_]*)"
+            r"[A-Za-z_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|CREDENTIAL|API_KEY|APIKEY|AUTH)"
+            r"[A-Za-z_]*)"
             r"\s*=\s*['\"]?([A-Za-z0-9_.+/=@:%-]{8,})['\"]?",
-            re.MULTILINE,
+            re.MULTILINE | re.IGNORECASE,
         ),
     ),
     (
         "json_secret",
         re.compile(
-            r'"(?:[^"]*(?:secret|token|key|password|credential|apikey|api_key|auth)[^"]*)"'
-            r'\s*:\s*"([A-Za-z0-9_.+/=@:%-]{8,})"',
+            r"""(?:"[^"]*(?:secret|token|key|password|credential|apikey|api_key|auth)[^"]*"|'[^']*(?:secret|token|key|password|credential|apikey|api_key|auth)[^']*')"""
+            r"""\s*:\s*(?:"([A-Za-z0-9_.+/=@:%-]{8,})"|'([A-Za-z0-9_.+/=@:%-]{8,})')""",
             re.IGNORECASE,
         ),
     ),
@@ -81,7 +81,7 @@ _STRUCTURAL_PATTERNS: list[tuple[str, re.Pattern]] = [
     (
         "db_password",
         re.compile(
-            r"(?:postgres|mysql|mongodb|redis)(?:ql)?://[^:]+:([^@\s]{8,})@",
+            r"(?:postgres|mysql|mongodb|redis)(?:ql)?://[^:]+:(.{8,}?)@[^@\s/]+",
             re.IGNORECASE,
         ),
     ),
@@ -134,7 +134,13 @@ def redact_text(text: str) -> tuple[str, list[dict]]:
         else:
             for match in pattern.finditer(result):
                 if match.lastindex and match.lastindex >= 1:
-                    token = match.group(1)
+                    # Use the last non-None capture group as the secret value.
+                    token = next(
+                        (g for g in reversed(match.groups()) if g is not None),
+                        None,
+                    )
+                    if token is None:
+                        continue
                     masked = mask_token(token)
                     if masked != token:
                         findings.append({"pattern": name, "masked": masked})

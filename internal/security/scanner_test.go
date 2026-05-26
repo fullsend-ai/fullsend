@@ -165,6 +165,49 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "db_connection_password"))
 	})
+
+	// Bypass vector tests (issue #446)
+
+	t.Run("lowercase env var name redacted", func(t *testing.T) {
+		result := r.Scan("export my_token=s3cr3t_value_here")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, "s3cr3t_value_here")
+	})
+
+	t.Run("mixed case env var name redacted", func(t *testing.T) {
+		result := r.Scan("My_Secret_Key=FAKE0000test_value")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, "FAKE0000test_value")
+	})
+
+	t.Run("single-quoted json value redacted", func(t *testing.T) {
+		result := r.Scan("{'api_key': 'not-a-prefix-match-value'}")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "not-a-prefix-match-value")
+	})
+
+	t.Run("double-quoted json still redacted", func(t *testing.T) {
+		result := r.Scan(`{"password": "my-super-secret-pass-1234"}`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "my-super-secret-pass-1234")
+	})
+
+	t.Run("db password with embedded @ redacted", func(t *testing.T) {
+		result := r.Scan("postgres://user:P@ssw0rd1@host:5432/db")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.NotContains(t, result.Sanitized, "P@ssw0rd1")
+	})
+
+	t.Run("short db password not matched", func(t *testing.T) {
+		// Passwords below minimum length (4) should not match
+		result := r.Scan("postgres://user:abc@host:5432/db")
+		assert.True(t, result.Safe || !hasFinding(result, "db_connection_password"))
+	})
 }
 
 func TestSSRFValidator(t *testing.T) {
