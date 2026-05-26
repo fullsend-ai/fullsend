@@ -809,8 +809,8 @@ func TestSubmitFormalReview_FiltersByPRFileDiffs(t *testing.T) {
 	require.Len(t, fc.CreatedReviews[0].Comments, 2, "file-filtered and line-filtered findings should be omitted")
 	assert.Equal(t, "changed.go", fc.CreatedReviews[0].Comments[0].Path)
 	assert.Equal(t, "also-changed.go", fc.CreatedReviews[0].Comments[1].Path)
-	assert.Contains(t, out.String(), "1 finding(s) omitted: file not in PR diff")
-	assert.Contains(t, out.String(), "1 finding(s) omitted: line not in any diff hunk")
+	assert.Contains(t, out.String(), "1 inline comment(s) omitted (file not in PR diff) — findings still count toward verdict")
+	assert.Contains(t, out.String(), "1 inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict")
 }
 
 func TestSubmitFormalReview_ListPRFileDiffsErrorFallsBack(t *testing.T) {

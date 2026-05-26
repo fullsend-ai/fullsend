@@ -303,13 +303,17 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		}
 	}
 
+	// We filter inline comments here because the GitHub API cannot
+	// accept review comments on lines outside the PR diff. The
+	// findings themselves remain in the sticky comment body and
+	// continue to influence the review verdict.
 	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
 
 	if fileFiltered > 0 {
-		printer.StepWarn(fmt.Sprintf("%d finding(s) omitted: file not in PR diff", fileFiltered))
+		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
 	}
 	if lineFiltered > 0 {
-		printer.StepWarn(fmt.Sprintf("%d finding(s) omitted: line not in any diff hunk", lineFiltered))
+		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict", lineFiltered))
 	}
 
 	var reviewBody string

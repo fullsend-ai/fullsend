@@ -18,6 +18,32 @@ post. In interactive mode, it posts directly via `gh pr review`. It
 does not evaluate code directly — that is the `code-review` skill's
 responsibility.
 
+## Findings vs inline comments
+
+Findings are the canonical review output. Each finding records a
+severity, category, file, line, description, and remediation. The
+review verdict is determined by the findings — their count and
+severity decide whether the outcome is approve, request-changes, or
+comment-only.
+
+Inline comments are a **delivery mechanism** for findings, not the
+findings themselves. When findings have file and line locations, the
+CLI attempts to attach them as inline diff comments on the GitHub PR
+review so reviewers see feedback on the relevant code lines. However,
+the GitHub API rejects review comments on lines that are not part of
+the PR diff. This means:
+
+- **Findings whose file is not in the PR diff** cannot be posted as
+  inline comments. The finding is still valid and still counts toward
+  the verdict — it just cannot be attached to a specific diff line.
+- **Findings whose line is not in any diff hunk** (the file is in the
+  diff but the specific line is not) also cannot be posted as inline
+  comments. Again, the finding remains valid and influences the verdict.
+
+In both cases, the finding is included in the sticky comment body. The
+log messages from `post-review` say "inline comment(s) omitted" (not
+"findings omitted") to make this distinction clear.
+
 ## Process
 
 Follow these steps in order. Do not skip steps.
