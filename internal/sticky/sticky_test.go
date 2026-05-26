@@ -301,6 +301,40 @@ func TestPost_UpdateExisting_EmptyHTMLURL(t *testing.T) {
 	assert.Contains(t, client.UpdatedComments[0].Body, "New.")
 }
 
+func TestExtractCurrentContent_Basic(t *testing.T) {
+	cfg := Config{Marker: "<!-- m -->"}
+	body := "<!-- m -->\nReview findings here."
+	got := ExtractCurrentContent(body, cfg)
+	assert.Equal(t, "Review findings here.", got)
+}
+
+func TestExtractCurrentContent_WithHistory(t *testing.T) {
+	cfg := Config{Marker: "<!-- m -->"}
+
+	body1 := "<!-- m -->\nRun 1 content."
+	body2 := "<!-- m -->\nRun 2 content."
+	combined := BuildUpdatedBody(body1, body2, cfg)
+
+	got := ExtractCurrentContent(combined, cfg)
+	assert.Equal(t, "Run 2 content.", got)
+	assert.NotContains(t, got, "Run 1 content.")
+}
+
+func TestExtractCurrentContent_WithFooter(t *testing.T) {
+	cfg := Config{Marker: "<!-- m -->", FooterMarker: "<!-- footer -->"}
+	body := "<!-- m -->\nReview content.\n\n<!-- footer -->\nFooter info."
+	got := ExtractCurrentContent(body, cfg)
+	assert.Equal(t, "Review content.", got)
+	assert.NotContains(t, got, "Footer info.")
+}
+
+func TestExtractCurrentContent_Empty(t *testing.T) {
+	cfg := Config{Marker: "<!-- m -->"}
+	body := "<!-- m -->"
+	got := ExtractCurrentContent(body, cfg)
+	assert.Empty(t, got)
+}
+
 func TestPost_DryRunExisting(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.IssueComments = map[string][]forge.IssueComment{

@@ -190,6 +190,122 @@ func TestPostFailureNotice_EmptyReason(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "NOT reviewed")
 }
 
+func TestPostFailureNotice_PreservesPriorSuccessfulReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	// Seed an existing sticky comment with a successful review.
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:      100,
+			HTMLURL: "https://github.com/o/r/issues/1#issuecomment-100",
+			Body:    "<!-- test -->\n## Review\n\n**Verdict:** Approved\n\nLooks good, no issues found.",
+			Author:  "bot",
+		}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := sticky.Config{Marker: "<!-- test -->"}
+	parsed := ReviewResult{Action: "failure", Reason: "tool-failure"}
+	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	updated := fc.UpdatedComments[0].Body
+	// The prior review findings should be visible (not just in collapsed history).
+	assert.Contains(t, updated, "Looks good, no issues found.")
+	// A warning banner should be present.
+	assert.Contains(t, updated, "Latest review run failed")
+	assert.Contains(t, updated, "tool-failure")
+	// Should NOT contain the blanket "NOT reviewed" message at top level.
+	// The top-level content should show the preserved review.
+	topLevel := sticky.ExtractCurrentContent(updated, cfg)
+	assert.NotContains(t, topLevel, "NOT reviewed")
+}
+
+func TestPostFailureNotice_NoPriorReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	cfg := sticky.Config{Marker: "<!-- test -->"}
+	parsed := ReviewResult{Action: "failure", Reason: "tool-failure"}
+	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "NOT reviewed")
+	assert.Contains(t, comments[0].Body, "tool-failure")
+}
+
+func TestPostFailureNotice_PriorFailureNotPreserved(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	// Seed an existing sticky comment that is itself a failure notice.
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:     100,
+			Body:   "<!-- test -->\n## Review\n\n**Reason:** token-limit\n\nThis PR was NOT reviewed. Do not count this as an approval.",
+			Author: "bot",
+		}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := sticky.Config{Marker: "<!-- test -->"}
+	parsed := ReviewResult{Action: "failure", Reason: "tool-failure"}
+	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	updated := fc.UpdatedComments[0].Body
+	topLevel := sticky.ExtractCurrentContent(updated, cfg)
+	// When the prior content was also a failure, the new failure should
+	// replace it (current behavior, not preserved).
+	assert.Contains(t, topLevel, "NOT reviewed")
+	assert.Contains(t, topLevel, "tool-failure")
+}
+
+func TestPostFailureNotice_PriorStaleHeadNotPreserved(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:     100,
+			Body:   "<!-- test -->\n## Review\n\n**Reason:** stale-head\n\nThe review agent reviewed commit `abc` but the PR HEAD is now `def`.",
+			Author: "bot",
+		}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := sticky.Config{Marker: "<!-- test -->"}
+	parsed := ReviewResult{Action: "failure", Reason: "tool-failure"}
+	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	topLevel := sticky.ExtractCurrentContent(fc.UpdatedComments[0].Body, cfg)
+	assert.Contains(t, topLevel, "NOT reviewed")
+}
+
+func TestIsFailureOrStaleContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"successful review", "## Review\n\n**Verdict:** Approved", false},
+		{"failure notice", "## Review\n\nThis PR was NOT reviewed.", true},
+		{"stale-head", "## Review\n\n**Reason:** stale-head\n\nDiscarded.", true},
+		{"prior preserved failure", "## Review\n\n> ⚠️ **Latest review run failed** (x).", true},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isFailureOrStaleContent(tt.content))
+		})
+	}
+}
+
 func TestCheckStaleHead_CaseInsensitive(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.PullRequestHeadSHA = "abc1234567890abcdef1234567890abcdef123456"

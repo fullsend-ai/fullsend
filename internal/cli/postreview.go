@@ -218,6 +218,9 @@ The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. T
 }
 
 // postFailureNotice posts a failure comment as a sticky comment.
+// When a prior successful review exists, the failure is shown as a
+// warning banner while preserving the previous review findings
+// prominently (not collapsed into history).
 func postFailureNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, printer *ui.Printer) error {
 	printer.StepStart("Review agent reported failure, posting notice")
 
@@ -239,11 +242,34 @@ func postFailureNotice(ctx context.Context, client forge.Client, owner, repo str
 This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	}
 
+	// When a prior successful review exists, preserve it prominently
+	// and show the failure as a warning banner instead of replacing the
+	// review findings with "NOT reviewed". See #1559.
+	botUser, _ := client.GetAuthenticatedUser(ctx)
+	comments, listErr := client.ListIssueComments(ctx, owner, repo, pr)
+	if listErr == nil {
+		if existing := sticky.FindMarkedComment(comments, cfg.Marker, botUser); existing != nil {
+			priorContent := sticky.ExtractCurrentContent(existing.Body, cfg)
+			if priorContent != "" && !isFailureOrStaleContent(priorContent) {
+				body = fmt.Sprintf("## Review\n\n> **⚠️ Latest review run failed** (%s). Showing results from previous successful review.\n\n%s", reason, priorContent)
+				printer.StepInfo("Preserving prior successful review")
+			}
+		}
+	}
+
 	if _, err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
 		return fmt.Errorf("posting failure notice: %w", err)
 	}
 	printer.StepDone("Failure notice posted")
 	return nil
+}
+
+// isFailureOrStaleContent returns true if the content looks like a
+// failure notice or stale-head notice rather than a successful review.
+func isFailureOrStaleContent(content string) bool {
+	return strings.Contains(content, "This PR was NOT reviewed") ||
+		strings.Contains(content, "**Reason:** stale-head") ||
+		strings.Contains(content, "⚠️ **Latest review run failed**")
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then

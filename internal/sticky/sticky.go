@@ -201,6 +201,31 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	return combined
 }
 
+// ExtractCurrentContent returns the top-level (non-history) content from
+// a sticky comment body, stripping the marker prefix, footer, and any
+// collapsed history blocks. Returns an empty string if the body has no
+// meaningful content after stripping.
+func ExtractCurrentContent(body string, cfg Config) string {
+	content, _ := strings.CutPrefix(body, cfg.Marker+"\n")
+	content, _ = strings.CutPrefix(content, cfg.Marker)
+
+	// Strip footer if configured.
+	if cfg.FooterMarker != "" {
+		if idx := strings.Index(content, cfg.FooterMarker); idx >= 0 {
+			content = strings.TrimRight(content[:idx], "\n")
+		}
+	}
+
+	// Remove history blocks (try sentinel-delimited first, then legacy).
+	matches := detailsRe.FindAllString(content, -1)
+	activeRe := detailsRe
+	if len(matches) == 0 {
+		activeRe = legacyDetailsRe
+	}
+	content = activeRe.ReplaceAllString(content, "")
+	return strings.TrimSpace(content)
+}
+
 // TruncateBody trims body to fit within maxSize, keeping the current
 // content at the top and trimming history from the end. The truncation
 // point is aligned to a valid UTF-8 boundary.
