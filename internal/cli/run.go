@@ -233,14 +233,19 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 		rootSpanKind = telemetry.SpanKindConsumer()
 	}
 
+	workItemID := telemetry.WorkItemIDFromEnv()
+	rootSpanName := agentName + "-run"
+	if workItemID != "" {
+		rootSpanName = agentName + ": " + workItemID
+	}
 	rec, runCtx, recErr := telemetry.NewRecorder(ctx, runDir, tp.Tracer,
-		agentName+"-run",
+		rootSpanName,
 		[]telemetry.Attr{
 			telemetry.StringAttr("fullsend.agent", agentName),
 			telemetry.StringAttr("fullsend.harness", harnessPath),
 			telemetry.StringAttr("fullsend.model", h.Model),
 			telemetry.StringAttr("fullsend.image", h.Image),
-			telemetry.StringAttr("fullsend.work_item_id", telemetry.WorkItemIDFromEnv()),
+			telemetry.StringAttr("fullsend.work_item_id", workItemID),
 			telemetry.StringAttr("gen_ai.operation.name", "invoke_agent"),
 			telemetry.StringAttr("gen_ai.agent.name", agentName),
 			telemetry.StringAttr("gen_ai.request.model", h.Model),
@@ -274,7 +279,7 @@ func runAgent(agentName, fullsendDir, outputBase, targetRepo, fullsendBinary str
 				Harness:    harnessPath,
 				Model:      h.Model,
 				Image:      h.Image,
-				WorkItemID: telemetry.WorkItemIDFromEnv(),
+				WorkItemID: workItemID,
 				StartTime:  rec.StartTime(),
 				ExitCode:   exitCode,
 				Attrs: map[string]string{
