@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -325,10 +327,27 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		printer.StepInfo(fmt.Sprintf("Attaching %d inline comment(s)", len(inlineComments)))
 	}
 	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA, inlineComments); err != nil {
+		if is422(err) && len(inlineComments) > 0 {
+			printer.StepWarn(fmt.Sprintf("Review with inline comments rejected (422), retrying without inline comments: %v", err))
+			if err2 := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA, nil); err2 != nil {
+				return fmt.Errorf("submitting review without inline comments: %w", err2)
+			}
+			printer.StepDone("Review submitted (inline comments dropped)")
+			return nil
+		}
 		return fmt.Errorf("submitting review: %w", err)
 	}
 	printer.StepDone("Review submitted")
 	return nil
+}
+
+// is422 reports whether err is a GitHub API 422 Unprocessable Entity error.
+func is422(err error) bool {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusUnprocessableEntity
+	}
+	return false
 }
 
 // findingsToReviewComments converts review findings with file and line

@@ -5,11 +5,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"sync/atomic"
 	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -897,4 +901,120 @@ func TestPostApprovedFollowUpIssues_DisabledIsNoop(t *testing.T) {
 
 	err := postApprovedFollowUpIssues(context.Background(), "acme", "repo", 9, parsed, printer)
 	require.NoError(t, err)
+}
+
+func TestSubmitFormalReview_422RetryWithoutComments(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+
+	var callCount atomic.Int32
+	fc.CreatePullRequestReviewFunc = func(_ context.Context, _, _ string, _ int, event, body, commitSHA string, comments []forge.ReviewComment) error {
+		n := callCount.Add(1)
+		if n == 1 {
+			// First call: has inline comments, return 422.
+			return &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"}
+		}
+		// Second call: should have no comments.
+		fc.CreatedReviews = append(fc.CreatedReviews, forge.ReviewRecord{
+			Owner:     "acme",
+			Repo:      "repo",
+			Number:    1,
+			Event:     event,
+			Body:      body,
+			CommitSHA: commitSHA,
+			Comments:  comments,
+		})
+		return nil
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{File: "a.go", Line: 10, Severity: "high", Category: "bug", Description: "Bad code"},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "approve", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(2), callCount.Load(), "CreatePullRequestReview should be called twice")
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Empty(t, fc.CreatedReviews[0].Comments, "retry should have no inline comments")
+	assert.Equal(t, "APPROVE", fc.CreatedReviews[0].Event)
+	assert.Contains(t, out.String(), "422")
+	assert.Contains(t, out.String(), "inline comments dropped")
+}
+
+func TestSubmitFormalReview_422NoRetryWithoutComments(t *testing.T) {
+	// When a 422 occurs but there are no inline comments, do NOT retry —
+	// the error has a different root cause.
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors["CreatePullRequestReview"] = &gh.APIError{
+		StatusCode: http.StatusUnprocessableEntity,
+		Message:    "Validation Failed",
+	}
+	printer := ui.New(io.Discard)
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "approve", "", "", nil, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "submitting review")
+}
+
+func TestSubmitFormalReview_Non422ErrorNoRetry(t *testing.T) {
+	// Non-422 errors (e.g. 403, 500) should NOT trigger the retry path.
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors["CreatePullRequestReview"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "Resource not accessible",
+	}
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{File: "a.go", Line: 10, Severity: "high", Category: "bug", Description: "Bad code"},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "approve", "", "", findings, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "submitting review")
+}
+
+func TestIs422(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "github 422",
+			err:  &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+			want: true,
+		},
+		{
+			name: "github 403",
+			err:  &gh.APIError{StatusCode: http.StatusForbidden, Message: "Forbidden"},
+			want: false,
+		},
+		{
+			name: "wrapped 422",
+			err:  fmt.Errorf("outer: %w", &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "inner"}),
+			want: true,
+		},
+		{
+			name: "plain error",
+			err:  fmt.Errorf("some error"),
+			want: false,
+		},
+		{
+			name: "nil",
+			err:  nil,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, is422(tt.err))
+		})
+	}
 }

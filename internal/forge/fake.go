@@ -145,6 +145,13 @@ type FakeClient struct {
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
+	// CreatePullRequestReviewFunc, when non-nil, overrides the default
+	// CreatePullRequestReview behavior. It receives the same arguments
+	// and its return value is used directly. The Errors map is ignored
+	// when this is set. Use this for tests that need per-call control
+	// (e.g. first call fails, second succeeds).
+	CreatePullRequestReviewFunc func(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error
+
 	// Call recorders
 	CreatedRepos        []Repository
 	CreatedFiles        []FileRecord
@@ -836,9 +843,12 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 	return nil, nil
 }
 
-func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error {
+func (f *FakeClient) CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.CreatePullRequestReviewFunc != nil {
+		return f.CreatePullRequestReviewFunc(ctx, owner, repo, number, event, body, commitSHA, comments)
+	}
 	if e := f.err("CreatePullRequestReview"); e != nil {
 		return e
 	}
