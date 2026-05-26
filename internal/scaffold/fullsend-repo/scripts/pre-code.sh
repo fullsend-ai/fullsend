@@ -70,14 +70,53 @@ BOT_LOGIN="${FULLSEND_BOT_LOGIN:-fullsend-ai[bot]}"
 
 echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
-# Search for open PRs in the repo that mention the issue number.
-# This catches PRs with "Closes #N", "Fixes #N", or "#N" in the body/title.
-# Use gh's built-in --jq to filter out bot-authored PRs in one call.
-HUMAN_PR_LINES="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
+# Search for open PRs that mention the issue number. This is a broad search;
+# we narrow it below to PRs that genuinely address this issue via closing
+# keywords (Closes/Fixes/Resolves #N) or the agent branch convention.
+CANDIDATE_JSON="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
   --search "${ISSUE_NUMBER} in:body,title" \
-  --json number,url,author \
-  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
+  --json number,url,author,body,title,headRefName \
+  2>/dev/null || echo '[]')"
+
+# Fetch the triage bot's sticky comment to check for PRs marked as unrelated.
+TRIAGE_BODY="$(gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" \
+  --jq '[.[] | select(.body | test("<!-- fullsend:triage-agent -->"))] | last | .body // ""' \
   2>/dev/null || true)"
+
+# Extract PR numbers explicitly called out as unrelated in the triage comment.
+EXCLUDED_PRS=""
+if [[ -n "${TRIAGE_BODY}" ]]; then
+  EXCLUDED_PRS="$(echo "${TRIAGE_BODY}" \
+    | grep -iE 'unrelated|not related|does not address|not addressing' \
+    | grep -oE '#[0-9]+' | grep -oE '[0-9]+' \
+    | sort -u | paste -sd, || true)"
+fi
+
+# Filter candidate PRs to those that genuinely address this issue:
+# 1. Not authored by the bot
+# 2. Body or title contains a closing keyword (Closes/Fixes/Resolves #N)
+#    OR branch follows the agent/<N>-* naming convention
+# 3. PR number is not excluded by the triage comment
+CLOSE_RE="(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${ISSUE_NUMBER}\\b"
+BRANCH_RE="^agent/${ISSUE_NUMBER}-"
+
+HUMAN_PR_LINES="$(echo "${CANDIDATE_JSON}" | jq -r \
+  --arg bot "${BOT_LOGIN}" \
+  --arg close_re "${CLOSE_RE}" \
+  --arg branch_re "${BRANCH_RE}" \
+  --arg excluded "${EXCLUDED_PRS}" \
+  '
+  ($excluded | split(",") | map(select(. != "")) | map(tonumber)) as $excl |
+  [.[] |
+    select(.author.login != $bot) |
+    select(
+      (.headRefName | test($branch_re)) or
+      (.body | test($close_re; "i")) or
+      (.title | test($close_re; "i"))
+    ) |
+    select(.number | IN($excl[]) | not)
+  ] | .[] | "\(.number)\t\(.author.login)\t\(.url)"
+  ' 2>/dev/null || true)"
 
 if [[ -n "${HUMAN_PR_LINES}" ]]; then
   # Parse the first PR for the notice.
