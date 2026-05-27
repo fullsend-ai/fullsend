@@ -6,13 +6,13 @@ This guide explains how to install Fullsend, both in organization and repository
 We recommend using repository mode as it is simpler.
 
 Note: this guide is not intended to be a reference for the installation parameters.
-It is intended to a be simplified version to help you get started and that covers most
+It is intended to be simplified version to help you get started and that covers most
 of use cases. For a detailed reference of the install command check
 [the full install guide](installation.md).
 
 ## Google Cloud Platform (GCP) Project
 
-Fullsend needs a GCP Project to connect run the inference. Create it and then enable the following
+Fullsend needs a GCP Project to run the inference. Create it and then enable the following
 APIs:
 
 * [Agent Platform](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com).
