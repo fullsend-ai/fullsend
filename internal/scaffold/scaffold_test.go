@@ -231,6 +231,8 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "install_mode: per-org")
 	assert.Contains(t, s, "permissions: {}")
 	assert.Contains(t, s, "sparse-checkout: config.yaml")
+	assert.Contains(t, s, "repository: ${{ job.workflow_repository }}")
+	assert.Contains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "set -euo pipefail")
 	assert.Contains(t, s, "Invalid stage name")
 	assert.Contains(t, s, `^[a-z][a-z0-9_-]*$`)

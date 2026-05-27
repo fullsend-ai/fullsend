@@ -32,6 +32,7 @@ jobs:
       - name: Checkout config repository
         uses: actions/checkout@v6
         with:
+          repository: ${{ job.workflow_repository }}
           persist-credentials: false
           sparse-checkout: config.yaml
           sparse-checkout-cone-mode: false
@@ -374,6 +375,7 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'prioritize'
     uses: ./.github/workflows/prioritize.yml
+    secrets: inherit
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}

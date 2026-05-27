@@ -29,17 +29,10 @@ gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml \
   -q '.[] | select(.event == "issue_comment" or .event == "issues")'
 ```
 
-2. Find the corresponding agent runs in the dispatch repo:
+2. Find the corresponding dispatch runs in the config repo (triage/code/review/fix/retro run as jobs inside `dispatch.yml`):
 
 ```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=triage.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-3. If the issue reached `ready-to-code`, find code dispatches:
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=code.yml --limit 10 \
+gh run list --repo "$DISPATCH_REPO" --workflow=dispatch.yml --limit 10 \
   --json databaseId,status,conclusion,createdAt
 ```
 
@@ -47,17 +40,10 @@ gh run list --repo "$DISPATCH_REPO" --workflow=code.yml --limit 10 \
 
 1. The PR branch follows `agent/{issue}-{slug}`. Extract the issue number to trace the full history.
 
-2. Find review dispatches:
+2. Find dispatch runs for this PR (review/fix stages appear as jobs in the run):
 
 ```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=review.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-3. Find fix dispatches (if review requested changes):
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=fix.yml --limit 10 \
+gh run list --repo "$DISPATCH_REPO" --workflow=dispatch.yml --limit 10 \
   --json databaseId,status,conclusion,createdAt
 ```
 

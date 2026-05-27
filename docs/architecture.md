@@ -512,14 +512,13 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ╔═══════════════════════════════════════════════════════════════╗
                  ║ DISPATCH WORKFLOW (.fullsend repo, dispatch.yml)              ║
                  ║                                                               ║
-                 ║ Mints OIDC token → Cloud Function (token mint) → scoped      ║
-                 ║ GitHub App installation token per agent role.                  ║
-                 ║ Dispatches per-role agent workflows (code.yml, triage.yml).   ║
+                 ║ Routes to stage; synchronous workflow_call to upstream      ║
+                 ║ reusable-{stage}.yml (or prioritize.yml in .fullsend).        ║
                  ╚═══════════════════════════════════════════════════════════════╝
                        │
                        ▼
                  ╔═══════════════════════════════════════════════════════════════╗
-                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)               ║
+                 ║ AGENT WORKFLOW (fullsend-ai/fullsend reusable-*.yml)          ║
                  ║                                                               ║
                  ║ Validates source repo is enrolled in config.yaml.             ║
                  ║ Uses scoped GitHub App tokens:                                ║
@@ -601,7 +600,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 
 | Abstract layer | MVP technology | ADR |
 |---|---|---|
-| Dispatcher | Shim workflow (`fullsend.yml`) in enrolled repo → `workflow_call` to `.fullsend/dispatch.yml` → OIDC mint → per-role agent workflows (thin callers → upstream reusable workflows) | [ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md), [ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md) |
+| Dispatcher | Shim workflow (`fullsend.yml`) in enrolled repo → `workflow_call` to `.fullsend/dispatch.yml` → synchronous `workflow_call` to upstream reusable workflows | [ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md), [ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md), [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md) |
 | Agent runner | GitHub Actions job → `fullsend run` CLI (via `fullsend-ai/fullsend@v0` composite action) | |
 | Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
 | Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
