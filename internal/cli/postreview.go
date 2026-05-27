@@ -245,7 +245,10 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	// When a prior successful review exists, preserve it prominently
 	// and show the failure as a warning banner instead of replacing the
 	// review findings with "NOT reviewed". See #1559.
-	botUser, _ := client.GetAuthenticatedUser(ctx)
+	botUser, authErr := client.GetAuthenticatedUser(ctx)
+	if authErr != nil {
+		printer.StepInfo("Could not determine bot user, marker spoofing protection degraded")
+	}
 	comments, listErr := client.ListIssueComments(ctx, owner, repo, pr)
 	if listErr == nil {
 		if existing := sticky.FindMarkedComment(comments, cfg.Marker, botUser); existing != nil {
@@ -269,7 +272,7 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 func isFailureOrStaleContent(content string) bool {
 	return strings.Contains(content, "This PR was NOT reviewed") ||
 		strings.Contains(content, "**Reason:** stale-head") ||
-		strings.Contains(content, "⚠️ **Latest review run failed**")
+		strings.Contains(content, "**⚠️ Latest review run failed**")
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then

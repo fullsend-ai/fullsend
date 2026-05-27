@@ -296,7 +296,7 @@ func TestIsFailureOrStaleContent(t *testing.T) {
 		{"successful review", "## Review\n\n**Verdict:** Approved", false},
 		{"failure notice", "## Review\n\nThis PR was NOT reviewed.", true},
 		{"stale-head", "## Review\n\n**Reason:** stale-head\n\nDiscarded.", true},
-		{"prior preserved failure", "## Review\n\n> ⚠️ **Latest review run failed** (x).", true},
+		{"prior preserved failure", "## Review\n\n> **⚠️ Latest review run failed** (x).", true},
 		{"empty", "", false},
 	}
 	for _, tt := range tests {
