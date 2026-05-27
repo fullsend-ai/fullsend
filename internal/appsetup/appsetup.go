@@ -59,9 +59,13 @@ type SecretExistsFunc func(role string) (bool, error)
 type StoreSecretFunc func(ctx context.Context, role, pem string) error
 
 // DefaultBrowser opens URLs using platform-specific commands.
+// It is a no-op during tests or CI.
 type DefaultBrowser struct{}
 
 func (DefaultBrowser) Open(_ context.Context, url string) error {
+	if strings.HasSuffix(os.Args[0], ".test") {
+		return fmt.Errorf("running under go test, skipping browser open for %s", url)
+	}
 	var cmd string
 	var args []string
 	switch runtime.GOOS {
