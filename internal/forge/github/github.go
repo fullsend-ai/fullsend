@@ -58,10 +58,17 @@ type APIErrorDetail struct {
 	Resource string `json:"resource"`
 	Field    string `json:"field"`
 	Code     string `json:"code"`
+	Message  string `json:"message"`
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("github api: %d %s", e.StatusCode, e.Message)
+	s := fmt.Sprintf("github api: %d %s", e.StatusCode, e.Message)
+	for _, d := range e.Errors {
+		if d.Message != "" {
+			s += fmt.Sprintf(" (%s)", d.Message)
+		}
+	}
+	return s
 }
 
 // Unwrap returns forge.ErrNotFound for 404 errors, enabling errors.Is checks.

@@ -554,6 +554,19 @@ func TestAPIError_ErrorString(t *testing.T) {
 	assert.Contains(t, err.Error(), "Not Found")
 }
 
+func TestAPIError_ErrorStringWithDetails(t *testing.T) {
+	err := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Resource: "Repository", Field: "name", Code: "custom", Message: "name already exists on this account"},
+		},
+	}
+	assert.Contains(t, err.Error(), "422")
+	assert.Contains(t, err.Error(), "Validation Failed")
+	assert.Contains(t, err.Error(), "name already exists on this account")
+}
+
 func TestCreateFileOnBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "PUT", r.Method)

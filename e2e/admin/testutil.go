@@ -73,7 +73,16 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 		logf("[org-pool] Trying to acquire %s...", org)
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
-			logf("[org-pool] Error trying %s: %v", org, err)
+			logf("[org-pool] Error trying %s: %v — will check for stale lock", org, err)
+			// tryCreateLock may return an error when the repo exists but the
+			// error message doesn't match isRepoAlreadyExists (e.g. GitHub
+			// returns "422 Validation Failed" without "already exists" in
+			// the top-level message). Still attempt stale lock recovery.
+			if token != "" {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, nil
+				}
+			}
 			continue
 		}
 		if acquired {
@@ -107,7 +116,12 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 		for _, org := range shuffled {
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
-				logf("[org-pool] Error trying %s: %v", org, err)
+				logf("[org-pool] Error trying %s: %v — will check for stale lock", org, err)
+				if token != "" {
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, nil
+					}
+				}
 				continue
 			}
 			if acquired {
