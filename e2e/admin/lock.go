@@ -148,15 +148,30 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 	}
 
 	// Verify we actually got the lock (handle race between two creators).
-	content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
-	if err != nil {
-		return false, fmt.Errorf("verifying lock: %w", err)
-	}
-	if strings.TrimSpace(string(content)) == runID {
-		logf("[e2e-lock] Lock acquired (run: %s)", truncateUUID(runID))
-		return true, nil
+	// Retry the read because GitHub's auto_init may serve stale default
+	// README content ("# e2e-lock") briefly after CreateOrUpdateFile succeeds.
+	for i := range 5 {
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(i+1) * time.Second):
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
+		content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
+		if err != nil {
+			return false, fmt.Errorf("verifying lock: %w", err)
+		}
+		holder := strings.TrimSpace(string(content))
+		if holder == runID {
+			logf("[e2e-lock] Lock acquired (run: %s)", truncateUUID(runID))
+			return true, nil
+		}
+		logf("[e2e-lock] Verification read %d/5: got %q, expected %s (auto_init race?)", i+1, truncateUUID(holder), truncateUUID(runID))
 	}
 
+	// After retries, still not our content — genuinely lost the race.
+	content, _ := client.GetFileContent(ctx, org, lockRepo, "README.md")
 	logf("[e2e-lock] Lost lock race for %s/%s (holder: %s)", org, lockRepo, truncateUUID(strings.TrimSpace(string(content))))
 	return false, nil
 }
