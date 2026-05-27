@@ -1,6 +1,6 @@
-# How to onboard a new organization
+# How to install fullsend
 
-This guide walks through installing fullsend in a GitHub organization and enrolling your first repository.
+This guide walks through installing fullsend for a GitHub organization or a single repository. Choose the [installation mode](#choose-your-installation-mode) that fits your use case before running any commands.
 
 ## Prerequisites
 
@@ -70,7 +70,32 @@ The table below lists every scope the installer may request and why. You are nev
 
 The `--inference-region` flag defaults to `global` for the broadest model availability. For a list of all available regions, see the [Agent Platform documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/use-claude).
 
-## 1. Run the installer
+## Choose your installation mode
+
+Before running any install commands, decide which mode fits your use case:
+
+| Mode | Command format | Best for | Creates `.fullsend` repo? |
+|------|---------------|----------|--------------------------|
+| **Per-repo** | `fullsend admin install ORG/REPO` | Teams in shared orgs, single-repo onboarding, independent setups | No |
+| **Per-org** | `fullsend admin install ORG` | Orgs where one admin manages fullsend for all repos | Yes |
+
+**Use per-repo mode** if any of these apply:
+- Multiple independent teams share the same GitHub organization
+- You only want fullsend on specific repositories without org-wide configuration
+- You do not have (or do not want to use) org-level admin access
+
+→ Skip to [Per-repo installation](#per-repo-installation)
+
+**Use per-org mode** if:
+- A single admin manages fullsend across the entire organization
+- You want centralized configuration via the `.fullsend` config repo
+- You plan to enroll many repositories under unified management
+
+→ Continue to [Per-org installation](#per-org-installation) below
+
+## Per-org installation
+
+### 1. Run the installer
 
 The installer is interactive. It will open multiple browser windows to create and install a GitHub App for each agent role. Follow the prompts in each window to complete the app setup.
 
@@ -195,17 +220,17 @@ You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery
 
 > **Note:** Multi-org with `--public` requires all orgs to share the same GitHub Apps. Private apps (the default) are single-org only.
 
-## 2. Merge enrollment PRs
+### 2. Merge enrollment PRs
 
 If you chose to enroll repositories during install, the installer dispatches a workflow that creates an enrollment PR in each enrolled repo. These PRs add a shim workflow (`.github/workflows/fullsend.yaml`) that wires events to the agent pipeline.
 
 Review and merge each enrollment PR to complete enrollment.
 
-## 3. Managing repository enrollment
+### 3. Managing repository enrollment
 
 After installation, you can enroll or unenroll repositories at any time using the `repos` subcommands.
 
-### Enable repositories
+#### Enable repositories
 
 Set the variables for your environment:
 
@@ -230,7 +255,7 @@ The enable command:
 - Triggers the `repo-maintenance` workflow to create enrollment PRs
 - Validates that repositories exist in the organization before making changes
 
-### Disable repositories
+#### Disable repositories
 
 `ORG_NAME` carries over from the enable step above, or set it now:
 
@@ -262,14 +287,14 @@ The disable command:
 - Warns (but does not reject) repository names not found in the config, allowing safe cleanup of deleted repos
 - Does not delete existing shim workflows (merge the unenrollment PR to remove them)
 
-## 4. Test the pipeline
+### 4. Test the pipeline
 
 Once a repo is enrolled (enrollment PR merged):
 
 1. Create an issue in the enrolled repo
 2. The triage agent picks it up automatically — check the Actions tab in both the target repo and `.fullsend` for workflow run logs
 
-## 5. Analyze installation status
+### 5. Analyze installation status
 
 The `analyze` command checks the current state of a fullsend installation and reports what is installed, missing, or needs updating. It requires `repo` and `admin:org` scopes.
 
@@ -283,7 +308,7 @@ fullsend admin analyze "$ORG_NAME"
 
 This is a read-only operation — it makes no changes.
 
-## 6. Uninstall
+### 6. Uninstall
 
 The `uninstall` command tears down the fullsend installation for a GitHub organization, removing the `.fullsend` config repo and associated resources. It prompts for confirmation by requiring you to type the exact organization name.
 
