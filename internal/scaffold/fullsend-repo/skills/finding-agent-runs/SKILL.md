@@ -18,8 +18,8 @@ DISPATCH_REPO="${ORG}/.fullsend"
 ```
 
 The shim workflow (`fullsend.yaml`) runs in the source repo on `main`. It
-dispatches to `${DISPATCH_REPO}` which runs the agent workflows
-(`triage.yml`, `code.yml`, `review.yml`, `retro.yml`).
+calls `${DISPATCH_REPO}` `dispatch.yml`, which synchronously runs agent stages
+via upstream `reusable-*.yml` workflows (and `prioritize.yml` when routed).
 
 ## Issue → Agent Runs
 
@@ -57,10 +57,7 @@ Confirm `dispatch-code completed/success` in the jobs list.
 Match by timestamp in the dispatch repo (runs start within seconds):
 
 ```bash
-gh run list --repo "${DISPATCH_REPO}" --workflow=triage.yml --limit 5 \
-  --json databaseId,status,conclusion,createdAt
-
-gh run list --repo "${DISPATCH_REPO}" --workflow=code.yml --limit 5 \
+gh run list --repo "${DISPATCH_REPO}" --workflow=dispatch.yml --limit 5 \
   --json databaseId,status,conclusion,createdAt
 ```
 

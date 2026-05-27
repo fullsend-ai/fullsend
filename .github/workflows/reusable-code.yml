@@ -1,6 +1,10 @@
-# Reusable code agent workflow. Called by thin callers in .fullsend repos
-# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+# Reusable code agent workflow. Called by dispatch workflows via workflow_call.
+# Runs in the caller's repo context (secrets, checkout).
 name: Code Agent
+
+concurrency:
+  group: fullsend-code-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
+  cancel-in-progress: true
 
 on:
   workflow_call:

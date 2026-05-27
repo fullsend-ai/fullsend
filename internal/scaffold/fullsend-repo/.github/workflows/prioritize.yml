@@ -1,7 +1,17 @@
-# fullsend-stage: prioritize
 name: Prioritize
 
 on:
+  workflow_call:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       event_type:

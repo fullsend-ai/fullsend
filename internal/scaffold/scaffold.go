@@ -11,7 +11,7 @@ import (
 var content embed.FS
 
 // FullsendRepoFile returns the content of a file from the fullsend-repo scaffold.
-// The path is relative to the fullsend-repo root (e.g., ".github/workflows/triage.yml").
+// The path is relative to the fullsend-repo root (e.g., ".github/workflows/dispatch.yml").
 func FullsendRepoFile(path string) ([]byte, error) {
 	return content.ReadFile("fullsend-repo/" + path)
 }
