@@ -1739,6 +1739,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 				}
 			}
 		} else {
+			printer.StepWarn(fmt.Sprintf("Could not verify which apps are installed for %s. Assuming all apps are installed.", org))
 			existingSlugs = agentSlugs
 		}
 
