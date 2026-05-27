@@ -287,6 +287,21 @@ fi
 
 echo "Creating PR..."
 
+# ---------------------------------------------------------------------------
+# Check whether the triage agent flagged this as a partial fix.
+# When the issue has a "partial-fix" label, use "Part of #N" instead of
+# "Closes #N" so the issue stays open for remaining work.
+# ---------------------------------------------------------------------------
+ISSUE_LABELS="$(gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}" \
+  --jq '[.labels[].name] | join(",")' 2>/dev/null || true)"
+
+if echo "${ISSUE_LABELS}" | grep -q "partial-fix"; then
+  ISSUE_REF="Part of #${ISSUE_NUMBER}"
+  echo "Issue has partial-fix label — using '${ISSUE_REF}' (issue will stay open)"
+else
+  ISSUE_REF="Closes #${ISSUE_NUMBER}"
+fi
+
 COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
 COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed '/^Closes #/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
 
@@ -327,7 +342,7 @@ PR_BODY="${DESCRIPTION}
 
 ---
 
-Closes #${ISSUE_NUMBER}
+${ISSUE_REF}
 
 ### Post-script verification
 

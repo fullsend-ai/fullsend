@@ -76,7 +76,7 @@ remove_label() {
 # add or remove these via label_actions. This list covers labels that the
 # pipeline itself applies (pre-triage.sh resets the first four; the action
 # handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged")
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "partial-fix")
 
 is_control_label() {
   local label="$1"
@@ -173,6 +173,16 @@ case "${ACTION}" in
         add_label "triaged"
         ;;
     esac
+
+    # When the triage agent indicates the recommended fix is partial, add a
+    # label so post-code.sh can use "Part of #N" instead of "Closes #N".
+    PARTIAL_FIX=$(jq -r '.triage_summary.partial_fix // false' "${RESULT_FILE}")
+    if [[ "${PARTIAL_FIX}" == "true" ]]; then
+      echo "Applying partial-fix label (triage indicated fix does not fully resolve the issue)..."
+      add_label "partial-fix"
+    else
+      remove_label "partial-fix"
+    fi
     ;;
 
   *)
