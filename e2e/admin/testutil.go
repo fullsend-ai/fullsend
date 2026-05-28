@@ -273,7 +273,7 @@ func runCLI(t *testing.T, binary, token string, args ...string) string {
 
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = strings.TrimSpace(string(modRoot))
-	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token)
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
 	out, runErr := cmd.CombinedOutput()
 	output := string(out)
 	t.Logf("[cli] output:\n%s", output)
