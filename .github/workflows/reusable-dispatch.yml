@@ -164,7 +164,9 @@ jobs:
               ;;
 
             issues)
-              if [[ "${EVENT_ACTION}" == "labeled" ]]; then
+              if [[ "${EVENT_ACTION}" == "opened" || "${EVENT_ACTION}" == "edited" ]]; then
+                STAGE="triage"
+              elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
                 if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
