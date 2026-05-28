@@ -15,7 +15,7 @@ Date: 2026-04-28
 
 ## Status
 
-Accepted
+Accepted (Option C superseded by [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) for the event-driven dispatch path)
 
 ## Context
 

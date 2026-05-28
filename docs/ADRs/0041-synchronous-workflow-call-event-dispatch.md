@@ -68,6 +68,8 @@ Cross-repo shim → `.fullsend` is already `workflow_call` ([ADR 0029](0029-cent
 [ADR 0034](0034-centralized-shim-routing-via-dispatch.md)). This ADR targets
 only **in-config-repo** dispatch from `dispatch.yml` to agent stages.
 
+This decision assumes the token mint model from [ADR 0029](0029-central-token-mint-secretless-fullsend.md): stage workflows obtain credentials via OIDC exchange rather than relying on config-repo secrets being visible to the enrolled-repo caller context.
+
 [ADR 0026](0026-stage-based-dispatch-for-agent-workflow-decoupling.md) Option C
 introduced runtime `# fullsend-stage:` scanning so org-specific agent workflows
 could be wired without editing `dispatch.yml`. Static `workflow_call` jobs in
