@@ -1,6 +1,6 @@
 ---
 title: "15. Normative implementation contracts live under docs/normative/"
-status: Proposed
+status: Accepted
 relates_to:
   - architectural-invariants
   - governance
@@ -17,7 +17,7 @@ Date: 2026-04-06
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
