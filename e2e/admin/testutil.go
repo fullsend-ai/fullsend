@@ -5,6 +5,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -74,6 +75,16 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
+			// Only attempt stale lock recovery for 422 errors (repo
+			// likely exists). Rate limits, auth failures, and network
+			// errors would just waste more API quota.
+			var apiErr *gh.APIError
+			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				logf("[org-pool] 422 on %s — will check for stale lock", org)
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, nil
+				}
+			}
 			continue
 		}
 		if acquired {
@@ -108,6 +119,13 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
+				var apiErr *gh.APIError
+				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+					logf("[org-pool] 422 on %s — will check for stale lock", org)
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, nil
+					}
+				}
 				continue
 			}
 			if acquired {

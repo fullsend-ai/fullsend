@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -552,6 +553,57 @@ func TestAPIError_ErrorString(t *testing.T) {
 	}
 	assert.Contains(t, err.Error(), "404")
 	assert.Contains(t, err.Error(), "Not Found")
+}
+
+func TestAPIError_ErrorStringWithDetails(t *testing.T) {
+	err := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Resource: "Repository", Field: "name", Code: "custom", Message: "name already exists on this account"},
+		},
+	}
+	assert.Contains(t, err.Error(), "422")
+	assert.Contains(t, err.Error(), "Validation Failed")
+	assert.Contains(t, err.Error(), "name already exists on this account")
+}
+
+func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "You have exceeded a secondary rate limit",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":           "test-repo",
+			"full_name":      "org/test-repo",
+			"default_branch": "main",
+			"private":        false,
+		})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:   "test-token",
+		baseURL: srv.URL,
+		http:    srv.Client(),
+	}
+
+	// Override the backoff for testing — we don't want to wait 60s.
+	origBackoff := secondaryRateLimitBackoff
+	defer func() { secondaryRateLimitBackoff = origBackoff }()
+	secondaryRateLimitBackoff = 10 * time.Millisecond
+
+	repo, err := client.CreateRepo(context.Background(), "org", "test-repo", "desc", false)
+	require.NoError(t, err)
+	assert.Equal(t, "test-repo", repo.Name)
+	assert.Equal(t, 3, attempts, "should have retried twice before succeeding")
 }
 
 func TestCreateFileOnBranch(t *testing.T) {
