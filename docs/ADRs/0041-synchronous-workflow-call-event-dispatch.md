@@ -108,14 +108,34 @@ convention. Do not add compile-time sync tooling as a substitute.
 `workflow_dispatch` remains allowed for **non-event** entry points only (e.g.
 `repo-maintenance.yml`, manual prioritize, admin/CLI triggers).
 
-Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to stay within four
-`workflow_call` nesting levels.
+Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to conserve
+`workflow_call` nesting levels (limit: 10 levels, 50 calls per run as of
+November 2025).
 
 After agent architecture is revised to support [ADR 0038](0038-universal-harness-access.md),
 re-evaluate whether a discovery mechanism is needed.
 
 ## Consequences
 
+- **Nesting arithmetic changes from ADR 0031.** Under ADR 0031's async model,
+  `workflow_dispatch` from dispatch to thin caller starts a new workflow run and
+  resets the `workflow_call` nesting counter (thin caller → reusable = 1 level).
+  Under this ADR's synchronous model, nesting accumulates across the full chain:
+
+  ```
+  Level 1: shim ──workflow_call──> .fullsend/dispatch.yml
+  Level 2: dispatch.yml ──workflow_call──> .fullsend/code.yml (thin caller)
+  Level 3: code.yml ──workflow_call──> reusable-code.yml
+               ──uses──> fullsend-ai/fullsend@v0 (composite action, not a level)
+  ```
+
+  This consumes 3 of the 10 available nesting levels, leaving 7 for future
+  composition within reusable workflows (e.g., sub-stage delegation). Thin
+  callers remain valuable despite consuming a nesting level: they provide
+  explicit `secrets:` passthrough (least-privilege over `secrets: inherit`)
+  and `vars.*` → `inputs.*` mapping that makes the reusable workflow's
+  parameter contract visible and auditable
+  ([ADR 0031](0031-reusable-workflows-for-action-installed-distribution.md)).
 - PR/issue observers can use one Actions run to see agent completion without
   hunting orphan `.fullsend` runs; mitigates [#504](https://github.com/fullsend-ai/fullsend/issues/504),
   [#896](https://github.com/fullsend-ai/fullsend/issues/896), [#1048](https://github.com/fullsend-ai/fullsend/issues/1048),

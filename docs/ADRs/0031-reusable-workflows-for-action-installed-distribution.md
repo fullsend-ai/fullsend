@@ -87,7 +87,8 @@ in `.fullsend/scripts/` remain accessible.
 retain `# fullsend-stage:` markers so dispatch can route events to the correct
 agent workflow.
 
-The dispatch chain uses 1 level of `workflow_call` nesting (limit is 4):
+The dispatch chain uses 1 level of `workflow_call` nesting (limit is 10 as of
+November 2025; was 4 previously):
 
 ```
 shim ──workflow_call──> .fullsend/dispatch.yml
