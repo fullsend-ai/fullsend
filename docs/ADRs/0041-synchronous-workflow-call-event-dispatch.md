@@ -31,6 +31,10 @@ dispatched run to the caller in the UI — operators see unrelated top-level run
 in `.fullsend` with no parent workflow, which makes it hard to answer “is the
 agent still running?” from a PR or issue and hard to debug failures.
 
+While the `workflow_dispatch` API can return run details (run ID/URLs), it does
+not provide a native caller→callee run relationship in the Actions UI, and
+closing the loop still requires extra plumbing (posting links, polling, etc.).
+
 Operational pain is documented across multiple issues:
 
 - [#504](https://github.com/fullsend-ai/fullsend/issues/504) — enrolled-repo shim
@@ -108,8 +112,8 @@ convention. Do not add compile-time sync tooling as a substitute.
 `workflow_dispatch` remains allowed for **non-event** entry points only (e.g.
 `repo-maintenance.yml`, manual prioritize, admin/CLI triggers).
 
-Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to stay within four
-`workflow_call` nesting levels.
+Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to reduce
+`workflow_call` nesting depth (GitHub currently allows up to ten levels).
 
 After agent architecture is revised to support [ADR 0038](0038-universal-harness-access.md),
 re-evaluate whether a discovery mechanism is needed.
