@@ -1,6 +1,6 @@
 ---
 title: "28. GitLab Support Architecture"
-status: Proposed
+status: Deprecated
 relates_to:
   - agent-infrastructure
   - agent-architecture
@@ -17,7 +17,7 @@ Date: 2026-04-29
 
 ## Status
 
-Proposed
+Deprecated
 
 ## Context
 
