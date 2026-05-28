@@ -444,19 +444,46 @@ func (c *LiveGCFClient) AccessSecretVersion(ctx context.Context, projectID, secr
 }
 
 // DisableSecretVersion disables the latest version of a Secret Manager secret.
+// The disable API rejects the "latest" alias, so we first resolve it to a
+// numeric version via GET, then disable that version.
 func (c *LiveGCFClient) DisableSecretVersion(ctx context.Context, projectID, secretID string) error {
-	reqURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s/versions/latest:disable",
+	// Resolve "latest" to a numeric version name.
+	getURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s/versions/latest",
 		url.PathEscape(projectID), url.PathEscape(secretID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, "{}")
+	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, getURL, "")
+	if err != nil {
+		return fmt.Errorf("resolving latest secret version: %w", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode == http.StatusNotFound {
+		return nil // No versions to disable.
+	}
+	if getResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(getResp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d resolving latest secret version: %s", getResp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	var version struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(getResp.Body, 1<<20)).Decode(&version); err != nil {
+		return fmt.Errorf("decoding secret version metadata: %w", err)
+	}
+	if version.Name == "" {
+		return fmt.Errorf("secret version metadata has empty name")
+	}
+
+	// Disable the resolved version.
+	disableURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:disable", version.Name)
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodPost, disableURL, "{}")
 	if err != nil {
 		return fmt.Errorf("disabling secret version: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil // No versions to disable.
-	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return fmt.Errorf("unexpected status %d disabling secret version: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))

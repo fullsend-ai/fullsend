@@ -1280,15 +1280,27 @@ func TestLiveGCFClient_GetProjectNumber(t *testing.T) {
 
 func TestLiveGCFClient_DisableSecretVersion(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
+		callCount := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount == 1 {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Contains(t, r.URL.Path, "secrets/my-secret/versions/latest")
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{
+					"name": "projects/123/secrets/my-secret/versions/5",
+				})
+				return
+			}
 			assert.Equal(t, http.MethodPost, r.Method)
-			assert.Contains(t, r.URL.Path, "secrets/my-secret/versions/latest:disable")
+			assert.Contains(t, r.URL.Path, "projects/123/secrets/my-secret/versions/5:disable")
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer srv.Close()
 
 		err := newTestClient(srv).DisableSecretVersion(context.Background(), "proj", "my-secret")
 		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
 	})
 
 	t.Run("not found is idempotent", func(t *testing.T) {
@@ -1301,7 +1313,7 @@ func TestLiveGCFClient_DisableSecretVersion(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("error", func(t *testing.T) {
+	t.Run("resolve_error", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
@@ -1310,7 +1322,28 @@ func TestLiveGCFClient_DisableSecretVersion(t *testing.T) {
 
 		err := newTestClient(srv).DisableSecretVersion(context.Background(), "proj", "secret")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "unexpected status 403")
+		assert.Contains(t, err.Error(), "unexpected status 403 resolving latest")
+	})
+
+	t.Run("disable_error", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{
+					"name": "projects/123/secrets/s/versions/2",
+				})
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DisableSecretVersion(context.Background(), "proj", "secret")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403 disabling")
 	})
 }
 
