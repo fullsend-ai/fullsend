@@ -95,6 +95,51 @@ Implement [#896](https://github.com/fullsend-ai/fullsend/issues/896), [#1048](ht
 [#272](https://github.com/fullsend-ai/fullsend/issues/272) without changing dispatch
 mechanism. Reduces pain but leaves orphan runs and early-success dispatch jobs.
 
+#### Post-decision note: `return_run_details` (February 2026)
+
+GitHub added a `return_run_details` option for `workflow_dispatch` events
+(February 2026 changelog). When enabled, `gh workflow run` returns the
+dispatched run's ID and URL instead of exiting immediately after the API
+call is accepted. This strengthens Option C in two ways:
+
+- **Direct run link.** The dispatcher can capture the run URL and post it
+  as a PR/issue comment (addressing
+  [#1048](https://github.com/fullsend-ai/fullsend/issues/1048) and the
+  dropped `post-run-link` from
+  [#863](https://github.com/fullsend-ai/fullsend/issues/863) /
+  [#529](https://github.com/fullsend-ai/fullsend/issues/529)).
+- **Optional polling.** With the run ID, the dispatcher can poll for
+  completion and report back, partially closing the "dispatch succeeded ≠
+  agent done" gap from
+  [#504](https://github.com/fullsend-ai/fullsend/issues/504).
+
+However, `return_run_details` remains **insufficient** for the goals that
+drove the Option B decision:
+
+- **No UI correlation.** The dispatched run still appears as an unrelated
+  top-level run in `.fullsend`. GitHub does not create a parent/child run
+  graph — operators must follow a comment link rather than seeing the
+  agent run inline in the caller's workflow visualization.
+- **No lifecycle coupling.** The caller and dispatched run have
+  independent lifecycles. Cancelling the dispatch job does not cancel the
+  agent run; a failed agent run does not fail the dispatch job unless
+  custom polling logic is added.
+- **Polling overhead.** Achieving lifecycle coupling via polling requires
+  the dispatch job to stay alive for the duration of the agent run,
+  consuming a GitHub Actions runner slot. This negates the async
+  concurrency benefit that motivated `workflow_dispatch` in the first
+  place.
+- **No single-run observability.** Even with run links, operators still
+  need to navigate between two separate runs to understand the full
+  picture — the caller's logs and the agent's logs remain disjoint.
+
+**Operational guidance:** For `workflow_dispatch` entry points that remain
+after this ADR (e.g., `repo-maintenance.yml`, manual triggers), posting
+the dispatched run URL via `return_run_details` is a useful UX improvement
+and should be adopted where practical. This does not change the decision
+for event-driven agent dispatch, where `workflow_call` provides the
+required properties natively.
+
 ## Decision
 
 For **event-driven** agent dispatch (webhook → shim → routing → agent), eliminate
