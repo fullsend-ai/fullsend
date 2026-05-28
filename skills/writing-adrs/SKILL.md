@@ -36,6 +36,27 @@ Consequences sections.
 If a decision turned out to be wrong, that is exactly what supersession is for.
 The original ADR remains as a historical record of what was decided and why.
 
+### Status and pull request review
+
+In this repo, **new ADRs are approved when a human merges the PR** — they do not
+appear on `main` until then. Merge is the approval event; an open PR is the review
+gate, not a reason to leave the decision itself unsettled in the document.
+
+When authoring a new ADR:
+
+- Use **Accepted** when the decision is made and the ADR is ready for review.
+  You are recording the decision as it should read once merged, not claiming it
+  is already binding on `main`.
+- Use **Proposed** only when the ADR is intentionally incomplete or the decision
+  is still being debated in the PR.
+- Use **Undecided** when options are documented but no choice has been made.
+
+Do **not** default to Proposed just because the file is new on a branch. Proposed
+means the decision is unsettled, not that the PR awaits merge.
+
+After merge to `main`, Accepted ADRs follow the immutability rules above. Agents
+and humans should also follow the summary in [AGENTS.md](../../AGENTS.md#architecture-decision-records-adrs).
+
 ### docs/architecture.md is always current
 
 Unlike ADRs, `docs/architecture.md` is a **living document**. It must always
@@ -124,11 +145,12 @@ Follow these steps in order:
    the `title` field and the `# heading` must have **no leading zeros**
    (e.g., `"1. Use ADRs"`, not `"0001. Use ADRs"`). The four-digit
    zero-padded format is only for filenames.
-4. **Choose the right status.** Use **Proposed** for a draft awaiting
-   discussion. Use **Undecided** when the problem is identified but no choice
-   has been made. Use **Accepted** when the decision is made. Include an
-   Options section only when there are genuine alternatives worth documenting;
-   if the decision is obvious, just decide it.
+4. **Choose the right status.** For agent-authored ADRs going through PR review,
+   default to **Accepted** when the decision is made (see "Status and pull
+   request review" above). Use **Undecided** when the problem is identified but
+   no choice has been made. Use **Proposed** only when the decision itself is
+   still open for debate. Include an Options section only when there are genuine
+   alternatives worth documenting; if the decision is obvious, just decide it.
 5. **Write the ADR.** Follow the conciseness rules above.
 6. **Run linters.** Execute `make lint` and fix any errors before committing.
 7. **If status is Accepted, update living documents** (see below).

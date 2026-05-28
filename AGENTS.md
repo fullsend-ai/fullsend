@@ -25,3 +25,13 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 **When writing code:** If you need a forge operation that `forge.Client` does not yet support, add a new method to the interface and implement it in the GitHub client — do not work around the interface.
 
 **When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
+
+## Architecture Decision Records (ADRs)
+
+These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full authoring guidance is in [`skills/writing-adrs/SKILL.md`](skills/writing-adrs/SKILL.md); invoke that skill when writing a new ADR.
+
+**Immutability:** Once an ADR on `main` has status **Accepted**, its Context, Decision, and Consequences sections are frozen. Do not add post-decision notes, rewrite rationale, or edit consequences in place. When circumstances change, write a **new** ADR that supersedes the old one. The only acceptable edits to an Accepted ADR on `main` are status changes (e.g., to Deprecated or Superseded) and links to the superseding ADR. Typos and broken links are narrow exceptions — call them out in the PR description.
+
+**New ADRs in pull requests:** Approval happens at **merge**, not when the branch is created. If the decision is made, set status to **Accepted** in the ADR you are proposing (not **Proposed** merely because the PR is open). Use **Proposed** or **Undecided** only when the decision itself is still unsettled. When status is Accepted, update `docs/architecture.md` and related problem docs in the same PR per the writing-adrs skill.
+
+**When reviewing PRs:** Flag in-place edits to Context, Decision, or Consequences on Accepted ADRs already on `main` as a policy violation. Allow status-only updates and supersession links. For brand-new ADR files on the PR branch, evaluate whether the recorded decision matches the diff — do not treat **Accepted** on a new file as a mistake if the ADR is ready for human review at merge.
