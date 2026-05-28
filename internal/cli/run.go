@@ -957,7 +957,7 @@ func bootstrapEnv(sandboxName, repoDir string, h *harness.Harness) error {
 	}
 	tmpFile.Close()
 
-	if err := sandbox.Upload(sandboxName, tmpFile.Name(), remoteEnvFile); err != nil {
+	if err := sandbox.UploadFile(sandboxName, tmpFile.Name(), remoteEnvFile); err != nil {
 		return fmt.Errorf("copying .env file to sandbox: %w", err)
 	}
 
@@ -998,13 +998,13 @@ func bootstrapEnv(sandboxName, repoDir string, h *harness.Harness) error {
 			}
 			tmp.Close()
 
-			if err := sandbox.Upload(sandboxName, tmp.Name(), hf.Dest); err != nil {
+			if err := sandbox.UploadFile(sandboxName, tmp.Name(), hf.Dest); err != nil {
 				os.Remove(tmp.Name())
 				return fmt.Errorf("copying expanded file %s to %s: %w", hf.Src, hf.Dest, err)
 			}
 			os.Remove(tmp.Name())
 		} else {
-			if err := sandbox.Upload(sandboxName, hostPath, hf.Dest); err != nil {
+			if err := sandbox.UploadFile(sandboxName, hostPath, hf.Dest); err != nil {
 				return fmt.Errorf("copying host file %s to %s: %w", hf.Src, hf.Dest, err)
 			}
 		}

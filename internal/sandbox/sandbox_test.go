@@ -378,6 +378,17 @@ func TestEffectiveReadyTimeout_EnvVarCappedAtMax(t *testing.T) {
 	assert.Equal(t, maxReadyTimeout, got)
 }
 
+func TestUploadFile_OpenshellNotInPath(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "test.txt")
+	require.NoError(t, os.WriteFile(f, []byte("hello"), 0o644))
+
+	t.Setenv("PATH", "")
+
+	err := UploadFile("test-sandbox", f, "/tmp/workspace/test.txt")
+	assert.Error(t, err)
+}
+
 func TestUploadDir_OpenshellNotInPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "")

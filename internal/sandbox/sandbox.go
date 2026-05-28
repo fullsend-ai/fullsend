@@ -377,6 +377,35 @@ func Upload(sandboxName, localPath, remotePath string) error {
 	return nil
 }
 
+// UploadFile copies a single local file into a sandbox at a specific remote path.
+// openshell sandbox upload treats the remote path as a directory (similar to
+// docker cp), placing the file inside it with the source basename. This function
+// uploads to the parent directory and renames inside the sandbox if the resulting
+// filename differs from the desired remote name, ensuring file-to-file semantics.
+// This mirrors the DownloadFile approach.
+func UploadFile(sandboxName, localPath, remotePath string) error {
+	remoteDir := filepath.Dir(remotePath)
+
+	if err := Upload(sandboxName, localPath, remoteDir); err != nil {
+		return err
+	}
+
+	// openshell places the file as <remoteDir>/<basename(localPath)>.
+	// If that differs from the desired remotePath, rename it in-sandbox.
+	uploadedPath := filepath.Join(remoteDir, filepath.Base(localPath))
+	if uploadedPath != remotePath {
+		mvCmd := fmt.Sprintf("mv %s %s", uploadedPath, remotePath)
+		_, stderr, exitCode, err := Exec(sandboxName, mvCmd, 10*time.Second)
+		if err != nil {
+			return fmt.Errorf("renaming uploaded file in sandbox %q: %w", sandboxName, err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("renaming uploaded file in sandbox %q: exit %d: %s", sandboxName, exitCode, stderr)
+		}
+	}
+	return nil
+}
+
 // UploadDir uploads a local directory into a sandbox, preserving symlinks.
 // openshell sandbox upload dereferences symlinks; this builds a local tarball
 // with --no-dereference, uploads it, and extracts it in the sandbox.
