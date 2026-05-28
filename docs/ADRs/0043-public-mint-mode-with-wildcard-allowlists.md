@@ -1,6 +1,6 @@
 ---
 title: "43. Public mint mode with wildcard allowlists"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-infrastructure
   - security-threat-model
@@ -18,7 +18,7 @@ Date: 2026-05-27
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
