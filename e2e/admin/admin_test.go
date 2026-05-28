@@ -229,21 +229,37 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
-	prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
-	require.NoError(t, err, "listing PRs for %s", testRepo)
-
+	// Poll for the enrollment PR. The repo-maintenance workflow creates it
+	// asynchronously after install, and GitHub's API may not surface it
+	// immediately (eventual consistency). Use the exact title to avoid
+	// matching disconnect/update PRs.
+	const enrollPRTitle = "chore: connect to fullsend agent pipeline"
 	var enrollmentPR *forge.ChangeProposal
-	for _, pr := range prs {
-		if strings.Contains(pr.Title, "fullsend") {
-			cp := pr
-			enrollmentPR = &cp
+	for attempt := 0; attempt < 24; attempt++ {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
+		if err != nil {
+			t.Logf("Attempt %d: error listing PRs: %v", attempt+1, err)
+			continue
+		}
+		for _, pr := range prs {
+			if pr.Title == enrollPRTitle {
+				cp := pr
+				enrollmentPR = &cp
+				break
+			}
+		}
+		if enrollmentPR != nil {
 			break
 		}
+		t.Logf("Attempt %d: enrollment PR not yet created", attempt+1)
 	}
-	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s (expected title: %s)", testRepo, enrollPRTitle)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
-	err = env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
+	err := env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
 	require.NoError(t, err, "merging enrollment PR")
 
 	time.Sleep(5 * time.Second)
