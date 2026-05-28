@@ -64,6 +64,20 @@ Cross-repo shim → `.fullsend` is already `workflow_call` ([ADR 0029](0029-cent
 [ADR 0034](0034-centralized-shim-routing-via-dispatch.md)). This ADR targets
 only **in-config-repo** dispatch from `dispatch.yml` to agent stages.
 
+**Dependency on ADR 0029 (token mint):** Moving in-config-repo dispatch to
+`workflow_call` means stage workflows run as reusable-workflow callees. Under
+`workflow_call`, the callee does **not** inherit the caller's repository
+secrets — secrets must be explicitly passed via `secrets: inherit` or
+individual `secrets:` mappings. Because
+[ADR 0029](0029-central-token-mint-secretless-fullsend.md) removes App PEMs
+and provider API keys from `.fullsend` repo secrets in favor of mint-issued
+short-lived tokens (obtained via OIDC at runtime), stage workflows no longer
+need `secrets: inherit` for forge credentials. This ADR therefore **depends
+on ADR 0029's token mint model being in place** before `workflow_call`
+dispatch can fully replace `workflow_dispatch` for the event path — without
+the mint, stage workflows called via `workflow_call` would lack access to
+the App PEMs they need.
+
 [ADR 0026](0026-stage-based-dispatch-for-agent-workflow-decoupling.md) Option C
 introduced runtime `# fullsend-stage:` scanning so org-specific agent workflows
 could be wired without editing `dispatch.yml`. Static `workflow_call` jobs in
@@ -71,7 +85,12 @@ could be wired without editing `dispatch.yml`. Static `workflow_call` jobs in
 discovery rather than replacing it with compile-time tooling. After agent
 architecture is revised to support [ADR 0038](0038-universal-harness-access.md),
 we may revisit this decision and re-evaluate whether a discovery mechanism is
-needed.
+needed. **Re-evaluation trigger:** revisit when either (a) the number of
+distinct agent workflows per stage exceeds **8** in any production `.fullsend`
+deployment, or (b) **6 months** have passed since ADR 0038 is accepted —
+whichever comes first. At that point, evaluate whether a compile-time or
+URL-based discovery mechanism (aligned with ADR 0038's universal access model)
+would reduce maintenance burden enough to justify reintroducing indirection.
 
 ## Options
 
@@ -112,7 +131,9 @@ Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to stay within four
 `workflow_call` nesting levels.
 
 After agent architecture is revised to support [ADR 0038](0038-universal-harness-access.md),
-re-evaluate whether a discovery mechanism is needed.
+re-evaluate whether a discovery mechanism is needed. Use the same
+re-evaluation trigger defined in the Context section: workflow count
+threshold (>8 per stage) or time-based (6 months post-ADR 0038 acceptance).
 
 ## Consequences
 
@@ -131,4 +152,9 @@ re-evaluate whether a discovery mechanism is needed.
 - Per-org and per-repo dispatch shapes converge; enrolled-repo shims may need
   `needs:` / concurrency review ([#504](https://github.com/fullsend-ai/fullsend/issues/504)).
 - Discovery may be revisited after [ADR 0038](0038-universal-harness-access.md)
-  agent architecture changes land.
+  agent architecture changes land. Concrete trigger: workflow count >8 per
+  stage or 6 months post-ADR 0038 acceptance (see Context and Decision).
+- **Depends on [ADR 0029](0029-central-token-mint-secretless-fullsend.md):**
+  `workflow_call` dispatch requires the token mint to be operational so
+  stage workflows can obtain forge credentials at runtime via OIDC instead
+  of relying on `secrets: inherit` for repo-stored App PEMs.

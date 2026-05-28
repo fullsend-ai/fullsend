@@ -17,6 +17,14 @@ Date: 2026-04-28
 
 Accepted
 
+> **Partial supersession:**
+> [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) supersedes
+> **Option C** (stage-marker scanning with `gh workflow run`) for the
+> event-driven dispatch path. The stage-based indirection concept remains;
+> only the dynamic `# fullsend-stage:` discovery mechanism and the
+> `workflow_dispatch` fan-out are replaced by static `workflow_call` jobs
+> in `dispatch.yml`.
+
 ## Context
 
 [ADR 0008](0008-workflow-dispatch-for-cross-repo-dispatch.md) established that
