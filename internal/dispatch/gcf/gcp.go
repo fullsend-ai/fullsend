@@ -1092,6 +1092,9 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	if template == nil {
 		return fmt.Errorf("Cloud Run service has no template")
 	}
+	// Remove revision name so Cloud Run auto-generates one; re-sending the
+	// existing name causes a 409 "revision already exists" conflict.
+	delete(template, "revision")
 	containers, _ := template["containers"].([]interface{})
 	if len(containers) == 0 {
 		return fmt.Errorf("Cloud Run service has no containers")
@@ -1107,9 +1110,9 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 		return fmt.Errorf("marshaling Cloud Run service update: %w", err)
 	}
 
-	// PATCH the service with updateMask scoped to template.containers to avoid
-	// clobbering unrelated fields in the read-modify-write cycle.
-	patchResp, err := c.Client.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=template.containers", string(payloadBytes))
+	// PATCH the service with updateMask covering both template.revision (cleared
+	// so Cloud Run auto-generates a new name) and template.containers (env vars).
+	patchResp, err := c.Client.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=template.revision,template.containers", string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("patching Cloud Run service: %w", err)
 	}

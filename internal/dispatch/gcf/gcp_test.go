@@ -813,6 +813,7 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"template": map[string]interface{}{
+						"revision": "my-svc-00042-abc",
 						"containers": []interface{}{
 							map[string]interface{}{
 								"image": "gcr.io/proj/mint:latest",
@@ -825,11 +826,13 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 			}
 			// PATCH with updated env
 			assert.Equal(t, http.MethodPatch, r.Method)
-			assert.Contains(t, r.URL.RawQuery, "updateMask=template.containers")
+			assert.Contains(t, r.URL.RawQuery, "updateMask=template.revision,template.containers")
 
 			var body map[string]interface{}
 			json.NewDecoder(r.Body).Decode(&body)
 			tmpl := body["template"].(map[string]interface{})
+			_, hasRevision := tmpl["revision"]
+			assert.False(t, hasRevision, "revision should be stripped to avoid 409 conflict")
 			containers := tmpl["containers"].([]interface{})
 			container := containers[0].(map[string]interface{})
 			envs := container["env"].([]interface{})
