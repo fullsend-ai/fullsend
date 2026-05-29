@@ -111,6 +111,12 @@ func TestMintEnrollCmd_Flags(t *testing.T) {
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
 	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 
+	sourceOrgFlag := cmd.Flags().Lookup("source-org")
+	require.NotNil(t, sourceOrgFlag, "expected deprecated --source-org alias")
+	assert.Equal(t, "fullsend-ai", sourceOrgFlag.DefValue)
+	assert.True(t, sourceOrgFlag.Hidden, "--source-org should be hidden")
+	assert.NotEmpty(t, sourceOrgFlag.Deprecated, "--source-org should have a deprecation message")
+
 	roleAppIDsFlag := cmd.Flags().Lookup("role-app-ids")
 	require.NotNil(t, roleAppIDsFlag, "expected --role-app-ids flag")
 
@@ -355,6 +361,8 @@ func TestResolveEnrollAppIDs_RoleMissingFromAppSet(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found in app set")
 }
 
+// Covers per-repo enrollment where owner == appSet (e.g., fullsend-ai/repo --app-set=fullsend-ai).
+// The org-level path blocks this case; repo-level allows it because the org owns the apps.
 func TestResolveEnrollAppIDs_SelfEnroll(t *testing.T) {
 	result, err := resolveEnrollAppIDs(
 		"",
