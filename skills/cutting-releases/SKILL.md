@@ -10,9 +10,8 @@ allowed-tools: Read, Grep, Glob, AskUserQuestion, Bash(git tag:*), Bash(git log:
 # Cutting Releases
 
 Releases are driven by annotated git tags. When a tag matching `v*` is pushed,
-the `.github/workflows/release.yml` workflow runs GoReleaser, which builds
-binaries, generates a changelog, and creates the GitHub release. The release
-title comes from the tag annotation via `name_template` in `.goreleaser.yml`.
+`.github/workflows/release.yml` runs GoReleaser to build binaries, generate a
+changelog, and create the GitHub release.
 
 ## Process
 
@@ -65,9 +64,8 @@ Use `AskUserQuestion` to ask:
 > Any special title for this release? (e.g. "MVP Release Candidate 1")
 > Leave blank to use just the version tag.
 
-The answer becomes the tag subject line. If blank, do **not** use the version
-as the subject — leave the subject empty so that GoReleaser's `name_template`
-renders just the tag without duplication.
+The answer becomes the tag subject line. If blank, leave the subject empty
+so GoReleaser's `name_template` renders just the tag without duplication.
 
 ### 5. Gather changes since last tag
 
@@ -75,9 +73,8 @@ renders just the tag without duplication.
 git log --oneline <previous-tag>..HEAD
 ```
 
-Summarize the changes into categories (features, fixes, refactors). Exclude
-commits that start with `docs:`, `test:`, `chore:`, `ci:`, or `build:` — GoReleaser filters
-these from the changelog anyway.
+Summarize changes into categories (features, fixes, refactors). Exclude
+`docs:`, `test:`, `chore:`, `ci:`, `build:` commits — GoReleaser filters these anyway.
 
 ### 6. Create the annotated tag
 
@@ -93,8 +90,8 @@ Build the tag message:
 git tag -a v0.X.0 -m "<message>"
 ```
 
-The first line of the annotation flows into the GitHub release title via
-GoReleaser's `name_template: "{{ .Tag }}{{ if and .TagSubject (ne .TagSubject .Tag) }}: {{ .TagSubject }}{{ end }}"`.
+The first line of the annotation becomes the release title suffix via
+GoReleaser's `name_template` (see `.goreleaser.yml`).
 
 ### 7. Push the tag
 
@@ -110,43 +107,43 @@ gh run list --workflow=release.yml --limit=1
 
 ### 8. Move the `v0` tag
 
-Downstream orgs reference reusable workflows via `@v0`. After the
-version tag is pushed, move `v0` to the same commit:
+Downstream orgs reference reusable workflows via `@v0`. Use
+`AskUserQuestion` to confirm before force-pushing:
+
+> About to force-push `v0` to `<tag>`. This immediately changes what
+> all downstream `@v0` consumers resolve. Proceed?
+
+Once confirmed:
 
 ```
 git tag -f v0 <tag>
 git push origin v0 --force
 ```
 
-This updates all `@v0` workflow references immediately. The Sandbox
-Images workflow (triggered by tag push) will also run.
+The Sandbox Images workflow (triggered by tag push) will also run.
 
 ### 9. Run post-flight verification
 
 Read [post-flight.md](post-flight.md) in this skill's directory and
-follow the post-flight verification procedure. This waits for CI
-workflows, verifies release artifacts, and checks downstream `@v0`
-resolution.
+follow the post-flight verification procedure.
 
 ### 10. Install the binary locally
 
-Ask the user where to install (default: `~/.local/bin/`), then run
-the install script using its repo-root-relative path:
+Use `AskUserQuestion` to ask where to install (default: `~/.local/bin/`),
+then run the install script using its repo-root-relative path:
 
 ```bash
 bash skills/cutting-releases/scripts/install-binary.sh <tag> [install-dir]
 ```
 
-The script downloads the release archive, verifies its SHA-256 checksum
-against the release's `checksums.txt`, and installs the binary as
-`fullsend-<tag>` so multiple versions can coexist.
+The script downloads the archive, verifies its SHA-256 checksum, and
+installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 
 ## Notes
 
 - **Pre-releases:** Tags with `-rc.N`, `-alpha.N`, or `-beta.N` suffixes are
   automatically marked as pre-releases by GoReleaser.
 - **Never delete a published tag.** If a release is bad, cut a new patch or RC.
-- **The changelog** is auto-generated from commit messages. Conventional commit
-  prefixes (`feat:`, `fix:`, etc.) produce clean changelogs.
+- **The changelog** is auto-generated from conventional commit prefixes.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. Always move it as part of the release process (step 8).

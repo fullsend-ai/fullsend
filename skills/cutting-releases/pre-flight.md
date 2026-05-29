@@ -34,6 +34,15 @@ For each changed workflow, read the full diff and check:
 - **Permissions:** Changes to `permissions:` blocks may fail if the
   calling workflow's token doesn't grant the new scopes.
 
+As a mechanical backstop, grep for removed or renamed identifiers:
+
+```
+git diff v0..origin/main -- .github/workflows/reusable-*.yml | grep -E '^\-\s+(\w+:)' | grep -v '^\-\s*#'
+```
+
+Cross-reference any removed lines against caller workflows to confirm
+they are unused before classifying as safe.
+
 Classify each change as:
 - **Additive** (new optional inputs, new env vars) — safe.
 - **Default change** (different default values) — note for migration.
