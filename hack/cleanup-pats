@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# cleanup-pats - Delete all expired classic PATs from the e2e test account
+#
+# Uses Playwright browser automation to navigate the GitHub tokens page
+# and delete expired tokens. Reports how many unexpired tokens remain.
+#
+# Requires: E2E_GITHUB_SESSION_FILE (Playwright storageState JSON)
+#
+# To generate a session file first:
+#   make e2e-export-session
+#
+# Usage: cleanup-pats
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ -z "${E2E_GITHUB_SESSION_FILE:-}" ]]; then
+  echo "E2E_GITHUB_SESSION_FILE is not set."
+  echo "Generate one with: make e2e-export-session"
+  exit 1
+fi
+
+exec go run "${REPO_ROOT}/hack/cleanup-pats.go"
