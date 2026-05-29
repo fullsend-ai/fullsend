@@ -85,6 +85,11 @@ The fullsend-ai org maintains public GitHub Apps shared across orgs.
 PEM keys are tied to the app, not the org. Enrolling a new org copies PEMs
 from the app set (e.g., `fullsend-ai`).
 
+**PEM bootstrapping:** On a fresh mint with no existing PEM secrets, use
+`fullsend mint deploy --pem-dir=/path/to/pems` to bootstrap the app set's
+PEMs during deployment. App IDs are auto-discovered from the GitHub API.
+After this, `mint enroll <org>` copies from the bootstrapped app set.
+
 Apps must be installed on the target org before the mint can produce tokens.
 An org admin installs via `https://github.com/apps/{slug}/installations/new`
 or by running `fullsend admin install`.

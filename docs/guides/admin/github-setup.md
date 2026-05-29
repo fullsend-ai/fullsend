@@ -57,6 +57,28 @@ When using the default app set, an **org owner** installs each app from these UR
 
 > **Tip:** To verify apps are installed, run `gh api /orgs/{org}/installations --jq '.installations[].app_slug'`.
 
+### Bootstrapping PEMs during mint deploy
+
+When deploying a fresh mint, you can bootstrap the app set's PEM secrets during deployment by providing PEM files on disk. This allows `mint enroll` to work immediately without needing `admin install` first.
+
+```bash
+fullsend mint deploy --project=<PROJECT> --pem-dir=/path/to/pems
+```
+
+The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g., `fullsend.pem`, `triage.pem`, `coder.pem`, `review.pem`, `retro.pem`, `prioritize.pem`). The CLI auto-discovers each app's numeric ID from the GitHub API by looking up the public app slug (`fullsend-ai-{role}`).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pem-dir` | — | Directory containing `{role}.pem` files |
+
+After deploying with PEMs, enrollment works directly:
+
+```bash
+fullsend mint enroll acme-corp --project=<PROJECT>
+```
+
+> **Note:** PEM bootstrapping requires the GitHub Apps to already exist as public apps. For the default `fullsend-ai` app set, these are the apps maintained by the fullsend-ai organization. If you are using a custom app set with private apps, use `admin install` instead.
+
 ## Per-org setup
 
 Per-org mode creates a `.fullsend` config repository, deploys reusable workflows, configures secrets and variables, and enrolls repositories:

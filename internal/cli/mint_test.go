@@ -2,6 +2,12 @@ package cli
 
 import (
 	"bufio"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -93,6 +99,146 @@ func TestMintDeployCmd_NoArgs(t *testing.T) {
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "extra"})
 	err := cmd.Execute()
 	require.Error(t, err)
+}
+
+func TestMintDeployCmd_PemDirFlag(t *testing.T) {
+	cmd := newMintDeployCmd()
+
+	pemDirFlag := cmd.Flags().Lookup("pem-dir")
+	require.NotNil(t, pemDirFlag, "expected --pem-dir flag")
+	assert.Equal(t, "", pemDirFlag.DefValue)
+}
+
+func TestMintDeployCmd_DryRunWithPemDir(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--pem-dir=/tmp/pems"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+// --- lookupAppID tests ---
+
+func TestLookupAppID_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/apps/fullsend-ai-coder", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 12345, "slug": "fullsend-ai-coder", "client_id": "Iv1.abc123"}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "fullsend-ai-coder")
+	require.NoError(t, err)
+	assert.Equal(t, 12345, appID)
+}
+
+func TestLookupAppID_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	_, err := lookupAppID(context.Background(), "nonexistent-app")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestLookupAppID_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	_, err := lookupAppID(context.Background(), "some-app")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+}
+
+// --- loadAppSetPEMs tests ---
+
+func TestLoadAppSetPEMs_Success(t *testing.T) {
+	roles := defaultMintRoles()
+
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		err := os.WriteFile(filepath.Join(pemDir, role+".pem"), []byte("-----BEGIN RSA PRIVATE KEY-----\nfake-"+role+"\n-----END RSA PRIVATE KEY-----\n"), 0o600)
+		require.NoError(t, err)
+	}
+
+	appIDCounter := 100
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		appIDCounter++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	agentPEMs, agentAppIDs, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	require.NoError(t, err)
+	assert.Len(t, agentPEMs, len(roles))
+	assert.Len(t, agentAppIDs, len(roles))
+
+	for _, role := range roles {
+		assert.Contains(t, agentPEMs, role, "expected PEM for role %s", role)
+		assert.NotEmpty(t, agentPEMs[role])
+		assert.Contains(t, agentAppIDs, role, "expected app ID for role %s", role)
+		assert.NotEmpty(t, agentAppIDs[role])
+	}
+}
+
+func TestLoadAppSetPEMs_MissingPEM(t *testing.T) {
+	pemDir := t.TempDir()
+	// Only write one PEM — the rest will be missing.
+	err := os.WriteFile(filepath.Join(pemDir, "fullsend.pem"), []byte("fake"), 0o600)
+	require.NoError(t, err)
+
+	_, _, err = loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading PEM for role")
+}
+
+func TestLoadAppSetPEMs_InvalidAppSet(t *testing.T) {
+	_, _, err := loadAppSetPEMs(context.Background(), t.TempDir(), "INVALID CHARS")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid app set")
+}
+
+func TestLoadAppSetPEMs_AppNotFound(t *testing.T) {
+	roles := defaultMintRoles()
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		err := os.WriteFile(filepath.Join(pemDir, role+".pem"), []byte("fake"), 0o600)
+		require.NoError(t, err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	_, _, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "looking up app ID")
+	assert.Contains(t, err.Error(), "not found")
 }
 
 // --- enroll command tests ---

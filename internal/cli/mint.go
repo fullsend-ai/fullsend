@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +43,76 @@ func resolveRole(role string) string {
 	return role
 }
 
+// githubAPIBaseURL is the base URL for the GitHub API.
+// Overridden in tests to use httptest servers.
+var githubAPIBaseURL = "https://api.github.com"
+
+// lookupAppID fetches the numeric app ID for a public GitHub App by slug.
+// It makes an unauthenticated GET request to the GitHub API.
+func lookupAppID(ctx context.Context, slug string) (int, error) {
+	url := githubAPIBaseURL + "/apps/" + slug
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("creating request for app %s: %w", slug, err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("looking up app %s: %w", slug, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, fmt.Errorf("GitHub App %q not found — ensure the app exists and is publicly visible", slug)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("GitHub API returned %d for app %s", resp.StatusCode, slug)
+	}
+
+	var app struct {
+		ID int `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&app); err != nil {
+		return 0, fmt.Errorf("decoding app %s response: %w", slug, err)
+	}
+	if app.ID == 0 {
+		return 0, fmt.Errorf("GitHub App %s has no numeric ID", slug)
+	}
+	return app.ID, nil
+}
+
+// loadAppSetPEMs reads PEM files from pemDir and discovers app IDs from the
+// GitHub API, returning maps ready for gcf.Config.
+func loadAppSetPEMs(ctx context.Context, pemDir, appSet string) (map[string][]byte, map[string]string, error) {
+	if err := appsetup.ValidateAppSet(appSet); err != nil {
+		return nil, nil, fmt.Errorf("invalid app set: %w", err)
+	}
+
+	roles := defaultMintRoles()
+	agentPEMs := make(map[string][]byte, len(roles))
+	agentAppIDs := make(map[string]string, len(roles))
+
+	for _, role := range roles {
+		pemPath := filepath.Join(pemDir, role+".pem")
+		pemData, err := os.ReadFile(pemPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading PEM for role %q: %w", role, err)
+		}
+
+		slug := appsetup.AppSlug(appSet, role)
+		appID, err := lookupAppID(ctx, slug)
+		if err != nil {
+			return nil, nil, fmt.Errorf("looking up app ID for %s: %w", slug, err)
+		}
+
+		agentPEMs[role] = pemData
+		agentAppIDs[role] = strconv.Itoa(appID)
+	}
+
+	return agentPEMs, agentAppIDs, nil
+}
+
 func newMintCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mint",
@@ -63,6 +135,7 @@ func newMintDeployCmd() *cobra.Command {
 	var sourceDir string
 	var skipDeploy bool
 	var dryRun bool
+	var pemDir string
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -102,6 +175,9 @@ func newMintDeployCmd() *cobra.Command {
 				if skipDeploy {
 					printer.StepInfo("Would skip code deployment (--skip-deploy)")
 				}
+				if pemDir != "" {
+					printer.StepInfo(fmt.Sprintf("Would bootstrap app set %q with PEMs from %s", appsetup.DefaultAppSet, pemDir))
+				}
 				return nil
 			}
 
@@ -116,16 +192,31 @@ func newMintDeployCmd() *cobra.Command {
 				deployMode = gcf.DeploySkip
 			}
 
-			// Deploy requires at least a placeholder org for the WIF condition.
-			// The actual orgs are registered via 'mint enroll'.
-			provisioner := gcf.NewProvisioner(gcf.Config{
+			cfg := gcf.Config{
 				ProjectID:         project,
 				Region:            region,
-				GitHubOrgs:        []string{gcf.PlaceholderOrg},
-				AgentAppIDs:       map[string]string{gcf.PlaceholderOrg: "0"},
 				FunctionSourceDir: sourceDir,
 				DeployMode:        deployMode,
-			}, gcpClient)
+			}
+
+			if pemDir != "" {
+				printer.StepStart(fmt.Sprintf("Loading PEMs and discovering app IDs for app set %q", appsetup.DefaultAppSet))
+				agentPEMs, agentAppIDs, err := loadAppSetPEMs(ctx, pemDir, appsetup.DefaultAppSet)
+				if err != nil {
+					printer.StepFail("Failed to load app set PEMs")
+					return fmt.Errorf("loading app set PEMs: %w", err)
+				}
+				printer.StepDone(fmt.Sprintf("Loaded %d role PEMs for app set %q", len(agentPEMs), appsetup.DefaultAppSet))
+
+				cfg.GitHubOrgs = []string{appsetup.DefaultAppSet}
+				cfg.AgentPEMs = agentPEMs
+				cfg.AgentAppIDs = agentAppIDs
+			} else {
+				cfg.GitHubOrgs = []string{gcf.PlaceholderOrg}
+				cfg.AgentAppIDs = map[string]string{gcf.PlaceholderOrg: "0"}
+			}
+
+			provisioner := gcf.NewProvisioner(cfg, gcpClient)
 
 			printer.StepStart("Provisioning mint infrastructure")
 			result, err := provisioner.Provision(ctx)
@@ -137,12 +228,17 @@ func newMintDeployCmd() *cobra.Command {
 			mintURL := result["FULLSEND_MINT_URL"]
 			printer.StepDone(fmt.Sprintf("Mint deployed at %s", mintURL))
 			printer.Blank()
-			printer.Summary("Deployment complete", []string{
+
+			summaryLines := []string{
 				fmt.Sprintf("Project: %s", project),
 				fmt.Sprintf("Region: %s", region),
 				fmt.Sprintf("URL: %s", mintURL),
-				"Next: fullsend mint enroll <org> --project=" + project,
-			})
+			}
+			if pemDir != "" {
+				summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
+			}
+			summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
+			printer.Summary("Deployment complete", summaryLines)
 
 			return nil
 		},
@@ -153,6 +249,7 @@ func newMintDeployCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: embedded)")
 	cmd.Flags().BoolVar(&skipDeploy, "skip-deploy", false, "skip code upload, reuse existing function")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "directory containing {role}.pem files for the app set")
 
 	return cmd
 }
