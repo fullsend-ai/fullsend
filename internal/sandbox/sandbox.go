@@ -358,6 +358,10 @@ func ExecStreamReader(sandboxName, command string, timeout time.Duration, stderr
 }
 
 // Upload copies a local file or directory into a sandbox.
+//
+// After a successful transfer, Upload verifies that the file exists inside
+// the sandbox. openshell sandbox upload silently drops files above ~16 MB
+// while still returning exit 0, so the exit code alone is not trustworthy.
 func Upload(sandboxName, localPath, remotePath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), transferTimeout)
 	defer cancel()
@@ -373,6 +377,35 @@ func Upload(sandboxName, localPath, remotePath string) error {
 			return fmt.Errorf("upload to sandbox %q timed out after %s", sandboxName, transferTimeout)
 		}
 		return fmt.Errorf("upload to sandbox %q failed: %s: %w", sandboxName, string(out), err)
+	}
+
+	// Verify the file was actually placed in the sandbox. openshell
+	// silently drops large files (>~16 MB) while returning exit 0.
+	if verifyErr := verifyUpload(sandboxName, localPath, remotePath); verifyErr != nil {
+		return verifyErr
+	}
+	return nil
+}
+
+// verifyUpload checks that a file transferred by Upload actually exists
+// inside the sandbox. When remotePath ends with "/" it is treated as a
+// directory destination, so we verify <remotePath>/<basename(localPath)>.
+func verifyUpload(sandboxName, localPath, remotePath string) error {
+	// Determine the expected path inside the sandbox.
+	target := remotePath
+	if strings.HasSuffix(remotePath, "/") {
+		target = remotePath + filepath.Base(localPath)
+	}
+
+	checkCmd := fmt.Sprintf("test -e %q", target)
+	_, stderr, exitCode, err := Exec(sandboxName, checkCmd, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("upload verification failed for %q in sandbox %q: %w",
+			target, sandboxName, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("upload to sandbox %q succeeded (exit 0) but file %q does not exist in the sandbox — possible silent drop (stderr: %s)",
+			sandboxName, target, strings.TrimSpace(stderr))
 	}
 	return nil
 }

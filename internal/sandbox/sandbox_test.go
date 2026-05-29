@@ -378,6 +378,50 @@ func TestEffectiveReadyTimeout_EnvVarCappedAtMax(t *testing.T) {
 	assert.Equal(t, maxReadyTimeout, got)
 }
 
+func TestUpload_OpenshellNotInPath(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "file.txt")
+	require.NoError(t, os.WriteFile(tmp, []byte("data"), 0o644))
+	t.Setenv("PATH", "")
+
+	err := Upload("test-sandbox", tmp, "/tmp/workspace/file.txt")
+	assert.Error(t, err)
+}
+
+func TestVerifyUpload_TargetPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		localPath  string
+		remotePath string
+		wantTarget string
+	}{
+		{
+			name:       "exact remote path",
+			localPath:  "/host/file.txt",
+			remotePath: "/sandbox/file.txt",
+			wantTarget: "/sandbox/file.txt",
+		},
+		{
+			name:       "directory destination with trailing slash",
+			localPath:  "/host/binary",
+			remotePath: "/sandbox/bin/",
+			wantTarget: "/sandbox/bin/binary",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// With openshell unavailable, verifyUpload will fail at
+			// Exec, but the error message reveals the target path it
+			// tried to verify.
+			t.Setenv("PATH", "")
+			err := verifyUpload("test-sandbox", tt.localPath, tt.remotePath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantTarget,
+				"error should reference the resolved target path")
+		})
+	}
+}
+
 func TestUploadDir_OpenshellNotInPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "")
