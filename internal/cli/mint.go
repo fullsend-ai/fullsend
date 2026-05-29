@@ -552,6 +552,7 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 		}
 		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", org))
 		printer.StepInfo(fmt.Sprintf("  Would copy PEMs from %s for %d roles", appSet, len(roleList)))
+		printer.StepInfo(fmt.Sprintf("  Would add %s to WIF provider condition", org))
 		printer.Blank()
 		printer.StepInfo("To grant Agent Platform access, run 'fullsend inference provision' separately")
 		return nil
@@ -582,6 +583,14 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 		return fmt.Errorf("registering org: %w", err)
 	}
 	printer.StepDone("Org registered in mint")
+
+	// Step 5: Ensure org is in WIF provider condition.
+	printer.StepStart("Updating WIF provider condition")
+	if err := provisioner.EnsureOrgInWIFCondition(ctx, org); err != nil {
+		printer.StepFail("Failed to update WIF condition")
+		return fmt.Errorf("updating WIF condition: %w", err)
+	}
+	printer.StepDone("WIF condition updated")
 
 	printer.Blank()
 	printer.Summary("Enrollment complete", []string{

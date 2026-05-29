@@ -110,7 +110,7 @@ WIF pools are always created at locations/global.`,
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
-	cmd.Flags().StringVar(&pool, "pool", "fullsend-pool", "WIF pool name")
+	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
 	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (org-scoped only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 
@@ -255,7 +255,7 @@ Use --format=json to get a machine-readable status + config output.`,
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
-	cmd.Flags().StringVar(&pool, "pool", "fullsend-pool", "WIF pool name")
+	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
 	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name")
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, env")
 
@@ -470,7 +470,7 @@ the GCP console or via gcloud.`,
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
-	cmd.Flags().StringVar(&pool, "pool", "fullsend-pool", "WIF pool name")
+	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
 	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (org-scoped only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 

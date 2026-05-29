@@ -81,7 +81,7 @@ func TestInferenceProvisionCmd_Flags(t *testing.T) {
 
 	poolFlag := cmd.Flags().Lookup("pool")
 	require.NotNil(t, poolFlag, "expected --pool flag")
-	assert.Equal(t, "fullsend-pool", poolFlag.DefValue)
+	assert.Equal(t, "fullsend-inference", poolFlag.DefValue)
 
 	providerFlag := cmd.Flags().Lookup("provider")
 	require.NotNil(t, providerFlag, "expected --provider flag")
@@ -229,7 +229,7 @@ func TestInferenceStatusCmd_Flags(t *testing.T) {
 
 	poolFlag := cmd.Flags().Lookup("pool")
 	require.NotNil(t, poolFlag, "expected --pool flag")
-	assert.Equal(t, "fullsend-pool", poolFlag.DefValue)
+	assert.Equal(t, "fullsend-inference", poolFlag.DefValue)
 
 	providerFlag := cmd.Flags().Lookup("provider")
 	require.NotNil(t, providerFlag, "expected --provider flag")
@@ -312,7 +312,7 @@ func TestFormatStatusJSON(t *testing.T) {
 	result := &inferenceStatusResult{
 		Status:      "healthy",
 		ProjectID:   "my-project",
-		WIFProvider: "projects/123/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		WIFProvider: "projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
 		Details:     []string{"Project number: 123", "WIF provider: found"},
 	}
 
@@ -325,7 +325,7 @@ func TestFormatStatusJSON(t *testing.T) {
 
 	assert.Equal(t, "healthy", parsed["status"])
 	assert.Equal(t, "my-project", parsed["FULLSEND_GCP_PROJECT_ID"])
-	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc", parsed["FULLSEND_GCP_WIF_PROVIDER"])
+	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc", parsed["FULLSEND_GCP_WIF_PROVIDER"])
 	details, ok := parsed["details"].([]interface{})
 	require.True(t, ok, "expected details to be an array")
 	assert.Len(t, details, 2)
@@ -356,13 +356,13 @@ func TestFormatStatusEnv(t *testing.T) {
 	result := &inferenceStatusResult{
 		Status:      "healthy",
 		ProjectID:   "my-project",
-		WIFProvider: "projects/123/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		WIFProvider: "projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
 	}
 
 	output := formatStatusEnv(result)
 	assert.Contains(t, output, "FULLSEND_INFERENCE_STATUS=healthy")
 	assert.Contains(t, output, "FULLSEND_GCP_PROJECT_ID=my-project")
-	assert.Contains(t, output, "FULLSEND_GCP_WIF_PROVIDER=projects/123/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc")
+	assert.Contains(t, output, "FULLSEND_GCP_WIF_PROVIDER=projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc")
 	assert.NotContains(t, output, "FULLSEND_GCP_REGION")
 	assert.NotContains(t, output, "Status:")
 }
@@ -529,7 +529,7 @@ func TestInferenceDeprovisionCmd_Flags(t *testing.T) {
 
 	poolFlag := cmd.Flags().Lookup("pool")
 	require.NotNil(t, poolFlag, "expected --pool flag")
-	assert.Equal(t, "fullsend-pool", poolFlag.DefValue)
+	assert.Equal(t, "fullsend-inference", poolFlag.DefValue)
 
 	providerFlag := cmd.Flags().Lookup("provider")
 	require.NotNil(t, providerFlag, "expected --provider flag")

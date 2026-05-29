@@ -371,8 +371,9 @@ Inference authentication:
 					printer.StepStart("Provisioning WIF infrastructure for inference")
 					gcpClient := gcf.NewLiveGCFClient(inferenceProject)
 					provisioner := gcf.NewProvisioner(gcf.Config{
-						ProjectID:  inferenceProject,
-						GitHubOrgs: []string{org},
+						ProjectID:   inferenceProject,
+						GitHubOrgs:  []string{org},
+						WIFPoolName: gcf.DefaultInferencePool,
 					}, gcpClient)
 					inferenceWIFProvider, err = provisioner.ProvisionWIF(ctx)
 					if err != nil {
@@ -789,7 +790,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		if needsWIFProvision {
 			printer.StepInfo("Would provision WIF infrastructure in GCP project " + inferenceProject)
 			printer.StepInfo(fmt.Sprintf("  Service account: fullsend-mint@%s.iam.gserviceaccount.com", inferenceProject))
-			printer.StepInfo("  WIF pool: fullsend-pool")
+			printer.StepInfo("  WIF pool: " + gcf.DefaultInferencePool)
 			printer.StepInfo(fmt.Sprintf("  WIF provider: %s", gcf.BuildRepoProviderID(owner, repo)))
 			printer.StepInfo(fmt.Sprintf("  Repo restriction: %s/%s", owner, repo))
 			printer.Blank()
@@ -934,9 +935,10 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	if needsWIFProvision {
 		printer.StepStart("Provisioning WIF infrastructure")
 		provisioner := gcf.NewProvisioner(gcf.Config{
-			ProjectID:  inferenceProject,
-			GitHubOrgs: []string{owner},
-			Repo:       owner + "/" + repo,
+			ProjectID:   inferenceProject,
+			GitHubOrgs:  []string{owner},
+			Repo:        owner + "/" + repo,
+			WIFPoolName: gcf.DefaultInferencePool,
 		}, gcf.NewLiveGCFClient(inferenceProject))
 		var provErr error
 		inferenceWIFProvider, provErr = provisioner.ProvisionWIF(ctx)
