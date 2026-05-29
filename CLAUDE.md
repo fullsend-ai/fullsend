@@ -32,14 +32,7 @@ When making changes to Go code under `cmd/` or `internal/`:
 
 ### Running e2e tests
 
-The e2e tests require GitHub credentials. There are three ways to provide them:
-
-- **`E2E_GITHUB_PASSWORD` env var:** Set directly with the password.
-- **`E2E_GITHUB_PASSWORD_FILE` env var:** Set to a file path containing the password (used in devaipod environments where secrets are mounted as files).
-- **`E2E_GITHUB_SESSION_FILE` env var:** Set to a pre-exported Playwright session file (skips login).
-- **`E2E_GITHUB_TOTP_SECRET` env var:** Optional. The TOTP secret (base32) for the test account's 2FA. Required only when the test account has 2FA enabled — used during session export and sudo confirmation.
-
-If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
+See [docs/testing/e2e.md](docs/testing/e2e.md) for the full guide (prerequisites, credentials, CI authentication, and org pools). Quick start: set `E2E_GITHUB_USERNAME` and `E2E_GITHUB_PASSWORD`, then run `make e2e-test`.
 
 ## Key design decisions made
 

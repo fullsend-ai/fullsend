@@ -26,3 +26,4 @@ Guides for contributors developing and testing fullsend itself.
 
 - [Local development](dev/local-dev.md) — Run fullsend agents locally on macOS and Linux (amd64 + arm64)
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
+- [End-to-end tests](../testing/e2e.md) — Running and maintaining the admin e2e test suite
