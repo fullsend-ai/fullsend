@@ -305,9 +305,9 @@ Resolution algorithm:
 5. Detect cycles (if skill A references skill B, and skill B references skill A, reject)
 6. Fail if any resource cannot be fetched or validated
 
-**Output:** A `ResolvedHarness` struct containing absolute paths or cache paths for all resources.
+**Output:** The harness is modified in place, replacing URL fields with local cache paths. Returns `([]Dependency, error)` listing the resolved resources.
 
-**Implementation:** New package `internal/resolve/` provides `ResolveHarness(h *harness.Harness) (*ResolvedHarness, error)`.
+**Implementation:** New package `internal/resolve/` provides `ResolveHarness(ctx, h *harness.Harness, opts ResolveOpts) ([]Dependency, error)`.
 
 ### Runtime Dependency Loading (Future)
 
@@ -934,60 +934,41 @@ import (
 
     "github.com/fullsend-ai/fullsend/internal/fetch"
     "github.com/fullsend-ai/fullsend/internal/harness"
-    "github.com/fullsend-ai/fullsend/internal/security"
 )
 
-type ResolvedHarness struct {
-    Harness      *harness.Harness
-    AgentPath    string   // absolute path or cache path
-    PolicyPath   string
-    SkillPaths   []string
-    Dependencies []Dependency
-}
-
 type Dependency struct {
-    URL        string
-    LocalPath  string // cache path
-    SHA256     string
-    FetchedAt  time.Time
+    URL       string
+    LocalPath string
+    SHA256    string
+    FetchedAt time.Time
+    CacheHit  bool
 }
 
-// ResolveHarness resolves all resources (local and remote) and returns paths.
-func ResolveHarness(ctx context.Context, workspaceRoot string, h *harness.Harness, policy fetch.FetchPolicy) (*ResolvedHarness, error) {
-    resolved := &ResolvedHarness{Harness: h}
-    resourceCount := 0
+type ResolveOpts struct {
+    WorkspaceRoot string
+    FetchPolicy   fetch.FetchPolicy
+    TraceID       string
+    AuditLogPath  string
+}
 
-    // Resolve agent
-    var err error
-    resolved.AgentPath, err = resolveResourceWithLimits(ctx, workspaceRoot, h.Agent, h.AllowedRemoteResources, policy, 0, &resourceCount, "")
-    if err != nil {
-        return nil, fmt.Errorf("resolving agent: %w", err)
-    }
+// ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
+// Skills) in the harness to local cache paths. Local paths are left unchanged.
+// The harness is modified in place.
+// Phase 1: single-level resolution only (no transitive deps).
+func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) ([]Dependency, error) {
+    var deps []Dependency
 
-    // Resolve policy
-    if h.Policy != "" {
-        resolved.PolicyPath, err = resolveResourceWithLimits(ctx, workspaceRoot, h.Policy, h.AllowedRemoteResources, policy, 0, &resourceCount, "")
+    if h.Agent != "" && harness.IsURL(h.Agent) {
+        dep, localPath, err := resolveURL(ctx, "agent", h.Agent, h, opts)
         if err != nil {
-            return nil, fmt.Errorf("resolving policy: %w", err)
+            return nil, fmt.Errorf("resolving agent: %w", err)
         }
+        h.Agent = localPath
+        deps = append(deps, dep)
     }
 
-    // Resolve skills
-    // Phase 1: Single-level only (skills themselves cannot reference URLs)
-    // Phase 2+: Each skill may have transitive dependencies (code below)
-    for _, skill := range h.Skills {
-        skillPath, err := resolveResourceWithLimits(ctx, workspaceRoot, skill, h.AllowedRemoteResources, policy, 0, &resourceCount, "")
-        if err != nil {
-            return nil, fmt.Errorf("resolving skill %s: %w", skill, err)
-        }
-        resolved.SkillPaths = append(resolved.SkillPaths, skillPath)
-
-        // Phase 2+: Parse skill to extract transitive dependencies
-        // (skill format TBD — may have a dependencies: field in frontmatter)
-        // Recursively resolve those dependencies
-    }
-
-    return resolved, nil
+    // Similar for h.Policy and h.Skills...
+    return deps, nil
 }
 
 // resolveResourceWithLimits resolves a single resource with depth and count limits.
@@ -1135,12 +1116,14 @@ if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
 // NEW: Resolve remote resources
 fetchPolicy := fetch.DefaultPolicy
 // TODO: Load allowed domains from config.yaml
-resolved, err := resolve.ResolveHarness(ctx, workspaceRoot, h, fetchPolicy)
+deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+    WorkspaceRoot: workspaceRoot,
+    FetchPolicy:   fetchPolicy,
+})
 if err != nil {
     return fmt.Errorf("resolving remote resources: %w", err)
 }
-
-// Use resolved.AgentPath, resolved.PolicyPath, etc. instead of h.Agent, h.Policy
+// h.Agent, h.Policy, h.Skills are now local cache paths
 ```
 
 ### 7. Security Scanner Integration
@@ -1238,7 +1221,10 @@ fetchPolicy := fetch.DefaultPolicy
 if offline {
     fetchPolicy.Offline = true
 }
-resolved, err := resolve.ResolveHarness(ctx, workspaceRoot, h, fetchPolicy)
+deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+    WorkspaceRoot: workspaceRoot,
+    FetchPolicy:   fetchPolicy,
+})
 ```
 
 ## Migration Path

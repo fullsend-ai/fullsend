@@ -634,6 +634,23 @@ func TestResolveRelativeTo_PluginTraversalRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
 }
 
+func TestResolveRelativeTo_URLsUnchanged(t *testing.T) {
+	agentURL := "https://example.com/agents/code.md#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	skillURL := "https://example.com/skills/review.md#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	h := &Harness{
+		Agent:  agentURL,
+		Policy: "policies/readonly.yaml",
+		Skills: []string{"skills/local-skill", skillURL},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, agentURL, h.Agent)
+	assert.Equal(t, skillURL, h.Skills[1])
+	assert.Equal(t, "/base/dir/policies/readonly.yaml", h.Policy)
+	assert.Equal(t, "/base/dir/skills/local-skill", h.Skills[0])
+}
+
 func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")
@@ -982,5 +999,38 @@ func TestMatchesAllowedPrefix(t *testing.T) {
 
 	t.Run("trailing slash from query not path", func(t *testing.T) {
 		assert.False(t, h.MatchesAllowedPrefix("https://evil.com/path?ref=v1/"))
+	})
+}
+
+func TestMatchingAllowedPrefix(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		AllowedRemoteResources: []string{
+			"https://example.com/skills/",
+			"https://cdn.example.com/policies/",
+		},
+	}
+
+	t.Run("returns matching prefix", func(t *testing.T) {
+		assert.Equal(t, "https://example.com/skills/", h.MatchingAllowedPrefix("https://example.com/skills/summarize.md"))
+	})
+
+	t.Run("returns second prefix when matched", func(t *testing.T) {
+		assert.Equal(t, "https://cdn.example.com/policies/", h.MatchingAllowedPrefix("https://cdn.example.com/policies/readonly.yaml"))
+	})
+
+	t.Run("returns empty for non-matching URL", func(t *testing.T) {
+		assert.Equal(t, "", h.MatchingAllowedPrefix("https://evil.com/skills/summarize.md"))
+	})
+
+	t.Run("returns empty for path traversal", func(t *testing.T) {
+		assert.Equal(t, "", h.MatchingAllowedPrefix("https://example.com/skills/../evil/payload"))
+	})
+
+	t.Run("preserves original prefix casing", func(t *testing.T) {
+		h2 := &Harness{
+			AllowedRemoteResources: []string{"https://Example.Com/Skills/"},
+		}
+		assert.Equal(t, "https://Example.Com/Skills/", h2.MatchingAllowedPrefix("https://example.com/skills/test.md"))
 	})
 }

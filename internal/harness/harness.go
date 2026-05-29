@@ -325,12 +325,11 @@ func (h *Harness) validateSecurity() error {
 // ResolveRelativeTo resolves all relative paths in the harness against baseDir.
 // Relative paths that resolve outside baseDir are rejected to prevent directory
 // traversal (e.g. ../../etc/shadow). Absolute paths and ${VAR} paths are allowed.
-// TODO(PR 7): skip URL-valued fields (agent, policy, skills[]) via IsURL().
 func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
 
 	resolve := func(field, p string) (string, error) {
-		if p == "" || filepath.IsAbs(p) {
+		if p == "" || filepath.IsAbs(p) || IsURL(p) {
 			return p, nil
 		}
 		resolved := filepath.Join(baseDir, p)
@@ -614,13 +613,20 @@ func (h *Harness) ValidateResourceTypes() error {
 // Returns false if the URL contains "%25" (double-encoded percent sign) or
 // cannot be parsed.
 func (h *Harness) MatchesAllowedPrefix(rawURL string) bool {
+	return h.MatchingAllowedPrefix(rawURL) != ""
+}
+
+// MatchingAllowedPrefix returns the first AllowedRemoteResources entry that
+// matches rawURL, or "" if none match. It applies the same normalization as
+// MatchesAllowedPrefix.
+func (h *Harness) MatchingAllowedPrefix(rawURL string) string {
 	lower := strings.ToLower(rawURL)
 	if strings.Contains(lower, "%25") {
-		return false
+		return ""
 	}
 	normalized, ok := normalizeURLPath(lower)
 	if !ok {
-		return false
+		return ""
 	}
 	for _, prefix := range h.AllowedRemoteResources {
 		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
@@ -628,10 +634,10 @@ func (h *Harness) MatchesAllowedPrefix(rawURL string) bool {
 			continue
 		}
 		if strings.HasPrefix(normalized, normPrefix) {
-			return true
+			return prefix
 		}
 	}
-	return false
+	return ""
 }
 
 // normalizeURLPath parses a URL, percent-decodes and cleans its path, and

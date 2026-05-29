@@ -142,14 +142,14 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 **Scope:** New package that orchestrates fetch + cache + validation + audit for URL-referenced resources. This is the core logic.
 
 **Create `internal/resolve/resolve.go`:**
-- `ResolvedHarness` struct: wraps `*harness.Harness` + resolved paths (AgentPath, PolicyPath, SkillPaths, Dependencies)
-- `Dependency` struct: URL, LocalPath (cache path), SHA256, FetchedAt
-- `ResolveOpts` struct: WorkspaceRoot, FetchPolicy, OrgAllowlist, TraceID, AuditLogPath
-- `ResolveHarness(ctx, h *harness.Harness, opts) (*ResolvedHarness, error)`:
+- `Dependency` struct: URL, LocalPath (cache path), SHA256, FetchedAt, CacheHit
+- `ResolveOpts` struct: WorkspaceRoot, FetchPolicy, TraceID, AuditLogPath
+- `ResolveHarness(ctx, h *harness.Harness, opts) ([]Dependency, error)`:
+  - Modifies the harness in place, replacing URL fields with local cache paths
   - For each declarative field (Agent, Policy, Skills):
     - Local path: return as-is
-    - URL: validate against `AllowedRemoteResources` → extract/require integrity hash → check cache (with re-verification) → if miss and not offline: `fetch.FetchURL` → verify hash → security scan (InputPipeline, remote threshold) → `CachePut` → `AppendFetchAudit` → return cache content path
-  - Phase 1: single-level only (no transitive deps)
+    - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → check cache (with re-verification) → if miss and not offline: `fetch.FetchURL` → verify hash → `CachePut` → `AppendFetchAudit` → return cache content path
+  - Phase 1: single-level only (no transitive deps), security scanning deferred
 
 **Create `internal/resolve/resolve_test.go`:**
 - Tests using `httptest.NewTLSServer`: local pass-through, URL fetch+cache, cache hit, hash mismatch, URL not in allowlist, missing hash, offline+miss, offline+hit, security scan failure, mixed harness, audit entries
@@ -169,9 +169,8 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 - In `runAgent()`, **between** `h.ResolveRelativeTo(absFullsendDir)` and `h.ValidateFilesExist()`:
   1. `h.ValidateResourceTypes()` — reject URLs in script fields, require hashes (no-op for local-only harnesses)
   2. If harness has any URL references: load org config, call `h.ValidateAllowedRemoteResources(orgCfg.AllowedRemoteResources)`
-  3. `resolve.ResolveHarness(ctx, h, opts)` — fetch/cache URLs (no-op if all local)
-  4. Replace harness fields with resolved paths: `h.Agent = resolved.AgentPath`, etc.
-  5. `h.ValidateFilesExist()` then validates resolved paths (cache files or local files)
+  3. `resolve.ResolveHarness(ctx, h, opts)` — fetch/cache URLs, replace harness fields with cache paths in place (no-op if all local)
+  4. `h.ValidateFilesExist()` then validates resolved paths (cache files or local files)
 
 **Key design:** For local-only harnesses, steps 1-3 are no-ops (no URLs detected, no fetches). Zero behavioral change for existing users.
 
