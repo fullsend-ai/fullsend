@@ -67,12 +67,9 @@ func createPAT(page playwright.Page, note, password, totpSecret, screenshotDir s
 	}
 
 	// Set expiration to 7 days.
-	expirationSelect := page.Locator("#token_expiration")
-	if _, err := expirationSelect.SelectOption(playwright.SelectOptionValues{
-		Values: playwright.StringSlice("seven_days"),
-	}, playwright.LocatorSelectOptionOptions{
-		Timeout: playwright.Float(5000),
-	}); err != nil {
+	// GitHub's classic PAT page may use different selectors across UI updates.
+	// Try multiple selectors and interaction strategies for robustness.
+	if err := setTokenExpiration(page, screenshotDir, logf); err != nil {
 		logf("[pat] Warning: could not set expiration, using default: %v", err)
 	}
 
@@ -116,6 +113,74 @@ func createPAT(page playwright.Page, note, password, totpSecret, screenshotDir s
 
 	logf("[pat] Created PAT: %s**** (note: %s)", token[:4], note)
 	return token, nil
+}
+
+// setTokenExpiration attempts to set the token expiration to 7 days on the
+// classic PAT creation page. It tries multiple selectors and interaction
+// strategies to handle GitHub UI changes gracefully.
+func setTokenExpiration(page playwright.Page, screenshotDir string, logf func(string, ...any)) error {
+	// Candidate selectors for the expiration <select> element, ordered by
+	// likelihood. GitHub has changed the element ID across UI updates.
+	selectors := []string{
+		"#token_expiration",
+		"select[name='token[expiration]']",
+		"select[id*='expiration']",
+		"select[name*='expiration']",
+	}
+
+	// Option values GitHub has used for 7-day expiration.
+	optionValues := []string{"seven_days", "7"}
+
+	for _, sel := range selectors {
+		loc := page.Locator(sel)
+
+		// Wait for the element to be attached to the DOM before interacting.
+		if err := loc.WaitFor(playwright.LocatorWaitForOptions{
+			State:   playwright.WaitForSelectorStateAttached,
+			Timeout: playwright.Float(3000),
+		}); err != nil {
+			logf("[pat] Selector %q not found, trying next", sel)
+			continue
+		}
+
+		// Try each known option value.
+		for _, val := range optionValues {
+			if _, err := loc.SelectOption(playwright.SelectOptionValues{
+				Values: playwright.StringSlice(val),
+			}, playwright.LocatorSelectOptionOptions{
+				Timeout: playwright.Float(3000),
+			}); err == nil {
+				logf("[pat] Set expiration via %s = %s", sel, val)
+				return nil
+			}
+		}
+
+		// SelectOption failed for all values — try setting via JavaScript
+		// in case the element is present but the option values differ.
+		for _, val := range optionValues {
+			result, err := page.Evaluate(
+				`([sel, val]) => {
+					const el = document.querySelector(sel);
+					if (!el) return false;
+					const opt = Array.from(el.options).find(o => o.value === val);
+					if (!opt) return false;
+					el.value = val;
+					el.dispatchEvent(new Event('change', {bubbles: true}));
+					return true;
+				}`,
+				[]string{sel, val},
+			)
+			if err == nil && result == true {
+				logf("[pat] Set expiration via JS: %s = %s", sel, val)
+				return nil
+			}
+		}
+
+		logf("[pat] Found %q but could not set a 7-day value", sel)
+	}
+
+	saveDebugScreenshot(page, screenshotDir, "pat-expiration-failed", logf)
+	return fmt.Errorf("no expiration selector matched on the PAT creation page")
 }
 
 // deletePAT deletes a classic GitHub PAT by navigating to the tokens page
