@@ -295,7 +295,25 @@ func newMintDeployCmd() *cobra.Command {
 
 Most runs need only --project and --region. The optional --pem-dir flag is
 for first-time bootstrap only: it seeds the default app set's PEM secrets so
-that 'mint enroll' can work without running 'admin install' first.`,
+that 'mint enroll' can work without running 'admin install' first.
+
+Required GCP APIs (gcloud services enable):
+  - iam.googleapis.com
+  - cloudresourcemanager.googleapis.com
+  - cloudfunctions.googleapis.com
+  - run.googleapis.com
+  - secretmanager.googleapis.com
+  - iamcredentials.googleapis.com              (runtime: used by deployed function, not CLI)
+
+Required IAM roles on the target project:
+  - roles/iam.serviceAccountAdmin             (create mint service account)
+  - roles/iam.workloadIdentityPoolAdmin        (create WIF pool and provider)
+  - roles/cloudfunctions.developer             (deploy Cloud Function)
+  - roles/run.admin                            (set Cloud Run invoker policy)
+
+When using --pem-dir, additionally requires:
+  - roles/secretmanager.admin                  (create and manage PEM secrets)
+  - roles/resourcemanager.projectIamAdmin      (grant roles/aiplatform.user to WIF principals)`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -433,7 +451,18 @@ Per-org enrollment (fullsend mint enroll acme):
 Per-repo enrollment (fullsend mint enroll acme/widget):
   - Same as per-org plus:
   - Adds repo to PER_REPO_WIF_REPOS
-  - Creates a dedicated WIF provider for the repo`,
+  - Creates a dedicated WIF provider for the repo
+
+Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
+
+Required IAM roles on the mint project:
+  - roles/secretmanager.admin                  (copy PEM secrets)
+  - roles/cloudfunctions.viewer                (read Cloud Function metadata)
+  - roles/run.admin                            (update Cloud Run service env vars)
+  - roles/iam.workloadIdentityPoolAdmin        (update WIF provider condition; create repo-scoped providers)
+
+When enrolling a repo (per-repo mode), additionally requires:
+  - roles/resourcemanager.projectIamAdmin      (grant roles/aiplatform.user to repo WIF principal)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -822,7 +851,15 @@ By default, PEM secrets are disabled (not deleted) and WIF providers are
 disabled (not deleted). Use --delete-secrets or --delete-provider for
 permanent removal.
 
-Requires typing the org/repo name to confirm (unless --dry-run or --yolo).`,
+Requires typing the org/repo name to confirm (unless --dry-run or --yolo).
+
+Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
+
+Required IAM roles on the mint project:
+  - roles/cloudfunctions.viewer                (read Cloud Function metadata)
+  - roles/run.admin                            (update Cloud Run service env vars)
+  - roles/secretmanager.admin                  (disable or delete PEM secrets; org-scoped only)
+  - roles/iam.workloadIdentityPoolAdmin        (update, disable, or delete WIF providers)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -1110,7 +1147,11 @@ func newMintStatusCmd() *cobra.Command {
 
 Shows function info, enrolled orgs, role-app-id mappings, per-repo WIF
 repos, and overall health status. If an org argument is provided, drills
-into that org's PEM secret status.`,
+into that org's PEM secret status.
+
+Required IAM roles on the mint project:
+  - roles/cloudfunctions.viewer                   (read Cloud Function metadata)
+  - roles/secretmanager.viewer                    (list and read secret metadata)`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {

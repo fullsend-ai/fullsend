@@ -297,6 +297,6 @@ my-repo/
 
 ## See Also
 
-- [Installation Guide](../admin/installation.md) - Initial setup
+- [Installation Guide](../getting-started/installation.md) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md)

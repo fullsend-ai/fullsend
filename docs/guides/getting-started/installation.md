@@ -1,29 +1,140 @@
 # How to onboard a new organization
 
-This guide walks through installing fullsend in a GitHub organization and enrolling your first repository.
+This guide walks through setting up fullsend in a GitHub organization and enrolling your first repository.
 
-> **GitHub-only setup:** If your GCP admin has already deployed the token mint and inference infrastructure, you do not need GCP access. See [Setting up with pre-provisioned infrastructure](github-setup.md) for the GitHub-only path using `fullsend github setup`.
+## Choose your setup path
 
-## Prerequisites
+Your setup path depends on what GCP infrastructure is already in place and how much control you need. Most users follow the **end-user path** — your organization is enrolled in a hosted mint service, and you provision inference access and configure GitHub yourself. This is the fastest way to get started.
 
+| Path | When to use | What you need |
+|------|-------------|---------------|
+| **[End-user setup](#end-user-setup)** | Mint service is hosted for you (most common) | GCP project for inference + GitHub org access |
+| **[GitHub-only setup](github-setup.md)** | Both GCP inference and mint are pre-provisioned | GitHub org access + GCP config values from your admin (no GCP credentials needed) |
+| **[All-in-one admin install](#all-in-one-admin-install)** | You manage everything — GCP mint, inference, and GitHub | Full GCP + GitHub access |
+
+> **Mint service note:** The token mint is fully self-hostable, but most users currently use the mint service hosted by the fullsend team. Work is in progress to offer this as a secure, trusted public service — reducing the need for per-org enrollment. See [Mint service administration](../infrastructure/mint-administration.md) for self-hosting details.
+
+---
+
+## End-user setup
+
+This is the standard path for organizations using a hosted mint service. You provision GCP inference access and configure GitHub — the mint service admin handles enrollment.
+
+### Prerequisites
+
+- **From your mint service admin:** Before starting, confirm that your organization is enrolled in the hosted mint and obtain the token mint URL (the HTTPS endpoint for OIDC token exchange). This is a blocking prerequisite — contact your mint admin first.
 - **GitHub organization** with admin access
 - **GitHub CLI** (`gh`) authenticated — no special scopes are needed upfront. The installer runs a preflight check and tells you exactly which scopes are missing before making any changes. When prompted, run the `gh auth refresh -s <scopes>` command it suggests.
 
   > **Note on scope breadth:** `gh auth` scopes apply to *every* organization your account belongs to — GitHub does not support per-org scoping for classic OAuth tokens. If that is a concern, create a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) scoped to the target organization and export it as `GH_TOKEN` before running the installer.
 
-- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases). The binary includes an embedded copy of the mint Cloud Function source, so it works standalone without needing the repository checked out.
-
-  *Note*: If running from a local clone of the repository, the CLI uses the local `internal/mint/` source instead of the embedded copy (a log message confirms this). This lets developers iterate on the mint source without rebuilding the binary. Use `go run ./cmd/fullsend/main.go <command>` to run from source.
-
+- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
 - **GCP project** with the following APIs enabled:
-  - [Agent Platform](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) (inference)
-  - [Cloud Functions](https://console.cloud.google.com/apis/library/cloudfunctions.googleapis.com) (token mint)
-  - [Cloud Run](https://console.cloud.google.com/apis/library/run.googleapis.com) (token mint runtime)
-  - [Secret Manager](https://console.cloud.google.com/apis/library/secretmanager.googleapis.com) (PEM storage)
-  - [IAM Credentials](https://console.cloud.google.com/apis/library/iamcredentials.googleapis.com) (WIF token exchange)
-  - [Cloud Resource Manager](https://console.cloud.google.com/apis/library/cloudresourcemanager.googleapis.com) (project number lookup)
 
-- **GCP IAM roles** — the user running `fullsend admin install` authenticates via ADC (`gcloud auth application-default login`) and needs the following IAM roles on the target GCP project:
+  ```bash
+  gcloud services enable \
+    iam.googleapis.com \
+    cloudresourcemanager.googleapis.com \
+    aiplatform.googleapis.com \
+    --project="$GCP_PROJECT"
+  ```
+
+- **GCP IAM roles** for inference provisioning — the user authenticates via ADC (`gcloud auth application-default login`) and needs:
+
+  | Role | What it covers |
+  |------|----------------|
+  | `roles/iam.workloadIdentityPoolAdmin` | Create WIF pool and provider for GitHub Actions OIDC authentication |
+  | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to WIF principals via project IAM policy |
+
+  An administrator can grant the required roles:
+
+  ```bash
+  export GCP_PROJECT="my-project-id"
+  export USER_EMAIL="alice@example.com"
+
+  for ROLE in \
+    roles/iam.workloadIdentityPoolAdmin \
+    roles/resourcemanager.projectIamAdmin; do
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+      --member="user:$USER_EMAIL" \
+      --role="$ROLE"
+  done
+  ```
+
+### Step 1: Request mint enrollment
+
+Contact your mint service admin and request enrollment for your GitHub organization. They will run `fullsend mint enroll <your-org>` on the mint project (see [Mint service administration](../infrastructure/mint-administration.md)). Once enrolled, they will provide you with the mint URL.
+
+### Step 2: Provision inference access
+
+Provision [Workload Identity Federation (WIF)](https://cloud.google.com/iam/docs/workload-identity-federation) infrastructure and grant Agent Platform access in your GCP project:
+
+```bash
+export ORG_NAME="<your-github-org>"
+export GCP_PROJECT="<your-gcp-project>"
+
+fullsend inference provision "$ORG_NAME" \
+  --project "$GCP_PROJECT"
+```
+
+This creates a WIF pool (`fullsend-inference`), an OIDC provider (`github-oidc`), and grants `roles/aiplatform.user` to the WIF principal — allowing GitHub Actions workflows to authenticate and call Agent Platform models. The command is idempotent and safe to re-run.
+
+Note the WIF provider resource name printed by the command — you will need it for the next step.
+
+### Step 3: Set up GitHub
+
+Configure your GitHub organization with the mint URL and inference settings:
+
+```bash
+fullsend github setup "$ORG_NAME" \
+  --mint-url="<MINT_URL>" \
+  --inference-project "$GCP_PROJECT" \
+  --inference-wif-provider "<WIF_PROVIDER_FROM_STEP_2>"
+```
+
+This creates the `.fullsend` config repository, installs GitHub Apps (opens browser windows for each agent role), configures org-level variables and secrets, and prompts you to enroll repositories.
+
+The `--inference-region` flag defaults to `global` for the broadest model availability. For a list of all available regions, see the [Agent Platform documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/use-claude).
+
+See [Setting up with pre-provisioned infrastructure](github-setup.md) for the full `github setup` reference, including per-repo mode, `--skip-app-setup`, and day-2 operations.
+
+### Step 4: Merge enrollment PRs
+
+If you enrolled repositories during setup, the installer dispatches a workflow that creates an enrollment PR in each enrolled repo. These PRs add a shim workflow (`.github/workflows/fullsend.yaml`) that wires events to the agent pipeline.
+
+Review and merge each enrollment PR to complete enrollment.
+
+### Step 5: Test the pipeline
+
+Once a repo is enrolled (enrollment PR merged):
+
+1. Create an issue in the enrolled repo
+2. The triage agent picks it up automatically — check the Actions tab in both the target repo and `.fullsend` for workflow run logs
+
+---
+
+## All-in-one admin install
+
+For administrators who manage both GCP infrastructure and GitHub configuration, `fullsend admin install` provisions everything in a single command: token mint, inference WIF, GitHub Apps, and repository enrollment.
+
+### Additional prerequisites
+
+All prerequisites from the [end-user setup](#prerequisites) above, plus:
+
+- **GCP project** with the following additional APIs enabled (for the token mint):
+
+  ```bash
+  gcloud services enable \
+    cloudfunctions.googleapis.com \
+    run.googleapis.com \
+    secretmanager.googleapis.com \
+    iamcredentials.googleapis.com \
+    --project="$GCP_PROJECT"
+  ```
+
+  > **Note:** `iamcredentials.googleapis.com` is a runtime dependency — the deployed mint Cloud Function uses it for WIF token exchange, not the CLI itself. It must be enabled before deployment.
+
+- **GCP IAM roles** — the full set required for both mint and inference:
 
   | Role | What it covers |
   |------|----------------|
@@ -36,7 +147,7 @@ This guide walks through installing fullsend in a GitHub organization and enroll
 
   `roles/owner` covers all of the above for users with broad access.
 
-  An administrator with elevated access to the GCP project (for example, with the ability to set IAM policy) can grant all required roles with a single script:
+  An administrator with elevated access to the GCP project can grant all required roles with a single script:
 
   ```bash
   export GCP_PROJECT="my-project-id"    # target GCP project
@@ -70,9 +181,7 @@ The table below lists every scope the installer may request and why. You are nev
 
 > **Per-repo scope note:** Per-repo install (`fullsend admin install <owner/repo>`) only requires `repo` and `workflow` when reusing existing GitHub Apps. Creating new apps requires `admin:org`.
 
-The `--inference-region` flag defaults to `global` for the broadest model availability. For a list of all available regions, see the [Agent Platform documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/use-claude).
-
-## 1. Run the installer
+### Run the installer
 
 The installer is interactive. It will open multiple browser windows to create and install a GitHub App for each agent role. Follow the prompts in each window to complete the app setup.
 
@@ -130,84 +239,21 @@ The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and
 
 The installer automatically detects when the deployed mint function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure, org registration, and PEM secrets. Use `--skip-mint-deploy` to explicitly skip the Cloud Function deployment step.
 
-> **Mint URL stability:** The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Adding a new org to an existing mint only updates env vars (`ROLE_APP_IDS`, `ALLOWED_ORGS`) without redeploying the function. Existing enrolled repos continue working with no changes. However, deploying to a **different region** (e.g., changing `--mint-region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo variable (`FULLSEND_MINT_URL`) or org variable, so changing the region requires updating every enrolled repo's variable to the new URL. Avoid changing `--mint-region` after initial deployment unless you plan to update all consumers.
-
 ### Multi-org setup
 
-A single token mint can serve multiple GitHub organizations. The first org deploys the mint infrastructure and creates **public unlisted** GitHub Apps; additional orgs reuse the existing mint and install the same apps.
+A single token mint can serve multiple GitHub organizations. See [Mint service administration — Multi-org setup](../infrastructure/mint-administration.md#multi-org-setup) for the complete multi-org workflow.
 
-**First org (deploys mint + creates public apps):**
-
-Set the variables for the first organization:
-
-```bash
-export FIRST_ORG="<first-github-org>"
-export GCP_PROJECT="<your-gcp-project>"
-```
-
-```bash
-fullsend admin install "$FIRST_ORG" \
-  --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT" \
-  --public
-```
-
-The `--public` flag creates GitHub Apps as public unlisted — they won't appear in the marketplace but can be installed by other organizations via their installation URL.
-
-When the first org uses a custom app set prefix, pass `--app-set` so the apps are named accordingly:
-
-```bash
-fullsend admin install "$FIRST_ORG" \
-  --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT" \
-  --public \
-  --app-set "$FIRST_ORG"
-```
-
-This creates public apps named `{first-org}-fullsend`, `{first-org}-coder`, etc.
-
-**Additional orgs (install existing public apps):**
-
-Set the variables for the additional organization:
-
-```bash
-export ADDITIONAL_ORG="<additional-github-org>"
-```
-
-`GCP_PROJECT` and `FIRST_ORG` carry over from the first-org step above.
-
-```bash
-fullsend admin install "$ADDITIONAL_ORG" \
-  --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT"
-```
-
-The installer auto-detects shared public apps by matching installed app IDs against the mint's `ROLE_APP_IDS`. It copies PEM secrets from the app set to the new org's scoped key and records the actual app slug in `config.yaml`, so subsequent operations find the correct app regardless of naming convention.
-
-If the public apps were created with a custom `--app-set`, pass the same value so the CLI uses the correct slug prefix for convention-based lookups:
-
-```bash
-fullsend admin install "$ADDITIONAL_ORG" \
-  --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT" \
-  --app-set "$FIRST_ORG"
-```
-
-You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery step. PEMs use org-scoped naming (`fullsend-{org}--{role}-app-pem`), so each org's secrets are stored independently. For public apps (shared across orgs), the provisioner copies the same PEM under each org's scoped key.
-
-> **Note:** Multi-org with `--public` requires all orgs to share the same GitHub Apps. Private apps (the default) are single-org only.
-
-## 2. Merge enrollment PRs
+### Merge enrollment PRs
 
 If you chose to enroll repositories during install, the installer dispatches a workflow that creates an enrollment PR in each enrolled repo. These PRs add a shim workflow (`.github/workflows/fullsend.yaml`) that wires events to the agent pipeline.
 
-Review and merge each enrollment PR to complete enrollment.
+Review and merge each enrollment PR to complete enrollment. Then follow [Step 5: Test the pipeline](#step-5-test-the-pipeline) from the end-user setup to verify agent workflows are running.
 
-## 3. Managing repository enrollment
+### Managing repository enrollment
 
 After installation, you can enroll or unenroll repositories at any time using the `repos` subcommands.
 
-### Enable repositories
+#### Enable repositories
 
 Set the variables for your environment:
 
@@ -232,7 +278,7 @@ The enable command:
 - Triggers the `repo-maintenance` workflow to create enrollment PRs
 - Validates that repositories exist in the organization before making changes
 
-### Disable repositories
+#### Disable repositories
 
 `ORG_NAME` carries over from the enable step above, or set it now:
 
@@ -264,14 +310,7 @@ The disable command:
 - Warns (but does not reject) repository names not found in the config, allowing safe cleanup of deleted repos
 - Does not delete existing shim workflows (merge the unenrollment PR to remove them)
 
-## 4. Test the pipeline
-
-Once a repo is enrolled (enrollment PR merged):
-
-1. Create an issue in the enrolled repo
-2. The triage agent picks it up automatically — check the Actions tab in both the target repo and `.fullsend` for workflow run logs
-
-## 5. Analyze installation status
+### Analyze installation status
 
 The `analyze` command checks the current state of a fullsend installation and reports what is installed, missing, or needs updating. It requires `repo` and `admin:org` scopes.
 
@@ -285,7 +324,7 @@ fullsend admin analyze "$ORG_NAME"
 
 This is a read-only operation — it makes no changes.
 
-## 6. Uninstall
+### Uninstall
 
 The `uninstall` command tears down the fullsend installation for a GitHub organization, removing the `.fullsend` config repo and associated resources. It prompts for confirmation by requiring you to type the exact organization name.
 
@@ -502,10 +541,6 @@ The `admin install` command performs all setup in a single invocation. For organ
 
 | Role | Command | What it does |
 |------|---------|-------------|
-| GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
-| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint, store PEMs (does not grant Agent Platform access — use `inference provision`) |
-| GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
-| GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 | GCP Admin (Inference) | `fullsend inference provision <org\|owner/repo>` | Create WIF pool/provider and grant Agent Platform access (idempotent — safe to re-run for new orgs) |
 | GCP Admin (Inference) | `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF |
 | GCP Admin (Inference) | `fullsend inference status <org\|owner/repo>` | Check WIF health, print config values |
@@ -516,8 +551,59 @@ The `admin install` command performs all setup in a single invocation. For organ
 | GitHub Maintainer | `fullsend github status <org>` | Analyze GitHub-side installation state |
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
 | GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
+| GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
+| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint, store PEMs (does not grant Agent Platform access — use `inference provision`) |
+| GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
-See [Setting up with pre-provisioned infrastructure](github-setup.md) for the complete GitHub maintainer guide.
+See [Setting up with pre-provisioned infrastructure](github-setup.md) for the complete GitHub maintainer guide and [Mint service administration](../infrastructure/mint-administration.md) for the mint admin guide.
+
+### Per-command IAM role breakdown
+
+When using the split-responsibility workflow, each standalone command requires a subset of IAM roles. Use this table to request only what you need.
+
+| IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint enroll` | `mint unenroll` | `mint status` |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | x | x | |
+| `roles/resourcemanager.projectIamAdmin` | x | | | \* | \*\* | | |
+| `roles/iam.serviceAccountAdmin` | | | | x | | | |
+| `roles/secretmanager.admin` | | | | \* | x | x† | |
+| `roles/cloudfunctions.developer` | | | | x | | | |
+| `roles/cloudfunctions.viewer` | | | | | x | x | x |
+| `roles/run.admin` | | | | x | x | x | |
+| `roles/iam.workloadIdentityPoolViewer` | | | x\*\*\* | | | | |
+| `roles/secretmanager.viewer` | | | | | | | x |
+
+\* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
+
+\*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
+
+† `roles/secretmanager.admin` is required for `mint unenroll` only in org-scoped mode. Repo-scoped unenroll does not touch PEM secrets.
+
+\*\*\* All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
+
+Required GCP APIs also differ by command group:
+
+```bash
+# Inference commands (inference provision/deprovision/status):
+gcloud services enable \
+  iam.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  aiplatform.googleapis.com \
+  --project="$GCP_PROJECT"
+
+# Mint commands (mint deploy/enroll/unenroll/status):
+gcloud services enable \
+  iam.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  cloudfunctions.googleapis.com \
+  run.googleapis.com \
+  secretmanager.googleapis.com \
+  iamcredentials.googleapis.com \
+  --project="$GCP_PROJECT"
+```
+
+> **Note:** `iamcredentials.googleapis.com` is a runtime dependency — the deployed mint Cloud Function uses it for WIF token exchange, not the CLI itself. It must be enabled before `mint deploy`.
 
 ---
 
@@ -559,7 +645,7 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --condition=None
 ```
 
-> **⚠️ Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization, not just `.fullsend`. This is required for orgs using per-repo mode (where multiple repos need to authenticate to GCP independently), but it significantly widens the trust boundary compared to per-org-only setups. Note that `fullsend admin install <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
+> **Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization, not just `.fullsend`. This is required for orgs using per-repo mode (where multiple repos need to authenticate to GCP independently), but it significantly widens the trust boundary compared to per-org-only setups. Note that `fullsend admin install <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
 >
 > **For per-org-only setups**, use the tighter `assertion.repository == '$ORG_NAME/.fullsend'` condition instead, and scope the WIF principal to `attribute.repository/$ORG_NAME/.fullsend`. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
 
@@ -579,6 +665,7 @@ fullsend admin install "$ORG_NAME" \
 ## See Also
 
 - [Setting up with pre-provisioned infrastructure](github-setup.md) — GitHub-only setup when GCP is already provisioned
-- [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
-- [Enabling fullsend on private repositories](private-repositories.md) — Additional guardrails for private repos
+- [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
+- [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
+- [Enabling fullsend on private repositories](../infrastructure/private-repositories.md) — Additional guardrails for private repos
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details

@@ -22,21 +22,19 @@ For the all-in-one setup that provisions both GCP and GitHub in a single command
 
 ## Roles and responsibilities
 
-fullsend separates infrastructure management into distinct roles. A single person can hold multiple roles, but the CLI supports splitting them across teams:
+This guide covers the **GitHub Maintainer** role. The GCP-side work (token mint and inference WIF) is handled by a GCP administrator before you start. Here's where this guide fits in the overall workflow:
 
-| Role | Commands | Access Required | Provisions |
-|------|----------|-----------------|------------|
-| **GCP Admin (Mint)**\* | `fullsend mint deploy`, `mint enroll`, `mint unenroll`, `mint status` | GCP project with Cloud Functions, Secret Manager, IAM | Token mint Cloud Function, PEM secrets |
-| **GCP Admin (Inference)** | `fullsend inference provision`, `inference deprovision`, `inference status` | GCP project with IAM, Agent Platform enabled | WIF pool/provider, IAM bindings for Agent Platform |
-| **GitHub Maintainer (org)** | `fullsend github setup <org>`, `github enroll`, `github unenroll`, `github set`, `github status`, `github uninstall`, `github sync-scaffold` | GitHub org owner (`admin:org` scope) | GitHub Apps, config repo, org variables, workflows, enrollment |
-| **GitHub Maintainer (repo)** | `fullsend github setup <owner/repo>`, `github set` | GitHub repo admin (`repo` + `workflow` scopes) | Repo-level secrets, variables, shim workflow |
-| **Full Admin** | `fullsend admin install` | GCP + GitHub | Everything above in one command |
+| Role | What they do | Covered in |
+|------|-------------|------------|
+| **GCP Admin (Mint)** | Deploy token mint, enroll orgs | [Mint service administration](../infrastructure/mint-administration.md) |
+| **GCP Admin (Inference)** | Provision WIF and Agent Platform access | [Installing fullsend — standalone commands](installation.md#standalone-commands) |
+| **GitHub Maintainer (org)** | Configure GitHub org — Apps, config repo, enrollment | **This guide** |
+| **GitHub Maintainer (repo)** | Configure a single repo — secrets, variables, shim workflow | **This guide** ([per-repo setup](#per-repo-setup)) |
+| **Full Admin** | All of the above in one command | [Installing fullsend — all-in-one](installation.md#all-in-one-admin-install) |
 
-\*The mint is fully self-hostable, but most users currently use the mint service hosted by the fullsend team for convenience. Work is in progress to offer this as a secure, trusted public service — reducing the need for per-org `mint enroll` operations and GCP-side management.
+The typical workflow: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then hands you the mint URL and WIF provider resource name. You run `github setup` with those values. For the full role breakdown with IAM roles, see [Installing fullsend — standalone commands](installation.md#standalone-commands).
 
-The typical workflow: a GCP admin runs `mint deploy` (one-time), `mint enroll` (once per new org or repo), and `inference provision` (to create WIF and grant Agent Platform access), then hands off the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup`. For users of the fullsend-hosted mint, `mint deploy` is already done — only `mint enroll` and `inference provision` are needed for new orgs (planned to be simplified in a future release).
-
-**Ordering flexibility:** GCP operations (`mint deploy`, `mint enroll`, `inference provision`) are pure GCP — they do not interact with GitHub and do not require the GitHub Apps to be installed. `mint enroll` copies app IDs from the mint's existing configuration (defaulting to `--app-set=fullsend-ai`), not from the target org's GitHub installations. The GitHub Apps must be installed on the target org before **agents can run**, but the timing relative to GCP setup is flexible:
+The GitHub Apps must be installed on the target org before **agents can run**, but the timing relative to GCP setup is flexible:
 
 - **Per-org mode** — `github setup <org>` handles app installation interactively (opens a browser for each role), so a single org owner can run it without pre-installing apps.
 - **Per-org with `--skip-app-setup`** — an org owner must [pre-install the apps](#default-fullsend-ai-app-set-installation-urls) before running setup.
@@ -56,30 +54,6 @@ When using the default app set, an **org owner** installs each app from these UR
 | prioritize | <https://github.com/apps/fullsend-ai-prioritize/installations/new> |
 
 > **Tip:** To verify apps are installed, run `gh api /orgs/{org}/installations --jq '.installations[].app_slug'`.
-
-### Bootstrapping PEMs during mint deploy (optional)
-
-Most `mint deploy` runs need only `--project` and `--region` — they deploy or update the Cloud Function and GCP infrastructure without touching PEM secrets.
-
-For **first-time setup only**, the optional `--pem-dir` flag seeds the default app set's PEM secrets during deployment. This allows `mint enroll` to work immediately without running `admin install` first.
-
-```bash
-# Typical deploy (no PEMs needed):
-fullsend mint deploy --project=<PROJECT>
-
-# First-time bootstrap with PEMs:
-fullsend mint deploy --project=<PROJECT> --pem-dir=/path/to/pems
-```
-
-The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g., `fullsend.pem`, `triage.pem`, `coder.pem`, `review.pem`, `retro.pem`, `prioritize.pem`). The CLI auto-discovers each app's numeric ID from the GitHub API by looking up the public app slug (`fullsend-ai-{role}`).
-
-After deploying with PEMs, enrollment works directly:
-
-```bash
-fullsend mint enroll acme-corp --project=<PROJECT>
-```
-
-> **Note:** PEM bootstrapping requires the GitHub Apps to already exist as public apps. For the default `fullsend-ai` app set, these are the apps maintained by the fullsend-ai organization. If you are using a custom app set with private apps, use `admin install` instead.
 
 ## Per-org setup
 
@@ -272,6 +246,7 @@ Use `admin install` when one person has both GCP and GitHub access. Use the stan
 
 ## See Also
 
-- [Installing fullsend](installation.md) — All-in-one setup (GCP + GitHub)
-- [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets details
+- [Installing fullsend](installation.md) — End-user setup (inference + GitHub) and all-in-one admin install
+- [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
+- [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details

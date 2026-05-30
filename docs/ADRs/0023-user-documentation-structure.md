@@ -92,3 +92,7 @@ docs/guides/
 - New guides follow a consistent structure enforced by the writing rules, reducing maintenance burden.
 - The audience split must be maintained as new guides are added; the `docs/guides/README.md` index is the enforcement point.
 - Existing design documents (`docs/problems/`, `docs/ADRs/`, `docs/architecture.md`) remain unchanged — guides link into them, not the other way around.
+
+## Revision (2026-05)
+
+The original `admin/` directory was split into `getting-started/` and `infrastructure/` to better reflect the distinct audiences: **org maintainers** who onboard organizations (getting-started) vs. **platform operators** who deploy and manage GCP infrastructure like the token mint and WIF (infrastructure). The `user/` and `dev/` directories remain unchanged. See `docs/guides/README.md` for the current layout.

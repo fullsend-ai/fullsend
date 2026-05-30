@@ -4,14 +4,20 @@ Practical how-to documentation for fullsend, organized by audience. For design d
 
 Structure decided in [ADR 0023](../ADRs/0023-user-documentation-structure.md).
 
-## Administration
+## Getting started
 
-Guides for org administrators who install, configure, and manage fullsend.
+Guides for onboarding organizations and configuring GitHub — the first thing most users need.
 
-- [Installing fullsend](admin/installation.md) — All-in-one setup for a GitHub organization (GCP + GitHub)
-- [Setting up with pre-provisioned infrastructure](admin/github-setup.md) — GitHub-only setup when GCP infrastructure is already provisioned
-- [Infrastructure reference](admin/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
-- [Enabling fullsend on private repositories](admin/private-repositories.md) — Additional guardrails and configuration for private repos
+- [Installing fullsend](getting-started/installation.md) — End-user setup (inference + GitHub) and all-in-one admin install
+- [Setting up with pre-provisioned infrastructure](getting-started/github-setup.md) — GitHub-only setup when GCP infrastructure is already provisioned
+
+## Infrastructure
+
+Guides for platform operators who deploy and manage the GCP-side infrastructure (token mint, WIF, secrets).
+
+- [Mint service administration](infrastructure/mint-administration.md) — Deploying and managing the token mint Cloud Function
+- [Infrastructure reference](infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
+- [Enabling fullsend on private repositories](infrastructure/private-repositories.md) — Additional guardrails and configuration for private repos
 
 ## User guides
 
@@ -19,6 +25,9 @@ Guides for developers working in repositories where fullsend is active.
 
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
+- [Customizing agents](user/customizing-agents.md) — Harness configurations and layered content resolution for your org and repos
+- [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
+- [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
 
 ## Development
 

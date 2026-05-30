@@ -47,11 +47,12 @@ The `admin install` command performs all setup in a single invocation. The `mint
 
 | `admin install` Phase | Standalone Command | Required Access |
 |-----------------------|--------------------|-----------------|
-| Phases 1-3: Mint provisioning | `fullsend mint deploy` + `fullsend mint enroll` | GCP project (mint) |
-| Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference) |
+| Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin` |
+| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/secretmanager.admin`, `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin`; per-repo mode also needs `roles/resourcemanager.projectIamAdmin` |
+| Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
-The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Setting up with pre-provisioned infrastructure](../admin/github-setup.md).
+The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md).
 
 ### Token Resolution Chain
 
@@ -497,6 +498,8 @@ var executableFiles = map[string]struct{}{
 ## See Also
 
 - [Local Development](local-dev.md) — Development environment setup
-- [Setting up with pre-provisioned infrastructure](../admin/github-setup.md) — GitHub-only setup guide
-- [Infrastructure Reference](../admin/infrastructure-reference.md) — Admin infrastructure details
+- [Installing fullsend](../getting-started/installation.md) — End-user setup and all-in-one admin install
+- [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup guide
+- [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
+- [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
 - [Customizing Agents](../user/customizing-agents.md) — User customization guide

@@ -9,18 +9,18 @@ const tree: ManifestNode[] = [
     children: [
       {
         type: "dir",
-        name: "admin",
+        name: "getting-started",
         children: [
           {
             type: "file",
             name: "installation",
-            routeKey: "guides/admin/installation",
+            routeKey: "guides/getting-started/installation",
             title: "Installation Guide",
           },
           {
             type: "file",
             name: "config",
-            routeKey: "guides/admin/config",
+            routeKey: "guides/getting-started/config",
             title: "Configuration",
           },
         ],
@@ -74,12 +74,12 @@ describe("filterTree", () => {
         children: [
           {
             type: "dir",
-            name: "admin",
+            name: "getting-started",
             children: [
               {
                 type: "file",
                 name: "installation",
-                routeKey: "guides/admin/installation",
+                routeKey: "guides/getting-started/installation",
                 title: "Installation Guide",
               },
             ],
@@ -102,7 +102,7 @@ describe("filterTree", () => {
   });
 
   it("matches dir name and keeps full subtree", () => {
-    const result = filterTree(tree, "admin");
+    const result = filterTree(tree, "getting-started");
     expect(result).toEqual([
       {
         type: "dir",
@@ -110,18 +110,18 @@ describe("filterTree", () => {
         children: [
           {
             type: "dir",
-            name: "admin",
+            name: "getting-started",
             children: [
               {
                 type: "file",
                 name: "installation",
-                routeKey: "guides/admin/installation",
+                routeKey: "guides/getting-started/installation",
                 title: "Installation Guide",
               },
               {
                 type: "file",
                 name: "config",
-                routeKey: "guides/admin/config",
+                routeKey: "guides/getting-started/config",
                 title: "Configuration",
               },
             ],
@@ -140,12 +140,12 @@ describe("filterTree", () => {
         children: [
           {
             type: "dir",
-            name: "admin",
+            name: "getting-started",
             children: [
               {
                 type: "file",
                 name: "installation",
-                routeKey: "guides/admin/installation",
+                routeKey: "guides/getting-started/installation",
                 title: "Installation Guide",
               },
             ],
@@ -156,7 +156,7 @@ describe("filterTree", () => {
   });
 
   it("matches against file routeKey (path)", () => {
-    const result = filterTree(tree, "admin config");
+    const result = filterTree(tree, "started config");
     expect(result).toEqual([
       {
         type: "dir",
@@ -164,12 +164,12 @@ describe("filterTree", () => {
         children: [
           {
             type: "dir",
-            name: "admin",
+            name: "getting-started",
             children: [
               {
                 type: "file",
                 name: "config",
-                routeKey: "guides/admin/config",
+                routeKey: "guides/getting-started/config",
                 title: "Configuration",
               },
             ],
@@ -180,7 +180,7 @@ describe("filterTree", () => {
   });
 
   it("multi-word query with no combined match returns empty", () => {
-    const result = filterTree(tree, "admin readme");
+    const result = filterTree(tree, "started readme");
     expect(result).toEqual([]);
   });
 });

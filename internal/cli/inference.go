@@ -76,7 +76,16 @@ Repo-scoped mode (e.g. 'fullsend inference provision acme/widget'):
 After provisioning, prints the WIF provider resource name for handoff
 to the GitHub admin who runs 'fullsend admin install'.
 
-WIF pools are always created at locations/global.`,
+WIF pools are always created at locations/global.
+
+Required GCP APIs (gcloud services enable):
+  - iam.googleapis.com
+  - cloudresourcemanager.googleapis.com
+  - aiplatform.googleapis.com
+
+Required IAM roles on the target project:
+  - roles/iam.workloadIdentityPoolAdmin        (create WIF pools and providers)
+  - roles/resourcemanager.projectIamAdmin      (grant roles/aiplatform.user to WIF principals)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -220,7 +229,13 @@ func newInferenceStatusCmd() *cobra.Command {
 configuration values for handoff to the GitHub admin.
 
 Use --format=env to print KEY=value pairs suitable for copying.
-Use --format=json to get a machine-readable status + config output.`,
+Use --format=json to get a machine-readable status + config output.
+
+Requires the same GCP APIs as 'inference provision' (see 'fullsend inference provision --help').
+
+Required IAM roles on the target project:
+  - roles/iam.workloadIdentityPoolViewer          (read WIF pools and providers)
+  - roles/browser                                  (resourcemanager.projects.get)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -436,7 +451,12 @@ Repo-scoped mode (e.g. 'fullsend inference deprovision acme/widget'):
 
 Note: the IAM binding (roles/aiplatform.user) is NOT automatically
 revoked. To fully revoke access, remove the IAM binding manually in
-the GCP console or via gcloud.`,
+the GCP console or via gcloud.
+
+Requires the same GCP APIs as 'inference provision' (see 'fullsend inference provision --help').
+
+Required IAM roles on the target project:
+  - roles/iam.workloadIdentityPoolAdmin        (update or delete WIF providers)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
