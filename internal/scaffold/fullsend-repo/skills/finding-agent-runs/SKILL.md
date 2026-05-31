@@ -13,13 +13,15 @@ Given an issue or PR, find the fullsend agent workflow runs using `gh` CLI.
 ## Setup
 
 ```bash
-ORG=$(echo "${REPO_FULL_NAME:-$(gh repo view --json owner -q .owner.login)}" | cut -d/ -f1)
-DISPATCH_REPO="${ORG}/.fullsend"
+SOURCE_REPO="${REPO_FULL_NAME:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
+ORG=$(echo "${SOURCE_REPO}" | cut -d/ -f1)
+CONFIG_REPO="${ORG}/.fullsend"
 ```
 
-The shim workflow (`fullsend.yaml`) runs in the source repo on `main`. It
-dispatches to `${DISPATCH_REPO}` which runs the agent workflows
-(`triage.yml`, `code.yml`, `review.yml`, `retro.yml`).
+Per-org installs use synchronous `workflow_call`: the enrolled-repo shim
+(`fullsend.yaml`) calls `${CONFIG_REPO}` `dispatch.yml`, which runs agent
+stages as jobs in the **same** Actions run on `SOURCE_REPO`. There are no
+separate `dispatch.yml` runs in `.fullsend` to look up.
 
 ## Issue → Agent Runs
 
@@ -28,15 +30,15 @@ dispatches to `${DISPATCH_REPO}` which runs the agent workflows
 Triage dispatches from `issue_comment` events (the `/fs-triage` command):
 
 ```bash
-gh run list --workflow=fullsend.yaml \
+gh run list --repo "${SOURCE_REPO}" --workflow=fullsend.yaml \
   --json databaseId,status,conclusion,event,createdAt \
   -q '.[] | select(.event == "issue_comment")'
 ```
 
-Match by timestamp against the `/fs-triage` comment (`gh issue view <N> --json comments`), then confirm `dispatch-triage` succeeded:
+Match by timestamp against the `/fs-triage` comment (`gh issue view <N> --json comments`), then confirm the **Triage** stage job succeeded:
 
 ```bash
-gh run view <RUN_ID> --json jobs \
+gh run view <RUN_ID> --repo "${SOURCE_REPO}" --json jobs \
   -q '.jobs[] | "\(.name) \(.status)/\(.conclusion)"'
 ```
 
@@ -45,47 +47,35 @@ gh run view <RUN_ID> --json jobs \
 Code dispatches from `issues` events when `ready-to-code` is applied:
 
 ```bash
-gh run list --workflow=fullsend.yaml \
+gh run list --repo "${SOURCE_REPO}" --workflow=fullsend.yaml \
   --json databaseId,status,conclusion,event,createdAt \
   -q '.[] | select(.event == "issues")'
 ```
 
-Confirm `dispatch-code completed/success` in the jobs list.
-
-### Find the actual agent run
-
-Match by timestamp in the dispatch repo (runs start within seconds):
-
-```bash
-gh run list --repo "${DISPATCH_REPO}" --workflow=triage.yml --limit 5 \
-  --json databaseId,status,conclusion,createdAt
-
-gh run list --repo "${DISPATCH_REPO}" --workflow=code.yml --limit 5 \
-  --json databaseId,status,conclusion,createdAt
-```
+Confirm the **Code** job completed successfully in that run's job list.
 
 ## PR → Agent Runs
 
 ### Code agent run
 
 The PR branch follows `agent/{issue}-{slug}`. Extract the issue number and
-use the issue recipe above to find the code dispatch.
+use the issue recipe above to find the code dispatch run on `SOURCE_REPO`.
 
 ### Review dispatch
 
 Review dispatches from `pull_request_target` events. Match by `headBranch`:
 
 ```bash
-gh run list --workflow=fullsend.yaml \
+gh run list --repo "${SOURCE_REPO}" --workflow=fullsend.yaml \
   --json databaseId,status,conclusion,event,headBranch,createdAt \
   -q '.[] | select(.event == "pull_request_target")'
 ```
 
-Confirm `dispatch-review completed/success`, then find the run:
+Confirm the **Review** job completed successfully:
 
 ```bash
-gh run list --repo "${DISPATCH_REPO}" --workflow=review.yml --limit 5 \
-  --json databaseId,status,conclusion,createdAt
+gh run view <RUN_ID> --repo "${SOURCE_REPO}" --json jobs \
+  -q '.jobs[] | "\(.name) \(.status)/\(.conclusion)"'
 ```
 
 ### Retro dispatch
@@ -94,29 +84,26 @@ Retro dispatches from `pull_request_target` (on PR close) and from
 `issue_comment` events (the `/fs-retro` command):
 
 ```bash
-gh run list --workflow=fullsend.yaml \
+gh run list --repo "${SOURCE_REPO}" --workflow=fullsend.yaml \
   --json databaseId,status,conclusion,event,createdAt \
   -q '.[] | select(.event == "pull_request_target" or .event == "issue_comment")'
 ```
 
-Find the actual retro agent run:
-
-```bash
-gh run list --repo "${DISPATCH_REPO}" --workflow=retro.yml --limit 5 \
-  --json databaseId,status,conclusion,createdAt
-```
+Confirm the **Retro** job completed successfully in the same run.
 
 ## Reference
 
 ### Logs and artifacts
 
+Use the shim run ID on `SOURCE_REPO` (not `${CONFIG_REPO}`):
+
 ```bash
 # Search logs for errors
-gh run view <RUN_ID> --repo "${DISPATCH_REPO}" --log 2>&1 \
+gh run view <RUN_ID> --repo "${SOURCE_REPO}" --log 2>&1 \
   | grep -i "error\|fail\|exit code"
 
-# Download session artifact
-gh run download <RUN_ID> --repo "${DISPATCH_REPO}"
+# Download session artifact (uploaded by the stage job in this run)
+gh run download <RUN_ID> --repo "${SOURCE_REPO}"
 ```
 
 ### Common failure signatures

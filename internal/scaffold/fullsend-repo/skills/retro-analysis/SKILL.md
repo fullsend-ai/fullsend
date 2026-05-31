@@ -15,66 +15,61 @@ Given the originating PR or issue, reconstruct what agents ran and in what order
 ### Setup
 
 ```bash
-ORG=$(echo "$REPO_FULL_NAME" | cut -d/ -f1)
-DISPATCH_REPO="${ORG}/.fullsend"
+SOURCE_REPO="${REPO_FULL_NAME:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
+ORG=$(echo "${SOURCE_REPO}" | cut -d/ -f1)
+CONFIG_REPO="${ORG}/.fullsend"
 ```
+
+Per-org installs run shim → `dispatch.yml` → stage jobs synchronously in one
+Actions run on `SOURCE_REPO`. Stage names in the job list include **Route**,
+**Triage**, **Code**, **Review**, **Fix**, **Retro**, and **Prioritize**.
 
 ### From an issue
 
-1. Find triage dispatches (triggered by `/fs-triage` command or `needs-info` label responses):
+1. Find shim runs on the source repo (triage/code triggered by issue events or `/fs-triage`):
 
 ```bash
-gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml \
+gh run list --repo "$SOURCE_REPO" --workflow=fullsend.yaml \
   --json databaseId,status,conclusion,event,createdAt \
   -q '.[] | select(.event == "issue_comment" or .event == "issues")'
 ```
 
-2. Find the corresponding agent runs in the dispatch repo:
+2. Inspect stage jobs inside that run (not separate runs in `.fullsend`):
 
 ```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=triage.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-3. If the issue reached `ready-to-code`, find code dispatches:
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=code.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
+gh run view <RUN_ID> --repo "$SOURCE_REPO" --json jobs \
+  -q '.jobs[] | "\(.name) \(.status)/\(.conclusion) \(.startedAt)"'
 ```
 
 ### From a PR
 
-1. The PR branch follows `agent/{issue}-{slug}`. Extract the issue number to trace the full history.
+1. The PR branch follows `agent/{issue}-{slug}`. Extract the issue number to trace the full history on `SOURCE_REPO`.
 
-2. Find review dispatches:
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=review.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-3. Find fix dispatches (if review requested changes):
+2. Find shim runs for review/fix/retro (match by `headBranch` or timestamp):
 
 ```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=fix.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
+gh run list --repo "$SOURCE_REPO" --workflow=fullsend.yaml \
+  --json databaseId,status,conclusion,event,headBranch,createdAt \
+  -q '.[] | select(.event == "pull_request_target" or .event == "issue_comment")'
 ```
 
 ### Reading agent logs and artifacts
 
 ```bash
 # View job outcomes
-gh run view <RUN_ID> --repo "$DISPATCH_REPO" --json jobs \
+gh run view <RUN_ID> --repo "$SOURCE_REPO" --json jobs \
   -q '.jobs[] | "\(.name) \(.status)/\(.conclusion)"'
 
 # Search logs for errors
-gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
+gh run view <RUN_ID> --repo "$SOURCE_REPO" --log 2>&1 \
   | grep -i "error\|fail\|exit code"
 
 # Download session artifacts (JSONL traces)
-gh run download <RUN_ID> --repo "$DISPATCH_REPO"
+gh run download <RUN_ID> --repo "$SOURCE_REPO"
 ```
+
+Use `${CONFIG_REPO}` only when reading harness/agent definitions under
+`.fullsend` (files), not for workflow run IDs.
 
 ## Exploration strategy
 
