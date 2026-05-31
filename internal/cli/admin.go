@@ -1681,7 +1681,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
 		layers.NewWorkflowsLayer(org, client, printer, ""),
 		layers.NewSecretsLayer(org, client, nil, printer),
-		layers.NewInferenceLayer(org, client, nil, printer),
+		layers.NewInferenceLayer(org, client, nil, nil, printer),
 		dispatchLayer,
 		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
 	)
@@ -1848,7 +1848,7 @@ func buildLayerStack(
 		layers.NewWorkflowsLayer(org, client, printer, user),
 		layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendorBinary, vendorFn),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
-		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
+		layers.NewInferenceLayer(org, client, inferenceProvider, enrolledRepoIDs, printer),
 		dispatchLayer,
 		layers.NewEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer),
 	)
@@ -2256,12 +2256,9 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		}
 	}
 
-	// Sync org variable visibility so enrolled repos can read dispatch
-	// variables like FULLSEND_MINT_URL. Runs even when changed == 0 to
-	// reconcile a previously failed best-effort sync on re-run.
-	if cfg.Dispatch.Mode == "oidc-mint" {
-		syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
-	}
+	// Sync org secret/variable visibility for enrolled repos. Runs even when
+	// changed == 0 to reconcile a previously failed best-effort sync on re-run.
+	syncEnrolledRepoCredentialVisibility(ctx, client, printer, org, cfg, allOrgRepos)
 
 	if changed == 0 {
 		return nil
@@ -2281,17 +2278,11 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 // dispatch layer, derived from the gcf provisioner to stay in sync automatically.
 var dispatchOrgVariableNames = gcf.NewProvisioner(gcf.Config{}, nil).OrgVariableNames()
 
-// syncOrgVariableVisibility updates the "selected" repository list for each
-// dispatch org variable so that all currently enrolled repos (plus the config
-// repo) can read them. This is best-effort: failures are logged as warnings
-// but do not fail the enable command, because the repo-maintenance workflow
-// can reconcile this later.
-func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, allOrgRepos []forge.Repository) {
-	// Collect IDs for all enabled repos.
+// enrolledRepoIDsForConfig returns GitHub repo IDs for all enabled repos plus
+// the .fullsend config repo (which needs access to org-scoped credentials).
+func enrolledRepoIDsForConfig(cfg *config.OrgConfig, allOrgRepos []forge.Repository) []int64 {
 	enrolledRepoIDs := collectEnrolledRepoIDs(allOrgRepos, cfg.EnabledRepos())
 
-	// Ensure the config repo (.fullsend) is included — it needs access
-	// to dispatch variables for its own workflows.
 	seen := make(map[int64]bool, len(enrolledRepoIDs))
 	for _, id := range enrolledRepoIDs {
 		seen[id] = true
@@ -2302,6 +2293,28 @@ func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer
 			break
 		}
 	}
+	return enrolledRepoIDs
+}
+
+// syncEnrolledRepoCredentialVisibility updates org-level dispatch variables and
+// inference secrets/variables so only currently enrolled repos (plus .fullsend)
+// can read them. Best-effort: failures are warnings, not command errors.
+func syncEnrolledRepoCredentialVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, allOrgRepos []forge.Repository) {
+	if cfg.Dispatch.Mode == "oidc-mint" {
+		syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
+	}
+	if cfg.Inference.Provider != "" {
+		syncInferenceCredentialVisibility(ctx, client, printer, org, cfg, allOrgRepos)
+	}
+}
+
+// syncOrgVariableVisibility updates the "selected" repository list for each
+// dispatch org variable so that all currently enrolled repos (plus the config
+// repo) can read them. This is best-effort: failures are logged as warnings
+// but do not fail the enable command, because the repo-maintenance workflow
+// can reconcile this later.
+func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, allOrgRepos []forge.Repository) {
+	enrolledRepoIDs := enrolledRepoIDsForConfig(cfg, allOrgRepos)
 
 	for _, varName := range dispatchOrgVariableNames {
 		exists, checkErr := client.OrgVariableExists(ctx, org, varName)
@@ -2321,6 +2334,14 @@ func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer
 			printer.StepDone(fmt.Sprintf("Updated %s visibility (%d repos)", varName, len(enrolledRepoIDs)))
 		}
 	}
+}
+
+// syncInferenceCredentialVisibility updates org-level inference secret and
+// variable visibility for enrolled repos. Best-effort like dispatch sync.
+func syncInferenceCredentialVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, allOrgRepos []forge.Repository) {
+	repoIDs := enrolledRepoIDsForConfig(cfg, allOrgRepos)
+	layer := layers.NewInferenceLayer(org, client, nil, nil, printer)
+	layer.SyncEnrolledRepoAccess(ctx, repoIDs)
 }
 
 // runDisableRepos disables the specified repositories from fullsend enrollment.
@@ -2416,14 +2437,12 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 		return err
 	}
 
-	// Sync org variable visibility to revoke access for disabled repos.
-	if cfg.Dispatch.Mode == "oidc-mint" {
-		allOrgRepos, listErr := client.ListOrgRepos(ctx, org)
-		if listErr != nil {
-			printer.StepWarn(fmt.Sprintf("could not list org repos for variable sync: %v", listErr))
-		} else {
-			syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
-		}
+	// Sync org secret/variable visibility to revoke access for disabled repos.
+	allOrgRepos, listErr := client.ListOrgRepos(ctx, org)
+	if listErr != nil {
+		printer.StepWarn(fmt.Sprintf("could not list org repos for credential sync: %v", listErr))
+	} else {
+		syncEnrolledRepoCredentialVisibility(ctx, client, printer, org, cfg, allOrgRepos)
 	}
 
 	printer.Blank()

@@ -810,6 +810,38 @@ func TestRunEnableRepos_VariableSyncErrorDoesNotBlockEnable(t *testing.T) {
 	require.NoError(t, err, "enable should succeed even when variable sync fails")
 }
 
+func TestRunEnableRepos_SyncsInferenceOrgSecretsWhenConfigured(t *testing.T) {
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": false,
+		"api":     true,
+	})
+	cfg.Dispatch.Mode = "oidc-mint"
+	cfg.Inference.Provider = "vertex"
+
+	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
+	client.Repos[0].ID = 1
+	client.Repos[1].ID = 10
+	client.Repos[2].ID = 20
+	client.OrgSecrets = map[string]bool{
+		"testorg/FULLSEND_GCP_WIF_PROVIDER": true,
+		"testorg/FULLSEND_GCP_PROJECT_ID":   true,
+	}
+	client.OrgVariables = map[string]bool{"testorg/FULLSEND_GCP_REGION": true}
+	client.VariableValues["testorg/.fullsend/FULLSEND_GCP_REGION"] = "global"
+	client.VariablesExist["testorg/.fullsend/FULLSEND_GCP_REGION"] = true
+
+	printer := ui.New(&discardWriter{})
+
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	require.NoError(t, err)
+
+	// Enabled repos: web-app + api + .fullsend
+	wantIDs := []int64{10, 20, 1}
+	assert.Equal(t, wantIDs, client.OrgSecretRepoIDs["testorg/FULLSEND_GCP_WIF_PROVIDER"])
+	assert.Equal(t, wantIDs, client.OrgSecretRepoIDs["testorg/FULLSEND_GCP_PROJECT_ID"])
+	assert.Equal(t, wantIDs, client.OrgVariableRepoIDs["testorg/FULLSEND_GCP_REGION"])
+}
+
 func TestRunEnableRepos_SkipsVariableSyncWhenVariableNotExists(t *testing.T) {
 	// When the org variable doesn't exist yet (mint not provisioned),
 	// sync should skip gracefully.
@@ -1197,7 +1229,7 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
 		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), ""),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
-		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
+		layers.NewInferenceLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
 		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
 		layers.NewEnrollmentLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
 		layers.NewVendorBinaryLayer("test-org", ".fullsend", nil, ui.New(&discardWriter{}), false, nil),
