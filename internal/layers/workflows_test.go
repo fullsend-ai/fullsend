@@ -46,36 +46,38 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 		paths[f.Path] = string(f.Content)
 	}
 
-	assert.Contains(t, paths, ".github/workflows/triage.yml")
-	assert.Contains(t, paths, ".github/workflows/code.yml")
-	assert.Contains(t, paths, ".github/workflows/review.yml")
-	assert.Contains(t, paths, ".github/workflows/fix.yml")
+	assert.Contains(t, paths, ".github/workflows/dispatch.yml")
+	assert.Contains(t, paths, ".github/workflows/prioritize.yml")
 	assert.Contains(t, paths, ".github/workflows/repo-maintenance.yml")
+	assert.NotContains(t, paths, ".github/workflows/triage.yml")
+	assert.NotContains(t, paths, ".github/workflows/code.yml")
 
 	// CODEOWNERS is included in the same batch.
 	assert.Contains(t, paths, "CODEOWNERS")
 	assert.Contains(t, paths["CODEOWNERS"], "admin-user")
 }
 
-func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
+func TestWorkflowsLayer_Install_DispatchWorkflowContent(t *testing.T) {
 	client := forge.NewFakeClient()
 	layer, _ := newWorkflowsLayer(t, client)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	var triageContent string
+	var dispatchContent string
 	for _, f := range client.CommittedFiles[0].Files {
-		if f.Path == ".github/workflows/triage.yml" {
-			triageContent = string(f.Content)
+		if f.Path == ".github/workflows/dispatch.yml" {
+			dispatchContent = string(f.Content)
 			break
 		}
 	}
-	require.NotEmpty(t, triageContent, "triage.yml should have been written")
+	require.NotEmpty(t, dispatchContent, "dispatch.yml should have been written")
 
-	expected, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
+	expected, err := scaffold.FullsendRepoFile(".github/workflows/dispatch.yml")
 	require.NoError(t, err)
-	assert.Equal(t, string(expected), triageContent)
+	assert.Equal(t, string(expected), dispatchContent)
+	assert.Contains(t, dispatchContent, "reusable-triage.yml@v0")
+	assert.NotContains(t, dispatchContent, "gh workflow run")
 }
 
 func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
@@ -125,7 +127,7 @@ func TestWorkflowsLayer_Install_ExecutableModes(t *testing.T) {
 		modes[f.Path] = f.Mode
 	}
 
-	assert.Equal(t, "100644", modes[".github/workflows/triage.yml"])
+	assert.Equal(t, "100644", modes[".github/workflows/dispatch.yml"])
 	assert.Equal(t, "100644", modes["customized/agents/.gitkeep"])
 	assert.Equal(t, "100644", modes["AGENTS.md"])
 
@@ -187,7 +189,7 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
 	client := &forge.FakeClient{
 		FileContents: map[string][]byte{
-			"test-org/.fullsend/.github/workflows/triage.yml": []byte("triage workflow"),
+			"test-org/.fullsend/.github/workflows/dispatch.yml": []byte("dispatch workflow"),
 		},
 	}
 	layer, _ := newWorkflowsLayer(t, client)
@@ -199,7 +201,7 @@ func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
 	assert.Equal(t, StatusDegraded, report.Status)
 	// Details should list what exists
 	joined := strings.Join(report.Details, " ")
-	assert.Contains(t, joined, "triage.yml")
+	assert.Contains(t, joined, "dispatch.yml")
 	// WouldFix should list what's missing
 	assert.NotEmpty(t, report.WouldFix)
 	fixJoined := strings.Join(report.WouldFix, " ")

@@ -1,6 +1,10 @@
-# Reusable retro agent workflow. Called by thin callers in .fullsend repos
-# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+# Reusable retro agent workflow. Called by dispatch workflows via workflow_call.
+# Runs in the caller's repo context (secrets, checkout).
 name: Retro Agent
+
+concurrency:
+  group: fullsend-retro-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).pull_request.number || fromJSON(inputs.event_payload).issue.number }}
+  cancel-in-progress: true
 
 on:
   workflow_call:

@@ -167,10 +167,6 @@ func TestAdminInstallUninstall(t *testing.T) {
 	// scripts/, env/) and upstream-only dirs (.github/actions/, .github/scripts/) are
 	// provided at runtime via sparse checkout in reusable workflows.
 	for _, path := range []string{
-		".github/workflows/triage.yml",
-		".github/workflows/code.yml",
-		".github/workflows/review.yml",
-		".github/workflows/fix.yml",
 		".github/workflows/dispatch.yml",
 		".github/workflows/repo-maintenance.yml",
 		".github/workflows/prioritize.yml",
@@ -254,6 +250,11 @@ func runTriageDispatchSmokeTest(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
+	// Capture a lower-bound timestamp *before* creating the issue.
+	// The shim/dispatch workflows can start very quickly, and we only want to
+	// filter out runs from earlier test phases.
+	issueCreatedAt := time.Now()
+
 	// File a test issue to trigger the shim workflow.
 	issueTitle := fmt.Sprintf("e2e-triage-test-%s", env.runID)
 	issueBody := `## Bug Report
@@ -295,17 +296,14 @@ Files over 64KB save fine if they contain only ASCII characters.`
 		}
 	})
 
-	// Wait for the triage workflow to be dispatched in .fullsend.
-	// The shim fires on issues:opened and dispatches to triage.yml.
-	// The shim typically fires within ~5s of the issue being created,
-	// so 12 attempts at 5s intervals (60s total) is generous.
-	// Filter by CreatedAt to avoid false positives from previous runs.
-	issueCreatedAt := time.Now()
-	t.Log("Waiting for triage workflow to be dispatched...")
-	var triageRun *forge.WorkflowRun
+	// Wait for the enrolled-repo shim (fullsend.yaml). Cross-repo workflow_call
+	// runs appear on the caller repo, not as separate dispatch.yml runs in .fullsend.
+	// Chain: fullsend.yaml → .fullsend/dispatch.yml → reusable-triage (sync).
+	t.Log("Waiting for fullsend shim workflow to run...")
+	var shimRun *forge.WorkflowRun
 	for attempt := 0; attempt < 12; attempt++ {
 		time.Sleep(5 * time.Second)
-		runs, listErr := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, "triage.yml")
+		runs, listErr := env.client.ListWorkflowRuns(ctx, env.org, testRepo, "fullsend.yaml")
 		if listErr != nil {
 			t.Logf("Attempt %d: error listing workflow runs: %v", attempt+1, listErr)
 			continue
@@ -322,24 +320,24 @@ Files over 64KB save fine if they contain only ASCII characters.`
 			}
 			t.Logf("Attempt %d: found run %d (status: %s, conclusion: %s, created: %s)", attempt+1, run.ID, run.Status, run.Conclusion, run.CreatedAt)
 			r := run // avoid loop variable capture
-			triageRun = &r
+			shimRun = &r
 			break
 		}
-		if triageRun != nil {
+		if shimRun != nil {
 			break
 		}
-		t.Logf("Attempt %d: no triage workflow runs found yet", attempt+1)
+		t.Logf("Attempt %d: no fullsend shim workflow runs found yet", attempt+1)
 	}
-	require.NotNil(t, triageRun, "triage workflow should have been dispatched in .fullsend repo")
+	require.NotNil(t, shimRun, "fullsend shim workflow should have run in enrolled repo")
 
 	// Wait for the workflow run to complete (up to 12 minutes: 10-minute agent
 	// timeout + sandbox setup overhead).
-	t.Logf("Waiting for triage workflow run %d to complete...", triageRun.ID)
+	t.Logf("Waiting for fullsend shim workflow run %d to complete...", shimRun.ID)
 	var finalRun *forge.WorkflowRun
 	deadline := time.Now().Add(12 * time.Minute)
 	for time.Now().Before(deadline) {
 		time.Sleep(15 * time.Second)
-		run, getErr := env.client.GetWorkflowRun(ctx, env.org, forge.ConfigRepoName, triageRun.ID)
+		run, getErr := env.client.GetWorkflowRun(ctx, env.org, testRepo, shimRun.ID)
 		if getErr != nil {
 			t.Logf("Error polling workflow run: %v", getErr)
 			continue
@@ -350,18 +348,18 @@ Files over 64KB save fine if they contain only ASCII characters.`
 			break
 		}
 	}
-	require.NotNil(t, finalRun, "triage workflow run should have completed within deadline")
+	require.NotNil(t, finalRun, "fullsend shim workflow run should have completed within deadline")
 
 	// If the run failed, save logs and artifacts for debugging.
 	if finalRun.Conclusion != "success" {
-		runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", env.org, forge.ConfigRepoName, finalRun.ID)
-		fmt.Fprintf(os.Stderr, "::notice::Triage workflow run %d failed (conclusion: %s). Downloading debug artifacts. Run URL: %s\n", finalRun.ID, finalRun.Conclusion, runURL)
+		runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", env.org, testRepo, finalRun.ID)
+		fmt.Fprintf(os.Stderr, "::notice::Fullsend shim run %d failed (conclusion: %s). Downloading debug artifacts. Run URL: %s\n", finalRun.ID, finalRun.Conclusion, runURL)
 
-		debugDir := filepath.Join(env.screenshotDir, fmt.Sprintf("triage-run-%d", finalRun.ID))
+		debugDir := filepath.Join(env.screenshotDir, fmt.Sprintf("fullsend-run-%d", finalRun.ID))
 		_ = os.MkdirAll(debugDir, 0o755)
 
 		// Save workflow logs.
-		logs, logErr := env.client.GetWorkflowRunLogs(ctx, env.org, forge.ConfigRepoName, finalRun.ID)
+		logs, logErr := env.client.GetWorkflowRunLogs(ctx, env.org, testRepo, finalRun.ID)
 		if logErr != nil {
 			t.Logf("Could not fetch run logs: %v", logErr)
 		} else {
@@ -369,15 +367,15 @@ Files over 64KB save fine if they contain only ASCII characters.`
 			if writeErr := os.WriteFile(logPath, []byte(logs), 0o644); writeErr != nil {
 				t.Logf("Could not write logs to %s: %v", logPath, writeErr)
 			} else {
-				fmt.Fprintf(os.Stderr, "::notice file=%s::Triage run %d workflow logs saved\n", logPath, finalRun.ID)
+				fmt.Fprintf(os.Stderr, "::notice file=%s::Fullsend shim run %d workflow logs saved\n", logPath, finalRun.ID)
 			}
 			t.Logf("Workflow run logs:\n%s", logs)
 		}
 
 		// Download run artifacts (transcripts, etc).
-		downloadRunArtifacts(ctx, env.token, env.org, forge.ConfigRepoName, finalRun.ID, debugDir, t)
+		downloadRunArtifacts(ctx, env.token, env.org, testRepo, finalRun.ID, debugDir, t)
 
-		t.Fatalf("Triage workflow run %d concluded with %q, expected success. Debug artifacts saved to %s", finalRun.ID, finalRun.Conclusion, debugDir)
+		t.Fatalf("Fullsend shim workflow run %d concluded with %q, expected success. Debug artifacts saved to %s", finalRun.ID, finalRun.Conclusion, debugDir)
 	}
 
 	// Verify the triage agent posted a comment on the issue.

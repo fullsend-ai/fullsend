@@ -29,9 +29,9 @@ func init() {
 }
 
 // WorkflowsLayer manages workflow files and CODEOWNERS in the .fullsend
-// config repo. It writes the thin caller workflows, composite actions,
-// and a CODEOWNERS file that grants the installing user ownership of all
-// config-repo contents.
+// config repo. It writes dispatch.yml, prioritize.yml, repo-maintenance.yml,
+// composite actions, and a CODEOWNERS file that grants the installing user
+// ownership of all config-repo contents.
 type WorkflowsLayer struct {
 	org               string
 	client            forge.Client

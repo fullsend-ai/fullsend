@@ -1,7 +1,7 @@
 # Reusable dispatch workflow for per-repo installation mode.
 # Routes events to the appropriate stage reusable workflow via conditional
-# workflow_call jobs. This is the per-repo equivalent of the per-org
-# dispatch.yml + thin caller pair.
+# workflow_call jobs. Same direct-dispatch pattern as per-org dispatch.yml
+# (ADR 0041).
 #
 # Flow: shim (per-repo) → reusable-dispatch.yml → reusable-{stage}.yml
 # Nesting: 3 levels of workflow_call (within GitHub's 4-level limit)
@@ -49,7 +49,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped == 'true' && '' || steps.route.outputs.stage }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -412,4 +412,20 @@ jobs:
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
 
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+  prioritize:
+    name: Prioritize
+    needs: route
+    if: needs.route.outputs.stage == 'prioritize'
+    uses: ./.fullsend/.github/workflows/prioritize.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      event_type: ${{ github.event_name }}
+      source_repo: ${{ github.repository }}
+      event_payload: ${{ needs.route.outputs.event_payload }}
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

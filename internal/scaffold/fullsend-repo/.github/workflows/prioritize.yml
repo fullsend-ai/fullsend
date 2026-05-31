@@ -1,7 +1,22 @@
-# fullsend-stage: prioritize
 name: Prioritize
 
 on:
+  workflow_call:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER:
+        required: true
+      FULLSEND_GCP_PROJECT_ID:
+        required: true
   workflow_dispatch:
     inputs:
       event_type:
@@ -40,20 +55,31 @@ jobs:
           ref: v0
           path: .defaults
           sparse-checkout: |
-            internal/scaffold/fullsend-repo/
+            internal/scaffold/fullsend-repo/agents/
+            internal/scaffold/fullsend-repo/skills/
+            internal/scaffold/fullsend-repo/schemas/
+            internal/scaffold/fullsend-repo/harness/
+            internal/scaffold/fullsend-repo/plugins/
+            internal/scaffold/fullsend-repo/policies/
+            internal/scaffold/fullsend-repo/scripts/
+            internal/scaffold/fullsend-repo/env/
+            .github/scripts/
 
       - name: Prepare workspace (upstream defaults + org overrides)
         run: |
           set -euo pipefail
-          SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
-          for dir in ${LAYERED_DIRS}; do
-            if [[ -d "${SRC}/${dir}" ]]; then
+          for dir in agents skills schemas harness plugins policies scripts env; do
+            src=".defaults/internal/scaffold/fullsend-repo/${dir}"
+            if [[ -d "${src}" ]]; then
               mkdir -p "${dir}"
-              cp -r "${SRC}/${dir}/." "${dir}/"
+              cp -r "${src}/." "${dir}/"
             fi
           done
-          for dir in ${LAYERED_DIRS}; do
+          if [[ -d ".defaults/.github/scripts" ]]; then
+            mkdir -p .github/scripts
+            cp -r ".defaults/.github/scripts/." .github/scripts/
+          fi
+          for dir in agents skills schemas harness plugins policies scripts env; do
             if [[ -d "customized/${dir}" ]]; then
               find "customized/${dir}" -type f ! -name '.gitkeep' -print0 \
                 | while IFS= read -r -d '' f; do
@@ -63,8 +89,6 @@ jobs:
                   done
             fi
           done
-          mkdir -p .github/scripts
-          cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
           rm -rf .defaults
 
       - name: Validate enrollment and extract repo metadata

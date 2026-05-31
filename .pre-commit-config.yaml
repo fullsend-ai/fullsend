@@ -68,6 +68,10 @@ repos:
           - property "workflow_repository" is not defined
           - -ignore
           - SC2016
+          - -ignore
+          - 'could not read reusable workflow file for "\./\.github/workflows/prioritize\.yml"'
+          - -ignore
+          - 'could not read reusable workflow file for "\./\.fullsend/\.github/workflows/prioritize\.yml"'
 
   - repo: local
     hooks:

@@ -42,6 +42,7 @@ jobs:
       github.event_name != 'issue_comment'
       || github.event.comment.user.type != 'Bot'
     uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
+    secrets: inherit
     with:
       event_action: ${{ github.event.action }}
 

@@ -1,6 +1,18 @@
-# Reusable fix agent workflow. Called by thin callers in .fullsend repos
-# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+# Reusable fix agent workflow. Called by dispatch workflows via workflow_call.
+# Runs in the caller's repo context (secrets, checkout).
 name: Fix Agent
+
+# Single concurrency group per PR. A human /fix cancels any running fix so the
+# human's instruction takes immediate effect. Bot-triggered runs also cancel
+# previous bot runs on the same PR.
+concurrency:
+  group: >-
+    fullsend-fix-${{ inputs.source_repo }}-${{
+      fromJSON(inputs.event_payload).pull_request.number
+      || fromJSON(inputs.event_payload).issue.number
+      || inputs.pr_number
+    }}
+  cancel-in-progress: true
 
 on:
   workflow_call:
