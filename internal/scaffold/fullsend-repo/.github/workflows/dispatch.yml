@@ -1,4 +1,4 @@
-# lint-workflow-size: max-lines=390
+# lint-workflow-size: max-lines=400
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -43,6 +43,8 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          MINT_URL: ${{ vars.FULLSEND_MINT_URL }}
+          HEAD_REF: ${{ github.head_ref || '' }}
         run: |
           set -euo pipefail
 
@@ -181,6 +183,13 @@ jobs:
               fi
               ;;
           esac
+
+          # Skip offboard dispatch when mint URL is not configured (org never
+          # fully onboarded) — avoids hard failure in the mint step.
+          if [[ -n "$STAGE" && -z "${MINT_URL:-}" && "${HEAD_REF:-}" == fullsend/offboard* ]]; then
+            echo "::notice::Skipping dispatch: FULLSEND_MINT_URL not configured for offboard"
+            STAGE=""
+          fi
 
           if [[ -z "${STAGE}" ]]; then
             echo "No stage matched — skipping dispatch"

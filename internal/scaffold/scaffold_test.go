@@ -243,6 +243,9 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "self-dispatch guard")
 	assert.Contains(t, s, "Scanned")
 	assert.Contains(t, s, "skipped")
+	// Offboard skip: route step clears stage when MINT_URL is absent on offboard branch
+	assert.Contains(t, s, "fullsend/offboard")
+	assert.Contains(t, s, "Skipping dispatch: FULLSEND_MINT_URL not configured for offboard")
 	// Verify OIDC mint is the sole token path
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.Contains(t, s, "oidc-mint")
