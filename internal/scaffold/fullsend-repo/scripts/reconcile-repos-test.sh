@@ -15,6 +15,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 CONFIG_DIR="${TMPDIR}/config"
 MOCK_BIN="${TMPDIR}/bin"
 GH_LOG="${TMPDIR}/gh-calls.log"
+COMMIT_MSG_LOG="${TMPDIR}/commit-msgs.log"
 mkdir -p "${CONFIG_DIR}/templates" "${MOCK_BIN}"
 
 cat > "${CONFIG_DIR}/config.yaml" <<'EOF'
@@ -76,12 +77,13 @@ fi
 
 # Extract --jq filter if present.
 jq_filter=""
+input_file=""
 shift  # consume "api"
 endpoint="\$1"; shift
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --jq) jq_filter="\$2"; shift 2 ;;
-    --input) shift 2 ;;  # consume --input -
+    --input) input_file="\$2"; shift 2 ;;
     --method|--field) shift 2 ;;
     --silent) shift ;;
     *) shift ;;
@@ -115,6 +117,11 @@ case "\$endpoint" in
     json='{"sha":"tree-sha"}'
     ;;
   repos/test-org/test-repo/git/commits)
+    # Capture the commit message from stdin for verification.
+    if [[ "\$input_file" == "-" ]]; then
+      stdin=\$(cat)
+      printf '%s\n' "\$stdin" >> "${COMMIT_MSG_LOG}"
+    fi
     json='{"sha":"desired-commit-sha"}'
     ;;
   repos/test-org/test-repo/git/refs)
@@ -169,3 +176,42 @@ if grep -q "contents/.github/workflows/fullsend.yaml.*--method PUT" "${GH_LOG}";
 fi
 
 echo "PASS: stale shim branch update is atomic"
+
+# --- Test: commit messages include body and Signed-off-by ---
+
+if [ ! -f "${COMMIT_MSG_LOG}" ]; then
+  echo "FAIL: no commit messages were captured"
+  exit 1
+fi
+
+# The commit message is JSON-encoded in the payload; extract the raw
+# multi-line message from the first JSON object in the log.
+COMMIT_MSG=$(jq -r '.message // empty' "${COMMIT_MSG_LOG}" 2>/dev/null)
+if [ -z "$COMMIT_MSG" ]; then
+  echo "FAIL: could not extract commit message from API payload"
+  cat "${COMMIT_MSG_LOG}"
+  exit 1
+fi
+
+# B6: body must be non-empty (second paragraph after blank line).
+if ! printf '%s' "$COMMIT_MSG" | grep -q '^$'; then
+  echo "FAIL: commit message has no blank line separating title from body (gitlint B6 would fail)"
+  printf '%s\n' "$COMMIT_MSG"
+  exit 1
+fi
+
+BODY=$(printf '%s\n' "$COMMIT_MSG" | tail -n +3)
+if [ -z "$BODY" ]; then
+  echo "FAIL: commit message body is empty (gitlint B6 would fail)"
+  printf '%s\n' "$COMMIT_MSG"
+  exit 1
+fi
+
+# CC1: must contain Signed-off-by trailer.
+if ! printf '%s\n' "$COMMIT_MSG" | grep -q 'Signed-off-by:'; then
+  echo "FAIL: commit message has no Signed-off-by line (gitlint CC1 would fail)"
+  printf '%s\n' "$COMMIT_MSG"
+  exit 1
+fi
+
+echo "PASS: commit messages include body and Signed-off-by"
