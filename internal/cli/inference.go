@@ -23,7 +23,7 @@ func newInferenceCmd() *cobra.Command {
 These commands only require GCP project access — no GitHub token or
 mint project is needed. Use them to set up Workload Identity Federation
 for Agent Platform inference, then hand off the WIF provider resource name
-to the GitHub admin who runs 'fullsend admin install'.`,
+to the GitHub admin who runs 'fullsend github setup'.`,
 	}
 	cmd.AddCommand(newInferenceProvisionCmd())
 	cmd.AddCommand(newInferenceStatusCmd())
@@ -74,7 +74,7 @@ Repo-scoped mode (e.g. 'fullsend inference provision acme/widget'):
   Creates a WIF pool and a dedicated provider scoped to a single repo.
 
 After provisioning, prints the WIF provider resource name for handoff
-to the GitHub admin who runs 'fullsend admin install'.
+to the GitHub admin who runs 'fullsend github setup'.
 
 WIF pools are always created at locations/global.
 
@@ -198,7 +198,7 @@ func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, p
 		targetArg = repo
 	}
 	printer.StepInfo("Pass this value to the GitHub setup command:")
-	printer.StepInfo(fmt.Sprintf("  fullsend admin install %s \\", targetArg))
+	printer.StepInfo(fmt.Sprintf("  fullsend github setup %s \\", targetArg))
 	printer.StepInfo(fmt.Sprintf("    --inference-project=%s \\", project))
 	printer.StepInfo(fmt.Sprintf("    --inference-wif-provider=%s", wifProvider))
 	printer.Blank()

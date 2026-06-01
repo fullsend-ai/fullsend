@@ -269,7 +269,7 @@ func newMintCmd() *cobra.Command {
 		Long: `Manage the GCP Cloud Function that mints GitHub App installation tokens.
 
 These commands require GCP project access but do NOT require a GitHub token.
-Use 'fullsend admin install' for GitHub-side setup.`,
+Use 'fullsend github setup' for GitHub-side setup.`,
 	}
 	cmd.AddCommand(newMintDeployCmd())
 	cmd.AddCommand(newMintEnrollCmd())
@@ -631,7 +631,7 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 		fmt.Sprintf("Roles: %s", strings.Join(roleList, ", ")),
 		fmt.Sprintf("Mint URL: %s", discovery.URL),
 		fmt.Sprintf("Next: fullsend inference provision %s --project=<inference-gcp-project>", org),
-		fmt.Sprintf("Then: fullsend admin install %s --mint-url=%s --skip-mint-check", org, discovery.URL),
+		fmt.Sprintf("Then: fullsend github setup %s --mint-url=%s --inference-project=<project> --inference-wif-provider=<wif-provider>", org, discovery.URL),
 	})
 
 	return nil
