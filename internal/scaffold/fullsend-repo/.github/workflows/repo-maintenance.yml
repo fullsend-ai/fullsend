@@ -25,9 +25,9 @@ jobs:
       - name: Extract enrolled repo names from config
         id: repo-list
         run: |
-          REPOS=$(yq '.repos | keys | join(",")' config.yaml)
+          REPOS=$(yq '[.repos | to_entries[] | select(.value.enabled == true) | .key] | join(",")' config.yaml)
           if [[ -z "$REPOS" ]]; then
-            echo "::error::No repos found in config.yaml"
+            echo "::error::No enabled repos found in config.yaml"
             exit 1
           fi
           echo "names=$REPOS" >> "$GITHUB_OUTPUT"
