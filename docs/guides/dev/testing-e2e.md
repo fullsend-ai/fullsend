@@ -108,9 +108,9 @@ as owner and a `test-repo`) and appending its name to the `orgPool` slice.
 
 The e2e testing infrastructure is documented in these ADRs:
 
-- [ADR 0010: Stored browser session for e2e authentication in CI](../ADRs/0010-stored-session-for-e2e-browser-auth.md) --
+- [ADR 0010: Stored browser session for e2e authentication in CI](../../ADRs/0010-stored-session-for-e2e-browser-auth.md) --
   why stored sessions are used and how they work
-- [ADR 0039: TOTP automation for e2e 2FA](../ADRs/0039-totp-automation-for-e2e-2fa.md) --
+- [ADR 0039: TOTP automation for e2e 2FA](../../ADRs/0039-totp-automation-for-e2e-2fa.md) --
   automated TOTP entry for 2FA-enabled test accounts
-- [ADR 0040: Org pool for parallel e2e tests](../ADRs/0040-org-pool-for-parallel-e2e-tests.md) --
+- [ADR 0040: Org pool for parallel e2e tests](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md) --
   distributed locking across a pool of test organizations

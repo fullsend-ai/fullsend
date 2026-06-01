@@ -32,7 +32,7 @@ When making changes to Go code under `cmd/` or `internal/`:
 
 ### Running e2e tests
 
-See [docs/testing/e2e.md](docs/testing/e2e.md) for the full guide (prerequisites, credentials, CI authentication, and org pools). Quick start: set `E2E_GITHUB_USERNAME` and `E2E_GITHUB_PASSWORD`, then run `make e2e-test`.
+See [docs/guides/dev/testing-e2e.md](docs/guides/dev/testing-e2e.md) for the full guide (prerequisites, credentials, CI authentication, and org pools). Quick start: set `E2E_GITHUB_USERNAME` and `E2E_GITHUB_PASSWORD`, then run `make e2e-test`.
 
 ## Key design decisions made
 
