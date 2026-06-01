@@ -127,6 +127,20 @@ func TestAudienceUnmarshalJSON(t *testing.T) {
 		}
 	})
 
+	t.Run("array_with_empty_element", func(t *testing.T) {
+		var a audience
+		if err := json.Unmarshal([]byte(`["valid",""]`), &a); err == nil {
+			t.Fatal("expected error for array containing empty string")
+		}
+	})
+
+	t.Run("array_with_whitespace_element", func(t *testing.T) {
+		var a audience
+		if err := json.Unmarshal([]byte(`[" "]`), &a); err == nil {
+			t.Fatal("expected error for array containing whitespace-only string")
+		}
+	})
+
 	t.Run("invalid", func(t *testing.T) {
 		var a audience
 		if err := json.Unmarshal([]byte(`123`), &a); err == nil {
