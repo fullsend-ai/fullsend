@@ -42,4 +42,4 @@ jobs:
           E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
 
       - name: Delete expired PATs
-        run: ./hack/cleanup-pats
+        run: go run hack/cleanup-pats.go
