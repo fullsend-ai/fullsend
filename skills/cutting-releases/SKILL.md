@@ -117,10 +117,10 @@ Check that the title, changelog, and binary assets look correct.
 ### 9. Install the binary locally
 
 Ask the user where to install (default: `~/.local/bin/`), then run
-the install script from this skill's base directory:
+the install script using its repo-root-relative path:
 
 ```bash
-bash <base-dir>/scripts/install-binary.sh <tag> [install-dir]
+bash skills/cutting-releases/scripts/install-binary.sh <tag> [install-dir]
 ```
 
 The script downloads the release archive, verifies its SHA-256 checksum
