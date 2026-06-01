@@ -18,8 +18,9 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # build_mock creates a mock gh binary that returns preconfigured responses.
 # Arguments:
-#   $1 — output to return for "gh pr list" calls (tab-separated lines
-#         matching what gh --jq would produce, or empty for no PRs)
+#   $1 — JSON array to return for "gh pr list" calls. When the caller
+#        passes --jq, the mock pipes this JSON through jq so the real
+#        filter expression is exercised.  Pass an empty string for no PRs.
 build_mock() {
   local pr_list_output="$1"
   local mock_bin="${TMPDIR}/bin"
@@ -41,7 +42,21 @@ echo "gh $*" >> "${CALL_LOG}"
 
 # Route by subcommand
 if [[ "$1" == "pr" && "$2" == "list" ]]; then
-  cat "${PR_OUTPUT}"
+  # Parse --jq flag from arguments, just like the real gh CLI.
+  JQ_EXPR=""
+  shift 2
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--jq" ]]; then
+      JQ_EXPR="$2"
+      break
+    fi
+    shift
+  done
+  if [[ -n "${JQ_EXPR}" ]] && [[ -s "${PR_OUTPUT}" ]]; then
+    jq -r "${JQ_EXPR}" "${PR_OUTPUT}"
+  else
+    cat "${PR_OUTPUT}"
+  fi
 elif [[ "$1" == "label" ]]; then
   exit 0
 elif [[ "$1" == "api" ]]; then
@@ -167,8 +182,24 @@ run_test_stdout() {
 
 # --- Test cases ---
 
-# Tab character for readability.
-TAB=$'\t'
+# JSON helpers — build unfiltered PR JSON that the mock returns to the
+# script.  The mock pipes this through jq using the real --jq expression
+# from pre-code.sh, so the filter is exercised end-to-end.
+
+# Single human PR.
+HUMAN_PR_JSON='[{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+
+# Single fullsend-ai[bot] PR.
+BOT_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"}]'
+
+# Single fullsend-ai-coder[bot] PR.
+CODER_BOT_PR_JSON='[{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]'
+
+# Both bot PRs plus a human PR.
+MIXED_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"},{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+
+# Multiple human PRs.
+MULTI_HUMAN_PR_JSON='[{"number":50,"author":{"login":"dev-a"},"url":"https://github.com/test-org/test-repo/pull/50"},{"number":51,"author":{"login":"dev-b"},"url":"https://github.com/test-org/test-repo/pull/51"}]'
 
 # No existing PRs → agent proceeds (exit 0, no label/comment).
 run_test_stdout "no-existing-prs-proceeds" \
@@ -178,36 +209,36 @@ run_test_stdout "no-existing-prs-proceeds" \
 
 # Human PR exists → should apply label and comment, then exit 0.
 run_test "human-pr-applies-label" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent" \
   0
 
 run_test "human-pr-posts-comment" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "gh issue comment 42 --repo test-org/test-repo --body-file -" \
   0
 
 run_test_stdout "human-pr-skips-agent" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Skipping code agent" \
   0
 
-# Bot PR only → gh --jq filters it out, so pr list returns empty → proceeds.
+# Bot PR only → jq filter removes it → script sees empty output → proceeds.
 run_test_stdout "bot-pr-does-not-block" \
-  "" \
+  "${BOT_PR_JSON}" \
   "No existing human PRs found" \
   0
 
 # CODE_FORCE=true → should skip check even with human PR.
 run_test_stdout "force-override-code-force" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Force override" \
   0 \
   "CODE_FORCE=true"
 
 # COMMENT_BODY contains --force → should also skip check.
 run_test_stdout "force-override-comment-body" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Force override" \
   0 \
   "COMMENT_BODY=/fs-code --force"
@@ -219,34 +250,38 @@ run_test_stdout "no-gh-token-skips-check" \
   0 \
   "GH_TOKEN="
 
-# Coder bot PR only → gh --jq filters it out, so pr list returns empty → proceeds.
+# Coder bot PR only → jq filter removes it → script proceeds.
 run_test_stdout "coder-bot-pr-does-not-block" \
-  "" \
+  "${CODER_BOT_PR_JSON}" \
   "No existing human PRs found" \
   0
 
-# Coder bot PR + human PR → only the human PR blocks.
+# Both bots + human PR → jq filter removes bots, human PR blocks.
 run_test_stdout "coder-bot-pr-plus-human-pr-blocks" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${MIXED_PR_JSON}" \
   "Skipping code agent" \
+  0
+
+# Both bots only → jq filter removes all → script proceeds.
+run_test_stdout "both-bots-do-not-block" \
+  '[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]' \
+  "No existing human PRs found" \
   0
 
 # Multiple human PRs → should block and apply label.
 run_test "multiple-human-prs-block" \
-  "50${TAB}dev-a${TAB}https://github.com/test-org/test-repo/pull/50
-51${TAB}dev-b${TAB}https://github.com/test-org/test-repo/pull/51" \
+  "${MULTI_HUMAN_PR_JSON}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent" \
   0
 
 run_test_stdout "multiple-human-prs-notice" \
-  "50${TAB}dev-a${TAB}https://github.com/test-org/test-repo/pull/50
-51${TAB}dev-b${TAB}https://github.com/test-org/test-repo/pull/51" \
+  "${MULTI_HUMAN_PR_JSON}" \
   "Found existing human PR #50 by @dev-a" \
   0
 
 # PR label gets created.
 run_test "pr-label-created" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "gh label create pr-open --repo test-org/test-repo" \
   0
 
