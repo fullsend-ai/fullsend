@@ -156,7 +156,13 @@ func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
 		"--mint-url", "https://mint-test-abc123.run.app"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project is required")
+	// With a fake token the RepoSecretExists call fails, surfacing an API
+	// error. Either the API-error path or the not-found path is acceptable
+	// here — both mention the secret name or the flag.
+	errMsg := err.Error()
+	assert.True(t, strings.Contains(errMsg, "--inference-project") ||
+		strings.Contains(errMsg, "FULLSEND_GCP_PROJECT_ID"),
+		"expected error to mention --inference-project or FULLSEND_GCP_PROJECT_ID, got: %s", errMsg)
 }
 
 func TestGitHubSetupCmd_PerRepoRequiresWIFProvider(t *testing.T) {
@@ -167,7 +173,10 @@ func TestGitHubSetupCmd_PerRepoRequiresWIFProvider(t *testing.T) {
 		"--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-wif-provider is required")
+	errMsg := err.Error()
+	assert.True(t, strings.Contains(errMsg, "--inference-wif-provider") ||
+		strings.Contains(errMsg, "FULLSEND_GCP_WIF_PROVIDER"),
+		"expected error to mention --inference-wif-provider or FULLSEND_GCP_WIF_PROVIDER, got: %s", errMsg)
 }
 
 // --- Enroll command tests ---
@@ -604,4 +613,145 @@ func TestRunGitHubSetupPerRepo_DryRun(t *testing.T) {
 	assert.Empty(t, client.CommittedFiles)
 	assert.Empty(t, client.Variables)
 	assert.Empty(t, client.CreatedSecrets)
+}
+
+func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"repo", "workflow"}
+	// Pre-populate secrets as if a previous run stored them.
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		mintURL:         "https://mint-test-abc123.run.app",
+		inferenceRegion: "global",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		// inferenceProject and inferenceWIFProvider intentionally omitted.
+	})
+	require.NoError(t, err)
+
+	// Verify scaffold files were committed.
+	require.NotEmpty(t, client.CommittedFiles)
+
+	// Verify repo variables were set.
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://mint-test-abc123.run.app", varNames["FULLSEND_MINT_URL"])
+	assert.Equal(t, "global", varNames["FULLSEND_GCP_REGION"])
+	assert.Equal(t, "true", varNames["FULLSEND_PER_REPO_INSTALL"])
+
+	// Verify no secrets were overwritten.
+	assert.Empty(t, client.CreatedSecrets)
+}
+
+func TestRunGitHubSetupPerRepo_PartialReuse_ProjectOnly(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"repo", "workflow"}
+	// Only the project secret exists; WIF is provided via flag.
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:              "acme/widget",
+		mintURL:             "https://mint-test-abc123.run.app",
+		inferenceRegion:     "global",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:              strings.Join(config.PerRepoDefaultRoles(), ","),
+	})
+	require.NoError(t, err)
+
+	// Verify only WIF secret was written (project was reused).
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.NotContains(t, secretNames, "FULLSEND_GCP_PROJECT_ID")
+	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+}
+
+func TestRunGitHubSetupPerRepo_MissingFlagNoExistingSecret(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	// No existing secrets and no flags — should fail.
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		mintURL:         "https://mint-test-abc123.run.app",
+		inferenceRegion: "global",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-project is required")
+}
+
+func TestRunGitHubSetupPerRepo_MissingWIFNoExistingSecret(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	// Project flag provided, WIF missing with no existing secret.
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:           "acme/widget",
+		mintURL:          "https://mint-test-abc123.run.app",
+		inferenceProject: "my-project",
+		inferenceRegion:  "global",
+		agents:           strings.Join(config.PerRepoDefaultRoles(), ","),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider is required")
+}
+
+func TestRunGitHubSetupPerRepo_PartialReuse_WIFOnly(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"repo", "workflow"}
+	// Only the WIF secret exists; project is provided via flag.
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:           "acme/widget",
+		mintURL:          "https://mint-test-abc123.run.app",
+		inferenceRegion:  "global",
+		inferenceProject: "my-project",
+		agents:           strings.Join(config.PerRepoDefaultRoles(), ","),
+	})
+	require.NoError(t, err)
+
+	// Verify only project secret was written (WIF was reused).
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Contains(t, secretNames, "FULLSEND_GCP_PROJECT_ID")
+	assert.NotContains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+}
+
+func TestRunGitHubSetupPerRepo_SecretCheckError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"RepoSecretExists": fmt.Errorf("API rate limit exceeded"),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		mintURL:         "https://mint-test-abc123.run.app",
+		inferenceRegion: "global",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API rate limit exceeded")
+	assert.Contains(t, err.Error(), "checking existing secret")
 }

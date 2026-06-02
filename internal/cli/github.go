@@ -154,14 +154,39 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
 	}
 
+	// On re-run, allow skipping --inference-project and --inference-wif-provider
+	// if the corresponding secrets already exist on the repo (matching per-org
+	// fallback behavior). Each flag is checked independently so the user can
+	// update one while keeping the other.
+	reuseProject := false
+	reuseWIF := false
 	if cfg.inferenceProject == "" {
-		return fmt.Errorf("--inference-project is required for per-repo setup")
+		exists, err := client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
+		if err != nil {
+			return fmt.Errorf("checking existing secret FULLSEND_GCP_PROJECT_ID: %w (pass --inference-project to skip this check)", err)
+		}
+		if !exists {
+			return fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found)")
+		}
+		reuseProject = true
 	}
 	if cfg.inferenceWIFProvider == "" {
-		return fmt.Errorf("--inference-wif-provider is required for github setup (no GCP auto-provisioning)")
+		exists, err := client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER")
+		if err != nil {
+			return fmt.Errorf("checking existing secret FULLSEND_GCP_WIF_PROVIDER: %w (pass --inference-wif-provider to skip this check)", err)
+		}
+		if !exists {
+			return fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found)")
+		}
+		reuseWIF = true
 	}
-	if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
-		return err
+
+	// Validate format only when a new value is provided; reused secrets were
+	// validated on first write.
+	if cfg.inferenceWIFProvider != "" {
+		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
+			return err
+		}
 	}
 
 	roles, err := parseAgentRoles(cfg.agents)
@@ -173,6 +198,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	printer.Blank()
 	printer.Header("Setting up per-repo fullsend for " + cfg.target)
 	printer.Blank()
+
+	if reuseProject {
+		printer.StepInfo("Reusing existing FULLSEND_GCP_PROJECT_ID from " + cfg.target)
+	}
+	if reuseWIF {
+		printer.StepInfo("Reusing existing FULLSEND_GCP_WIF_PROVIDER from " + cfg.target)
+	}
 
 	perRepoCfg := config.NewPerRepoConfig(roles)
 	if err := perRepoCfg.Validate(); err != nil {
@@ -214,9 +246,12 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		forge.PerRepoGuardVar: "true",
 	}
 
-	repoSecrets := map[string]string{
-		"FULLSEND_GCP_PROJECT_ID":   cfg.inferenceProject,
-		"FULLSEND_GCP_WIF_PROVIDER": cfg.inferenceWIFProvider,
+	repoSecrets := make(map[string]string)
+	if !reuseProject {
+		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
+	}
+	if !reuseWIF {
+		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
 	}
 
 	if cfg.dryRun {

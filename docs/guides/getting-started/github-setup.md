@@ -110,9 +110,9 @@ fullsend github setup acme-corp \
 |------|----------|---------|-------------|
 | `--mint-url` | Yes | — | Token mint Cloud Function URL (HTTPS) |
 | `--agents` | No | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated agent roles to configure (per-repo omits `fullsend`) |
-| `--inference-project` | Yes (per-org: optional on re-run) | — | GCP project ID where Agent Platform is enabled |
+| `--inference-project` | Yes (optional on re-run) | — | GCP project ID where Agent Platform is enabled |
 | `--inference-region` | No | `global` | GCP region for Agent Platform inference |
-| `--inference-wif-provider` | Yes (per-org: optional on re-run) | — | Full WIF provider resource name (see [Prerequisites](#prerequisites) for format) |
+| `--inference-wif-provider` | Yes (optional on re-run) | — | Full WIF provider resource name (see [Prerequisites](#prerequisites) for format) |
 | `--skip-app-setup` | No | `false` | Skip GitHub App creation/installation (use when apps are already installed; see [GitHub App setup](#github-app-setup)) |
 | `--public` | No | `false` | Create public (unlisted) GitHub Apps (for multi-org sharing) |
 | `--app-set` | No | `fullsend-ai` | App set name prefix for GitHub Apps |
@@ -133,7 +133,7 @@ fullsend github setup acme-corp/my-service \
 ```
 
 Per-repo mode differs from per-org in these ways:
-- `--inference-project` and `--inference-wif-provider` are required (optional for per-org)
+- `--inference-project` and `--inference-wif-provider` are required on first setup; on re-runs, each is optional if the corresponding repo secret already exists
 - Secrets and variables are written to the target repo (not a `.fullsend` config repo)
 - The `fullsend` meta-role is excluded from the default agent set
 - `--enroll-all` and `--enroll-none` flags are not available
