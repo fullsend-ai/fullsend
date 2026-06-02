@@ -343,4 +343,4 @@ The proposed model follows the GitHub Actions approach: URL-based references wit
 
 ## Implementation Plan
 
-See `docs/plans/universal-harness-access.md` for full implementation details, security analysis, and migration path. See `docs/plans/universal-harness-access-implementation.md` for the phased PR breakdown (Phase 1 MVP).
+See `docs/plans/universal-harness-access.md` for full implementation details, security analysis, and migration path. See `docs/plans/universal-harness-access-phase1.md` for the phased PR breakdown (Phase 1 MVP) and `docs/plans/universal-harness-access-phase2.md` for Phase 2 (transitive dependency resolution).
