@@ -1281,7 +1281,7 @@ func buildScanContextCommand(repoDir, traceID string) string {
 	sort.Strings(inames) // deterministic ordering
 	inameExpr := strings.Join(inames, " -o ")
 
-	// Source .env to get PATH with /tmp/workspace/bin where fullsend is installed.
+	// Source .env to get PATH with SandboxWorkspace/bin where fullsend is installed.
 	envFile := sandbox.SandboxWorkspace + "/.env"
 
 	return fmt.Sprintf(

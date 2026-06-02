@@ -140,7 +140,7 @@ against the diff.
 
 ### 2a. Prior review context (re-reviews)
 
-Check if `/tmp/workspace/prior-review.txt` exists and is non-empty:
+Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
 
 - **Absent or empty:** This is a first review — skip to step 3.
 - **Present:** Read the **current section** (content before

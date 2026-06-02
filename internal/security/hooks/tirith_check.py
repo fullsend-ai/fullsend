@@ -21,7 +21,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 TIRITH_FAIL_ON = os.environ.get("TIRITH_FAIL_ON", "high")
 # When tirith is baked into the sandbox image, set TIRITH_REQUIRED=1 so that
 # a missing binary is treated as a security failure (fail-closed) rather than

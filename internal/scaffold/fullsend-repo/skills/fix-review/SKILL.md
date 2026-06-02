@@ -136,7 +136,7 @@ comment. The workflow pre-fetches this review body before the sandbox starts
 and places it at a known path. Read it:
 
 ```bash
-REVIEW_BODY_FILE="/tmp/workspace/review-body.txt"
+REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
 if [ ! -s "${REVIEW_BODY_FILE}" ]; then
   echo "::error::No review body found at ${REVIEW_BODY_FILE}"
   # Fallback: the file may not exist in local testing; check env.

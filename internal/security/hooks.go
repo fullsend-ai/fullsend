@@ -50,7 +50,7 @@ type claudeSettings struct {
 
 // SandboxHooksDir is the path where hook scripts are installed inside the
 // sandbox. Must match sandbox.SandboxWorkspace + "/.claude/hooks".
-const SandboxHooksDir = "/tmp/workspace/.claude/hooks"
+const SandboxHooksDir = "/sandbox/workspace/.claude/hooks"
 
 // GenerateClaudeSettings produces a .claude/settings.json with security hooks
 // configured according to the harness SecurityConfig. Returns the JSON bytes.

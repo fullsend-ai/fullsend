@@ -23,17 +23,17 @@ post_script: scripts/post-fix.sh
 
 host_files:
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: env/fix-agent.env
-    dest: /tmp/workspace/.env.d/fix-agent.env
+    dest: /sandbox/workspace/.env.d/fix-agent.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/workspace/.gcp-credentials.json
+    dest: /sandbox/workspace/.gcp-credentials.json
   - src: ${REVIEW_BODY_FILE}
-    dest: /tmp/workspace/review-body.txt
+    dest: /sandbox/workspace/review-body.txt
   - src: ${GCP_OIDC_TOKEN_FILE}
-    dest: /tmp/workspace/.gcp-oidc-token
+    dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
 skills:

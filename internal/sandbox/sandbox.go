@@ -14,9 +14,9 @@ import (
 
 const (
 	// SandboxWorkspace is the workspace directory inside the sandbox.
-	SandboxWorkspace = "/tmp/workspace" //nolint:gosec // not a credential
+	SandboxWorkspace = "/sandbox/workspace" //nolint:gosec // not a credential
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
-	SandboxClaudeConfig = "/tmp/claude-config" //nolint:gosec // not a credential
+	SandboxClaudeConfig = "/sandbox/claude-config" //nolint:gosec // not a credential
 
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second

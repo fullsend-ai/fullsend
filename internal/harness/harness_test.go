@@ -85,11 +85,11 @@ func TestLoad_HostFiles(t *testing.T) {
 agent: agents/test.md
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/workspace/.gcp-credentials.json
+    dest: /sandbox/workspace/.gcp-credentials.json
   - src: /etc/ssl/certs/ca-certificates.crt
     dest: /etc/ssl/certs/ca-certificates.crt
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
 `
 	dir := t.TempDir()
@@ -101,13 +101,13 @@ host_files:
 
 	require.Len(t, h.HostFiles, 3)
 	assert.Equal(t, "${GOOGLE_APPLICATION_CREDENTIALS}", h.HostFiles[0].Src)
-	assert.Equal(t, "/tmp/workspace/.gcp-credentials.json", h.HostFiles[0].Dest)
+	assert.Equal(t, "/sandbox/workspace/.gcp-credentials.json", h.HostFiles[0].Dest)
 	assert.False(t, h.HostFiles[0].Expand)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Src)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Dest)
 	assert.False(t, h.HostFiles[1].Expand)
 	assert.Equal(t, "env/gcp-vertex.env", h.HostFiles[2].Src)
-	assert.Equal(t, "/tmp/workspace/.env.d/gcp-vertex.env", h.HostFiles[2].Dest)
+	assert.Equal(t, "/sandbox/workspace/.env.d/gcp-vertex.env", h.HostFiles[2].Dest)
 	assert.True(t, h.HostFiles[2].Expand)
 }
 
@@ -115,7 +115,7 @@ func TestValidate_HostFileMissingSrc(t *testing.T) {
 	content := `
 agent: agents/test.md
 host_files:
-  - dest: /tmp/workspace/.gcp-credentials.json
+  - dest: /sandbox/workspace/.gcp-credentials.json
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
@@ -169,9 +169,9 @@ func TestResolveRelativeTo_HostFiles(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		HostFiles: []HostFile{
-			{Src: "env/gcp-vertex.env", Dest: "/tmp/workspace/.env.d/gcp-vertex.env", Expand: true},
-			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/workspace/.gcp-credentials.json"},
-			{Src: "/absolute/path/file.txt", Dest: "/tmp/workspace/file.txt"},
+			{Src: "env/gcp-vertex.env", Dest: "/sandbox/workspace/.env.d/gcp-vertex.env", Expand: true},
+			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/sandbox/workspace/.gcp-credentials.json"},
+			{Src: "/absolute/path/file.txt", Dest: "/sandbox/workspace/file.txt"},
 		},
 	}
 
@@ -206,7 +206,7 @@ func TestResolveRelativeTo_HostFileTraversalRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		HostFiles: []HostFile{
-			{Src: "../../../etc/shadow", Dest: "/tmp/workspace/shadow"},
+			{Src: "../../../etc/shadow", Dest: "/sandbox/workspace/shadow"},
 		},
 	}
 	err := h.ResolveRelativeTo("/base/dir")
