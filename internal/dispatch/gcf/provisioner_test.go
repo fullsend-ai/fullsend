@@ -1462,12 +1462,21 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "go.mod")
 	assert.Contains(t, names, "go.sum")
 	assert.Contains(t, names, "main.go")
-	assert.Len(t, names, 3)
+	assert.Contains(t, names, "mintcore/go.mod")
+	assert.Contains(t, names, "mintcore/github.go")
+	assert.Contains(t, names, "mintcore/oidc.go")
+	assert.Contains(t, names, "mintcore/claims.go")
+	assert.Contains(t, names, "mintcore/patterns.go")
+	assert.Contains(t, names, "mintcore/sts.go")
+	assert.Contains(t, names, "mintcore/wif.go")
+	assert.Contains(t, names, "mintcore/pem.go")
+	assert.Len(t, names, 11)
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 	// origDir is internal/mint/ relative to this test's package (internal/dispatch/gcf/).
 	origDir := filepath.Join("..", "..", "mint")
+	mintcoreDir := filepath.Join("..", "..", "mintcore")
 	entries, err := os.ReadDir(origDir)
 	if os.IsNotExist(err) {
 		t.Skipf("original mint source not available at %s (running outside repo)", origDir)
@@ -1476,14 +1485,26 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 
 	// Check that every embedded file matches its original.
 	for embeddedName, realName := range embeddedMintFiles {
-		orig, err := os.ReadFile(filepath.Join(origDir, realName))
+		var origPath string
+		if strings.HasPrefix(realName, "mintcore/") {
+			origPath = filepath.Join(mintcoreDir, strings.TrimPrefix(realName, "mintcore/"))
+		} else {
+			origPath = filepath.Join(origDir, realName)
+		}
+
+		orig, err := os.ReadFile(origPath)
 		require.NoError(t, err, "reading original %s", realName)
 
 		embedded, err := embeddedMintSource.ReadFile("mintsrc/" + embeddedName)
 		require.NoError(t, err, "reading embedded %s", embeddedName)
 
+		// The embedded go.mod uses ./mintcore while the original uses ../mintcore.
+		if realName == "go.mod" {
+			orig = []byte(strings.Replace(string(orig), "=> ../mintcore", "=> ./mintcore", 1))
+		}
+
 		assert.Equal(t, string(orig), string(embedded),
-			"mintsrc/%s is out of sync with internal/mint/%s — copy to internal/dispatch/gcf/mintsrc/%s to update",
+			"mintsrc/%s is out of sync with original %s — copy to internal/dispatch/gcf/mintsrc/%s to update",
 			embeddedName, realName, embeddedName)
 	}
 
@@ -1498,6 +1519,23 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 		}
 		if !knownReals[entry.Name()] {
 			t.Errorf("internal/mint/%s exists but is not in embeddedMintFiles — add it to mintsrc/ with .embed suffix", entry.Name())
+		}
+	}
+
+	// Check mintcore files too.
+	mintcoreEntries, err := os.ReadDir(mintcoreDir)
+	if err == nil {
+		for _, entry := range mintcoreEntries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			if entry.Name() == "go.sum" {
+				continue
+			}
+			expected := "mintcore/" + entry.Name()
+			if !knownReals[expected] {
+				t.Errorf("internal/mintcore/%s exists but is not in embeddedMintFiles — add it to mintsrc/mintcore/ with .embed suffix", entry.Name())
+			}
 		}
 	}
 }

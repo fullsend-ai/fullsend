@@ -275,6 +275,7 @@ Use 'fullsend github setup' for GitHub-side setup.`,
 	cmd.AddCommand(newMintEnrollCmd())
 	cmd.AddCommand(newMintUnenrollCmd())
 	cmd.AddCommand(newMintStatusCmd())
+	cmd.AddCommand(newMintRunCmd())
 	return cmd
 }
 

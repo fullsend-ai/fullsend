@@ -3,12 +3,14 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -115,24 +117,82 @@ var perOrgOnlyFlags = []string{
 
 // skipMintDispatcher implements dispatch.Dispatcher for --skip-mint-check mode.
 // It returns the user-provided mint URL without making any GCP API calls.
+// When a data directory is provided, StoreAgentPEM writes PEMs directly to
+// disk (loaded by the standalone mint at startup).
 type skipMintDispatcher struct {
 	mintURL string
+	dataDir string
 }
 
-func (d *skipMintDispatcher) Name() string                        { return "skip-mint-check" }
-func (d *skipMintDispatcher) OrgSecretNames() []string            { return nil }
-func (d *skipMintDispatcher) OrgVariableNames() []string          { return []string{"FULLSEND_MINT_URL"} }
-func (d *skipMintDispatcher) StoreAgentPEM(context.Context, string, string, []byte) error {
-	return nil
+func (d *skipMintDispatcher) Name() string             { return "skip-mint-check" }
+func (d *skipMintDispatcher) OrgSecretNames() []string  { return nil }
+func (d *skipMintDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
+func (d *skipMintDispatcher) StoreAgentPEM(ctx context.Context, org, role string, pem []byte) error {
+	if d.dataDir == "" {
+		return nil
+	}
+	return storePEMToDisk(d.dataDir, org, role, "", pem)
 }
 func (d *skipMintDispatcher) Provision(context.Context) (map[string]string, error) {
 	return map[string]string{"FULLSEND_MINT_URL": d.mintURL}, nil
+}
+
+type mintDiskConfig struct {
+	Org   string                        `json:"org"`
+	Roles map[string]mintDiskRoleConfig `json:"roles"`
+}
+
+type mintDiskRoleConfig struct {
+	AppID string `json:"app_id"`
+}
+
+func storePEMToDisk(dataDir, org, role, appID string, pemData []byte) error {
+	cleanRole := filepath.Base(filepath.Clean(role))
+	if cleanRole != role || cleanRole == "." || cleanRole == ".." {
+		return fmt.Errorf("invalid role name %q", role)
+	}
+
+	pemsDir := filepath.Join(dataDir, "pems")
+	if err := os.MkdirAll(pemsDir, 0o700); err != nil {
+		return fmt.Errorf("creating pems directory: %w", err)
+	}
+
+	pemPath := filepath.Join(pemsDir, cleanRole+".pem")
+	if err := os.WriteFile(pemPath, pemData, 0o600); err != nil {
+		return fmt.Errorf("writing PEM file: %w", err)
+	}
+
+	configPath := filepath.Join(dataDir, "config.json")
+	var cfg mintDiskConfig
+	if data, err := os.ReadFile(configPath); err == nil {
+		if jsonErr := json.Unmarshal(data, &cfg); jsonErr != nil {
+			return fmt.Errorf("existing config.json is corrupted: %w", jsonErr)
+		}
+	}
+
+	cfg.Org = org
+	if cfg.Roles == nil {
+		cfg.Roles = make(map[string]mintDiskRoleConfig)
+	}
+	cfg.Roles[cleanRole] = mintDiskRoleConfig{AppID: appID}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	tmpPath := configPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return fmt.Errorf("writing config temp file: %w", err)
+	}
+	return os.Rename(tmpPath, configPath)
 }
 
 type perRepoInstallConfig struct {
 	RepoFullName        string
 	Agents              string
 	MintURL             string
+	MintDataDir         string
 	InferenceRegion     string
 	InferenceProject    string
 	InferenceWIFProvider string
@@ -186,6 +246,17 @@ func validateSkipMintCheck(mintURL string) error {
 	if mintURL == "" {
 		return fmt.Errorf("--mint-url is required when using --skip-mint-check")
 	}
+	parsed, err := url.Parse(mintURL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("--mint-url must be a valid URL")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("--mint-url must not contain embedded credentials (userinfo)")
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+		return nil
+	}
 	return validateMintURLHTTPS(mintURL)
 }
 
@@ -238,6 +309,7 @@ func newInstallCmd() *cobra.Command {
 	var appSet string
 	// Per-repo flags.
 	var mintURL string
+	var mintDataDir string
 
 	cmd := &cobra.Command{
 		Use:   "install <org-or-owner/repo>",
@@ -287,6 +359,7 @@ Inference authentication:
 					RepoFullName:        arg,
 					Agents:              perRepoAgents,
 					MintURL:             mintURL,
+					MintDataDir:         mintDataDir,
 					InferenceRegion:     inferenceRegion,
 					InferenceProject:    inferenceProject,
 					InferenceWIFProvider: inferenceWIFProvider,
@@ -509,18 +582,20 @@ Inference authentication:
 
 			// Collect agent credentials via app setup.
 			var agentCreds []layers.AgentCredentials
-			if !skipAppSetup && !skipMintCheck {
-				if err := ensureConfigRepoExists(ctx, client, printer, org); err != nil {
-					return err
+			if !skipAppSetup {
+				if !skipMintCheck {
+					if err := ensureConfigRepoExists(ctx, client, printer, org); err != nil {
+						return err
+					}
 				}
-				creds, err := runAppSetup(ctx, client, printer, org, roles, mintProject, publicApps, sharedSlugs, appSet, perOrgStoredIDs)
+				creds, err := runAppSetup(ctx, client, printer, org, roles, mintProject, mintDataDir, publicApps, sharedSlugs, appSet, perOrgStoredIDs)
 				if err != nil {
 					return err
 				}
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, mintDataDir, skipMintCheck, allRepos)
 		},
 	}
 
@@ -543,6 +618,7 @@ Inference authentication:
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
 	// Shared flags.
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "token mint URL for OIDC token exchange")
+	cmd.Flags().StringVar(&mintDataDir, "mint-data-dir", "", "dev mint data directory for PEM storage (writes PEMs directly to disk)")
 
 	return cmd
 }
@@ -551,6 +627,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	repoFullName := c.RepoFullName
 	agents := c.Agents
 	mintURL := c.MintURL
+	mintDataDir := c.MintDataDir
 	inferenceRegion := c.InferenceRegion
 	inferenceProject := c.InferenceProject
 	inferenceWIFProvider := c.InferenceWIFProvider
@@ -830,7 +907,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return err
 	}
 
-	needAppSetup := !appsFound && !skipAppSetup && !skipMintCheck
+	needAppSetup := !appsFound && !skipAppSetup
 	needMintDeploy := !mintFound && !skipMintCheck
 
 	if !skipMintCheck && skipAppSetup && !appsFound {
@@ -862,7 +939,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			}
 		}
 
-		creds, credErr := runAppSetup(ctx, client, printer, owner, roles, mintProject, publicApps, sharedSlugs, c.AppSet, existingIDs)
+		creds, credErr := runAppSetup(ctx, client, printer, owner, roles, mintProject, mintDataDir, publicApps, sharedSlugs, c.AppSet, existingIDs)
 		if credErr != nil {
 			return credErr
 		}
@@ -877,6 +954,17 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 				}
 			}
 		}
+	}
+
+	if skipMintCheck && mintDataDir != "" && len(agentPEMs) > 0 {
+		printer.StepStart("Writing app credentials to dev mint data directory")
+		for role, pem := range agentPEMs {
+			appID := agentAppIDs[role]
+			if err := storePEMToDisk(mintDataDir, owner, role, appID, pem); err != nil {
+				return fmt.Errorf("writing PEM for %s to dev mint: %w", role, err)
+			}
+		}
+		printer.StepDone("Wrote app credentials to dev mint data directory")
 	}
 
 	if skipMintCheck {
@@ -1349,9 +1437,11 @@ func copySharedAppPEMs(ctx context.Context, client forge.Client, printer *ui.Pri
 }
 
 // runAppSetup creates or reuses GitHub Apps for each role. When mintProject is
-// non-empty, PEMs are also stored in GCP Secret Manager during app creation so
-// they survive partial provisioning failures.
-func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject string, publicApps bool, sharedSlugs map[string]string, appSet string, storedAppIDs map[string]string) ([]layers.AgentCredentials, error) {
+// non-empty, PEMs are stored in GCP Secret Manager. When mintURL is non-empty
+// (dev mint), PEMs are POSTed to the mint's /v1/pem endpoint. Otherwise PEMs
+// are stored in GitHub repo secrets. All paths store PEMs immediately so they
+// survive partial provisioning failures.
+func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject, mintDataDir string, publicApps bool, sharedSlugs map[string]string, appSet string, storedAppIDs map[string]string) ([]layers.AgentCredentials, error) {
 	printer.Header("Setting up GitHub Apps")
 	printer.Blank()
 
@@ -1383,11 +1473,19 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		}, gcf.NewLiveGCFClient(mintProject))
 	}
 
-	// In OIDC mint mode, PEMs live in Secret Manager — check there.
-	// Otherwise, check GitHub repo secrets.
+	// Check if PEMs already exist. Priority: Secret Manager > dev mint (disk) > repo secrets.
 	if pemProvisioner != nil {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
 			return pemProvisioner.SecretExists(ctx, org, role)
+		})
+	} else if mintDataDir != "" {
+		setup = setup.WithSecretExists(func(role string) (bool, error) {
+			pemPath := filepath.Join(mintDataDir, "pems", role+".pem")
+			_, err := os.Stat(pemPath)
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return err == nil, err
 		})
 	} else {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
@@ -1396,11 +1494,15 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		})
 	}
 
-	// In OIDC mint mode, store PEMs only in Secret Manager.
-	// Otherwise, store in GitHub repo secrets.
+	// Store PEMs immediately after app creation. Priority:
+	// Secret Manager (GCP) > dev mint (disk) > repo secrets.
 	if pemProvisioner != nil {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
 			return pemProvisioner.StoreAgentPEM(sctx, org, role, []byte(pem))
+		})
+	} else if mintDataDir != "" {
+		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
+			return storePEMToDisk(mintDataDir, org, role, "", []byte(pem))
 		})
 	} else {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
@@ -1495,7 +1597,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL, mintDataDir string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -1549,7 +1651,22 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 	var disp dispatch.Dispatcher
 	if skipMintCheck {
-		disp = &skipMintDispatcher{mintURL: mintURL}
+		disp = &skipMintDispatcher{mintURL: mintURL, dataDir: mintDataDir}
+		if mintDataDir != "" {
+			printer.StepStart("Writing app credentials to dev mint data directory")
+			for _, ac := range agentCreds {
+				if ac.PEM != "" {
+					appID := ""
+					if ac.AppID != 0 {
+						appID = strconv.Itoa(ac.AppID)
+					}
+					if err := storePEMToDisk(mintDataDir, org, ac.Role, appID, []byte(ac.PEM)); err != nil {
+						return fmt.Errorf("writing PEM for %s to dev mint: %w", ac.Role, err)
+					}
+				}
+			}
+			printer.StepDone("Wrote app credentials to dev mint data directory")
+		}
 	} else {
 		// Build the mint infrastructure provisioner.
 		agentPEMs := make(map[string][]byte)

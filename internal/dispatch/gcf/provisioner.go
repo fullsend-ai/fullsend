@@ -41,16 +41,24 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/oidc.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts.go.embed mintsrc/mintcore/wif.go.embed mintsrc/mintcore/pem.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
 // triggering Go's module boundary detection) to their real names for the
 // Cloud Function deployment zip.
 var embeddedMintFiles = map[string]string{
-	"go.mod.embed":  "go.mod",
-	"go.sum.embed":  "go.sum",
-	"main.go.embed": "main.go",
+	"go.mod.embed":                "go.mod",
+	"go.sum.embed":                "go.sum",
+	"main.go.embed":               "main.go",
+	"mintcore/go.mod.embed":       "mintcore/go.mod",
+	"mintcore/github.go.embed":    "mintcore/github.go",
+	"mintcore/oidc.go.embed":      "mintcore/oidc.go",
+	"mintcore/claims.go.embed":    "mintcore/claims.go",
+	"mintcore/patterns.go.embed":  "mintcore/patterns.go",
+	"mintcore/sts.go.embed":       "mintcore/sts.go",
+	"mintcore/wif.go.embed":       "mintcore/wif.go",
+	"mintcore/pem.go.embed":       "mintcore/pem.go",
 }
 
 // Compile-time check that Provisioner implements dispatch.Dispatcher.
@@ -1707,6 +1715,14 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading file %s: %w", entry.Name(), err)
 		}
+
+		// Rewrite replace directive for deployment: the local source uses
+		// ../mintcore (sibling dir) but the zip layout nests mintcore inside.
+		if entry.Name() == "go.mod" {
+			data = []byte(strings.Replace(string(data),
+				"=> ../mintcore", "=> ./mintcore", 1))
+		}
+
 		f, err := w.Create(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("creating zip entry %s: %w", entry.Name(), err)
@@ -1720,6 +1736,13 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 		}
 	}
 
+	// Include the mintcore module as a subdirectory (sibling on disk,
+	// nested in the zip so the replace ./mintcore directive resolves).
+	mintcoreDir := filepath.Join(dir, "..", "mintcore")
+	if err := addDirToZip(w, mintcoreDir, "mintcore"); err != nil {
+		return nil, fmt.Errorf("bundling mintcore: %w", err)
+	}
+
 	if fileCount == 0 {
 		return nil, fmt.Errorf("no deployable source files found in %s", dir)
 	}
@@ -1731,6 +1754,33 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 		return nil, fmt.Errorf("closing zip: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+func addDirToZip(w *zip.Writer, srcDir, zipPrefix string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading directory %s: %w", srcDir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(srcDir, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", entry.Name(), err)
+		}
+		f, err := w.Create(zipPrefix + "/" + entry.Name())
+		if err != nil {
+			return fmt.Errorf("creating zip entry %s/%s: %w", zipPrefix, entry.Name(), err)
+		}
+		if _, err := f.Write(data); err != nil {
+			return fmt.Errorf("writing zip entry %s/%s: %w", zipPrefix, entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 // bundleEmbeddedMintSource creates a zip archive from the mint source files

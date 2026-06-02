@@ -230,12 +230,12 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps (see [Custom app sets](#custom-app-sets)) |
 | `--skip-app-setup` | `false` | Skip GitHub App creation (reuse existing apps) |
 | `--skip-mint-deploy` | `false` | Skip Cloud Function deployment, reuse existing mint URL |
-| `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup; requires `--mint-url` |
+| `--skip-mint-check` | `false` | Skip GCP mint provisioning; requires `--mint-url`. Apps are still created. Permits HTTP for localhost/127.0.0.1/::1 |
 | `--enroll-all` | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | `false` | Skip repository enrollment without prompting (per-org only) |
 | `--vendor-fullsend-binary` | `false` | Cross-compile and vendor the fullsend binary for development iteration |
 
-The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
+The `--skip-mint-check` flag skips GCP mint provisioning (Cloud Function deployment, WIF setup, Secret Manager). It requires `--mint-url` to be set. GitHub Apps are still created and configured. The URL must use HTTPS, except for localhost, `127.0.0.1`, and `::1` which may use HTTP (for use with the [dev mint](../infrastructure/dev-mint.md)). This is useful when the mint infrastructure is managed externally or you are using the dev mint for local evaluation.
 
 The installer automatically detects when the deployed mint function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure, org registration, and PEM secrets. Use `--skip-mint-deploy` to explicitly skip the Cloud Function deployment step.
 

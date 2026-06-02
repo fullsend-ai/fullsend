@@ -16,6 +16,7 @@ Guides for onboarding organizations and configuring GitHub — the first thing m
 Guides for platform operators who deploy and manage the GCP-side infrastructure (token mint, WIF, secrets).
 
 - [Mint service administration](infrastructure/mint-administration.md) — Deploying and managing the token mint Cloud Function
+- [Development token mint](infrastructure/dev-mint.md) — Run fullsend locally without GCP using the dev mint
 - [Infrastructure reference](infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [Enabling fullsend on private repositories](infrastructure/private-repositories.md) — Additional guardrails and configuration for private repos
 

@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -1466,14 +1469,34 @@ func TestInstallCmd_SkipMintCheckRejectsHTTP(t *testing.T) {
 }
 
 func TestSkipMintDispatcher(t *testing.T) {
-	d := &skipMintDispatcher{mintURL: "https://mint.example.com/v1/token"}
-	assert.Equal(t, "skip-mint-check", d.Name())
-	assert.Nil(t, d.OrgSecretNames())
-	assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
-	assert.NoError(t, d.StoreAgentPEM(context.Background(), "org", "role", []byte("pem")))
-	vars, err := d.Provision(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "https://mint.example.com/v1/token"}, vars)
+	t.Run("no data dir", func(t *testing.T) {
+		d := &skipMintDispatcher{}
+		assert.Equal(t, "skip-mint-check", d.Name())
+		assert.Nil(t, d.OrgSecretNames())
+		assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
+		assert.NoError(t, d.StoreAgentPEM(context.Background(), "org", "role", []byte("pem")))
+	})
+
+	t.Run("with data dir writes PEM to disk", func(t *testing.T) {
+		dataDir := t.TempDir()
+		d := &skipMintDispatcher{mintURL: "http://localhost:8321", dataDir: dataDir}
+		assert.NoError(t, d.StoreAgentPEM(context.Background(), "myorg", "triage", []byte("pem-data")))
+
+		pemData, err := os.ReadFile(filepath.Join(dataDir, "pems", "triage.pem"))
+		require.NoError(t, err)
+		assert.Equal(t, "pem-data", string(pemData))
+
+		configData, err := os.ReadFile(filepath.Join(dataDir, "config.json"))
+		require.NoError(t, err)
+		var cfg mintDiskConfig
+		require.NoError(t, json.Unmarshal(configData, &cfg))
+		assert.Equal(t, "myorg", cfg.Org)
+		assert.Equal(t, "", cfg.Roles["triage"].AppID)
+
+		vars, err := d.Provision(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "http://localhost:8321"}, vars)
+	})
 }
 
 func TestValidateMintURLHTTPS(t *testing.T) {
@@ -1506,7 +1529,9 @@ func TestValidateMintURLHTTPS(t *testing.T) {
 func TestValidateSkipMintCheck(t *testing.T) {
 	require.Error(t, validateSkipMintCheck(""))
 	require.Error(t, validateSkipMintCheck("http://example.com"))
-	require.NoError(t, validateSkipMintCheck("https://mint.example.com/v1/token"))
+	require.NoError(t, validateSkipMintCheck("https://mint.example.com"))
+	require.NoError(t, validateSkipMintCheck("http://localhost:8321"))
+	require.NoError(t, validateSkipMintCheck("http://127.0.0.1:8321"))
 }
 
 func TestValidateWIFProvider_Valid(t *testing.T) {
