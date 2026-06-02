@@ -262,8 +262,10 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 //   - REQUEST_CHANGES: includes a link to the sticky comment (API
 //     requires a non-empty body for this event); when inline comments
 //     are attached, the body references them instead
-//   - COMMENT: skipped entirely (sticky comment already covers it,
-//     and the API requires a non-empty body)
+//   - COMMENT: skipped when no inline-eligible findings exist (sticky
+//     comment already covers it); when inline comments are present, a
+//     COMMENT review is submitted with a body linking to the sticky
+//     comment so findings appear on the relevant code lines
 func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer) error {
 	event, ok := reviewActionToEvent(action)
 	if !ok {
@@ -284,11 +286,6 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	} else {
 		dismissStaleRequestChanges(ctx, client, owner, repo, pr, event, user, reviews, printer)
 		minimizeStaleReviews(ctx, client, user, reviews, printer)
-	}
-
-	if event == "COMMENT" {
-		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
-		return nil
 	}
 
 	var diffHunks map[string][][2]int
@@ -316,8 +313,17 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict", lineFiltered))
 	}
 
+	// COMMENT verdicts skip the formal review unless there are inline-
+	// eligible findings worth attaching. When inline comments exist,
+	// a COMMENT review is submitted so the findings appear on the
+	// relevant code lines.
+	if event == "COMMENT" && len(inlineComments) == 0 {
+		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
+		return nil
+	}
+
 	var reviewBody string
-	if event == "REQUEST_CHANGES" {
+	if event == "REQUEST_CHANGES" || (event == "COMMENT" && len(inlineComments) > 0) {
 		reviewBody = "See the review comment above for full details."
 		if commentURL != "" {
 			reviewBody = fmt.Sprintf("See the [review comment](%s) for full details.", commentURL)

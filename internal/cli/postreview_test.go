@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
+	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
@@ -262,7 +262,7 @@ func TestSubmitFormalReview_DismissesOnCommentVerdict(t *testing.T) {
 
 	require.Len(t, fc.DismissedReviews, 1, "COMMENT verdict must still dismiss stale CHANGES_REQUESTED")
 	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
-	assert.Empty(t, fc.CreatedReviews, "COMMENT events skip formal review submission")
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings skips formal review")
 }
 
 func TestSubmitFormalReview_DryRun(t *testing.T) {
@@ -370,7 +370,7 @@ func TestSubmitFormalReview_PassesCommitSHA(t *testing.T) {
 
 	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "deadbeef1234", "", nil, false, printer)
 	require.NoError(t, err)
-	assert.Empty(t, fc.CreatedReviews, "COMMENT events should skip formal review")
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings should skip formal review")
 }
 
 func TestSubmitFormalReview_EmptyCommitSHA(t *testing.T) {
@@ -434,14 +434,73 @@ func TestSubmitFormalReview_RejectSubmitsRequestChanges(t *testing.T) {
 	assert.Contains(t, fc.CreatedReviews[0].Body, commentURL)
 }
 
-func TestSubmitFormalReview_CommentSkipped(t *testing.T) {
+func TestSubmitFormalReview_CommentSkippedWithoutFindings(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-bot"
 	printer := ui.New(io.Discard)
 
 	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", nil, false, printer)
 	require.NoError(t, err)
-	assert.Empty(t, fc.CreatedReviews, "COMMENT events should skip formal review")
+	assert.Empty(t, fc.CreatedReviews, "COMMENT events with no inline findings should skip formal review")
+}
+
+func TestSubmitFormalReview_CommentSubmittedWithInlineFindings(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{
+			Severity:    "medium",
+			Category:    "logic-error",
+			File:        "internal/service.go",
+			Line:        42,
+			Description: "Nil pointer dereference possible.",
+		},
+	}
+
+	commentURL := "https://github.com/acme/repo/pull/1#issuecomment-99"
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", commentURL, findings, false, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedReviews, 1)
+	review := fc.CreatedReviews[0]
+	assert.Equal(t, "COMMENT", review.Event)
+	assert.Contains(t, review.Body, commentURL)
+	assert.Contains(t, review.Body, "[review comment]")
+	require.Len(t, review.Comments, 1)
+	assert.Equal(t, "internal/service.go", review.Comments[0].Path)
+	assert.Equal(t, 42, review.Comments[0].Line)
+}
+
+func TestSubmitFormalReview_CommentSkippedWhenFindingsFilteredOut(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "other.go", Patch: "@@ -1,5 +1,10 @@ package other"},
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{
+			Severity:    "low",
+			Category:    "style",
+			File:        "not-in-diff.go",
+			Line:        10,
+			Description: "File not in PR diff.",
+		},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", findings, false, printer)
+	require.NoError(t, err)
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline-eligible findings should skip formal review")
 }
 
 func TestDismissStaleRequestChanges(t *testing.T) {
