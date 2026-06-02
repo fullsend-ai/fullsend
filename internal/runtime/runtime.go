@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"io"
 	"sync/atomic"
 	"time"
 
@@ -33,7 +32,6 @@ type TranscriptError struct {
 }
 
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.
-// TODO: split transcript/debug helpers before adding a second runtime implementation.
 type Runtime interface {
 	Name() string
 	ConfigDir() string
@@ -41,13 +39,16 @@ type Runtime interface {
 	Bootstrap(input BootstrapInput) error
 	Run(params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (exitCode int, err error)
 	ClearIterationArtifacts(sandboxName string) error
-	ExtractTranscripts(sandboxName, agentLabel, outputDir string) error
-	ExtractDebugLog(sandboxName, localPath, debug string) error
-	ParseTranscriptErrors(transcriptDir string) []TranscriptError
-	EmitTranscriptErrors(w io.Writer, summaries []TranscriptError)
 }
 
-// Default returns the configured agent runtime (Claude Code today).
-func Default() Runtime {
-	return ClaudeRuntime{}
+// Backend pairs the active runtime with its transcript/debug artifact handler.
+type Backend struct {
+	Runtime
+	Transcripts TranscriptHandler
+}
+
+// Default returns the configured agent backend (Claude Code today).
+func Default() Backend {
+	r := ClaudeRuntime{}
+	return Backend{Runtime: r, Transcripts: r}
 }

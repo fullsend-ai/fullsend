@@ -250,32 +250,22 @@ func installClaudeHooks(sandboxName string, hooks security.ClaudeSandboxHooks) e
 	}
 	os.Remove(tmpSettings.Name())
 
-	sh := hooks.SandboxHooks
-	if sh != nil && sh.Tirith != nil {
-		if sh.Tirith.FailOn != "" {
-			escapedFailOn := strings.ReplaceAll(sh.Tirith.FailOn, "'", "'\\''")
-			envCmd := fmt.Sprintf("echo 'export TIRITH_FAIL_ON=%s' >> %s/.env",
-				escapedFailOn, sandbox.SandboxWorkspace)
-			if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
-				return fmt.Errorf("setting TIRITH_FAIL_ON: %w", err)
-			}
+	if failOn := hooks.TirithFailOn(); failOn != "" {
+		escapedFailOn := strings.ReplaceAll(failOn, "'", "'\\''")
+		envCmd := fmt.Sprintf("echo 'export TIRITH_FAIL_ON=%s' >> %s/.env",
+			escapedFailOn, sandbox.SandboxWorkspace)
+		if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
+			return fmt.Errorf("setting TIRITH_FAIL_ON: %w", err)
 		}
-		if boolDefault(sh.Tirith.Enabled, true) {
-			envCmd := fmt.Sprintf("echo 'export TIRITH_REQUIRED=1' >> %s/.env", sandbox.SandboxWorkspace)
-			if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
-				return fmt.Errorf("setting TIRITH_REQUIRED: %w", err)
-			}
+	}
+	if hooks.TirithRequired() {
+		envCmd := fmt.Sprintf("echo 'export TIRITH_REQUIRED=1' >> %s/.env", sandbox.SandboxWorkspace)
+		if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
+			return fmt.Errorf("setting TIRITH_REQUIRED: %w", err)
 		}
 	}
 
 	return nil
-}
-
-func boolDefault(b *bool, def bool) bool {
-	if b == nil {
-		return def
-	}
-	return *b
 }
 
 func bootstrapPlugins(sandboxName, configDir string, plugins []string) error {
@@ -403,5 +393,8 @@ func buildPluginConfigs(plugins []string, pluginsBase, mktBase, marketplace, ver
 	return result, nil
 }
 
-// Ensure ClaudeRuntime implements Runtime.
-var _ Runtime = ClaudeRuntime{}
+// Ensure ClaudeRuntime implements Runtime and TranscriptHandler.
+var (
+	_ Runtime           = ClaudeRuntime{}
+	_ TranscriptHandler = ClaudeRuntime{}
+)

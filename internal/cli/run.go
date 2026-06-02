@@ -384,7 +384,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	repoDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
 
 	// 7. Bootstrap sandbox.
-	rt := agentruntime.Default()
+	backend := agentruntime.Default()
+	rt := backend.Runtime
+	tx := backend.Transcripts
 	bootstrapStart := time.Now()
 	printer.StepStart("Bootstrapping sandbox")
 	boot := newHarnessBootstrap(h, sandboxName)
@@ -630,7 +632,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// 9c. Extract transcripts for this iteration.
 		transcriptStart := time.Now()
 		printer.StepStart("Extracting transcripts")
-		if err := rt.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
+		if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
 			printer.StepWarn("Failed to extract transcripts: " + err.Error())
 		} else {
 			printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
@@ -639,7 +641,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Extract debug log if --debug was enabled.
 		if debug != "" {
 			debugDst := filepath.Join(iterDir, "claude-debug.log")
-			if err := rt.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
+			if err := tx.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
 				printer.StepWarn("Failed to extract debug log: " + err.Error())
 			} else {
 				printer.StepInfo("Extracted claude-debug.log")
@@ -654,8 +656,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, repoDir, repoSrc); err != nil {
-			if es := rt.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
-				rt.EmitTranscriptErrors(os.Stderr, es)
+			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
+				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
@@ -697,9 +699,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if lastExitCode != 0 {
 		lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
 		lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
-		if errorSummaries := rt.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
+		if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
 			printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
-			rt.EmitTranscriptErrors(os.Stderr, errorSummaries)
+			tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
 		}
 	}
 

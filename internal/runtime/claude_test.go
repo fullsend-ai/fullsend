@@ -15,10 +15,11 @@ import (
 )
 
 func TestDefaultRuntime(t *testing.T) {
-	rt := Default()
-	assert.Equal(t, "claude", rt.Name())
-	assert.Equal(t, sandbox.SandboxClaudeConfig, rt.ConfigDir())
-	assert.Contains(t, rt.EnvExports()[0], "CLAUDE_CONFIG_DIR")
+	backend := Default()
+	assert.Equal(t, "claude", backend.Name())
+	assert.Equal(t, sandbox.SandboxClaudeConfig, backend.ConfigDir())
+	assert.Contains(t, backend.EnvExports()[0], "CLAUDE_CONFIG_DIR")
+	assert.NotNil(t, backend.Transcripts)
 }
 
 func testRunCommand(agentName, model, repoDir string, pluginDirs []string, debug string) string {
