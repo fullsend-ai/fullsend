@@ -79,10 +79,9 @@ repos:
     hooks:
       - id: go-fmt
         name: gofmt
-        entry: bash -c 'out=$(gofmt -l .); [ -z "$out" ] || { echo "$out"; exit 1; }'
+        entry: gofmt -w
         language: system
         types: [go]
-        pass_filenames: false
 
       - id: go-vet
         name: go vet
