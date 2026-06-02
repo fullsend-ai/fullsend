@@ -131,7 +131,6 @@ OpenShell requires a gateway to work, start one on a different terminal using Po
 # export FULLSEND_SANDBOX_IMAGE=ghcr.io/fullsend-ai/fullsend-sandbox:dev
 # podman machine start
 
-export OPENSHELL_SSH_HANDSHAKE_SECRET="local-$(openssl rand -hex 16)"
 # v0.0.38 requires an explicit supervisor image (version-tagged images start at 0.0.41)
 export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dfd47683e7da4f1a4a8fa5d77f92d3696e6a41f9"
 

@@ -215,8 +215,6 @@ runs:
         GATEWAY_LOG="${GITHUB_WORKSPACE}/output/openshell-gateway.log"
         mkdir -p "${GITHUB_WORKSPACE}/output"
 
-        export OPENSHELL_SSH_HANDSHAKE_SECRET="ci-$(openssl rand -hex 16)"
-        echo "::add-mask::${OPENSHELL_SSH_HANDSHAKE_SECRET}"
         # Version-tagged images start at 0.0.41; for 0.0.38 use the release commit SHA.
         # TODO: pass via --podman-supervisor-image flag when one exists (Docker driver has --docker-supervisor-image).
         export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dfd47683e7da4f1a4a8fa5d77f92d3696e6a41f9"
