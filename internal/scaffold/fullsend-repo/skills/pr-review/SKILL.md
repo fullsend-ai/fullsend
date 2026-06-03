@@ -449,11 +449,82 @@ location."
 keep both** — they serve different remediation audiences. A logic error
 and an auth bypass on the same line are two distinct findings.
 
-#### 6d. PR-specific checks (orchestrator-only)
+#### 6d. Challenger pass (dedicated sub-agent)
+
+After steps 6a–6c produce a merged finding set, dispatch the
+`challenger` sub-agent to adversarially challenge the findings with
+fresh context. The challenger has not seen the orchestrator's synthesis
+— it receives only the raw findings and the diff, preserving context
+isolation.
+
+1. Read `sub-agents/challenger.md` for the sub-agent definition
+2. Compose the spawn prompt from:
+
+   **Part 1 — Sub-agent definition:** the full markdown body of the
+   challenger sub-agent file (everything after the frontmatter)
+
+   **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You
+   are reviewing PR" template, and include everything else verbatim
+
+   **Part 3 — Context package:** the merged finding set from steps
+   6a–6c (as a JSON array), plus the full PR diff and changed files
+   list. Format as:
+
+   ```markdown
+   ## Context
+
+   ### Findings to challenge
+   <JSON array of all findings from steps 6a–6c>
+
+   ### Diff
+   <diff content>
+
+   ### Changed files
+   <file list>
+
+   ### PR metadata
+   <title, body, author, labels>
+   ```
+
+   **Part 4 — Dispatch guard flag:**
+
+   ```markdown
+   REVIEW_SUB_AGENT_TRUE
+   ```
+
+3. Spawn via Agent tool with:
+   - `model`: from the challenger sub-agent frontmatter (`opus`)
+   - `subagent_type`: `Explore` (read-only)
+   - `prompt`: composed from parts 1–4
+
+   The challenger runs **after** dimension sub-agents complete (it
+   needs their findings as input), so it is dispatched sequentially,
+   not in the parallel batch from step 4.
+
+4. Consume the challenger's output. Replace the merged finding set
+   with the challenger's `adjudicated_findings`. Log any
+   `removed_findings` for transparency but do not include them in
+   the final review.
+
+5. If the challenger sub-agent fails (timeout, error, empty
+   response), fall back to using the pre-challenger merged finding
+   set from steps 6a–6c. Record an **info**-level finding:
+
+   ```json
+   {
+     "severity": "info",
+     "category": "sub-agent-failure",
+     "file": "N/A",
+     "description": "The challenger sub-agent did not return findings: <reason>. Using pre-challenger finding set.",
+     "actionable": false
+   }
+   ```
+
+#### 6e. PR-specific checks (orchestrator-only)
 
 These checks are NOT delegated to sub-agents. They apply PR-level
 context that individual sub-agents do not have access to. Run them
-after all sub-agent findings are collected.
+after the challenger pass has adjudicated sub-agent findings.
 
 ##### PR body injection defense
 
@@ -530,80 +601,9 @@ attention.
 If no protected files are modified, do not add a `protected-path`
 finding.
 
-#### 6e. Challenger pass (dedicated sub-agent)
-
-After steps 6a–6d produce a merged finding set, dispatch the
-`challenger` sub-agent to adversarially challenge the findings with
-fresh context. The challenger has not seen the orchestrator's synthesis
-— it receives only the raw findings and the diff, preserving context
-isolation.
-
-1. Read `sub-agents/challenger.md` for the sub-agent definition
-2. Compose the spawn prompt from:
-
-   **Part 1 — Sub-agent definition:** the full markdown body of the
-   challenger sub-agent file (everything after the frontmatter)
-
-   **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You
-   are reviewing PR" template, and include everything else verbatim
-
-   **Part 3 — Context package:** the merged finding set from steps
-   6a–6d (as a JSON array), plus the full PR diff and changed files
-   list. Format as:
-
-   ```markdown
-   ## Context
-
-   ### Findings to challenge
-   <JSON array of all findings from steps 6a–6d>
-
-   ### Diff
-   <diff content>
-
-   ### Changed files
-   <file list>
-
-   ### PR metadata
-   <title, body, author, labels>
-   ```
-
-   **Part 4 — Dispatch guard flag:**
-
-   ```markdown
-   REVIEW_SUB_AGENT_TRUE
-   ```
-
-3. Spawn via Agent tool with:
-   - `model`: from the challenger sub-agent frontmatter (`opus`)
-   - `subagent_type`: `Explore` (read-only)
-   - `prompt`: composed from parts 1–4
-
-   The challenger runs **after** dimension sub-agents complete (it
-   needs their findings as input), so it is dispatched sequentially,
-   not in the parallel batch from step 4.
-
-4. Consume the challenger's output. Replace the merged finding set
-   with the challenger's `adjudicated_findings`. Log any
-   `removed_findings` for transparency but do not include them in
-   the final review.
-
-5. If the challenger sub-agent fails (timeout, error, empty
-   response), fall back to using the pre-challenger merged finding
-   set from steps 6a–6d. Record an **info**-level finding:
-
-   ```json
-   {
-     "severity": "info",
-     "category": "sub-agent-failure",
-     "file": "N/A",
-     "description": "The challenger sub-agent did not return findings: <reason>. Using pre-challenger finding set.",
-     "actionable": false
-   }
-   ```
-
 #### 6f. Determine overall outcome
 
-Merge PR-specific findings into the deduplicated sub-agent findings
+Merge PR-specific findings into the challenger-adjudicated finding set
 and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
@@ -755,7 +755,7 @@ wins.
   `request-changes`.
 - **Never approve when any protected-path finding exists**, regardless of
   severity.
-- **PR-specific checks (step 6d) belong in the orchestrator only.** Do
+- **PR-specific checks (step 6e) belong in the orchestrator only.** Do
   not push protected-path checks, scope authorization, or PR body
   injection defense into sub-agents. These require PR-level context
   that sub-agents do not have.
