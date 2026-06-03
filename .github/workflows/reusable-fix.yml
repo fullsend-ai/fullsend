@@ -340,6 +340,17 @@ jobs:
           FIX_REPO_FULL_NAME: ${{ inputs.source_repo }}
         run: bash .github/scripts/setup-agent-env.sh
 
+      - name: Post start comment
+        if: steps.app-token.outputs.token != ''
+        continue-on-error: true
+        uses: fullsend-ai/fullsend/.github/actions/agent-status-comment@v0
+        with:
+          description: Addressing review feedback on this PR
+          number: ${{ steps.context.outputs.pr_number }}
+          repo: ${{ inputs.source_repo }}
+          sha: ${{ steps.pre-agent.outputs.head }}
+          token: ${{ steps.app-token.outputs.token }}
+
       - name: Run fix agent
         uses: fullsend-ai/fullsend@v0
         env:
@@ -356,3 +367,15 @@ jobs:
         with:
           agent: fix
           version: ${{ inputs.fullsend_version }}
+
+      - name: Post completion comment
+        if: always() && steps.app-token.outputs.token != ''
+        continue-on-error: true
+        uses: fullsend-ai/fullsend/.github/actions/agent-status-comment@v0
+        with:
+          description: Addressing review feedback on this PR
+          number: ${{ steps.context.outputs.pr_number }}
+          repo: ${{ inputs.source_repo }}
+          sha: ${{ steps.pre-agent.outputs.head }}
+          token: ${{ steps.app-token.outputs.token }}
+          status: ${{ job.status }}

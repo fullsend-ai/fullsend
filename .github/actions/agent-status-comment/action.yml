@@ -1,0 +1,126 @@
+name: Agent Status Comment
+description: >-
+  Post or update a status comment on an issue or PR for a fullsend agent
+  workflow run. Start comments include a run-specific HTML marker. On
+  completion, the start comment is edited in place if it is still the
+  last comment; otherwise a new completion comment is posted. Cancelled
+  runs delete their start comment to avoid stale "in progress" messages.
+
+inputs:
+  description:
+    description: >-
+      Human-readable action phrase (e.g. "Reviewing this PR"). Used as-is for
+      start comments; completion comments prepend "Finished". Must be a
+      hardcoded literal — do not pass user-controlled content.
+    required: true
+  number:
+    description: Issue or PR number to comment on
+    required: true
+  repo:
+    description: Repository full name (owner/repo) to comment on
+    required: true
+  sha:
+    description: Commit SHA the workflow is running against
+    required: true
+  token:
+    description: GitHub token with issues:write permission
+    required: true
+  status:
+    description: >-
+      Workflow job status (success/failure/cancelled). When set, updates or
+      posts a completion comment; when empty, posts a start comment.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Post status comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DESCRIPTION: ${{ inputs.description }}
+        NUMBER: ${{ inputs.number }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        STATUS: ${{ inputs.status }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${NUMBER}" || "${NUMBER}" == "null" ]]; then
+          echo "::notice::No issue/PR number — skipping status comment"
+          exit 0
+        fi
+
+        MARKER="<!-- fullsend:agent-status:${GITHUB_RUN_ID} -->"
+        RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        SHORT_SHA="${SHA:0:7}"
+        TIMESTAMP=$(date -u +'%-I:%M %p UTC')
+
+        find_start_comment() {
+          gh api "repos/${REPO}/issues/${NUMBER}/comments" \
+            --paginate \
+            --jq "[.[] | select(.body | contains(\"${MARKER}\")) | .id] | first" \
+            2>/dev/null || true
+        }
+
+        if [[ -z "${STATUS}" ]]; then
+          # Post start comment
+          printf -v BODY '%s\n%s\n%s' \
+            "${MARKER}" \
+            "🤖 ${DESCRIPTION} · Started ${TIMESTAMP}" \
+            "Commit: \`${SHORT_SHA}\` · [View workflow run →](${RUN_URL})"
+          gh issue comment "${NUMBER}" --repo "${REPO}" --body "${BODY}"
+
+        elif [[ "${STATUS}" == "cancelled" ]]; then
+          # Cancelled (superseded) run — delete the start comment.
+          COMMENT_ID=$(find_start_comment)
+          if [[ -n "${COMMENT_ID}" && "${COMMENT_ID}" != "null" ]]; then
+            gh api -X DELETE "repos/${REPO}/issues/comments/${COMMENT_ID}" 2>/dev/null || true
+          fi
+
+        else
+          # Completion — edit in place if start comment is still last,
+          # otherwise post a new comment.
+          case "${STATUS}" in
+            success)   STATUS_LABEL="✅ Success" ;;
+            failure)   STATUS_LABEL="❌ Failure" ;;
+            *)         STATUS_LABEL="❓ ${STATUS}" ;;
+          esac
+
+          COMMENT_ID=$(find_start_comment)
+
+          # Extract start time from the existing comment body
+          START_TIME=""
+          if [[ -n "${COMMENT_ID}" && "${COMMENT_ID}" != "null" ]]; then
+            START_TIME=$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" \
+              --jq '.body' 2>/dev/null \
+              | grep -oP 'Started \K[0-9]+:[0-9]+ [AP]M UTC' || true)
+          fi
+
+          if [[ -n "${START_TIME}" ]]; then
+            TIME_PART=" · Started ${START_TIME} · Completed ${TIMESTAMP}"
+          else
+            TIME_PART=" · Completed ${TIMESTAMP}"
+          fi
+
+          printf -v BODY '%s\n%s\n%s' \
+            "${MARKER}" \
+            "🤖 Finished ${DESCRIPTION} · ${STATUS_LABEL}${TIME_PART}" \
+            "Commit: \`${SHORT_SHA}\` · [View workflow run →](${RUN_URL})"
+
+          if [[ -n "${COMMENT_ID}" && "${COMMENT_ID}" != "null" ]]; then
+            # Check if start comment is the last comment on the issue/PR
+            LAST_COMMENT_ID=$(gh api "repos/${REPO}/issues/${NUMBER}/comments?per_page=1&direction=desc" \
+              --jq '.[0].id' 2>/dev/null || true)
+            if [[ "${COMMENT_ID}" == "${LAST_COMMENT_ID}" ]]; then
+              gh api -X PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" \
+                -f body="${BODY}" 2>/dev/null || true
+            else
+              gh issue comment "${NUMBER}" --repo "${REPO}" --body "${BODY}"
+            fi
+          else
+            # Start comment not found — post fresh
+            gh issue comment "${NUMBER}" --repo "${REPO}" --body "${BODY}"
+          fi
+        fi

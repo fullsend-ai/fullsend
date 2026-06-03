@@ -118,6 +118,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Record target commit SHA
+        id: target-sha
+        run: echo "sha=$(git -C target-repo rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Validate inputs
         env:
           ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
@@ -142,6 +146,17 @@ jobs:
           CODE_ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
         run: bash .github/scripts/setup-agent-env.sh
 
+      - name: Post start comment
+        if: steps.app-token.outputs.token != ''
+        continue-on-error: true
+        uses: fullsend-ai/fullsend/.github/actions/agent-status-comment@v0
+        with:
+          description: Implementing changes and creating a PR
+          number: ${{ fromJSON(inputs.event_payload).issue.number }}
+          repo: ${{ inputs.source_repo }}
+          sha: ${{ steps.target-sha.outputs.sha }}
+          token: ${{ steps.app-token.outputs.token }}
+
       - name: Run code agent
         uses: fullsend-ai/fullsend@v0
         env:
@@ -154,3 +169,15 @@ jobs:
         with:
           agent: code
           version: ${{ inputs.fullsend_version }}
+
+      - name: Post completion comment
+        if: always() && steps.app-token.outputs.token != ''
+        continue-on-error: true
+        uses: fullsend-ai/fullsend/.github/actions/agent-status-comment@v0
+        with:
+          description: Implementing changes and creating a PR
+          number: ${{ fromJSON(inputs.event_payload).issue.number }}
+          repo: ${{ inputs.source_repo }}
+          sha: ${{ steps.target-sha.outputs.sha }}
+          token: ${{ steps.app-token.outputs.token }}
+          status: ${{ job.status }}
