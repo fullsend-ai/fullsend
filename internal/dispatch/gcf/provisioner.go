@@ -357,10 +357,23 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
+	// Defense-in-depth: cross-check ALLOWED_ORGS against ROLE_APP_IDS.
+	// If ALLOWED_ORGS is empty but ROLE_APP_IDS has entries for other orgs,
+	// the env var data is inconsistent (e.g., stale read from a diverged
+	// template). Abort rather than silently clobbering existing orgs.
+	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
+	if allowedOrgs == "" {
+		if otherOrgs := otherOrgsInRoleAppIDs(trafficEnvVars["ROLE_APP_IDS"], org); len(otherOrgs) > 0 {
+			return fmt.Errorf(
+				"data inconsistency: ALLOWED_ORGS is empty but ROLE_APP_IDS contains entries for %s; "+
+					"this suggests env var data loss — run 'fullsend mint status --project=%s' to investigate",
+				strings.Join(otherOrgs, ", "), p.cfg.ProjectID)
+		}
+	}
+
 	needsUpdate := false
 
 	// Check ALLOWED_ORGS.
-	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
 	orgPresent := false
 	for _, o := range strings.Split(allowedOrgs, ",") {
 		if strings.EqualFold(strings.TrimSpace(o), org) {
@@ -983,6 +996,40 @@ func mergeAllowedOrgs(existing, desired map[string]string) {
 	}
 	sort.Strings(merged)
 	desired["ALLOWED_ORGS"] = strings.Join(merged, ",")
+}
+
+// otherOrgsInRoleAppIDs parses ROLE_APP_IDS JSON and returns a sorted list
+// of org names that differ from enrollingOrg. ROLE_APP_IDS keys are in the
+// format "org/role", so the org is extracted from the prefix before the first
+// slash. Returns nil if the JSON is empty or unparseable.
+func otherOrgsInRoleAppIDs(roleAppIDsJSON, enrollingOrg string) []string {
+	if roleAppIDsJSON == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(roleAppIDsJSON), &m); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for key := range m {
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		orgName := parts[0]
+		if !strings.EqualFold(orgName, enrollingOrg) && !seen[orgName] {
+			seen[orgName] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	orgs := make([]string, 0, len(seen))
+	for o := range seen {
+		orgs = append(orgs, o)
+	}
+	sort.Strings(orgs)
+	return orgs
 }
 
 // mergeRoleAppIDs reads ROLE_APP_IDS from existing env vars and merges with

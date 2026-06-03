@@ -1636,8 +1636,11 @@ func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *tes
 	fake := newFakeGCFClient()
 	// Simulate an existing deployed function from a previous org's install.
 	fake.functionInfo = &FunctionInfo{
-		URI:     "https://mint.run.app",
-		EnvVars: map[string]string{"ROLE_APP_IDS": `{"existing-org/coder":"999"}`},
+		URI: "https://mint.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "existing-org",
+			"ROLE_APP_IDS": `{"existing-org/coder":"999"}`,
+		},
 	}
 	// Simulate existing WIF provider with existing-org already configured.
 	fake.wifProvider = &WIFProviderInfo{
@@ -2771,6 +2774,80 @@ func TestMergeAllowedOrgs_BothEmpty(t *testing.T) {
 	desired := map[string]string{"ALLOWED_ORGS": ""}
 	mergeAllowedOrgs(existing, desired)
 	assert.Equal(t, "", desired["ALLOWED_ORGS"])
+}
+
+func TestOtherOrgsInRoleAppIDs(t *testing.T) {
+	t.Run("returns_other_orgs", func(t *testing.T) {
+		roleJSON := `{"org-a/coder":"100","org-b/triage":"200","new-org/coder":"300"}`
+		others := otherOrgsInRoleAppIDs(roleJSON, "new-org")
+		assert.Equal(t, []string{"org-a", "org-b"}, others)
+	})
+	t.Run("returns_nil_when_only_enrolling_org", func(t *testing.T) {
+		roleJSON := `{"new-org/coder":"300"}`
+		others := otherOrgsInRoleAppIDs(roleJSON, "new-org")
+		assert.Nil(t, others)
+	})
+	t.Run("returns_nil_when_empty", func(t *testing.T) {
+		others := otherOrgsInRoleAppIDs("", "new-org")
+		assert.Nil(t, others)
+	})
+	t.Run("returns_nil_when_invalid_json", func(t *testing.T) {
+		others := otherOrgsInRoleAppIDs("{bad", "new-org")
+		assert.Nil(t, others)
+	})
+	t.Run("case_insensitive_org_match", func(t *testing.T) {
+		roleJSON := `{"New-Org/coder":"100"}`
+		others := otherOrgsInRoleAppIDs(roleJSON, "new-org")
+		assert.Nil(t, others)
+	})
+}
+
+func TestEnsureOrgInMint_AbortsOnDataInconsistency(t *testing.T) {
+	// When ALLOWED_ORGS is empty but ROLE_APP_IDS has entries for other
+	// orgs, EnsureOrgInMint should abort with a data inconsistency error
+	// rather than silently proceeding and clobbering existing orgs.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{"org-a/coder":"100","org-b/coder":"200"}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
+		"new-org/coder": "300",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "data inconsistency")
+	assert.Contains(t, err.Error(), "org-a")
+	assert.Contains(t, err.Error(), "org-b")
+	// Should NOT have called UpdateServiceEnvVars — we aborted early.
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
+	// When ALLOWED_ORGS is empty and ROLE_APP_IDS is also empty (or has
+	// only the enrolling org), this is a genuine first enrollment — proceed.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
+		"new-org/coder": "100",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }
 
 func TestRegisterPerRepoWIF_AddsNewRepo(t *testing.T) {
