@@ -19,22 +19,34 @@ not from general best practices.
 
 Before exploring context files, assess the diff size and nature.
 
-**Trivial diffs (under 10 changed lines, single concern):**
+**Trivial diffs (under 20 changed lines, single concern):**
 
 - Read only the changed files plus at most 3 sibling files in the same
   directory.
-- Do not read CI scripts, workflow files, Makefiles, or shell scripts
-  unless the diff itself modifies them.
+- Do not read files outside the directory of each changed file.
+  A YAML config change does not require reading Go, Python, or other
+  source files elsewhere in the repo.
+- Do not run shell pipelines (`awk`, `sed`, `grep`, `wc`) for
+  whitespace, indentation, or formatting analysis. The diff context
+  provides sufficient information.
+- Do not run `git log` or `git blame` searches. Commit history is not
+  needed to evaluate style on a small change.
 - Aim for under 10 tool calls total.
 
-**Non-trivial diffs (10+ changed lines or multiple concerns):**
+**Non-trivial diffs (20+ changed lines or multiple concerns):**
 
 - Read 3-5 existing files in the same package/directory as the changed
   files to extract the established patterns before evaluating.
 
-## Early exit for mechanical changes
+## Early exit criteria
 
-If the diff is a mechanical or generated change — such as a dependency
-version bump, Docker digest update, or rendered-manifest regeneration —
-and the changed lines match the style of surrounding lines in the same
-file, report no findings immediately without further exploration.
+If the diff is a mechanical, generated, or value-only change — such as
+a dependency version bump, Docker digest update, rendered-manifest
+regeneration, hash swap, URL update, or feature flag toggle — and the
+changed values follow the same pattern as their surrounding context in
+the diff, report no findings immediately without further exploration.
+Do not read additional files beyond the diff context.
+
+This rule takes precedence over the size-based categories above: a
+25-line value-only change exits here rather than triggering non-trivial
+exploration.
