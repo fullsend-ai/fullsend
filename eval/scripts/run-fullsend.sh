@@ -35,7 +35,9 @@ git -c "credential.helper=${GH_CRED_HELPER}" \
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
 cleanup() {
+  # shellcheck disable=SC2317 # invoked indirectly via trap
   [[ -n "${ENV_FILE:-}" ]] && rm -f "$ENV_FILE"
+  # shellcheck disable=SC2317
   [[ -n "${TARGET_DIR:-}" && -d "${TARGET_DIR:-}" ]] && rm -rf "$TARGET_DIR"
 }
 trap cleanup EXIT

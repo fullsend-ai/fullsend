@@ -162,12 +162,24 @@ for case_dir in "$CASES_DIR"/*/; do
   max_cost=$(yq -r '.max_cost_usd' "$annotations")
 
   if [[ ! -f "$metrics_file" ]]; then
-    echo "  ${case_name}: WARNING — metrics.json not found, skipping threshold checks"
+    echo "  ${case_name}: FAIL — metrics.json not found, cannot verify thresholds"
+    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
     continue
   fi
 
   actual_turns=$(jq -r '.num_turns' "$metrics_file")
   actual_cost=$(jq -r '.total_cost_usd' "$metrics_file")
+
+  if ! [[ "$actual_turns" =~ ^[0-9]+$ ]]; then
+    echo "  ${case_name}: FAIL — invalid num_turns value: $actual_turns"
+    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
+    continue
+  fi
+  if ! [[ "$actual_cost" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+    echo "  ${case_name}: FAIL — invalid total_cost_usd value: $actual_cost"
+    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
+    continue
+  fi
 
   if [[ "$actual_turns" -le "$max_turns" ]] 2>/dev/null; then
     printf "  %-30s max_turns     %-4s  actual  %-4s  PASS\n" "$case_name" "$max_turns" "$actual_turns"
