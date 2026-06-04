@@ -98,6 +98,10 @@ The agent itself in execution — the LLM, its tool-use loop, and the interface 
 
 This is the thing that actually reasons and acts. Everything else in this document exists to support, constrain, or coordinate it.
 
+**Decided (implementation):**
+
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; the MVP registers Claude Code only. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+
 **Open questions:**
 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?

@@ -1,4 +1,4 @@
-package cli
+package runtime
 
 import (
 	"bufio"
@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strings"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -48,11 +46,6 @@ var allowedTools = map[string]bool{
 	"Grep":  true,
 	"Glob":  true,
 	"Agent": true,
-}
-
-// RunMetrics collects execution statistics from stream parsing.
-type RunMetrics struct {
-	ToolCalls atomic.Int32
 }
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
@@ -215,28 +208,4 @@ func emitToolProgress(printer *ui.Printer, toolName, context string, start time.
 		fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
 	}
 	printer.Heartbeat(msg)
-}
-
-// ansiEscRe matches ANSI CSI sequences, OSC sequences, and charset designators.
-var ansiEscRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]`)
-
-// sanitizeOutput strips ANSI escape sequences, control characters, and GHA
-// workflow command markers from untrusted sandbox output. Safe for terminals,
-// CI log viewers, and log aggregators.
-func sanitizeOutput(s string) string {
-	s = ansiEscRe.ReplaceAllString(s, "")
-	s = strings.ReplaceAll(s, "::", ": :")
-	for _, enc := range []string{"%0A", "%0a", "%0D", "%0d"} {
-		s = strings.ReplaceAll(s, enc, " ")
-	}
-	var buf strings.Builder
-	buf.Grow(len(s))
-	for _, r := range s {
-		if (r >= 0x20 && r < 0x7F) || r > 0x9F {
-			buf.WriteRune(r)
-		} else {
-			buf.WriteByte(' ')
-		}
-	}
-	return buf.String()
 }

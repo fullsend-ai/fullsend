@@ -1,4 +1,4 @@
-package cli
+package runtime
 
 import (
 	"bytes"
@@ -154,7 +154,7 @@ func TestExtractTranscriptErrors_MultipleFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	summaries := extractTranscriptErrors(dir)
+	summaries := parseTranscriptErrors(dir)
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 error summary, got %d", len(summaries))
 	}
@@ -168,14 +168,14 @@ func TestExtractTranscriptErrors_MultipleFiles(t *testing.T) {
 
 func TestExtractTranscriptErrors_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	summaries := extractTranscriptErrors(dir)
+	summaries := parseTranscriptErrors(dir)
 	if len(summaries) != 0 {
 		t.Errorf("expected no summaries for empty dir, got %d", len(summaries))
 	}
 }
 
 func TestExtractTranscriptErrors_MissingDir(t *testing.T) {
-	summaries := extractTranscriptErrors("/nonexistent/dir")
+	summaries := parseTranscriptErrors("/nonexistent/dir")
 	if summaries != nil {
 		t.Errorf("expected nil for missing dir, got %v", summaries)
 	}
@@ -198,7 +198,7 @@ func TestTruncateError(t *testing.T) {
 }
 
 func TestEmitTranscriptErrors(t *testing.T) {
-	summaries := []transcriptErrorSummary{
+	summaries := []TranscriptError{
 		{
 			Source:       "code-transcript.jsonl",
 			IsError:      true,
@@ -220,7 +220,7 @@ func TestEmitTranscriptErrors(t *testing.T) {
 }
 
 func TestEmitTranscriptErrors_EmptyMessage(t *testing.T) {
-	summaries := []transcriptErrorSummary{
+	summaries := []TranscriptError{
 		{
 			Source:   "test.jsonl",
 			IsError:  true,

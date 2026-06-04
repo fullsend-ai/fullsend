@@ -1,4 +1,4 @@
-package cli
+package runtime
 
 import (
 	"bytes"

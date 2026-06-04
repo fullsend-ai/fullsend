@@ -534,62 +534,6 @@ func collectPodmanLogs(sandboxName string) string {
 	return b.String()
 }
 
-// ExtractTranscripts copies Claude transcript files (.jsonl) from the sandbox
-// to a local output directory.
-func ExtractTranscripts(sandboxName, agentName, outputDir string) error {
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("creating output dir: %w", err)
-	}
-
-	root, err := os.OpenRoot(outputDir)
-	if err != nil {
-		return fmt.Errorf("opening output root: %w", err)
-	}
-	defer root.Close()
-
-	stdout, _, _, err := Exec(sandboxName,
-		fmt.Sprintf("find %s -name '*.jsonl' 2>/dev/null || true", SandboxClaudeConfig),
-		10*time.Second,
-	)
-	if err != nil {
-		return fmt.Errorf("finding transcripts: %w", err)
-	}
-
-	trimmed := strings.TrimSpace(stdout)
-	if trimmed == "" {
-		fmt.Fprintf(os.Stderr, "  [%s] No transcripts found\n", agentName)
-		return nil
-	}
-	files := strings.Split(trimmed, "\n")
-
-	for _, remotePath := range files {
-		remotePath = strings.TrimSpace(remotePath)
-		if remotePath == "" {
-			continue
-		}
-		localName := fmt.Sprintf("%s-%s", agentName, filepath.Base(remotePath))
-
-		// Validate path stays within outputDir (kernel-enforced), then remove
-		// the probe file so DownloadFile can write the actual content.
-		f, createErr := root.Create(localName)
-		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentName, localName, createErr)
-			continue
-		}
-		f.Close()
-
-		localPath := filepath.Join(outputDir, localName)
-		os.Remove(localPath)
-		if dlErr := DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentName, dlErr)
-			continue
-		}
-		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentName, localName)
-	}
-
-	return nil
-}
-
 // ExtractOutputFiles copies all files under a remote directory in the sandbox
 // to a local output directory, preserving relative paths.
 func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, error) {

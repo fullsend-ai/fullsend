@@ -1,4 +1,4 @@
-package cli
+package runtime
 
 import (
 	"bufio"
@@ -33,29 +33,17 @@ type transcriptResult struct {
 	Result  string `json:"result,omitempty"`
 }
 
-// transcriptErrorSummary holds extracted error information from a transcript.
-type transcriptErrorSummary struct {
-	// Source is the transcript filename the error was found in.
-	Source string
-	// IsError is true when the result event has is_error set.
-	IsError bool
-	// ErrorMessage is the error text from the result event.
-	ErrorMessage string
-	// Subtype is the result subtype (e.g. "error_max_turns").
-	Subtype string
-}
-
-// extractTranscriptErrors scans all JSONL files in transcriptDir for
+// parseTranscriptErrors scans all JSONL files in transcriptDir for
 // result events with errors. Returns a summary for each transcript that
 // contains an error result. Files that cannot be read or parsed are
 // silently skipped — transcript extraction is best-effort.
-func extractTranscriptErrors(transcriptDir string) []transcriptErrorSummary {
+func parseTranscriptErrors(transcriptDir string) []TranscriptError {
 	entries, err := os.ReadDir(transcriptDir)
 	if err != nil {
 		return nil
 	}
 
-	var summaries []transcriptErrorSummary
+	var summaries []TranscriptError
 
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
@@ -72,10 +60,10 @@ func extractTranscriptErrors(transcriptDir string) []transcriptErrorSummary {
 
 // parseTranscriptFile reads a JSONL transcript and returns the last result
 // event, if any. The second return value is false if no result event was found.
-func parseTranscriptFile(path string) (transcriptErrorSummary, bool) {
+func parseTranscriptFile(path string) (TranscriptError, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return transcriptErrorSummary{}, false
+		return TranscriptError{}, false
 	}
 	defer f.Close()
 
@@ -105,10 +93,10 @@ func parseTranscriptFile(path string) (transcriptErrorSummary, bool) {
 	}
 
 	if lastResult == nil {
-		return transcriptErrorSummary{}, false
+		return TranscriptError{}, false
 	}
 
-	return transcriptErrorSummary{
+	return TranscriptError{
 		Source:       filepath.Base(path),
 		IsError:     lastResult.IsError,
 		ErrorMessage: truncateError(lastResult.Result),
@@ -141,7 +129,7 @@ func truncateError(msg string) string {
 // emitTranscriptErrors writes ::error:: annotations for each transcript
 // error summary. These appear in the GitHub Actions job summary, making
 // agent failures diagnosable without downloading artifacts.
-func emitTranscriptErrors(w io.Writer, summaries []transcriptErrorSummary) {
+func emitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 	for _, s := range summaries {
 		// Sanitize the error message to prevent GHA command injection.
 		msg := sanitizeOutput(s.ErrorMessage)
