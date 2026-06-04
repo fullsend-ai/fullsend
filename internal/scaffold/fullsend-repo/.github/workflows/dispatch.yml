@@ -148,7 +148,11 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  STAGE="review"
+                  # Only auto-review bot PRs.
+                  # Human PRs require explicit triggering via /fs-review command.
+                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]]; then
+                    STAGE="review"
+                  fi
                   ;;
                 closed)
                   STAGE="retro"
