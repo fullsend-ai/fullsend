@@ -13,9 +13,13 @@ SRC="$REPO_ROOT/internal/mint"
 DST="$REPO_ROOT/internal/dispatch/gcf/mintsrc"
 
 rc=0
-for f in main.go go.mod go.sum; do
-    if ! cmp -s "$SRC/$f" "$DST/$f.embed"; then
-        echo "DESYNC: internal/mint/$f != internal/dispatch/gcf/mintsrc/$f.embed" >&2
+for f in "$SRC"/*; do
+    name="$(basename "$f")"
+    if [[ "$name" == *_test.go ]]; then
+        continue
+    fi
+    if ! cmp -s "$f" "$DST/$name.embed"; then
+        echo "DESYNC: internal/mint/$name != internal/dispatch/gcf/mintsrc/$name.embed" >&2
         rc=1
     fi
 done
