@@ -38,7 +38,7 @@ type AppConfig struct {
 
 // DefaultAgentRoles returns the standard set of agent roles.
 func DefaultAgentRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "code", "review", "retro", "prioritize"}
 }
 
 // AgentAppConfig returns the GitHub App configuration for a given agent role.
@@ -86,8 +86,8 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 		}
 		base.Events = []string{"issues", "issue_comment"}
 
-	case "coder":
-		base.Description = fmt.Sprintf("Fullsend coder agent for %s", org)
+	case "code", "coder": // TODO(#1850): remove "coder" in v0.15.0
+		base.Description = fmt.Sprintf("Fullsend code agent for %s", org)
 		base.Permissions = AppPermissions{
 			Issues:       "write",
 			Contents:     "write",

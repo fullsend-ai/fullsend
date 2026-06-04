@@ -32,16 +32,16 @@ import (
 )
 
 // defaultMintRoles returns the default roles for mint enrollment.
-// The "fix" role is an alias for "coder" (same app, same PEM) and is
+// The "fix" role is an alias for "code" (same app, same PEM) and is
 // not a separate enrollment target.
 func defaultMintRoles() []string {
 	return config.DefaultAgentRoles()
 }
 
 // roleAlias maps role aliases to their canonical names.
-// The fix role reuses the coder app — same PEM, same app ID.
+// The fix role reuses the code app — same PEM, same app ID.
 var roleAlias = map[string]string{
-	"fix": "coder",
+	"fix": "code",
 }
 
 // resolveRole returns the canonical role name, resolving aliases.
@@ -509,7 +509,7 @@ When enrolling a repo (per-repo mode), additionally requires:
 }
 
 // parseAndResolveRoles splits a comma-separated roles string, validates,
-// and resolves aliases (e.g., fix -> coder). Deduplicates after resolution.
+// and resolves aliases (e.g., fix -> code). Deduplicates after resolution.
 func parseAndResolveRoles(rolesStr string) ([]string, error) {
 	raw, err := parseAgentRoles(rolesStr)
 	if err != nil {
@@ -860,7 +860,7 @@ func resolveEnrollAppIDs(roleAppIDsJSON string, existingIDs map[string]string, a
 			return nil, fmt.Errorf("parsing --role-app-ids: %w", err)
 		}
 		// Build org-scoped keys from explicit map, resolving aliases.
-		// Detect duplicate canonical roles (e.g., both "fix" and "coder" resolve to "coder").
+		// Detect duplicate canonical roles (e.g., both "fix" and "code" resolve to "code").
 		seen := make(map[string]string) // canonical -> original key
 		for role, appID := range explicit {
 			if appID == "" {

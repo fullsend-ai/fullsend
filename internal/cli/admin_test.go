@@ -268,7 +268,7 @@ func TestParseAgentRoles(t *testing.T) {
 		want    []string
 		wantErr bool
 	}{
-		{"triage,review,coder", []string{"triage", "review", "coder"}, false},
+		{"triage,review,code", []string{"triage", "review", "code"}, false},
 		{" triage , review ", []string{"triage", "review"}, false},
 		{"", nil, false},
 		{"single", []string{"single"}, false},
@@ -1324,33 +1324,33 @@ func TestInstallCmd_PerRepoRejectsURL(t *testing.T) {
 func TestResolveSharedRoleAppIDs_MatchesInstalledApps(t *testing.T) {
 	fake := forge.NewFakeClient()
 	fake.Installations = []forge.Installation{
-		{AppID: 100, AppSlug: "acme-coder"},
+		{AppID: 100, AppSlug: "acme-code"},
 		{AppID: 200, AppSlug: "acme-reviewer"},
 	}
 
 	existingIDs := map[string]string{
-		"other-org/coder":    "100",
+		"other-org/code":    "100",
 		"other-org/reviewer": "200",
 	}
 
-	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder", "reviewer"})
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"code", "reviewer"})
 	require.NoError(t, err)
-	assert.Equal(t, "100", result["new-org/coder"])
+	assert.Equal(t, "100", result["new-org/code"])
 	assert.Equal(t, "200", result["new-org/reviewer"])
 }
 
 func TestResolveSharedRoleAppIDs_ErrorWhenAppNotInstalled(t *testing.T) {
 	fake := forge.NewFakeClient()
 	fake.Installations = []forge.Installation{
-		{AppID: 100, AppSlug: "acme-coder"},
+		{AppID: 100, AppSlug: "acme-code"},
 	}
 
 	existingIDs := map[string]string{
-		"other-org/coder":    "100",
+		"other-org/code":    "100",
 		"other-org/reviewer": "999",
 	}
 
-	_, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder", "reviewer"})
+	_, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"code", "reviewer"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no shared app for role \"reviewer\"")
 }
@@ -1358,7 +1358,7 @@ func TestResolveSharedRoleAppIDs_ErrorWhenAppNotInstalled(t *testing.T) {
 func TestResolveSharedRoleAppIDs_ErrorWhenNoExistingIDs(t *testing.T) {
 	fake := forge.NewFakeClient()
 
-	_, err := resolveSharedRoleAppIDs(context.Background(), fake, nil, "new-org", []string{"coder"})
+	_, err := resolveSharedRoleAppIDs(context.Background(), fake, nil, "new-org", []string{"code"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no existing ROLE_APP_IDS")
 }
@@ -1366,32 +1366,32 @@ func TestResolveSharedRoleAppIDs_ErrorWhenNoExistingIDs(t *testing.T) {
 func TestResolveSharedRoleAppIDs_SkipsSameOrg(t *testing.T) {
 	fake := forge.NewFakeClient()
 	fake.Installations = []forge.Installation{
-		{AppID: 100, AppSlug: "acme-coder"},
+		{AppID: 100, AppSlug: "acme-code"},
 	}
 
 	existingIDs := map[string]string{
-		"new-org/coder":   "100",
-		"other-org/coder": "100",
+		"new-org/code":   "100",
+		"other-org/code": "100",
 	}
 
-	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder"})
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"code"})
 	require.NoError(t, err)
-	assert.Equal(t, "100", result["new-org/coder"])
+	assert.Equal(t, "100", result["new-org/code"])
 }
 
 func TestResolveSharedRoleAppIDs_SameOrgUsesOwnEntry(t *testing.T) {
 	fake := forge.NewFakeClient()
 	fake.Installations = []forge.Installation{
-		{AppID: 100, AppSlug: "acme-coder"},
+		{AppID: 100, AppSlug: "acme-code"},
 	}
 
 	existingIDs := map[string]string{
-		"acme-corp/coder": "100",
+		"acme-corp/code": "100",
 	}
 
-	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "acme-corp", []string{"coder"})
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "acme-corp", []string{"code"})
 	require.NoError(t, err)
-	assert.Equal(t, "100", result["acme-corp/coder"])
+	assert.Equal(t, "100", result["acme-corp/code"])
 }
 
 func TestInstallCmd_SkipMintCheckRequiresMintURL(t *testing.T) {
@@ -1613,20 +1613,20 @@ func TestFilterSlugsByAppSet(t *testing.T) {
 		{
 			name:   "matching app-set preserved",
 			appSet: "fullsend-ai",
-			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
-			want:   map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+			slugs:  map[string]string{"code": "fullsend-ai-code", "review": "fullsend-ai-review"},
+			want:   map[string]string{"code": "fullsend-ai-code", "review": "fullsend-ai-review"},
 		},
 		{
 			name:   "different app-set filtered out",
 			appSet: "fullsend-ai",
-			slugs:  map[string]string{"coder": "konflux-ci-coder", "review": "konflux-ci-review"},
+			slugs:  map[string]string{"code": "konflux-ci-code", "review": "konflux-ci-review"},
 			want:   map[string]string{},
 		},
 		{
 			name:   "mixed app-sets keeps only matching",
 			appSet: "fullsend-ai",
-			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "konflux-ci-review"},
-			want:   map[string]string{"coder": "fullsend-ai-coder"},
+			slugs:  map[string]string{"code": "fullsend-ai-code", "review": "konflux-ci-review"},
+			want:   map[string]string{"code": "fullsend-ai-code"},
 		},
 		{
 			name:   "nil input returns empty map",
@@ -1637,14 +1637,14 @@ func TestFilterSlugsByAppSet(t *testing.T) {
 		{
 			name:   "shorter prefix does not match longer slug",
 			appSet: "fullsend",
-			slugs:  map[string]string{"coder": "fullsend-ai-coder"},
+			slugs:  map[string]string{"code": "fullsend-ai-code"},
 			want:   map[string]string{},
 		},
 		{
 			name:   "default app-set matches own slugs",
 			appSet: "fullsend",
-			slugs:  map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
-			want:   map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+			slugs:  map[string]string{"code": "fullsend-code", "review": "fullsend-review"},
+			want:   map[string]string{"code": "fullsend-code", "review": "fullsend-review"},
 		},
 	}
 
@@ -1666,7 +1666,7 @@ func TestRunUninstall_LegacySlugsIncludedWhenConfigUnavailable(t *testing.T) {
 
 	// Simulate a legacy app installed under the old naming convention.
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "fullsend-coder"},
+		{ID: 1, AppSlug: "fullsend-code"},
 	}
 
 	var buf strings.Builder
@@ -1676,10 +1676,10 @@ func TestRunUninstall_LegacySlugsIncludedWhenConfigUnavailable(t *testing.T) {
 	require.NoError(t, err)
 
 	output := buf.String()
-	// The legacy slug "fullsend-coder" should NOT be reported as "not found".
-	assert.NotContains(t, output, "App fullsend-coder not found")
+	// The legacy slug "fullsend-code" should NOT be reported as "not found".
+	assert.NotContains(t, output, "App fullsend-code not found")
 	// It should appear in the app cleanup section.
-	assert.Contains(t, output, "fullsend-coder")
+	assert.Contains(t, output, "fullsend-code")
 }
 
 func TestRunUninstall_WarnsWhenNoAppsFound(t *testing.T) {
@@ -1710,7 +1710,7 @@ func TestRunUninstall_LegacySlugsSkippedWhenAppSetMatchesLegacy(t *testing.T) {
 	client.Errors["GetFileContent"] = errors.New("not found")
 
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "fullsend-coder"},
+		{ID: 1, AppSlug: "fullsend-code"},
 	}
 
 	var buf strings.Builder
@@ -1722,7 +1722,7 @@ func TestRunUninstall_LegacySlugsSkippedWhenAppSetMatchesLegacy(t *testing.T) {
 	output := buf.String()
 	// Should find the legacy app and attempt cleanup.
 	assert.NotContains(t, output, "No fullsend apps found")
-	assert.Contains(t, output, "fullsend-coder")
+	assert.Contains(t, output, "fullsend-code")
 }
 
 func TestRunUninstall_DedupsSlugsAcrossAppSets(t *testing.T) {
@@ -1733,7 +1733,7 @@ func TestRunUninstall_DedupsSlugsAcrossAppSets(t *testing.T) {
 	client.Errors["GetFileContent"] = errors.New("not found")
 
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "fullsend-coder"},
+		{ID: 1, AppSlug: "fullsend-code"},
 		{ID: 2, AppSlug: "fullsend-triage"},
 	}
 
@@ -1747,7 +1747,7 @@ func TestRunUninstall_DedupsSlugsAcrossAppSets(t *testing.T) {
 
 	output := buf.String()
 	// Each slug should appear in the "Opening ... settings" line exactly once.
-	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-coder settings"))
+	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-code settings"))
 	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-triage settings"))
 }
 
@@ -1757,7 +1757,7 @@ func TestRunUninstall_NopBrowserSkipsBrowserOpen(t *testing.T) {
 	client.Errors["GetFileContent"] = errors.New("not found")
 
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "fullsend-ai-coder"},
+		{ID: 1, AppSlug: "fullsend-ai-code"},
 	}
 
 	var buf strings.Builder
@@ -1768,8 +1768,8 @@ func TestRunUninstall_NopBrowserSkipsBrowserOpen(t *testing.T) {
 
 	output := buf.String()
 	// NopBrowser.Open returns nil, so the success path runs.
-	assert.Contains(t, output, "Opened fullsend-ai-coder")
-	assert.Contains(t, output, "fullsend-ai-coder/advanced")
+	assert.Contains(t, output, "Opened fullsend-ai-code")
+	assert.Contains(t, output, "fullsend-ai-code/advanced")
 	assert.NotContains(t, output, "Could not open browser")
 }
 

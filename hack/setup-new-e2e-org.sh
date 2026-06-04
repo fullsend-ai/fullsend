@@ -10,7 +10,7 @@
 set -euo pipefail
 
 APP_SET="fullsend-ai"
-ROLES=(fullsend triage coder review retro prioritize)
+ROLES=(fullsend triage code review retro prioritize)
 BOT_USER="botsend"
 
 # open_browser tries to open a URL in the default browser.

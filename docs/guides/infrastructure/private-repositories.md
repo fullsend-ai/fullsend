@@ -44,29 +44,29 @@ All agents are designed to operate safely, but some produce output with higher d
 | Agent | Default risk | Notes |
 |-------|-------------|-------|
 | **triage** | Low | Output stays within the source repo (labels, comments on the triggering issue). No cross-repo disclosure. |
-| **coder** | Low | Commits and PR descriptions stay within the source repo. |
+| **code** | Low | Commits and PR descriptions stay within the source repo. |
 | **review** | Low | Review comments stay within the source repo's PR. |
 | **retro** | **Higher** | Files improvement issues that may target a different repo. If the target repo has broader visibility than the source, private content can leak. See [#1189](https://github.com/fullsend-ai/fullsend/issues/1189). |
 | **prioritize** | **Higher** | Analyzes issues across repos and may produce cross-repo summaries. If summaries reference private repo content, the same disclosure risk applies. |
 
-> **Recommendation:** Start with **triage**, **coder**, and **review** on private repos. Enable **retro** and **prioritize** only after configuring the guardrails described below.
+> **Recommendation:** Start with **triage**, **code**, and **review** on private repos. Enable **retro** and **prioritize** only after configuring the guardrails described below.
 
 To limit which agents run, edit the `roles` list in `config.yaml`:
 
 - **Per-repo install:** `.fullsend/config.yaml` in the target repo. List only the roles you want enabled:
   ```yaml
   version: "1"
-  roles: [triage, coder, review]   # retro and prioritize omitted
+  roles: [triage, code, review]   # retro and prioritize omitted
   ```
 
 - **Per-org install:** `.fullsend` config repo's `config.yaml`. Use `defaults.roles` for an org-wide default, or add a per-repo override under `repos`:
   ```yaml
   defaults:
-    roles: [fullsend, triage, coder, review, retro, prioritize]
+    roles: [fullsend, triage, code, review, retro, prioritize]
   repos:
     my-private-repo:
       enabled: true
-      roles: [triage, coder, review]   # retro and prioritize disabled for this repo
+      roles: [triage, code, review]   # retro and prioritize disabled for this repo
   ```
 
 Roles omitted from the list are not dispatched — the dispatcher blocks them before any agent runs.
@@ -175,14 +175,14 @@ Not all private repos are equal. A repo containing open-source code that happens
 
 ### High-sensitivity repos (PII, credentials, financial data)
 
-- **Enable only:** triage, coder, review
+- **Enable only:** triage, code, review
 - **Disable:** retro, prioritize (any agent that produces cross-repo output)
 - **Require:** `AGENTS.md` with the private repository rules above
 - **Consider:** Restricting the `.fullsend` config repo Actions log visibility, since workflow logs may contain references to private repo content
 
 ### Medium-sensitivity repos (proprietary code, internal tooling)
 
-- **Enable:** triage, coder, review
+- **Enable:** triage, code, review
 - **Enable with caution:** retro, prioritize — only if AGENTS.md guardrails are configured and tested
 - **Require:** `AGENTS.md` with at minimum the sensitive-content-reproduction rules
 

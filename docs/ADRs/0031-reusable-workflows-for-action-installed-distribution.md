@@ -151,6 +151,6 @@ caller's perspective.
 - **Token generation uses OIDC:** Reusable workflows use the `mint-token`
   composite action for OIDC-based token minting
   ([ADR 0029](https://github.com/fullsend-ai/fullsend/pull/655)). Each
-  reusable workflow requests a scoped token for its role (triage, coder,
+  reusable workflow requests a scoped token for its role (triage, code,
   review, fullsend) — no PEMs or App secrets in the calling repo. The fix
-  workflow reuses the coder role.
+  workflow reuses the code role.

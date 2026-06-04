@@ -97,7 +97,7 @@ For first-time setup, the optional `--pem-dir` flag seeds the default app set's 
 fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems
 ```
 
-The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g., `fullsend.pem`, `triage.pem`, `coder.pem`, `review.pem`, `retro.pem`, `prioritize.pem`). The CLI auto-discovers each app's numeric ID from the GitHub API by looking up the public app slug (`fullsend-ai-{role}`).
+The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g., `fullsend.pem`, `triage.pem`, `code.pem`, `review.pem`, `retro.pem`, `prioritize.pem`). The CLI auto-discovers each app's numeric ID from the GitHub API by looking up the public app slug (`fullsend-ai-{role}`).
 
 > **Note:** PEM bootstrapping requires `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` in addition to the base roles. It also requires the GitHub Apps to already exist as public apps.
 
@@ -177,7 +177,7 @@ fullsend admin install "$FIRST_ORG" \
   --app-set "$FIRST_ORG"
 ```
 
-This creates public apps named `{first-org}-fullsend`, `{first-org}-coder`, etc.
+This creates public apps named `{first-org}-fullsend`, `{first-org}-code`, etc.
 
 **Additional orgs (install existing public apps):**
 

@@ -11,7 +11,7 @@ import (
 func TestDefaultAgentRoles(t *testing.T) {
 	roles := DefaultAgentRoles()
 	require.Len(t, roles, 6)
-	assert.Equal(t, []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}, roles)
+	assert.Equal(t, []string{"fullsend", "triage", "code", "review", "retro", "prioritize"}, roles)
 }
 
 func TestAgentAppConfig_Fullsend(t *testing.T) {
@@ -47,10 +47,10 @@ func TestAgentAppConfig_Triage(t *testing.T) {
 	assert.Contains(t, cfg.Events, "issue_comment")
 }
 
-func TestAgentAppConfig_Coder(t *testing.T) {
-	cfg := AgentAppConfig("myorg", "coder", "fullsend")
+func TestAgentAppConfig_Code(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "code", "fullsend")
 
-	assert.Equal(t, "fullsend-coder", cfg.Name)
+	assert.Equal(t, "fullsend-code", cfg.Name)
 	assert.Equal(t, "write", cfg.Permissions.Issues)
 	assert.Equal(t, "write", cfg.Permissions.Contents)
 	assert.Equal(t, "write", cfg.Permissions.PullRequests)
@@ -61,6 +61,15 @@ func TestAgentAppConfig_Coder(t *testing.T) {
 	assert.Contains(t, cfg.Events, "pull_request")
 	assert.Contains(t, cfg.Events, "check_run")
 	assert.Contains(t, cfg.Events, "check_suite")
+}
+
+func TestAgentAppConfig_CoderAlias(t *testing.T) {
+	codeCfg := AgentAppConfig("myorg", "code", "fullsend")
+	coderCfg := AgentAppConfig("myorg", "coder", "fullsend")
+
+	assert.Equal(t, codeCfg.Description, coderCfg.Description)
+	assert.Equal(t, codeCfg.Permissions, coderCfg.Permissions)
+	assert.Equal(t, codeCfg.Events, coderCfg.Events)
 }
 
 func TestAgentAppConfig_Review(t *testing.T) {
@@ -114,16 +123,16 @@ func TestAgentAppConfig_UnknownRole(t *testing.T) {
 }
 
 func TestAgentAppConfig_CustomAppSet(t *testing.T) {
-	cfg := AgentAppConfig("myorg", "coder", "my-custom")
-	assert.Equal(t, "my-custom-coder", cfg.Name)
+	cfg := AgentAppConfig("myorg", "code", "my-custom")
+	assert.Equal(t, "my-custom-code", cfg.Name)
 
 	cfg = AgentAppConfig("myorg", "fullsend", "my-custom")
 	assert.Equal(t, "my-custom-fullsend", cfg.Name)
 }
 
 func TestAgentAppConfig_DefaultAppSet(t *testing.T) {
-	cfg := AgentAppConfig("myorg", "coder", "fullsend-ai")
-	assert.Equal(t, "fullsend-ai-coder", cfg.Name)
+	cfg := AgentAppConfig("myorg", "code", "fullsend-ai")
+	assert.Equal(t, "fullsend-ai-code", cfg.Name)
 
 	cfg = AgentAppConfig("myorg", "fullsend", "fullsend-ai")
 	assert.Equal(t, "fullsend-ai-fullsend", cfg.Name)

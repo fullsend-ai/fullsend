@@ -19,8 +19,8 @@ function mockGh(opts: {
 
 describe("analyzeSecretsLayer", () => {
   it("naming matches Go helpers", () => {
-    expect(secretNameForRole("coder")).toBe("FULLSEND_CODER_APP_PRIVATE_KEY");
-    expect(variableNameForRole("coder")).toBe("FULLSEND_CODER_APP_ID");
+    expect(secretNameForRole("code")).toBe("FULLSEND_CODE_APP_PRIVATE_KEY");
+    expect(variableNameForRole("code")).toBe("FULLSEND_CODE_APP_ID");
   });
 
   it("installed when all secrets and variables exist", async () => {

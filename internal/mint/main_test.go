@@ -335,8 +335,8 @@ func TestHandler_InvalidRoleFormat(t *testing.T) {
 }
 
 func TestHandler_RoleNotAllowed(t *testing.T) {
-	t.Setenv("ALLOWED_ROLES", "triage,coder")
-	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "triage,code")
+	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
 	body := `{"role":"deploy"}`
@@ -351,13 +351,13 @@ func TestHandler_RoleNotAllowed(t *testing.T) {
 }
 
 func TestHandler_RoleAllowed(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
 	oidcToken := validOIDCToken()
 
 	// Should pass role validation and fail at STS (no mock).
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -373,9 +373,61 @@ func TestHandler_RoleAllowed(t *testing.T) {
 	}
 }
 
-func TestHandler_InvalidRepoName(t *testing.T) {
-	t.Setenv("ALLOWED_ROLES", "coder")
+// TODO(#1850): remove when the transitional coder alias is removed.
+func TestHandler_CoderAliasBackwardCompat(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	if !h.checkAllowedRole("coder") {
+		t.Fatal("coder alias must be allowed via rolePermissions")
+	}
+
+	oidcToken := validOIDCToken()
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusForbidden {
+		var resp map[string]string
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if strings.Contains(resp["error"], "role not allowed") {
+			t.Fatal("coder alias was rejected at role validation")
+		}
+		// 403 from PEM access or app ID lookup is expected (no mock) — it means
+		// the request passed role validation, which is what we're testing.
+	}
+}
+
+// TODO(#1850): remove when the transitional coder alias is removed.
+// Verifies that role=coder requires its own ROLE_APP_IDS entry; the
+// rolePermissions alias alone is not sufficient for role allowlisting.
+func TestHandler_CoderAliasRequiresOwnAppID(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
+	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
+
+	if h.checkAllowedRole("coder") {
+		t.Fatal("coder should not be allowed when ROLE_APP_IDS only has test-org/code")
+	}
+
+	oidcToken := validOIDCToken()
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+oidcToken)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for coder without its own ROLE_APP_IDS entry, got %d", rec.Code)
+	}
+}
+
+func TestHandler_InvalidRepoName(t *testing.T) {
+	t.Setenv("ALLOWED_ROLES", "code")
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
 	tests := []struct {
@@ -389,7 +441,7 @@ func TestHandler_InvalidRepoName(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			body := fmt.Sprintf(`{"role":"coder","repos":%s}`, tc.repos)
+			body := fmt.Sprintf(`{"role":"code","repos":%s}`, tc.repos)
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 			req.Header.Set("Authorization", "Bearer test-token")
@@ -403,11 +455,11 @@ func TestHandler_InvalidRepoName(t *testing.T) {
 }
 
 func TestHandler_EmptyRepos(t *testing.T) {
-	t.Setenv("ALLOWED_ROLES", "coder")
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "code")
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
-	body := `{"role":"coder"}`
+	body := `{"role":"code"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
@@ -424,8 +476,8 @@ func TestHandler_EmptyRepos(t *testing.T) {
 }
 
 func TestHandler_TooManyRepos(t *testing.T) {
-	t.Setenv("ALLOWED_ROLES", "coder")
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "code")
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
 	repos := make([]string, maxRepos+1)
@@ -433,7 +485,7 @@ func TestHandler_TooManyRepos(t *testing.T) {
 		repos[i] = fmt.Sprintf("repo-%d", i)
 	}
 	reposJSON, _ := json.Marshal(repos)
-	body := fmt.Sprintf(`{"role":"coder","repos":%s}`, reposJSON)
+	body := fmt.Sprintf(`{"role":"code","repos":%s}`, reposJSON)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
@@ -464,7 +516,7 @@ func TestHandler_OIDCPrevalidation_BadIssuer(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -487,7 +539,7 @@ func TestHandler_OIDCPrevalidation_ExpiredToken(t *testing.T) {
 		time.Now().Add(-10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -510,7 +562,7 @@ func TestHandler_OIDCPrevalidation_WrongOrg(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -533,7 +585,7 @@ func TestHandler_OIDCPrevalidation_BadAudience(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -561,7 +613,7 @@ func TestHandler_OIDCPrevalidation_MissingJobWorkflowRef(t *testing.T) {
 	oidcToken := base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
 		base64.RawURLEncoding.EncodeToString(claimsJSON) + ".fakesig"
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -630,7 +682,7 @@ func TestHandler_OIDCPrevalidation_BadJobWorkflowRef(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -764,7 +816,7 @@ func TestHandler_OIDCPrevalidation_NonWorkflowPath(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -836,10 +888,10 @@ func TestHandler_OIDCPrevalidation_WorkflowAllowlistUnset(t *testing.T) {
 }
 
 func TestHandler_OIDCValidationFailure(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{err: fmt.Errorf("STS returned status 403")})
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+validOIDCToken())
@@ -857,10 +909,10 @@ func TestHandler_OIDCValidationFailure(t *testing.T) {
 }
 
 func TestHandler_SecretAccessError(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{err: fmt.Errorf("access denied")}, &fakeTokenValidator{})
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+validOIDCToken())
@@ -878,7 +930,7 @@ func TestHandler_SecretAccessError(t *testing.T) {
 }
 
 func TestHandler_FullFlow(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -910,14 +962,14 @@ func TestHandler_FullFlow(t *testing.T) {
 
 	pemAccessor := &fakePEMAccessor{
 		pems: map[string][]byte{
-			"test-org/coder": pemData,
+			"test-org/code": pemData,
 		},
 	}
 
 	h := NewHandler(pemAccessor, &fakeTokenValidator{})
 	h.githubBaseURL = github.URL
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -938,7 +990,7 @@ func TestHandler_FullFlow(t *testing.T) {
 }
 
 func TestHandler_FullFlowWithRepos(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -972,12 +1024,12 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 
 	h := NewHandler(&fakePEMAccessor{
 		pems: map[string][]byte{
-			"test-org/coder": pemData,
+			"test-org/code": pemData,
 		},
 	}, &fakeTokenValidator{})
 	h.githubBaseURL = github.URL
 
-	body := `{"role":"coder","repos":["my-repo","other-repo"]}`
+	body := `{"role":"code","repos":["my-repo","other-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -1000,12 +1052,12 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 		t.Fatal("expected permissions in token request")
 	}
 	if perms["contents"] != "write" {
-		t.Fatalf("expected contents:write for coder role, got %v", perms["contents"])
+		t.Fatalf("expected contents:write for code role, got %v", perms["contents"])
 	}
 }
 
 func TestHandler_InstallationNotFound(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/code":"200"}`)
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -1020,12 +1072,12 @@ func TestHandler_InstallationNotFound(t *testing.T) {
 
 	h := NewHandler(&fakePEMAccessor{
 		pems: map[string][]byte{
-			"test-org/coder": pemData,
+			"test-org/code": pemData,
 		},
 	}, &fakeTokenValidator{})
 	h.githubBaseURL = github.URL
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+validOIDCToken())
@@ -1100,11 +1152,11 @@ func TestGenerateAppJWT_InvalidPEM(t *testing.T) {
 }
 
 func TestCheckAllowedRole(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/coder":"200","test-org/review":"300"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/code":"200","test-org/review":"300"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
-	if !h.checkAllowedRole("coder") {
-		t.Fatal("coder should be allowed")
+	if !h.checkAllowedRole("code") {
+		t.Fatal("code should be allowed")
 	}
 	if h.checkAllowedRole("deploy") {
 		t.Fatal("deploy should not be allowed")
@@ -1115,16 +1167,16 @@ func TestCheckAllowedRole_Empty(t *testing.T) {
 	t.Setenv("ALLOWED_ROLES", "")
 	t.Setenv("ROLE_APP_IDS", "")
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
-	if h.checkAllowedRole("coder") {
+	if h.checkAllowedRole("code") {
 		t.Fatal("should fail closed when no roles configured")
 	}
 }
 
 func TestLookupRoleAppID(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/coder":"200"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/code":"200"}`)
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
-	id, err := h.lookupRoleAppID("test-org", "coder")
+	id, err := h.lookupRoleAppID("test-org", "code")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1137,7 +1189,7 @@ func TestLookupRoleAppID(t *testing.T) {
 		t.Fatal("expected error for unknown role")
 	}
 
-	_, err = h.lookupRoleAppID("other-org", "coder")
+	_, err = h.lookupRoleAppID("other-org", "code")
 	if err == nil {
 		t.Fatal("expected error for wrong org")
 	}
@@ -1148,7 +1200,7 @@ func TestLookupRoleAppID_NotSet(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", "")
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
-	_, err := h.lookupRoleAppID("test-org", "coder")
+	_, err := h.lookupRoleAppID("test-org", "code")
 	if err == nil {
 		t.Fatal("expected error when ROLE_APP_IDS not set")
 	}
@@ -1220,7 +1272,7 @@ func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 	t.Setenv("WIF_POOL_NAME", "test-pool")
 	t.Setenv("WIF_PROVIDER_NAME", "github-oidc")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
-	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/coder":"200","test-org/review":"300","test-org/fix":"400","test-org/fullsend":"500","other-org/triage":"100","other-org/coder":"200","other-org/review":"300","other-org/fix":"400","other-org/fullsend":"500"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/code":"200","test-org/review":"300","test-org/fix":"400","test-org/fullsend":"500","other-org/triage":"100","other-org/code":"200","other-org/review":"300","other-org/fix":"400","other-org/fullsend":"500"}`)
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -1261,14 +1313,14 @@ func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 
 	pemAccessor := &fakePEMAccessor{
 		pems: map[string][]byte{
-			"other-org/coder": pemData,
+			"other-org/code": pemData,
 		},
 	}
 
 	h := NewHandler(pemAccessor, &fakeTokenValidator{})
 	h.githubBaseURL = github.URL
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -1295,7 +1347,7 @@ func TestHandler_MultiOrg_WrongOrg(t *testing.T) {
 	t.Setenv("WIF_POOL_NAME", "test-pool")
 	t.Setenv("WIF_PROVIDER_NAME", "github-oidc")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
-	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/coder":"200","test-org/review":"300","test-org/fix":"400","test-org/fullsend":"500","other-org/triage":"100","other-org/coder":"200","other-org/review":"300","other-org/fix":"400","other-org/fullsend":"500"}`)
+	t.Setenv("ROLE_APP_IDS", `{"test-org/triage":"100","test-org/code":"200","test-org/review":"300","test-org/fix":"400","test-org/fullsend":"500","other-org/triage":"100","other-org/code":"200","other-org/review":"300","other-org/fix":"400","other-org/fullsend":"500"}`)
 
 	oidcToken := makeTestOIDCToken(
 		"https://token.actions.githubusercontent.com",
@@ -1308,7 +1360,7 @@ func TestHandler_MultiOrg_WrongOrg(t *testing.T) {
 
 	h := NewHandler(&fakePEMAccessor{}, &fakeTokenValidator{})
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -1577,7 +1629,7 @@ func TestServeHTTP_PerRepoProvider(t *testing.T) {
 	}
 	tv := &fakeTokenValidator{}
 	h := NewHandler(
-		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/code": pemData}},
 		tv,
 	)
 
@@ -1591,7 +1643,7 @@ func TestServeHTTP_PerRepoProvider(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -1614,7 +1666,7 @@ func TestServeHTTP_PerRepoDirectWorkflow(t *testing.T) {
 	}
 	tv := &fakeTokenValidator{}
 	h := NewHandler(
-		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/code": pemData}},
 		tv,
 	)
 
@@ -1629,7 +1681,7 @@ func TestServeHTTP_PerRepoDirectWorkflow(t *testing.T) {
 		time.Now().Add(10*time.Minute).Unix(),
 	)
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)
@@ -1649,13 +1701,13 @@ func TestServeHTTP_DotFullsendProvider(t *testing.T) {
 	}
 	tv := &fakeTokenValidator{}
 	h := NewHandler(
-		&fakePEMAccessor{pems: map[string][]byte{"test-org/coder": pemData}},
+		&fakePEMAccessor{pems: map[string][]byte{"test-org/code": pemData}},
 		tv,
 	)
 
 	oidcToken := validOIDCToken()
 
-	body := `{"role":"coder","repos":["test-repo"]}`
+	body := `{"role":"code","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+oidcToken)

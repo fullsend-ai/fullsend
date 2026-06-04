@@ -77,7 +77,7 @@ The fullsend-ai org maintains public GitHub Apps shared across orgs.
 |------|----------|-------|
 | fullsend | fullsend-ai-fullsend | Dispatch/admin. Per-org only — excluded from per-repo installs. |
 | triage | fullsend-ai-triage | |
-| coder | fullsend-ai-coder | `fix` role shares this app and PEM but has distinct token permissions (no `checks:read`). No separate enrollment needed. |
+| code | fullsend-ai-code | `fix` role shares this app and PEM but has distinct token permissions (no `checks:read`). No separate enrollment needed. |
 | review | fullsend-ai-review | |
 | retro | fullsend-ai-retro | |
 | prioritize | fullsend-ai-prioritize | |
@@ -103,12 +103,12 @@ Determine enrollment type and set variables. Choose one — per-org or per-repo:
 # Per-org (set ORG only, leave REPO unset)
 ORG="<github-org>"
 unset REPO
-ROLES="fullsend,triage,coder,review,retro,prioritize"
+ROLES="fullsend,triage,code,review,retro,prioritize"
 
 # Per-repo (set both ORG and REPO)
 ORG="<github-org>"
 REPO="<repo-name>"
-ROLES="triage,coder,review,retro,prioritize"
+ROLES="triage,code,review,retro,prioritize"
 ```
 
 Validate and normalize inputs:
@@ -141,7 +141,7 @@ if [ -n "${REPO}" ]; then
 fi
 
 # Validate ROLES against allowlist
-VALID_ROLES="fullsend,triage,coder,review,retro,prioritize"
+VALID_ROLES="fullsend,triage,code,review,retro,prioritize"
 for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
   if ! echo ",${VALID_ROLES}," | grep -Fq ",${ROLE},"; then
     echo "ERROR: role '${ROLE}' is not in allowlist: ${VALID_ROLES}" >&2; exit 1
@@ -283,10 +283,10 @@ for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
   echo "DONE: ${SECRET_ID}"
 done
 
-# fix role reuses coder app — create fix PEM as a copy of coder PEM
-if echo ",${ROLES}," | grep -Fq ",coder,"; then
+# fix role reuses code app — create fix PEM as a copy of code PEM
+if echo ",${ROLES}," | grep -Fq ",code,"; then
   FIX_SECRET="fullsend-${ORG}--fix-app-pem"
-  CODER_SECRET="fullsend-${ORG}--coder-app-pem"
+  CODE_SECRET="fullsend-${ORG}--code-app-pem"
   if gcloud secrets describe "${FIX_SECRET}" --project="${GCP_PROJECT}" 2>/dev/null; then
     FIX_VERSION_COUNT=$(gcloud secrets versions list "${FIX_SECRET}" \
       --project="${GCP_PROJECT}" --filter="state=ENABLED" \
@@ -294,9 +294,9 @@ if echo ",${ROLES}," | grep -Fq ",coder,"; then
     if [ "${FIX_VERSION_COUNT}" -gt 0 ]; then
       echo "SKIP: ${FIX_SECRET} already exists"
     else
-      echo "WARN: ${FIX_SECRET} exists but has no active versions — re-adding from coder"
+      echo "WARN: ${FIX_SECRET} exists but has no active versions — re-adding from code"
       gcloud secrets versions access latest \
-        --secret="${CODER_SECRET}" --project="${GCP_PROJECT}" \
+        --secret="${CODE_SECRET}" --project="${GCP_PROJECT}" \
         | gcloud secrets versions add "${FIX_SECRET}" \
         --project="${GCP_PROJECT}" --data-file=- \
         || { echo "ERROR: failed to copy PEM to ${FIX_SECRET}" >&2; exit 1; }
@@ -306,7 +306,7 @@ if echo ",${ROLES}," | grep -Fq ",coder,"; then
       --project="${GCP_PROJECT}" --replication-policy=automatic \
       || { echo "ERROR: failed to create secret ${FIX_SECRET}" >&2; exit 1; }
     gcloud secrets versions access latest \
-      --secret="${CODER_SECRET}" --project="${GCP_PROJECT}" \
+      --secret="${CODE_SECRET}" --project="${GCP_PROJECT}" \
       | gcloud secrets versions add "${FIX_SECRET}" \
       --project="${GCP_PROJECT}" --data-file=- \
       || { echo "ERROR: failed to copy PEM to ${FIX_SECRET}" >&2; exit 1; }
@@ -316,7 +316,7 @@ if echo ",${ROLES}," | grep -Fq ",coder,"; then
     --member="serviceAccount:${SA_EMAIL}" \
     --role="roles/secretmanager.secretAccessor" \
     || { echo "ERROR: failed to bind IAM policy on ${FIX_SECRET}" >&2; exit 1; }
-  echo "DONE: ${FIX_SECRET} (fix role, copied from coder)"
+  echo "DONE: ${FIX_SECRET} (fix role, copied from code)"
 fi
 ```
 
@@ -370,12 +370,12 @@ for role in (r.strip() for r in roles_csv.split(',')):
     else:
         print(f'ERROR: no app ID found for {source_key}', file=sys.stderr)
         sys.exit(1)
-# fix role reuses coder app ID — auto-derive if coder was enrolled
+# fix role reuses code app ID — auto-derive if code was enrolled
 fix_key = f'{org}/fix'
-coder_key = f'{org}/coder'
-if fix_key not in data and coder_key in data:
-    data[fix_key] = data[coder_key]
-    print(f'ADDING: {fix_key} = {data[coder_key]} (derived from coder)', file=sys.stderr)
+code_key = f'{org}/code'
+if fix_key not in data and code_key in data:
+    data[fix_key] = data[code_key]
+    print(f'ADDING: {fix_key} = {data[code_key]} (derived from code)', file=sys.stderr)
 print(json.dumps(data, sort_keys=True))
 ") || { echo "ERROR: failed to merge ROLE_APP_IDS — see above" >&2; exit 1; }
 
@@ -640,19 +640,19 @@ for role in roles:
     else:
         print(f'FAIL: {key} not found')
         ok = False
-# fix role should also be present if coder is enrolled, with matching app ID
+# fix role should also be present if code is enrolled, with matching app ID
 fix_key = f'{org}/fix'
-coder_key = f'{org}/coder'
-if fix_key in data and coder_key in data:
-    if data[fix_key] == data[coder_key]:
-        print(f'OK: {fix_key} = {data[fix_key]} (matches coder)')
+code_key = f'{org}/code'
+if fix_key in data and code_key in data:
+    if data[fix_key] == data[code_key]:
+        print(f'OK: {fix_key} = {data[fix_key]} (matches code)')
     else:
-        print(f'FAIL: {fix_key} = {data[fix_key]} but coder = {data[coder_key]} — must match')
+        print(f'FAIL: {fix_key} = {data[fix_key]} but code = {data[code_key]} — must match')
         ok = False
 elif fix_key in data:
     print(f'OK: {fix_key} = {data[fix_key]}')
-elif coder_key in data:
-    print(f'FAIL: {fix_key} not found (should be derived from coder)')
+elif code_key in data:
+    print(f'FAIL: {fix_key} not found (should be derived from code)')
     ok = False
 sys.exit(0 if ok else 1)
 " || VERIFY_FAILED=1
@@ -668,11 +668,11 @@ for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
     echo "FAIL: ${ROLE} not in ALLOWED_ROLES"; VERIFY_FAILED=1
   fi
 done
-if echo ",${ROLES}," | grep -Fq ",coder,"; then
+if echo ",${ROLES}," | grep -Fq ",code,"; then
   if echo ",${CURRENT_ALLOWED_ROLES}," | grep -Fq ",fix,"; then
-    echo "OK: fix in ALLOWED_ROLES (derived from coder)"
+    echo "OK: fix in ALLOWED_ROLES (derived from code)"
   else
-    echo "FAIL: fix not in ALLOWED_ROLES (should be derived from coder)"; VERIFY_FAILED=1
+    echo "FAIL: fix not in ALLOWED_ROLES (should be derived from code)"; VERIFY_FAILED=1
   fi
 fi
 
@@ -689,8 +689,8 @@ for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
     | grep -q "serviceAccount:${SA_EMAIL}" \
     && echo "OK: ${ROLE} IAM binding" || { echo "FAIL: ${ROLE} IAM binding"; VERIFY_FAILED=1; }
 done
-# fix role PEM (if coder was enrolled)
-if echo ",${ROLES}," | grep -Fq ",coder,"; then
+# fix role PEM (if code was enrolled)
+if echo ",${ROLES}," | grep -Fq ",code,"; then
   FIX_SECRET="fullsend-${ORG}--fix-app-pem"
   gcloud secrets versions describe latest \
     --secret="${FIX_SECRET}" \
@@ -830,5 +830,5 @@ Rollback order (reverse of enrollment):
    Verify no other org shares the same app IDs before removing.
 4. **PEM secrets** — disable the latest version (reversible) rather than
    deleting the secret. Include `fullsend-{org}--fix-app-pem` when
-   rolling back coder. Only delete after a bake period confirms no
+   rolling back code. Only delete after a bake period confirms no
    workflows need the secret.

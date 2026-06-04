@@ -13,7 +13,7 @@ export type OrgConfigYaml = {
   repos?: Record<string, { enabled?: boolean; roles?: string[] }>;
 };
 
-const VALID_ROLES = new Set(["fullsend", "triage", "coder", "review"]);
+const VALID_ROLES = new Set(["fullsend", "triage", "code", "coder", "review", "fix", "retro", "prioritize"]); // TODO(#1850): remove "coder" after migration
 
 /** 512 KiB — more than sufficient for any realistic org `config.yaml`. */
 export const MAX_ORG_CONFIG_YAML_UTF8_BYTES = 512 * 1024;
@@ -182,12 +182,12 @@ export function validateOrgConfig(cfg: OrgConfigYaml): string | null {
   }
   for (const role of cfg.defaults?.roles ?? []) {
     if (!VALID_ROLES.has(role)) {
-      return `invalid role ${JSON.stringify(role)}: must be one of fullsend, triage, coder, review`;
+      return `invalid role ${JSON.stringify(role)}: must be one of fullsend, triage, code, coder, review, fix, retro, prioritize`;
     }
   }
   for (const agent of cfg.agents ?? []) {
     if (!VALID_ROLES.has(agent.role)) {
-      return `invalid agent role ${JSON.stringify(agent.role)}: must be one of fullsend, triage, coder, review`;
+      return `invalid agent role ${JSON.stringify(agent.role)}: must be one of fullsend, triage, code, coder, review, fix, retro, prioritize`;
     }
   }
   return null;

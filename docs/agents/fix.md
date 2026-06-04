@@ -1,6 +1,6 @@
 # Fix Agent
 
-<img src="icons/coder.png" alt="Fix agent icon" width="80">
+<img src="icons/code.png" alt="Fix agent icon" width="80">
 
 Review-feedback specialist that reads review comments on open PRs, implements targeted fixes, runs tests and linters, and commits the result.
 

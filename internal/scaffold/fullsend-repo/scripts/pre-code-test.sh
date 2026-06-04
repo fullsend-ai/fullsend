@@ -192,11 +192,11 @@ HUMAN_PR_JSON='[{"number":99,"author":{"login":"human-dev"},"url":"https://githu
 # Single fullsend-ai[bot] PR.
 BOT_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"}]'
 
-# Single fullsend-ai-coder[bot] PR.
-CODER_BOT_PR_JSON='[{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]'
+# Single fullsend-ai-code[bot] PR.
+CODE_BOT_PR_JSON='[{"number":11,"author":{"login":"fullsend-ai-code[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]'
 
 # Both bot PRs plus a human PR.
-MIXED_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"},{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+MIXED_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-code[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"},{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
 
 # Multiple human PRs.
 MULTI_HUMAN_PR_JSON='[{"number":50,"author":{"login":"dev-a"},"url":"https://github.com/test-org/test-repo/pull/50"},{"number":51,"author":{"login":"dev-b"},"url":"https://github.com/test-org/test-repo/pull/51"}]'
@@ -250,21 +250,21 @@ run_test_stdout "no-gh-token-skips-check" \
   0 \
   "GH_TOKEN="
 
-# Coder bot PR only → jq filter removes it → script proceeds.
-run_test_stdout "coder-bot-pr-does-not-block" \
-  "${CODER_BOT_PR_JSON}" \
+# Code bot PR only → jq filter removes it → script proceeds.
+run_test_stdout "code-bot-pr-does-not-block" \
+  "${CODE_BOT_PR_JSON}" \
   "No existing human PRs found" \
   0
 
 # Both bots + human PR → jq filter removes bots, human PR blocks.
-run_test_stdout "coder-bot-pr-plus-human-pr-blocks" \
+run_test_stdout "code-bot-pr-plus-human-pr-blocks" \
   "${MIXED_PR_JSON}" \
   "Skipping code agent" \
   0
 
 # Both bots only → jq filter removes all → script proceeds.
 run_test_stdout "both-bots-do-not-block" \
-  '[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]' \
+  '[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-code[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]' \
   "No existing human PRs found" \
   0
 
