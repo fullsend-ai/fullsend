@@ -71,6 +71,17 @@ dimension carry over to another — each requires its own scrutiny.
   all code paths that consume or branch on that type (including scripts,
   configs, and files not in the diff) and verify each handles the new
   value. A new variant with no downstream handler is a logic error.
+- Runtime mechanism verification: when the diff introduces a guard,
+  check, flag, or dispatch mechanism (e.g., a flag that controls
+  dispatch behavior, a recursion guard, a feature toggle), verify the
+  mechanism will actually trigger under the conditions described. Check
+  whether flags are real env vars vs. prompt text, whether format
+  expectations between producer and consumer match (e.g., an
+  orchestrator expecting structured JSON from a component that has no
+  output format instructions), and whether failure paths are handled
+  (e.g., what happens if a critical sub-component fails — does the
+  caller degrade gracefully or silently proceed?). Trace the full path
+  from where the mechanism is set to where it is read.
 - Test adequacy: are the right behaviors tested?
 - Do the tests actually constrain the code's behavior, or do they
   merely assert it runs?

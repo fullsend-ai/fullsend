@@ -205,6 +205,29 @@ dimension by keyword, or to `correctness` as a fallback.
 
 Each sub-agent receives ONLY the prior findings for its own dimension.
 
+#### 3a-1. Budget allocation priority
+
+When allocating review depth across dimensions, prioritize in this
+order:
+
+1. **Functional correctness** — do the mechanisms actually work at
+   runtime? Trace guard mechanisms, verify interface contracts between
+   producer and consumer, check failure paths.
+2. **Security** — are there vulnerabilities, auth bypasses, or
+   injection vectors?
+3. **Intent coherence** — does the change match the linked issue's
+   authorization?
+4. **Docs/style/contracts** — are references consistent, naming
+   correct, docs current?
+
+If the diff introduces new inter-component contracts (e.g., an
+orchestrator dispatching sub-agents with expected output formats, a
+producer emitting data consumed by a downstream component), the
+correctness sub-agent MUST verify interface compatibility — that the
+producer's actual output matches the consumer's expectations. Surface-
+level consistency checks (stale terminology, naming mismatches across
+docs) must not crowd out functional correctness analysis.
+
 #### 3b. Classify change domains
 
 Analyze the diff and changed file list to determine which review
