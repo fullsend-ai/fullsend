@@ -1,6 +1,29 @@
-# How to onboard a new organization
+# How to install fullsend
 
-This guide walks through setting up fullsend in a GitHub organization and enrolling your first repository.
+This guide walks through installing fullsend for a GitHub organization or a single repository.
+
+## Choose your installation mode
+
+Before running any install commands, decide whether you need **per-org** or **per-repo** mode:
+
+| Mode | Command format | Best for | Creates `.fullsend` repo? |
+|------|---------------|----------|--------------------------|
+| **Per-org** | `fullsend admin install ORG` | Orgs where one admin manages fullsend for all repos | Yes |
+| **Per-repo** | `fullsend admin install ORG/REPO` | Teams in shared orgs, single-repo onboarding, independent setups | No |
+
+**Use per-repo mode** if any of these apply:
+- Multiple independent teams share the same GitHub organization
+- You only want fullsend on specific repositories without org-wide configuration
+- You do not have (or do not want to use) org-level admin access
+
+→ Skip to [Per-repo installation](#per-repo-installation)
+
+**Use per-org mode** if:
+- A single admin manages fullsend across the entire organization
+- You want centralized configuration via the `.fullsend` config repo
+- You plan to enroll many repositories under unified management
+
+→ Continue below to choose your setup path
 
 ## Choose your setup path
 
