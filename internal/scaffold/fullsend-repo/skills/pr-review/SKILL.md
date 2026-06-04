@@ -46,8 +46,8 @@ and `description`.
 | `docs-currency`        | sonnet | Documentation staleness (follows docs-review skill inline)                     |
 | `cross-repo-contracts` | sonnet | API contract breakage affecting other repos (conditional)                      |
 
-The Model column shows short aliases for brevity. Full model IDs
-(e.g., `claude-sonnet-4-6`, `claude-opus-4-8`) are equally valid in
+The Model column reflects each sub-agent's current frontmatter. Any
+value accepted by the Agent tool's `model` parameter is valid in
 sub-agent frontmatter.
 
 ## Findings vs inline comments
@@ -329,9 +329,8 @@ For each selected sub-agent:
    ```
 
 4. Spawn via Agent tool with:
-   - `model`: from the sub-agent frontmatter (any valid Claude model
-     identifier — short aliases like `opus`, `sonnet`, `haiku`, or
-     full model IDs like `claude-sonnet-4-6`)
+   - `model`: from the sub-agent frontmatter (any value accepted by
+     the Agent tool's `model` parameter)
    - `subagent_type`: `Explore` (read-only — sub-agents do not write)
    - `run_in_background`: `true`
    - `prompt`: composed from parts 1–5
