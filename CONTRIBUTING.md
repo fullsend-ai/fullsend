@@ -53,6 +53,12 @@ chore(ci): update goreleaser to v2
 
 GoReleaser groups changelog entries by type prefix (see `.goreleaser.yml`). Commits without a recognized prefix land under "Others". Commits prefixed `docs:`, `test:`, or `chore:` are excluded from release notes entirely. A wrong prefix means the change shows up in the wrong section — or not at all.
 
+## DCO (Developer Certificate of Origin)
+
+This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on human-authored commits. Add `Signed-off-by` to your commits with `git commit -s`.
+
+**Agent commits are exempt.** The DCO is a human attestation — it certifies personhood and legal authority to contribute. An agent cannot meaningfully provide that certification. The code and fix agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+
 ## Pull request workflow
 
 ### Opening a PR

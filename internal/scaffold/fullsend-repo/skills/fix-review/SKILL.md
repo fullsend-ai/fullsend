@@ -355,7 +355,7 @@ The commit message must:
 - Note any disagreements with review feedback.
 
 ```bash
-git commit -s -m "fix: address review feedback on PR #${PR_NUMBER}
+git commit -m "fix: address review feedback on PR #${PR_NUMBER}
 
 <summary of changes per review comment>
 

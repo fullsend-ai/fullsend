@@ -639,12 +639,12 @@ Hard-wrap guidelines when a limit is configured:
 - URLs that exceed the limit may remain on one line (gitlint usually
   allows this via `ignore-body-lines`)
 - `Closes #N` and similar trailers: keep on one line
-- **`Signed-off-by:`** — `git commit -s` auto-generates this from
-  `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL`. If the resulting line
-  exceeds the body-max-line-length, gitlint CI will reject the commit.
-  Before committing, check: if the `Signed-off-by` trailer would exceed
-  the limit, omit the `-s` flag and write a shorter trailer manually, or
-  omit it entirely if the repo does not require DCO sign-off
+- **`Signed-off-by:`** — do NOT use `git commit -s`. The DCO is a
+  human attestation of personhood and legal authority to contribute.
+  An agent cannot meaningfully certify those conditions. Agent commits
+  use the GitHub App bot identity, which the DCO app auto-exempts.
+  The human who merges the PR accepts responsibility for the
+  contribution
 
 The commit body should:
 - Explain **what** changed and **why** (not just "fix bug")
@@ -653,7 +653,7 @@ The commit body should:
 - Note any trade-offs, assumptions, or edge cases
 
 ```bash
-git commit -s -m "<type>(#<number>): <short-description>
+git commit -m "<type>(#<number>): <short-description>
 
 <What changed and why. Hard-wrap at the limit from
 .gitlint if one is configured. Write substantive
@@ -673,16 +673,13 @@ is blocked by `disallowedTools`):
 
 ```bash
 git reset --soft HEAD~1
-git commit -s -m "<fixed title>
+git commit -m "<fixed title>
 
 <fixed body — respect ALL line-length rules>"
 gitlint --commit HEAD
 ```
 
 Common gitlint failures:
-- **B1 body-max-line-length** on `Signed-off-by:` — the auto-generated
-  trailer is too long. Recommit without `-s` and either add a shorter
-  sign-off manually or omit it if the repo doesn't require DCO.
 - **T1 title-max-length** — shorten the title.
 - **B1 body-max-line-length** on prose — re-wrap the offending line.
 

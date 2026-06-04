@@ -129,6 +129,18 @@ jobs:
           repos: ${{ steps.repo-parts.outputs.name }}
           mint_url: ${{ inputs.mint_url }}
 
+      - name: Resolve bot identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          APP_SLUG=$(gh api /app --jq '.slug')
+          BOT_LOGIN="${APP_SLUG}[bot]"
+          BOT_USER_ID=$(gh api "/users/${BOT_LOGIN}" --jq '.id')
+          GIT_BOT_EMAIL="${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
+          echo "Resolved bot identity: ${BOT_LOGIN} (${BOT_USER_ID})"
+          echo "GIT_BOT_EMAIL=${GIT_BOT_EMAIL}" >> "${GITHUB_ENV}"
+
       - name: Block fork PRs
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
