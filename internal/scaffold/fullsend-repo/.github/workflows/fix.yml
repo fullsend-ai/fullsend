@@ -25,7 +25,7 @@ on:
       trigger_source:
         required: true
         type: string
-        description: 'GitHub username that triggered the fix; bot accounts end with [bot]'
+        description: "GitHub username that triggered the fix; bot accounts end with [bot]"
       pr_number:
         required: false
         type: string
@@ -59,6 +59,7 @@ jobs:
       instruction: ${{ inputs.instruction || '' }}
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      fullsend_ai_ref: v0
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

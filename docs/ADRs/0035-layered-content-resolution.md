@@ -58,8 +58,10 @@ In both cases the main dirs (`agents/`, `skills/`, etc.) are not committed —
 they are populated at runtime from upstream.
 
 **B. Runtime layering via reusable workflows.** Each reusable workflow adds a
-"Prepare workspace" step that sparse-checkouts upstream defaults from
-`fullsend-ai/fullsend@v0`, copies them into the main dirs (`agents/`, `skills/`,
+"Prepare workspace" step that checks out upstream defaults from
+`fullsend-ai/fullsend` at the ref supplied via `fullsend_ai_ref` (PR #1278
+replaced the earlier checkout at `@v0` with a checkout at a
+caller-controlled ref), copies them into the main dirs (`agents/`, `skills/`,
 etc.), then copies customizations on top so override files replace upstream
 defaults. The workflow inspects `install_mode` to resolve the correct
 customization base:
@@ -89,7 +91,7 @@ File categories after this change:
   scaffold creates the structure, orgs add real files.
 - **Upstream defaults** (~60 files): agents, skills, schemas, harness,
   policies, scripts, env — authoritative in `fullsend-ai/fullsend`, provided
-  at runtime via sparse checkout of the release tag.
+  at runtime via checkout of the release tag.
 - **Upstream infrastructure** (~5 files): composite actions,
   `setup-agent-env.sh` — referenced directly from upstream, never in `.fullsend`.
 
@@ -114,7 +116,7 @@ File categories after this change:
 - Overrides are explicit and auditable: in `customized/` for per-org, in
   `.fullsend/customized/` for per-repo.
 - Requires a public upstream repo (`fullsend-ai/fullsend` is already public).
-- Runtime availability: sparse checkout of upstream defaults requires
+- Runtime availability: checkout of upstream defaults requires
   github.com to be reachable at workflow execution time. GitHub Actions already
   depends on github.com, so this adds no new availability boundary.
 - Migration for existing orgs: orgs that customized files in top-level dirs

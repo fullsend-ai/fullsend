@@ -6,6 +6,10 @@
 # Flow: shim (per-repo) → reusable-dispatch.yml → reusable-{stage}.yml
 # Nesting: 3 levels of workflow_call (within GitHub's 4-level limit)
 #
+# Stage workflows are referenced with relative paths (./.github/workflows/...)
+# so a pinned caller (e.g. @v0.10.1) resolves them at that exact tag with
+# no hardcoded version strings.
+#
 # Security: all user-controlled inputs (comment body, labels, usernames)
 # are passed via env: variables, not interpolated in run: blocks.
 name: Dispatch
@@ -35,6 +39,11 @@ on:
         required: false
         type: string
         default: "latest"
+      fullsend_ai_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+        default: v0
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -324,64 +333,61 @@ jobs:
     name: Triage
     needs: route
     if: needs.route.outputs.stage == 'triage'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
+    uses: ./.github/workflows/reusable-triage.yml
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
       event_payload: ${{ needs.route.outputs.event_payload }}
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
-
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
+      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   code:
     name: Code
     needs: route
     if: needs.route.outputs.stage == 'code'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
+    uses: ./.github/workflows/reusable-code.yml
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
       event_payload: ${{ needs.route.outputs.event_payload }}
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
-
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
+      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   review:
     name: Review
     needs: route
     if: needs.route.outputs.stage == 'review'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
+    uses: ./.github/workflows/reusable-review.yml
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
       event_payload: ${{ needs.route.outputs.event_payload }}
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
-
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
+      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   fix:
     name: Fix
     needs: route
     if: needs.route.outputs.stage == 'fix'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0
+    uses: ./.github/workflows/reusable-fix.yml
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -389,29 +395,27 @@ jobs:
       trigger_source: ${{ needs.route.outputs.trigger_source }}
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
-
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
+      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   retro:
     name: Retro
     needs: route
     if: needs.route.outputs.stage == 'retro'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
+    uses: ./.github/workflows/reusable-retro.yml
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
       event_payload: ${{ needs.route.outputs.event_payload }}
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
-
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
+      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

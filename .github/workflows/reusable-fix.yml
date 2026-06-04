@@ -17,7 +17,7 @@ on:
       trigger_source:
         required: true
         type: string
-        description: 'GitHub username that triggered the fix; bot accounts end with [bot]'
+        description: "GitHub username that triggered the fix; bot accounts end with [bot]"
       pr_number:
         required: false
         type: string
@@ -35,11 +35,16 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: 'latest'
+        default: "latest"
       install_mode:
         required: false
         type: string
-        default: 'per-org'
+        default: "per-org"
+      fullsend_ai_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+        default: v0
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: true
@@ -66,10 +71,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: fullsend-ai/fullsend
-          ref: v0
+          ref: ${{ inputs.fullsend_ai_ref }}
           path: .defaults
+          fetch-depth: 1
           sparse-checkout: |
+            .github/actions/
+            .github/scripts/
             internal/scaffold/fullsend-repo/
+            action.yml
 
       - name: Prepare workspace (upstream defaults + org/repo overrides)
         env:
@@ -104,18 +113,17 @@ jobs:
           done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
-          rm -rf .defaults
 
       - name: Validate enrollment and extract repo metadata
         id: repo-parts
-        uses: fullsend-ai/fullsend/.github/actions/validate-enrollment@v0
+        uses: ./.defaults/.github/actions/validate-enrollment
         with:
           source_repo: ${{ inputs.source_repo }}
           install_mode: ${{ inputs.install_mode }}
 
       - name: Mint coder token
         id: app-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@v0
+        uses: ./.defaults/.github/actions/mint-token
         with:
           role: coder
           repos: ${{ steps.repo-parts.outputs.name }}
@@ -321,7 +329,7 @@ jobs:
         run: bash scripts/pre-fix.sh
 
       - name: Setup GCP and prepare credentials
-        uses: fullsend-ai/fullsend/.github/actions/setup-gcp@v0
+        uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -341,7 +349,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
-        uses: fullsend-ai/fullsend@v0
+        uses: ./.defaults/
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
