@@ -47,6 +47,7 @@ func TestNewOrgConfig(t *testing.T) {
 	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
 	assert.Equal(t, 2, cfg.Defaults.MaxImplementationRetries)
 	assert.False(t, cfg.Defaults.AutoMerge)
+	assert.False(t, cfg.Defaults.SkipAutoReview)
 	assert.Equal(t, roles, cfg.Defaults.Roles)
 
 	assert.True(t, cfg.Repos["repo-a"].Enabled)
@@ -750,5 +751,120 @@ repos: {}
 		data, err := cfg.Marshal()
 		require.NoError(t, err)
 		assert.NotContains(t, string(data), "allowed_remote_resources")
+	})
+}
+
+// --- SkipAutoReview tests ---
+
+func TestOrgConfig_SkipAutoReview(t *testing.T) {
+	t.Run("parse YAML with skip_auto_review true", func(t *testing.T) {
+		yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  auto_merge: false
+  skip_auto_review: true
+agents: []
+repos: {}
+`
+		cfg, err := ParseOrgConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.True(t, cfg.Defaults.SkipAutoReview)
+	})
+
+	t.Run("parse YAML without skip_auto_review", func(t *testing.T) {
+		yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  auto_merge: false
+agents: []
+repos: {}
+`
+		cfg, err := ParseOrgConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.Defaults.SkipAutoReview)
+	})
+
+	t.Run("marshal includes skip_auto_review", func(t *testing.T) {
+		cfg := &OrgConfig{
+			Version:  "1",
+			Dispatch: DispatchConfig{Platform: "github-actions"},
+			Defaults: RepoDefaults{
+				Roles:                    []string{"fullsend"},
+				MaxImplementationRetries: 2,
+				AutoMerge:                false,
+				SkipAutoReview:           true,
+			},
+			Agents: []AgentEntry{},
+			Repos:  map[string]RepoConfig{},
+		}
+		data, err := cfg.Marshal()
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "skip_auto_review:")
+	})
+}
+
+func TestPerRepoConfig_SkipAutoReview(t *testing.T) {
+	t.Run("NewPerRepoConfig defaults skip_auto_review to false", func(t *testing.T) {
+		cfg := NewPerRepoConfig(nil)
+		assert.False(t, cfg.SkipAutoReview)
+	})
+
+	t.Run("parse YAML with skip_auto_review true", func(t *testing.T) {
+		yamlData := `
+version: "1"
+roles:
+  - fullsend
+  - triage
+skip_auto_review: true
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.True(t, cfg.SkipAutoReview)
+	})
+
+	t.Run("parse YAML with skip_auto_review false", func(t *testing.T) {
+		yamlData := `
+version: "1"
+roles:
+  - fullsend
+  - triage
+skip_auto_review: false
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.SkipAutoReview)
+	})
+
+	t.Run("marshal with skip_auto_review false omits field", func(t *testing.T) {
+		cfg := &PerRepoConfig{
+			Version:        "1",
+			Roles:          []string{"fullsend", "triage"},
+			SkipAutoReview: false,
+		}
+		data, err := cfg.Marshal()
+		require.NoError(t, err)
+		// omitempty skips false (zero value) for booleans
+		assert.NotContains(t, string(data), "skip_auto_review")
+	})
+
+	t.Run("marshal with skip_auto_review true includes field", func(t *testing.T) {
+		cfg := &PerRepoConfig{
+			Version:        "1",
+			Roles:          []string{"fullsend", "triage"},
+			SkipAutoReview: true,
+		}
+		data, err := cfg.Marshal()
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "skip_auto_review: true")
 	})
 }

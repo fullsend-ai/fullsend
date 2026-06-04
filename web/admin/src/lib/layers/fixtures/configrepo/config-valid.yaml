@@ -5,5 +5,6 @@ defaults:
   roles: [fullsend]
   max_implementation_retries: 2
   auto_merge: false
+  skip_auto_review: false
 agents: []
 repos: {}

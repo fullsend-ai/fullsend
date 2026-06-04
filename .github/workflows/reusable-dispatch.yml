@@ -178,7 +178,16 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  STAGE="review"
+                  # Check skip_auto_review config (defaults to false).
+                  # When skip_auto_review: true, PR events don't auto-trigger review —
+                  # /fs-review slash command and ready-for-review label still work.
+                  SKIP_AUTO_REVIEW="false"
+                  if [[ -f .fullsend/config.yaml ]]; then
+                    SKIP_AUTO_REVIEW=$(yq '.skip_auto_review // false' .fullsend/config.yaml)
+                  fi
+                  if [[ "$SKIP_AUTO_REVIEW" != "true" ]]; then
+                    STAGE="review"
+                  fi
                   ;;
                 closed)
                   STAGE="retro"

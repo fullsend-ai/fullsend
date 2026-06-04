@@ -33,6 +33,7 @@ type RepoDefaults struct {
 	Roles                    []string `yaml:"roles"`
 	MaxImplementationRetries int      `yaml:"max_implementation_retries"`
 	AutoMerge                bool     `yaml:"auto_merge"`
+	SkipAutoReview           bool     `yaml:"skip_auto_review"`
 }
 
 // RepoConfig holds per-repo configuration.
@@ -95,6 +96,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 			Roles:                    roles,
 			MaxImplementationRetries: 2,
 			AutoMerge:                false,
+			SkipAutoReview:           false,
 		},
 		Agents: agents,
 		Repos:  repos,
@@ -204,9 +206,10 @@ func (c *OrgConfig) DefaultRoles() []string {
 // PerRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 type PerRepoConfig struct {
-	Version    string   `yaml:"version"`
-	KillSwitch bool     `yaml:"kill_switch,omitempty"`
-	Roles      []string `yaml:"roles,omitempty"`
+	Version        string   `yaml:"version"`
+	KillSwitch     bool     `yaml:"kill_switch,omitempty"`
+	Roles          []string `yaml:"roles,omitempty"`
+	SkipAutoReview bool     `yaml:"skip_auto_review,omitempty"`
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -222,8 +225,9 @@ func NewPerRepoConfig(roles []string) *PerRepoConfig {
 		roles = DefaultAgentRoles()
 	}
 	return &PerRepoConfig{
-		Version: "1",
-		Roles:   roles,
+		Version:        "1",
+		Roles:          roles,
+		SkipAutoReview: false,
 	}
 }
 
