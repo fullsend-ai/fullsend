@@ -28,6 +28,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 | `chore` | Maintenance (CI, deps, tooling) | No |
 | `ci` | CI/CD pipeline changes | No |
 | `perf` | Performance improvement | Yes — under **Others** |
+| `build` | Build system or dependency changes | No |
 
 ### Scope
 

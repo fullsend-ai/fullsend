@@ -9,4 +9,4 @@ line-length=100
 # Matches the types documented in CONTRIBUTING.md and parsed by
 # GoReleaser for release notes.
 [contrib-title-conventional-commits]
-types=feat,fix,refactor,docs,test,chore,ci,perf
+types=feat,fix,refactor,docs,test,chore,ci,perf,build
