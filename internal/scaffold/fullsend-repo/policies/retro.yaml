@@ -4,7 +4,8 @@ version: 1
 #
 # Read-only agent: needs GitHub API (gh run list, gh run view, gh pr view)
 # and Vertex AI for inference. The sandbox token has issues:write (needed by
-# the post-script on the runner) but not pull_requests:write or contents:write.
+# the post-script on the runner) and pull_requests:write (required by GitHub to
+# comment on PRs via the issues endpoint) but not contents:write.
 # curl intentionally excluded to prevent disallowedTools bypass via raw HTTP
 # with the injected GH_TOKEN.
 

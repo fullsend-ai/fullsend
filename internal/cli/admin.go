@@ -859,6 +859,16 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 
 	// Phase 2: App creation + mint provisioning based on discovered state.
 	if needAppSetup {
+		// Ensure the mint service account exists before storing PEM
+		// secrets — StoreAgentPEM grants the SA access to each secret,
+		// which fails if the SA hasn't been created yet.
+		if mintProject != "" {
+			prov := gcf.NewProvisioner(gcf.Config{ProjectID: mintProject}, gcf.NewLiveGCFClient(mintProject))
+			if err := prov.EnsureMintServiceAccount(ctx); err != nil {
+				return fmt.Errorf("ensuring mint service account: %w", err)
+			}
+		}
+
 		var sharedSlugs map[string]string
 		if mintProject != "" {
 			slugs, storedIDs, slugErr := copySharedAppPEMs(ctx, client, printer, owner, roles, mintProject, mintRegion)

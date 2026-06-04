@@ -84,7 +84,7 @@ The mint enforces minimum permission sets per role. Tokens cannot exceed these s
 | **coder** | write | write | write | — | read | — | — | — | read |
 | **review** | read | write | write | — | read | — | — | — | read |
 | **fix** | write | write | write | — | — | — | — | — | read |
-| **retro** | read | read | write | read | — | — | — | — | read |
+| **retro** | read | write | write | read | — | — | — | — | read |
 | **prioritize** | read | — | write | — | — | — | — | write | read |
 
 ### Mint Security Controls
