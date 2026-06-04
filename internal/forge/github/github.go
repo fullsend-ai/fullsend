@@ -562,7 +562,7 @@ func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func
 		// Retry on transient errors:
 		// - 404: repo not ready (async init)
 		// - 409: branch ref conflict
-		// - 502/503/504: transient server-side errors
+		// - 500/502/503/504: transient server-side errors
 		var apiErr *APIError
 		if !errors.As(lastErr, &apiErr) || !isTransientStatus(apiErr.StatusCode) {
 			return lastErr
@@ -581,11 +581,12 @@ func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func
 
 // isTransientStatus returns true for HTTP status codes that indicate a
 // transient error worth retrying: 404 (async repo init), 409 (branch ref
-// conflict), and server-side 502, 503, 504 (GitHub infrastructure errors).
+// conflict), and server-side 500, 502, 503, 504 (GitHub infrastructure errors).
 func isTransientStatus(code int) bool {
 	switch code {
 	case http.StatusNotFound,
 		http.StatusConflict,
+		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
 		http.StatusGatewayTimeout:

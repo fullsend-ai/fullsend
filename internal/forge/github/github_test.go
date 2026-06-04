@@ -1152,12 +1152,12 @@ func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
 }
 
 func TestIsTransientStatus(t *testing.T) {
-	transient := []int{404, 409, 502, 503, 504}
+	transient := []int{404, 409, 500, 502, 503, 504}
 	for _, code := range transient {
 		assert.True(t, isTransientStatus(code), "expected %d to be transient", code)
 	}
 
-	nonTransient := []int{200, 201, 400, 401, 403, 422, 500}
+	nonTransient := []int{200, 201, 400, 401, 403, 422}
 	for _, code := range nonTransient {
 		assert.False(t, isTransientStatus(code), "expected %d to not be transient", code)
 	}
