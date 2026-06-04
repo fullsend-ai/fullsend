@@ -271,7 +271,7 @@ jobs:
           set -euo pipefail
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code) STAGE_ROLE="code" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
 

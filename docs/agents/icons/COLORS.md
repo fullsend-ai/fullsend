@@ -5,7 +5,7 @@ Original background circle color for each agent icon.
 | Icon | Hex | RGB |
 |------|-----|-----|
 | bootstrap | `#1d4f5d` | 29, 79, 93 |
-| coder | `#8b687d` | 139, 104, 125 |
+| code | `#8b687d` | 139, 104, 125 |
 | discovery | `#b7cc63` | 183, 204, 99 |
 | prioritize | `#f08175` | 240, 129, 117 |
 | refinement | `#916b7c` | 145, 107, 124 |

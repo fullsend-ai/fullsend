@@ -113,11 +113,11 @@ jobs:
           source_repo: ${{ inputs.source_repo }}
           install_mode: ${{ inputs.install_mode }}
 
-      - name: Mint coder token
+      - name: Mint code token
         id: app-token
         uses: fullsend-ai/fullsend/.github/actions/mint-token@v0
         with:
-          role: coder
+          role: code
           repos: ${{ steps.repo-parts.outputs.name }}
           mint_url: ${{ inputs.mint_url }}
 

@@ -453,7 +453,7 @@ var executableFiles = map[string]struct{}{
 │  8. Coder workflow dispatched (label trigger)                   │
 │     │                                                           │
 │     ▼                                                           │
-│  9. Repeat steps 4-6 with role=coder                            │
+│  9. Repeat steps 4-6 with role=code                            │
 │     ├── Coder agent creates branch, writes code                 │
 │     └── Opens PR via GitHub App bot                             │
 │     │                                                           │

@@ -35,7 +35,7 @@ Some users cannot or do not want to use the per-org model:
 
 Three ADRs and the implementation in PR 792 create the building blocks that make per-repo possible:
 
-- ADR 0029 replaces PEM secrets and dispatch PATs with OIDC-based credential issuance via a central token mint. The `mint-token` composite action takes a role name (triage, coder, review, fix) and returns a scoped GitHub App installation token — no PEMs or client IDs in the calling repo.
+- ADR 0029 replaces PEM secrets and dispatch PATs with OIDC-based credential issuance via a central token mint. The `mint-token` composite action takes a role name (triage, code, review, fix) and returns a scoped GitHub App installation token — no PEMs or client IDs in the calling repo.
 - [ADR 0031](0031-reusable-workflows-for-action-installed-distribution.md) publishes five reusable workflows (`reusable-triage.yml`, `reusable-code.yml`, `reusable-review.yml`, `reusable-fix.yml`, `reusable-retro.yml`) and four composite actions (`fullsend`, `mint-token`, `validate-enrollment`, `setup-gcp`) from `fullsend-ai/fullsend`, enabling any repo to call fullsend infrastructure via `workflow_call` without copying workflow files. Scaffold stage workflows in `.fullsend` are now thin callers (41–66 lines) that delegate to these reusable workflows.
 - [ADR 0034](0034-centralized-shim-routing-via-dispatch.md) centralizes event-to-stage routing in `dispatch.yml` within the `.fullsend` config repo. The enrolled-repo shim (~70 lines) forwards raw event context to `dispatch.yml` via `workflow_call`; `dispatch.yml` (~370 lines) determines the stage, mints an OIDC dispatch token, validates the stage, checks the kill switch, and dispatches to the matching thin caller via `workflow_call`. Adding a new stage requires only a case branch in `dispatch.yml` — zero changes to enrolled repos.
 - ADR 0035 introduces layered content resolution: upstream defaults (agents, skills, schemas, harness, policies, scripts) are sparse-checked from `fullsend-ai/fullsend` at runtime, then org overrides from `customized/` are copied on top. The scaffold installs only org-specific files (~23 files instead of ~68).
@@ -64,7 +64,7 @@ Run `fullsend admin install` targeting a single repo instead of an org. Copy all
 
 Use one GitHub App for triage, code, review, and fix roles to simplify per-repo setup.
 
-**Rejected**: GitHub suppresses events triggered by pushes made with any `GITHUB_TOKEN` or GitHub App installation token, to prevent infinite loops. Two separate Apps work because a push made with App-A's token _does_ generate events that trigger workflows authenticated as App-B. The fix→review loop requires the coder/fix agent to push commits that trigger review — if both roles share one App, the push token matches the workflow's App and the event is silently suppressed, breaking the feedback cycle. At minimum, coder and review must be separate Apps.
+**Rejected**: GitHub suppresses events triggered by pushes made with any `GITHUB_TOKEN` or GitHub App installation token, to prevent infinite loops. Two separate Apps work because a push made with App-A's token _does_ generate events that trigger workflows authenticated as App-B. The fix→review loop requires the code/fix agent to push commits that trigger review — if both roles share one App, the push token matches the workflow's App and the event is silently suppressed, breaking the feedback cycle. At minimum, code and review must be separate Apps.
 
 ### Alternative 3: Per-repo as a separate codebase
 
@@ -72,11 +72,11 @@ Build a standalone per-repo tool or action that does not share infrastructure wi
 
 **Rejected**: Duplicates agent logic, composite action, and security controls. Per-repo should reuse the same reusable workflows as per-org, with mode detection to adapt behavior.
 
-### Alternative 4: Two-app minimum (coder + review)
+### Alternative 4: Two-app minimum (code + review)
 
 Reduce per-repo to two Apps instead of matching the full per-org app set.
 
-**Rejected**: Dropping the triage App forces triage to share one of the other App identities, which conflates permissions (triage only needs `issues:write`, while coder has `contents:write`). The full per-role model (ADR 0007) provides least-privilege isolation. CLI automation (`fullsend admin install`) makes creating the Apps straightforward.
+**Rejected**: Dropping the triage App forces triage to share one of the other App identities, which conflates permissions (triage only needs `issues:write`, while code has `contents:write`). The full per-role model (ADR 0007) provides least-privilege isolation. CLI automation (`fullsend admin install`) makes creating the Apps straightforward.
 
 ## Decision
 
@@ -217,7 +217,7 @@ Per-repo maps to these profiles:
 | **Self-managed** | Per-repo user deploys own mint + own Apps | `fullsend admin install owner/repo --mint-project=my-proj` creates everything |
 
 **SaaS profile (default)**: The simplest path. Shared public Apps
-(`fullsend-ai-triage`, `fullsend-ai-coder`, `fullsend-ai-review`) are pre-created
+(`fullsend-ai-triage`, `fullsend-ai-code`, `fullsend-ai-review`) are pre-created
 by the platform operator and installed on the per-repo user's repo (requires
 org admin approval). The `mint-token` composite action exchanges a GitHub
 OIDC token for a scoped installation token — no PEMs, client IDs, or App
@@ -255,7 +255,7 @@ Shared flags (valid for both per-org and per-repo):
 - `--mint-url` — token mint URL for OIDC token exchange (optional; auto-discovered from `--mint-project`/`--mint-region` if omitted)
 - `--mint-project` — GCP project containing the mint function (defaults to `--inference-project` in per-repo)
 - `--mint-region` — cloud region for the mint function (default: `us-central1`)
-- `--agents` — comma-separated agent roles (default: `fullsend,triage,coder,review,retro,prioritize`)
+- `--agents` — comma-separated agent roles (default: `fullsend,triage,code,review,retro,prioritize`)
 - `--dry-run` — preview changes without making them
 - `--skip-app-setup` — skip GitHub App creation (reuse existing apps)
 - `--skip-mint-deploy` — skip Cloud Function deployment, reuse existing mint URL
@@ -336,7 +336,7 @@ Ordered by the project's threat priority (external injection > insider > drift >
 - **Base-branch config reads**: Reusable workflows read `.fullsend/`, `AGENTS.md`, and workflow files from the base branch only (enforced by `pull_request_target`). PR authors cannot inject modified agent instructions or policies via their PR.
 - **Template validation**: `fullsend admin install` generates the workflow file with `pull_request_target`. Users who modify it are warned in documentation.
 - **Minimal payload**: Following per-org `dispatch.yml`, `reusable-dispatch.yml` reads event context from `github.event.*` expressions (available in `workflow_call` callee context) rather than passing the full payload as an input.
-- **Clear error messages**: Credential auto-detection reports why coder and review Apps must be separate, with a link to setup documentation.
+- **Clear error messages**: Credential auto-detection reports why code and review Apps must be separate, with a link to setup documentation.
 - **Migration path**: Per-repo users who outgrow the model can migrate to per-org without changing agent behavior — the same reusable workflows power both modes.
 
 ## Resolved Questions

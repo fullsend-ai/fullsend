@@ -10,10 +10,11 @@ import (
 
 func TestValidRoles(t *testing.T) {
 	roles := ValidRoles()
-	assert.Len(t, roles, 7)
+	assert.Len(t, roles, 8)
 	assert.Contains(t, roles, "fullsend")
 	assert.Contains(t, roles, "triage")
-	assert.Contains(t, roles, "coder")
+	assert.Contains(t, roles, "code")
+	assert.Contains(t, roles, "coder") // TODO(#1850): remove after migration
 	assert.Contains(t, roles, "review")
 	assert.Contains(t, roles, "fix")
 	assert.Contains(t, roles, "retro")
@@ -24,7 +25,7 @@ func TestPerRepoDefaultRoles(t *testing.T) {
 	roles := PerRepoDefaultRoles()
 	assert.Len(t, roles, 6)
 	assert.Contains(t, roles, "triage")
-	assert.Contains(t, roles, "coder")
+	assert.Contains(t, roles, "code")
 	assert.Contains(t, roles, "review")
 	assert.Contains(t, roles, "fix")
 	assert.Contains(t, roles, "retro")
@@ -36,7 +37,7 @@ func TestPerRepoDefaultRoles(t *testing.T) {
 func TestNewOrgConfig(t *testing.T) {
 	allRepos := []string{"repo-a", "repo-b", "repo-c"}
 	enabledRepos := []string{"repo-a", "repo-c"}
-	roles := []string{"fullsend", "triage", "coder", "review"}
+	roles := []string{"fullsend", "triage", "code", "review"}
 	agents := []AgentEntry{
 		{Role: "fullsend", Name: "test", Slug: "test-slug"},
 	}
@@ -98,7 +99,7 @@ func TestOrgConfigValidate_Valid(t *testing.T) {
 			Platform: "github-actions",
 		},
 		Defaults: RepoDefaults{
-			Roles:                    []string{"fullsend", "coder"},
+			Roles:                    []string{"fullsend", "code"},
 			MaxImplementationRetries: 2,
 		},
 	}
@@ -182,7 +183,7 @@ func TestOrgConfigValidate_DuplicateRole(t *testing.T) {
 			Platform: "github-actions",
 		},
 		Defaults: RepoDefaults{
-			Roles:                    []string{"fullsend", "coder", "fullsend"},
+			Roles:                    []string{"fullsend", "code", "fullsend"},
 			MaxImplementationRetries: 2,
 		},
 	}
@@ -223,13 +224,13 @@ func TestOrgConfigAgentSlugs(t *testing.T) {
 	cfg := &OrgConfig{
 		Agents: []AgentEntry{
 			{Role: "fullsend", Name: "app1", Slug: "slug-1"},
-			{Role: "coder", Name: "app2", Slug: "slug-2"},
+			{Role: "code", Name: "app2", Slug: "slug-2"},
 		},
 	}
 
 	slugs := cfg.AgentSlugs()
 	assert.Equal(t, "slug-1", slugs["fullsend"])
-	assert.Equal(t, "slug-2", slugs["coder"])
+	assert.Equal(t, "slug-2", slugs["code"])
 	assert.Len(t, slugs, 2)
 }
 
@@ -252,7 +253,7 @@ dispatch:
 defaults:
   roles:
     - fullsend
-    - coder
+    - code
   max_implementation_retries: 3
   auto_merge: true
 agents:
@@ -273,7 +274,7 @@ repos:
 	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
 	assert.Equal(t, 3, cfg.Defaults.MaxImplementationRetries)
 	assert.True(t, cfg.Defaults.AutoMerge)
-	assert.Equal(t, []string{"fullsend", "coder"}, cfg.Defaults.Roles)
+	assert.Equal(t, []string{"fullsend", "code"}, cfg.Defaults.Roles)
 	assert.Len(t, cfg.Agents, 1)
 	assert.Equal(t, "fullsend", cfg.Agents[0].Role)
 	assert.Equal(t, "my-app", cfg.Agents[0].Name)
@@ -575,7 +576,7 @@ func TestNewPerRepoConfig_CustomRoles(t *testing.T) {
 func TestPerRepoConfigValidate_Valid(t *testing.T) {
 	cfg := &PerRepoConfig{
 		Version: "1",
-		Roles:   []string{"fullsend", "triage", "coder"},
+		Roles:   []string{"fullsend", "triage", "code"},
 	}
 	assert.NoError(t, cfg.Validate())
 }
@@ -664,7 +665,7 @@ func TestPerRepoConfigMarshal_KillSwitchOmitted(t *testing.T) {
 }
 
 func TestPerRepoConfig_RoundTrip(t *testing.T) {
-	original := NewPerRepoConfig([]string{"fullsend", "triage", "coder", "review", "fix"})
+	original := NewPerRepoConfig([]string{"fullsend", "triage", "code", "review", "fix"})
 	data, err := original.Marshal()
 	require.NoError(t, err)
 

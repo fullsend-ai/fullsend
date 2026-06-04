@@ -76,7 +76,7 @@ See [architecture.md](architecture.md).
 
 ### Identity
 
-A distinct GitHub App installation representing a specific agent role (e.g., triage, coder, reviewer). Each agent role gets its own identity so that actions are attributable and permissions can be scoped per-role. Identity is not the same as trust — an agent's identity lets it authenticate; trust derives from repository permissions and CODEOWNERS, not from which credentials the agent holds.
+A distinct GitHub App installation representing a specific agent role (e.g., triage, code, reviewer). Each agent role gets its own identity so that actions are attributable and permissions can be scoped per-role. Identity is not the same as trust — an agent's identity lets it authenticate; trust derives from repository permissions and CODEOWNERS, not from which credentials the agent holds.
 See [architecture.md](architecture.md) and [agent-architecture.md](problems/agent-architecture.md).
 
 ## L

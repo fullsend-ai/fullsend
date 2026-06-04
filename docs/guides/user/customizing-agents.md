@@ -191,9 +191,9 @@ Each agent role has its own identity, permissions, and purpose:
 │  ─────         ──────────                  ───────          │
 │  fullsend      {org}-fullsend[bot]         Dispatch/control │
 │  triage        {org}-triage[bot]           Issue triage     │
-│  coder         {org}-coder[bot]            Code generation  │
+│  code          {org}-code[bot]             Code generation  │
 │  review        {org}-review[bot]           PR review        │
-│  fix           (reuses coder app)          Fix failures     │
+│  fix           (reuses code app)           Fix failures     │
 │  retro         {org}-retro[bot]            Retrospectives   │
 │  prioritize    {org}-prioritize[bot]       Backlog priority │
 │                                                             │
@@ -202,7 +202,7 @@ Each agent role has its own identity, permissions, and purpose:
 │  PEM storage: GCP Secret Manager                            │
 │  Secret name: fullsend-{org}--{role}-app-pem                │
 │                                                             │
-│  Note: "fix" role reuses the "coder" app — no separate      │
+│  Note: "fix" role reuses the "code" app — no separate        │
 │  GitHub App is created for it.                               │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘

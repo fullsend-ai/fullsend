@@ -27,7 +27,7 @@ The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped Gi
 │  ┌──────────────────────────────────────────────────┐           │
 │  │ POST /v1/token                                   │           │
 │  │ Authorization: Bearer <OIDC JWT>                 │           │
-│  │ Body: { "role": "coder", "repos": ["my-repo"] }  │           │
+│  │ Body: { "role": "code", "repos": ["my-repo"] }   │           │
 │  └──────────┬───────────────────────────────────────┘           │
 │             │                                                   │
 │             ▼                                                   │
@@ -81,7 +81,7 @@ The mint enforces minimum permission sets per role. Tokens cannot exceed these s
 |------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
 | **fullsend** | write | write | — | write | — | write | read | — | read |
 | **triage** | read | — | write | — | — | — | — | — | read |
-| **coder** | write | write | write | — | read | — | — | — | read |
+| **code** | write | write | write | — | read | — | — | — | read |
 | **review** | read | write | write | — | read | — | — | — | read |
 | **fix** | write | write | write | — | — | — | — | — | read |
 | **retro** | read | read | write | read | — | — | — | — | read |

@@ -165,7 +165,7 @@ func TestMintDeployCmd_DryRunWithInvalidPEM(t *testing.T) {
 	for _, role := range defaultMintRoles() {
 		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
 	}
-	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "coder.pem"), []byte("not-a-pem"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "code.pem"), []byte("not-a-pem"), 0o600))
 
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--pem-dir=" + pemDir})
@@ -178,9 +178,9 @@ func TestMintDeployCmd_DryRunWithInvalidPEM(t *testing.T) {
 
 func TestLookupAppID_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/apps/fullsend-ai-coder", r.URL.Path)
+		assert.Equal(t, "/apps/fullsend-ai-code", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"id": 12345, "slug": "fullsend-ai-coder", "client_id": "Iv1.abc123"}`)
+		fmt.Fprintln(w, `{"id": 12345, "slug": "fullsend-ai-code", "client_id": "Iv1.abc123"}`)
 	}))
 	defer srv.Close()
 
@@ -188,7 +188,7 @@ func TestLookupAppID_Success(t *testing.T) {
 	githubAPIBaseURL = srv.URL
 	defer func() { githubAPIBaseURL = orig }()
 
-	appID, err := lookupAppID(context.Background(), "fullsend-ai-coder")
+	appID, err := lookupAppID(context.Background(), "fullsend-ai-code")
 	require.NoError(t, err)
 	assert.Equal(t, 12345, appID)
 }
@@ -308,12 +308,12 @@ func TestVerifyPEMMatchesApp_AppIDMismatch(t *testing.T) {
 
 func TestListPEMFiles(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "coder.pem"), []byte("x"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "code.pem"), []byte("x"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "review.pem"), []byte("x"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), []byte("x"), 0o600))
 
 	files := listPEMFiles(dir)
-	assert.Equal(t, []string{"coder.pem", "review.pem"}, files)
+	assert.Equal(t, []string{"code.pem", "review.pem"}, files)
 }
 
 func TestListPEMFiles_EmptyDir(t *testing.T) {
@@ -394,7 +394,7 @@ func TestLoadAppSetPEMs_InvalidPEM(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
 	}
 	// Overwrite one with invalid content.
-	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "coder.pem"), []byte("not-a-pem"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "code.pem"), []byte("not-a-pem"), 0o600))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -591,19 +591,19 @@ func TestMintStatusCmd_TooManyArgs(t *testing.T) {
 // --- role aliasing tests ---
 
 func TestResolveRole(t *testing.T) {
-	assert.Equal(t, "coder", resolveRole("fix"))
-	assert.Equal(t, "coder", resolveRole("coder"))
+	assert.Equal(t, "code", resolveRole("fix"))
+	assert.Equal(t, "code", resolveRole("code"))
 	assert.Equal(t, "triage", resolveRole("triage"))
 	assert.Equal(t, "review", resolveRole("review"))
 }
 
 func TestParseAndResolveRoles_FixAlias(t *testing.T) {
-	roles, err := parseAndResolveRoles("triage,fix,coder,review")
+	roles, err := parseAndResolveRoles("triage,fix,code,review")
 	require.NoError(t, err)
 
-	// "fix" should be resolved to "coder" and deduplicated.
+	// "fix" should be resolved to "code" and deduplicated.
 	assert.NotContains(t, roles, "fix")
-	assert.Contains(t, roles, "coder")
+	assert.Contains(t, roles, "code")
 	assert.Contains(t, roles, "triage")
 	assert.Contains(t, roles, "review")
 
@@ -616,7 +616,7 @@ func TestParseAndResolveRoles_FixAlias(t *testing.T) {
 }
 
 func TestParseAndResolveRoles_Sorted(t *testing.T) {
-	roles, err := parseAndResolveRoles("review,triage,coder")
+	roles, err := parseAndResolveRoles("review,triage,code")
 	require.NoError(t, err)
 
 	sorted := make([]string, len(roles))
@@ -640,14 +640,14 @@ func TestDefaultMintRoles(t *testing.T) {
 
 func TestResolveEnrollAppIDs_ExplicitJSON(t *testing.T) {
 	result, err := resolveEnrollAppIDs(
-		`{"coder":"111","triage":"222"}`,
+		`{"code":"111","triage":"222"}`,
 		nil,
 		"my-app-set",
 		"target-org",
-		[]string{"coder", "triage"},
+		[]string{"code", "triage"},
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "111", result["target-org/coder"])
+	assert.Equal(t, "111", result["target-org/code"])
 	assert.Equal(t, "222", result["target-org/triage"])
 }
 
@@ -657,7 +657,7 @@ func TestResolveEnrollAppIDs_ExplicitJSON_InvalidJSON(t *testing.T) {
 		nil,
 		"my-app-set",
 		"target-org",
-		[]string{"coder"},
+		[]string{"code"},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing --role-app-ids")
@@ -665,7 +665,7 @@ func TestResolveEnrollAppIDs_ExplicitJSON_InvalidJSON(t *testing.T) {
 
 func TestResolveEnrollAppIDs_FromAppSet(t *testing.T) {
 	existing := map[string]string{
-		"my-app-set/coder":  "111",
+		"my-app-set/code":  "111",
 		"my-app-set/triage": "222",
 	}
 	result, err := resolveEnrollAppIDs(
@@ -673,27 +673,27 @@ func TestResolveEnrollAppIDs_FromAppSet(t *testing.T) {
 		existing,
 		"my-app-set",
 		"target-org",
-		[]string{"coder", "triage"},
+		[]string{"code", "triage"},
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "111", result["target-org/coder"])
+	assert.Equal(t, "111", result["target-org/code"])
 	assert.Equal(t, "222", result["target-org/triage"])
 }
 
 func TestResolveEnrollAppIDs_TargetAlreadyRegistered(t *testing.T) {
 	existing := map[string]string{
-		"my-app-set/coder": "111",
-		"target-org/coder": "999",
+		"my-app-set/code": "111",
+		"target-org/code": "999",
 	}
 	result, err := resolveEnrollAppIDs(
 		"",
 		existing,
 		"my-app-set",
 		"target-org",
-		[]string{"coder"},
+		[]string{"code"},
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "999", result["target-org/coder"], "should use target org's existing entry")
+	assert.Equal(t, "999", result["target-org/code"], "should use target org's existing entry")
 }
 
 func TestResolveEnrollAppIDs_NoExistingIDs(t *testing.T) {
@@ -702,7 +702,7 @@ func TestResolveEnrollAppIDs_NoExistingIDs(t *testing.T) {
 		nil,
 		"my-app-set",
 		"target-org",
-		[]string{"coder"},
+		[]string{"code"},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no existing ROLE_APP_IDS")
@@ -710,14 +710,14 @@ func TestResolveEnrollAppIDs_NoExistingIDs(t *testing.T) {
 
 func TestResolveEnrollAppIDs_RoleMissingFromAppSet(t *testing.T) {
 	existing := map[string]string{
-		"my-app-set/coder": "111",
+		"my-app-set/code": "111",
 	}
 	_, err := resolveEnrollAppIDs(
 		"",
 		existing,
 		"my-app-set",
 		"target-org",
-		[]string{"coder", "unknown-role"},
+		[]string{"code", "unknown-role"},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown-role")
@@ -729,13 +729,13 @@ func TestResolveEnrollAppIDs_RoleMissingFromAppSet(t *testing.T) {
 func TestResolveEnrollAppIDs_SelfEnroll(t *testing.T) {
 	result, err := resolveEnrollAppIDs(
 		"",
-		map[string]string{"my-app-set/coder": "111"},
+		map[string]string{"my-app-set/code": "111"},
 		"my-app-set",
 		"my-app-set",
-		[]string{"coder"},
+		[]string{"code"},
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "111", result["my-app-set/coder"], "self-enroll should reuse existing entry")
+	assert.Equal(t, "111", result["my-app-set/code"], "self-enroll should reuse existing entry")
 }
 
 // --- confirmUnenroll tests ---

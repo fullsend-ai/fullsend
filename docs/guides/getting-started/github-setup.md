@@ -48,7 +48,7 @@ When using the default app set, an **org owner** installs each app from these UR
 |------|-----------------|
 | fullsend | <https://github.com/apps/fullsend-ai-fullsend/installations/new> |
 | triage | <https://github.com/apps/fullsend-ai-triage/installations/new> |
-| coder | <https://github.com/apps/fullsend-ai-coder/installations/new> |
+| code | <https://github.com/apps/fullsend-ai-code/installations/new> |
 | review | <https://github.com/apps/fullsend-ai-review/installations/new> |
 | retro | <https://github.com/apps/fullsend-ai-retro/installations/new> |
 | prioritize | <https://github.com/apps/fullsend-ai-prioritize/installations/new> |
@@ -75,7 +75,7 @@ Per-org setup includes a GitHub App setup phase that runs automatically unless `
 
 **What happens during app setup:**
 
-1. For each agent role (e.g., `triage`, `coder`, `review`), the CLI checks whether a GitHub App matching the naming convention (`{app-set}-{role}`, e.g., `fullsend-ai-triage`) is already installed on the org.
+1. For each agent role (e.g., `triage`, `code`, `review`), the CLI checks whether a GitHub App matching the naming convention (`{app-set}-{role}`, e.g., `fullsend-ai-triage`) is already installed on the org.
 2. If an app is already installed and its private key secret exists, the CLI reuses it.
 3. If no matching app is found, the CLI checks whether the app exists globally (e.g., a public app owned by another org). If found, it opens a browser to install the existing app on your org.
 4. If no app exists at all, the CLI runs the [manifest flow](https://docs.github.com/en/apps/creating-github-apps/setting-up-a-github-app/creating-a-github-app-from-a-manifest) — it opens a browser to `https://github.com/organizations/{org}/settings/apps/new` to create a new GitHub App.
@@ -87,7 +87,7 @@ Per-org setup includes a GitHub App setup phase that runs automatically unless `
 
 **The default `fullsend-ai` app set:**
 
-The default `--app-set` value is `fullsend-ai`, which corresponds to public GitHub Apps owned by the `fullsend-ai` organization (e.g., `fullsend-ai-triage`, `fullsend-ai-coder`, `fullsend-ai-review`). When using this default, the CLI detects these existing public apps and installs them on your org rather than creating new ones. An org owner must approve the installation.
+The default `--app-set` value is `fullsend-ai`, which corresponds to public GitHub Apps owned by the `fullsend-ai` organization (e.g., `fullsend-ai-triage`, `fullsend-ai-code`, `fullsend-ai-review`). When using this default, the CLI detects these existing public apps and installs them on your org rather than creating new ones. An org owner must approve the installation.
 
 **When to use `--skip-app-setup`:**
 
@@ -109,7 +109,7 @@ fullsend github setup acme-corp \
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--mint-url` | Yes | — | Token mint Cloud Function URL (HTTPS) |
-| `--agents` | No | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated agent roles to configure (per-repo omits `fullsend`) |
+| `--agents` | No | `fullsend,triage,code,review,retro,prioritize` | Comma-separated agent roles to configure (per-repo omits `fullsend`) |
 | `--inference-project` | Yes (optional on re-run) | — | GCP project ID where Agent Platform is enabled |
 | `--inference-region` | No | `global` | GCP region for Agent Platform inference |
 | `--inference-wif-provider` | Yes (optional on re-run) | — | Full WIF provider resource name (see [Prerequisites](#prerequisites) for format) |

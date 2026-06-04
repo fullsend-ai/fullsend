@@ -772,7 +772,8 @@ func (h *Handler) findInstallation(ctx context.Context, jwt, org, repo string) (
 // App itself has configured.
 var rolePermissions = map[string]map[string]string{
 	"triage":   {"contents": "read", "issues": "write", "metadata": "read"},
-	"coder":    {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+	"code":     {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+	"coder":    {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"}, // TODO(#1850): transitional alias — remove in v0.15.0
 	"review":   {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"fix":      {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
 	"retro":       {"actions": "read", "contents": "read", "pull_requests": "read", "issues": "write", "metadata": "read"},

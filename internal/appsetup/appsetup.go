@@ -206,7 +206,7 @@ func ValidateAppSet(appSet string) error {
 }
 
 // WithAppSet sets the app set prefix for GitHub App naming.
-// Apps are named "{appSet}-{role}" (e.g., "fullsend-ai-coder").
+// Apps are named "{appSet}-{role}" (e.g., "fullsend-ai-code").
 // Callers must validate appSet via ValidateAppSet before calling this method.
 func (s *Setup) WithAppSet(appSet string) *Setup {
 	s.appSet = appSet
@@ -900,7 +900,7 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 
 // DefaultAppSet is the default app set prefix for GitHub Apps.
 // The official GitHub Apps maintained by the fullsend-ai organization use
-// the "fullsend-ai" prefix (fullsend-ai-fullsend, fullsend-ai-coder, etc.).
+// the "fullsend-ai" prefix (fullsend-ai-fullsend, fullsend-ai-code, etc.).
 // Orgs that created apps under a different prefix (e.g., "fullsend")
 // must pass --app-set explicitly.
 const DefaultAppSet = "fullsend-ai"

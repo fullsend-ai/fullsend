@@ -5,7 +5,7 @@ description: >-
 
 inputs:
   role:
-    description: Agent role name (e.g. triage, coder, review, fullsend)
+    description: Agent role name (e.g. triage, code, review, fullsend)
     required: true
   repos:
     description: Comma-separated repo names to scope the token to

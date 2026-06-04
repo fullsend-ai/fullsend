@@ -55,7 +55,7 @@ type OrgConfig struct {
 
 // ValidRoles returns the set of recognized agent roles.
 func ValidRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "code", "coder", "review", "fix", "retro", "prioritize"} // TODO(#1850): remove "coder" after migration
 }
 
 // ValidProviders returns the set of recognized inference providers.
@@ -64,17 +64,17 @@ func ValidProviders() []string {
 }
 
 // DefaultAgentRoles returns the standard set of agent roles installed
-// when no custom roles are specified. The fix stage reuses the coder
-// app (role: coder) so it does not need a separate app or PEM.
+// when no custom roles are specified. The fix stage reuses the code
+// app (role: code) so it does not need a separate app or PEM.
 func DefaultAgentRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "code", "review", "retro", "prioritize"}
 }
 
 // PerRepoDefaultRoles returns agent roles for per-repo installation.
 // The "fullsend" dispatch role is excluded because per-repo mode uses
 // the target repo's shim workflow for dispatch instead of a separate app.
 func PerRepoDefaultRoles() []string {
-	return []string{"triage", "coder", "review", "fix", "retro", "prioritize"}
+	return []string{"triage", "code", "review", "fix", "retro", "prioritize"}
 }
 
 // NewOrgConfig creates a new OrgConfig with sensible defaults.

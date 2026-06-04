@@ -186,9 +186,9 @@ harness/
       gather-triage-output.sh
       push-to-issue.sh
   code/
-    coder/
-      coder.yaml
-      coder.md
+    code/
+      code.yaml
+      code.md
       fetch-issue-for-code.sh
       linter.sh
       push-to-PR.sh
@@ -226,7 +226,7 @@ agents/             # Agent definitions (.md, following Claude standard)
   completeness-assessor.md
   priority-evaluator.md
   triage-summary.md
-  coder.md
+  code.md
   arch-reviewer.md
   docs-reviewer.md
 
@@ -262,7 +262,7 @@ harness/            # Per-agent harness configs — the glue
   completeness-assessor.yaml
   priority-evaluator.yaml
   triage-summary.yaml
-  coder.yaml
+  code.yaml
   arch-reviewer.yaml
   docs-reviewer.yaml
 ```

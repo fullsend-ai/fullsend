@@ -30,7 +30,7 @@ In `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`, change line
           set -euo pipefail
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code) STAGE_ROLE="code" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
 
@@ -53,7 +53,7 @@ To:
           set -euo pipefail
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code) STAGE_ROLE="code" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
 
@@ -132,7 +132,7 @@ In `.github/workflows/reusable-dispatch.yml`, change lines 234-252 from:
           fi
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code) STAGE_ROLE="code" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
           ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")
@@ -157,7 +157,7 @@ To:
           fi
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code) STAGE_ROLE="code" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
           ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")

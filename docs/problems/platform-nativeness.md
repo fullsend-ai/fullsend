@@ -27,7 +27,7 @@ gh-aw workflows are defined **in the repo itself** as markdown files. Events tri
 
 ### Per-role GitHub App creation
 
-Fullsend creates one GitHub App per agent role (triage, coder, review, fullsend) through the [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). This involves a local HTTP server, a browser redirect to GitHub, a callback to capture the PEM (available only at creation time), polling or prompting to install the app on the org, and logic to detect reuse vs. lost-key scenarios ([ADR 0007](../ADRs/0007-per-role-github-apps.md)). The credential lifecycle is particularly fragile: the PEM private key is returned only once during the manifest conversion, there is no API to rotate it, and if the key is lost the app must be deleted and recreated from scratch.
+Fullsend creates one GitHub App per agent role (triage, code, review, fullsend) through the [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). This involves a local HTTP server, a browser redirect to GitHub, a callback to capture the PEM (available only at creation time), polling or prompting to install the app on the org, and logic to detect reuse vs. lost-key scenarios ([ADR 0007](../ADRs/0007-per-role-github-apps.md)). The credential lifecycle is particularly fragile: the PEM private key is returned only once during the manifest conversion, there is no API to rotate it, and if the key is lost the app must be deleted and recreated from scratch.
 
 gh-aw uses GitHub's own `GITHUB_TOKEN`, scoped per-job. The agent gets a read-only token automatically; the write job gets a scoped write token. No App creation, no PEM lifecycle, no manifest flow, no rotation concern.
 

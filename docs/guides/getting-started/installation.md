@@ -216,7 +216,7 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated agent roles to provision |
+| `--agents` | `fullsend,triage,code,review,retro,prioritize` | Comma-separated agent roles to provision |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--inference-project` | | GCP project ID for inference (Agent Platform) |
 | `--inference-region` | `global` | GCP region for inference |
@@ -475,7 +475,7 @@ Per-repo accepts all `admin install` flags except `--enroll-all` and `--enroll-n
 
 ## Custom app sets
 
-By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`, `fullsend-ai-review`). Organizations that need their own set of apps — for example, to use org-specific permissions or to register multiple app sets on the same mint — can pass `--app-set` to override the prefix.
+By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g., `fullsend-ai-fullsend`, `fullsend-ai-code`, `fullsend-ai-review`). Organizations that need their own set of apps — for example, to use org-specific permissions or to register multiple app sets on the same mint — can pass `--app-set` to override the prefix.
 
 ### Creating a custom app set
 
@@ -493,11 +493,11 @@ fullsend admin install "$ORG_NAME" \
   --app-set "$ORG_NAME"
 ```
 
-This creates apps named `{org}-fullsend`, `{org}-coder`, `{org}-review`, etc. The app set prefix is stored in the `.fullsend/config.yaml` slug mappings, so subsequent operations (permission checks, PEM recovery) find the correct apps automatically.
+This creates apps named `{org}-fullsend`, `{org}-code`, `{org}-review`, etc. The app set prefix is stored in the `.fullsend/config.yaml` slug mappings, so subsequent operations (permission checks, PEM recovery) find the correct apps automatically.
 
 ### Using existing public apps from another app set
 
-When a mint already has public apps registered under a custom app set (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`), additional orgs installing those apps must pass the same `--app-set` so the CLI resolves the correct slugs:
+When a mint already has public apps registered under a custom app set (e.g., `fullsend-ai-fullsend`, `fullsend-ai-code`), additional orgs installing those apps must pass the same `--app-set` so the CLI resolves the correct slugs:
 
 ```bash
 export NEW_ORG="<new-github-org>"
@@ -514,7 +514,7 @@ fullsend admin install "$NEW_ORG" \
 
 The installer detects that the public apps are already installed in the org (matched by app ID from the mint's `ROLE_APP_IDS`), copies PEM secrets to the new org's scoped key, and skips app creation. The `--app-set` value ensures convention-based slug lookups match the existing apps.
 
-> **Migration note:** Prior to this change, the default app set was `fullsend`, producing slugs like `fullsend-coder`. The default is now `fullsend-ai`, producing `fullsend-ai-coder`. Existing installations that used the old default should pass `--app-set fullsend` explicitly to continue matching their existing GitHub App slugs, or re-install with the new default.
+> **Migration note:** Prior to this change, the default app set was `fullsend`, producing slugs like `fullsend-code`. The default is now `fullsend-ai`, producing `fullsend-ai-code`. Existing installations that used the old default should pass `--app-set fullsend` explicitly to continue matching their existing GitHub App slugs, or re-install with the new default.
 
 ### Uninstalling a custom app set
 
