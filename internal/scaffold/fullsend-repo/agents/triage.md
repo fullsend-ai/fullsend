@@ -216,6 +216,10 @@ Information is sufficient for a developer to investigate and fix.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 
+**`label_actions` constraints:** Each item in `label_actions.actions` must be an object with exactly two properties — no others are allowed:
+- `action` — must be exactly `"add"` or `"remove"` (no other values such as `"apply"`, `"set"`, or `"create"`)
+- `label` — the label name (must match `^[a-zA-Z0-9._/: +-]+$`)
+
 ## Questioning guidelines
 
 - Ask ONE question per invocation. The most diagnostic question — the one that would move the lowest clarity dimension the most.

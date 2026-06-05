@@ -213,6 +213,28 @@ run_test_custom_filename_output "nested-additional-property-shows-allowed" \
   "false" \
   "allowed properties: actionable, category, description, file, line, remediation, severity"
 
+# --- label_actions.actions edge cases (issue #1931) ---
+
+run_test "valid-label-actions" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete.","label_actions":{"reason":"Applies area label.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "true"
+
+run_test "label-actions-invalid-action-enum" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete.","label_actions":{"reason":"Applies area label.","actions":[{"action":"apply","label":"area/api"}]}}' \
+  "false"
+
+run_test "label-actions-extra-properties-on-item" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete.","label_actions":{"reason":"Applies area label.","actions":[{"action":"add","label":"area/api","reason":"matches component"}]}}' \
+  "false"
+
+run_test "label-actions-missing-label" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete.","label_actions":{"reason":"Applies area label.","actions":[{"action":"add"}]}}' \
+  "false"
+
+run_test "label-actions-empty-label" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete.","label_actions":{"reason":"Applies area label.","actions":[{"action":"add","label":""}]}}' \
+  "false"
+
 # --- Structural failures ---
 
 run_test "missing-action" \
