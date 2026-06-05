@@ -1445,6 +1445,11 @@ func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string,
 	return nil
 }
 
+// DeleteIssueComment deletes an issue comment by its numeric ID.
+func (c *LiveClient) DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error {
+	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID))
+}
+
 // MinimizeComment minimizes (hides) an issue or review comment via the
 // GitHub GraphQL API. The caller provides the GraphQL node ID directly
 // (available in IssueComment.NodeID and PullRequestReview.NodeID).
