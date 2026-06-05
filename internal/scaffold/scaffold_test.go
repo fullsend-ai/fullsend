@@ -109,6 +109,8 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	content, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
 	require.NoError(t, err)
 	s := string(content)
+	// yamllint document-start rule requires --- at the top
+	assert.True(t, strings.HasPrefix(s, "---\n"), "shim workflow must start with YAML document start marker")
 	// ADR 34: shim has 2 jobs (dispatch + stop-fix), not per-stage jobs
 	assert.Contains(t, s, "dispatch:")
 	assert.Contains(t, s, "stop-fix:")
