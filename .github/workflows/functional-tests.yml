@@ -42,7 +42,8 @@ jobs:
         uses: astral-sh/setup-uv@v7.6.0
 
       - name: Install agent-eval-harness
-        run: uv pip install --system 'agent-eval-harness[anthropic] @ git+https://github.com/ralphbean/agent-eval-harness.git@worktree-execution-hooks'
+        # Installs from the git submodule checked out above (submodules: true)
+        run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
 
       - name: Install yq
         run: |
