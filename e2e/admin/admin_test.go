@@ -577,12 +577,20 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
+	// Record the time before disabling so we can find the workflow run.
+	disableTime := time.Now()
+
 	// Disable the test repo via CLI (updates config.yaml). The CLI now
 	// watches the repo-maintenance workflow to completion before returning,
 	// so the removal PR should already exist when this returns.
 	output := runCLI(t, env.binary, env.token,
 		"admin", "disable", "repos", env.org, testRepo, "--yolo")
 	t.Logf("Disable repos output:\n%s", output)
+
+	// Fetch and log repo-maintenance workflow output for debugging (#1960).
+	// The CLI dispatches repo-maintenance when disabling repos — capture its
+	// logs regardless of outcome so we can see what it did.
+	logRepoMaintenanceRun(t, env, disableTime)
 
 	// The CLI waited for repo-maintenance, so the removal PR should exist.
 	// A few retries handle GitHub eventual consistency.
@@ -616,4 +624,100 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	_, err = env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
 	require.True(t, forge.IsNotFound(err), "shim should be removed from %s after unenrollment", testRepo)
 	t.Log("Verified shim is gone")
+}
+
+// logRepoMaintenanceRun finds the most recent repo-maintenance workflow run
+// created after the given time, waits for it to complete if still in progress,
+// and logs its output (status, conclusion, logs, artifacts). This provides
+// visibility into what the workflow did so that failures in the unenrollment
+// flow can be diagnosed from e2e test output alone.
+func logRepoMaintenanceRun(t *testing.T, env *e2eEnv, afterTime time.Time) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Find the repo-maintenance run dispatched after afterTime.
+	var maintenanceRun *forge.WorkflowRun
+	for attempt := 0; attempt < 6; attempt++ {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		runs, err := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, "repo-maintenance.yml")
+		if err != nil {
+			t.Logf("[repo-maintenance] Attempt %d: error listing runs: %v", attempt+1, err)
+			continue
+		}
+		for _, run := range runs {
+			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if runTime.Before(afterTime) {
+				continue
+			}
+			r := run
+			maintenanceRun = &r
+			break
+		}
+		if maintenanceRun != nil {
+			break
+		}
+		t.Logf("[repo-maintenance] Attempt %d: no run found after %s", attempt+1, afterTime.Format(time.RFC3339))
+	}
+
+	if maintenanceRun == nil {
+		t.Log("[repo-maintenance] WARNING: no repo-maintenance workflow run found — cannot capture logs")
+		return
+	}
+
+	t.Logf("[repo-maintenance] Found run %d (status: %s, conclusion: %s, created: %s)",
+		maintenanceRun.ID, maintenanceRun.Status, maintenanceRun.Conclusion, maintenanceRun.CreatedAt)
+
+	// Wait for completion if still in progress (up to 3 minutes).
+	if maintenanceRun.Status != "completed" {
+		t.Logf("[repo-maintenance] Run %d still in progress, waiting for completion...", maintenanceRun.ID)
+		deadline := time.Now().Add(3 * time.Minute)
+		for time.Now().Before(deadline) {
+			time.Sleep(10 * time.Second)
+			run, err := env.client.GetWorkflowRun(ctx, env.org, forge.ConfigRepoName, maintenanceRun.ID)
+			if err != nil {
+				t.Logf("[repo-maintenance] Error polling run: %v", err)
+				continue
+			}
+			t.Logf("[repo-maintenance] Run %d: status=%s conclusion=%s", run.ID, run.Status, run.Conclusion)
+			if run.Status == "completed" {
+				maintenanceRun = run
+				break
+			}
+		}
+		if maintenanceRun.Status != "completed" {
+			t.Log("[repo-maintenance] WARNING: run did not complete within 3 minutes")
+		}
+	}
+
+	runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d",
+		env.org, forge.ConfigRepoName, maintenanceRun.ID)
+	t.Logf("[repo-maintenance] Run URL: %s", runURL)
+	fmt.Fprintf(os.Stderr, "::notice::repo-maintenance run %d: conclusion=%s url=%s\n",
+		maintenanceRun.ID, maintenanceRun.Conclusion, runURL)
+
+	// Download and log workflow logs.
+	logs, err := env.client.GetWorkflowRunLogs(ctx, env.org, forge.ConfigRepoName, maintenanceRun.ID)
+	if err != nil {
+		t.Logf("[repo-maintenance] Could not fetch run logs: %v", err)
+	} else {
+		debugDir := filepath.Join(env.screenshotDir, fmt.Sprintf("repo-maintenance-run-%d", maintenanceRun.ID))
+		_ = os.MkdirAll(debugDir, 0o755)
+		logPath := filepath.Join(debugDir, "workflow-logs.txt")
+		if writeErr := os.WriteFile(logPath, []byte(logs), 0o644); writeErr != nil {
+			t.Logf("[repo-maintenance] Could not write logs to %s: %v", logPath, writeErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "::notice file=%s::repo-maintenance run %d workflow logs saved\n", logPath, maintenanceRun.ID)
+		}
+		t.Logf("[repo-maintenance] Workflow run logs:\n%s", logs)
+	}
+
+	// Download run artifacts.
+	debugDir := filepath.Join(env.screenshotDir, fmt.Sprintf("repo-maintenance-run-%d", maintenanceRun.ID))
+	_ = os.MkdirAll(debugDir, 0o755)
+	downloadRunArtifacts(ctx, env.token, env.org, forge.ConfigRepoName, maintenanceRun.ID, debugDir, t)
 }
