@@ -32,6 +32,7 @@ repos:
 EOF
 
 cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'EOF'
+# --- fullsend managed below - do not edit ---
 fresh shim template
 EOF
 
@@ -39,8 +40,10 @@ cat > "${MOCK_BIN}/base64" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "-w0" ]]; then
   shift
+  /usr/bin/base64 "$@" | tr -d '\r\n'
+else
+  /usr/bin/base64 "$@"
 fi
-/usr/bin/base64 "$@" | tr -d '\r\n'
 EOF
 chmod +x "${MOCK_BIN}/base64"
 
@@ -132,11 +135,15 @@ while [[ \$# -gt 0 ]]; do
 done
 
 # Capture commit messages from stdin for the git/commits endpoint.
+# Also capture blob content so header-preservation tests can verify it.
 input_data=""
 if [[ "\$has_input" == "true" ]]; then
   input_data=\$(cat)
   if [[ "\$endpoint" == */git/commits ]]; then
     printf '%s\0' "\$input_data" >> "${COMMIT_MSGS_LOG}"
+  elif [[ "\$endpoint" == *"/git/blobs" ]]; then
+    blob_repo=\$(printf '%s' "\$endpoint" | cut -d/ -f3)
+    printf '%s' "\$input_data" > "${TMPDIR}/blob-input-\${blob_repo}.json"
   fi
 fi
 
@@ -149,8 +156,8 @@ case "\$endpoint" in
     rc=1
     ;;
   repos/test-org/test-repo/contents/*)
-    # test-repo: stale shim exists on default branch.
-    json='{"content":"c3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"file-sha"}'
+    # Remote shim with user license header + sentinel + stale managed content.
+    json='{"content":"IyBDb3B5cmlnaHQgMjAyNiBDb25mb3JtYQojIFNQRFgtTGljZW5zZS1JZGVudGlmaWVyOiBBcGFjaGUtMi4wCiMgLS0tIGZ1bGxzZW5kIG1hbmFnZWQgYmVsb3cgLSBkbyBub3QgZWRpdCAtLS0Kc3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"file-sha"}'
     ;;
   repos/test-org/removed-repo/contents/*)
     if [[ "\$method" == "DELETE" ]]; then
@@ -315,3 +322,424 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "PASS: commit messages include a non-trivial body (≤72 chars/line)"
+
+# Verify the blob content preserves the user header.
+if [ ! -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: no blob input captured"
+  exit 1
+fi
+
+BLOB_B64=$(jq -r '.content' "${TMPDIR}/blob-input-test-repo.json")
+BLOB_DECODED=$(printf '%s' "$BLOB_B64" | /usr/bin/base64 -d)
+
+if ! printf '%s' "$BLOB_DECODED" | head -1 | grep -q "^# Copyright 2026 Conforma"; then
+  echo "FAIL: user license header was not preserved in blob content"
+  echo "Got:"
+  printf '%s\n' "$BLOB_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$BLOB_DECODED" | grep -q "^# SPDX-License-Identifier: Apache-2.0"; then
+  echo "FAIL: SPDX header was not preserved in blob content"
+  echo "Got:"
+  printf '%s\n' "$BLOB_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$BLOB_DECODED" | grep -q "^# --- fullsend managed below - do not edit ---"; then
+  echo "FAIL: sentinel line missing from blob content"
+  echo "Got:"
+  printf '%s\n' "$BLOB_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$BLOB_DECODED" | grep -q "fresh shim template"; then
+  echo "FAIL: managed content was not updated to fresh template"
+  echo "Got:"
+  printf '%s\n' "$BLOB_DECODED"
+  exit 1
+fi
+
+echo "PASS: user license header preserved across shim update"
+
+# ===========================
+# Test 2: up-to-date shim with user header is not flagged as stale
+# ===========================
+
+# Reset state for test 2.
+rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
+
+# Generate the expected managed content (template with sentinel).
+UPTODATE_MANAGED=$(cat "${CONFIG_DIR}/templates/shim-workflow-call.yaml")
+UPTODATE_REMOTE=$(printf '# Copyright 2026 Conforma\n# SPDX-License-Identifier: Apache-2.0\n%s\n' "$UPTODATE_MANAGED")
+UPTODATE_B64=$(printf '%s' "$UPTODATE_REMOTE" | /usr/bin/base64 | tr -d '\r\n')
+
+# Create a new gh mock that returns the up-to-date content.
+cat > "${MOCK_BIN}/gh" <<EOF2
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
+    json='{"content":"${UPTODATE_B64}","sha":"file-sha"}'
+    ;;
+  repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF2
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2.log" 2>&1 || true
+
+if grep -q "shim is stale" "${TMPDIR}/stdout2.log"; then
+  echo "FAIL: up-to-date shim with user header was flagged as stale"
+  cat "${TMPDIR}/stdout2.log"
+  exit 1
+fi
+
+if ! grep -q "already enrolled (shim up to date)" "${TMPDIR}/stdout2.log"; then
+  echo "FAIL: up-to-date shim with user header was not recognized as current"
+  cat "${TMPDIR}/stdout2.log"
+  exit 1
+fi
+
+# Verify no blob was created (no update was needed).
+if [ -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: blob was created for up-to-date shim"
+  exit 1
+fi
+
+echo "PASS: up-to-date shim with user header not flagged as stale"
+
+# ===========================
+# Test 3: pre-sentinel shim migration does not duplicate content
+# ===========================
+
+# Reset state for test 3.
+rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
+
+# Create a new gh mock that returns a pre-sentinel shim (no sentinel line).
+cat > "${MOCK_BIN}/gh" <<EOF3
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
+  for arg in "\$@"; do
+    if [[ "\$arg" == "fullsend/onboard" ]]; then
+      echo "https://github.com/test-org/test-repo/pull/42"
+    fi
+  done
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+has_input=false
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
+  cat > "${TMPDIR}/blob-input-test-repo.json"
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
+    # Pre-sentinel shim: no sentinel line present.
+    json='{"content":"c3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"file-sha"}'
+    ;;
+  repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  repos/test-org/test-repo/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/test-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/test-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/test-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/test-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/test-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/test-repo/git/refs/heads/fullsend/onboard)
+    rc=0
+    ;;
+  repos/test-org/test-repo/git/refs/heads/fullsend/offboard)
+    rc=0
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF3
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout3.log" 2>&1 || true
+
+if ! grep -q "shim is stale" "${TMPDIR}/stdout3.log"; then
+  echo "FAIL: pre-sentinel shim was not flagged as stale"
+  cat "${TMPDIR}/stdout3.log"
+  exit 1
+fi
+
+if [ ! -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: no blob created for pre-sentinel shim update"
+  exit 1
+fi
+
+BLOB3_B64=$(jq -r '.content' "${TMPDIR}/blob-input-test-repo.json")
+BLOB3_DECODED=$(printf '%s' "$BLOB3_B64" | /usr/bin/base64 -d)
+
+# Verify the blob contains the sentinel and fresh template.
+if ! printf '%s' "$BLOB3_DECODED" | grep -q "^# --- fullsend managed below - do not edit ---"; then
+  echo "FAIL: sentinel missing from pre-sentinel shim update"
+  echo "Got:"
+  printf '%s\n' "$BLOB3_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$BLOB3_DECODED" | grep -q "fresh shim template"; then
+  echo "FAIL: fresh template missing from pre-sentinel shim update"
+  echo "Got:"
+  printf '%s\n' "$BLOB3_DECODED"
+  exit 1
+fi
+
+# Verify the old content is NOT prepended (no duplication).
+if printf '%s' "$BLOB3_DECODED" | grep -q "stale shim template"; then
+  echo "FAIL: old shim content was duplicated in pre-sentinel migration"
+  echo "Got:"
+  printf '%s\n' "$BLOB3_DECODED"
+  exit 1
+fi
+
+echo "PASS: pre-sentinel shim migration produces clean template without duplication"
+
+# ===========================
+# Test 4: non-comment YAML above sentinel is rejected (content-injection guard)
+# ===========================
+
+# Reset state for test 4.
+rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
+
+# Create a gh mock with a remote shim containing non-comment YAML above sentinel.
+cat > "${MOCK_BIN}/gh" <<EOF4
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
+  for arg in "\$@"; do
+    if [[ "\$arg" == "fullsend/onboard" ]]; then
+      echo "https://github.com/test-org/test-repo/pull/99"
+    fi
+  done
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+has_input=false
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
+  cat > "${TMPDIR}/blob-input-test-repo.json"
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
+    # Remote shim with non-comment YAML ("name: injected-workflow") above sentinel.
+    json='{"content":"bmFtZTogaW5qZWN0ZWQtd29ya2Zsb3cKIyAtLS0gZnVsbHNlbmQgbWFuYWdlZCBiZWxvdyAtIGRvIG5vdCBlZGl0IC0tLQpzdGFsZSBzaGltIHRlbXBsYXRlCg==","sha":"file-sha"}'
+    ;;
+  repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  repos/test-org/test-repo/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/test-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/test-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/test-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/test-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/test-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/test-repo/git/refs/heads/fullsend/onboard)
+    rc=0
+    ;;
+  repos/test-org/test-repo/git/refs/heads/fullsend/offboard)
+    rc=0
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF4
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout4.log" 2>&1 || true
+
+if [ ! -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: no blob created for injection-guarded shim update"
+  cat "${TMPDIR}/stdout4.log"
+  exit 1
+fi
+
+BLOB4_B64=$(jq -r '.content' "${TMPDIR}/blob-input-test-repo.json")
+BLOB4_DECODED=$(printf '%s' "$BLOB4_B64" | /usr/bin/base64 -d)
+
+# Verify the injected content was NOT preserved.
+if printf '%s' "$BLOB4_DECODED" | grep -q "injected-workflow"; then
+  echo "FAIL: non-comment YAML above sentinel was preserved (injection not blocked)"
+  echo "Got:"
+  printf '%s\n' "$BLOB4_DECODED"
+  exit 1
+fi
+
+# Verify the blob still contains sentinel and fresh template.
+if ! printf '%s' "$BLOB4_DECODED" | grep -q "^# --- fullsend managed below - do not edit ---"; then
+  echo "FAIL: sentinel missing from injection-guarded blob"
+  echo "Got:"
+  printf '%s\n' "$BLOB4_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$BLOB4_DECODED" | grep -q "fresh shim template"; then
+  echo "FAIL: fresh template missing from injection-guarded blob"
+  echo "Got:"
+  printf '%s\n' "$BLOB4_DECODED"
+  exit 1
+fi
+
+# Verify the warning log was emitted.
+if ! grep -q "::warning::test-repo: non-comment content above sentinel was rejected" "${TMPDIR}/stdout4.log"; then
+  echo "FAIL: no warning log emitted when injection guard rejected header"
+  cat "${TMPDIR}/stdout4.log"
+  exit 1
+fi
+
+echo "PASS: non-comment YAML above sentinel rejected by content-injection guard"

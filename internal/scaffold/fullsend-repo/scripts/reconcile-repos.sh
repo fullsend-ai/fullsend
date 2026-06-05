@@ -26,6 +26,7 @@ if ! command -v yq &>/dev/null; then
 fi
 SHIM_TEMPLATE="$CONFIG_DIR/templates/shim-workflow-call.yaml"
 SHIM_PATH=".github/workflows/fullsend.yaml"
+SENTINEL="# --- fullsend managed below - do not edit ---"
 REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
 
 ENROLL_BRANCH="fullsend/onboard"
@@ -76,6 +77,90 @@ fi
 shim_content_b64() {
   sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE" | base64 -w0
 }
+
+# extract_managed_content reads stdin and prints everything from the sentinel
+# line onward (the fullsend-managed portion). If no sentinel is found, prints
+# nothing (caller handles this case).
+extract_managed_content() {
+  awk -v sentinel="$SENTINEL" '
+    found { print; next }
+    $0 == sentinel { found=1; print }
+  '
+}
+
+# extract_user_header reads stdin and prints everything before the sentinel
+# line (the user-owned portion, e.g. license headers). Prints nothing if
+# there is no content before the sentinel. If no sentinel is found, prints
+# the entire input — callers must check for sentinel presence first.
+extract_user_header() {
+  awk -v sentinel="$SENTINEL" '
+    $0 == sentinel { exit }
+    { print }
+  '
+}
+
+# shim_with_header_b64 builds the final shim content by prepending any
+# user-owned header from the existing remote file onto the template.
+# Args: $1 = base64-encoded remote file content (may be empty for new files)
+#       $2 = repo name (for diagnostic messages)
+# Prints: base64-encoded final content
+shim_with_header_b64() {
+  local remote_b64="$1"
+  local repo="${2:-unknown}"
+  local template
+  template=$(sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE")
+
+  if [ -z "$remote_b64" ]; then
+    printf '%s\n' "$template" | base64 -w0
+    return
+  fi
+
+  # Only extract a header if the remote file contains the sentinel.
+  # Pre-sentinel shims have no user header to preserve.
+  local remote_raw
+  remote_raw=$(printf '%s' "$remote_b64" | base64 -d | tr -d '\r')
+  if ! printf '%s\n' "$remote_raw" | grep -qF "$SENTINEL"; then
+    printf '%s\n' "$template" | base64 -w0
+    return
+  fi
+
+  local header
+  header=$(printf '%s\n' "$remote_raw" | extract_user_header)
+
+  # Reject non-comment YAML that could inject keys (injection guard first,
+  # then blank-only check — order matters so the warning fires on injected content).
+  if [ -n "$header" ] && printf '%s\n' "$header" | grep -qvE '^[[:space:]]*(#|$)'; then
+    echo "::warning::$repo: non-comment content above sentinel was rejected — only YAML comments are preserved" >&2
+    header=""
+  elif [ -n "$header" ] && ! printf '%s\n' "$header" | grep -qE '^[[:space:]]*#'; then
+    header=""
+  fi
+
+  if [ -n "$header" ]; then
+    printf '%s\n%s\n' "$header" "$template" | base64 -w0
+  else
+    printf '%s\n' "$template" | base64 -w0
+  fi
+}
+
+# managed_content_b64 extracts the fullsend-managed portion from raw content.
+# If no sentinel is found, returns the full content (pre-sentinel shim).
+# Args: $1 = base64-encoded file content
+# Prints: base64-encoded managed portion
+managed_content_b64() {
+  local raw
+  raw=$(printf '%s' "$1" | base64 -d | tr -d '\r')
+  local managed
+  managed=$(printf '%s\n' "$raw" | extract_managed_content)
+
+  if [ -z "$managed" ]; then
+    # No sentinel found — treat entire content as managed (pre-sentinel shim).
+    printf '%s' "$1"
+  else
+    printf '%s\n' "$managed" | base64 -w0
+  fi
+}
+
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
 PER_REPO_GUARD_VAR="FULLSEND_PER_REPO_INSTALL"
 
@@ -314,20 +399,25 @@ if [ -n "$ENABLED_REPOS" ]; then
     # Fetch content and SHA in one call to avoid race between reads.
     REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
     if [ -n "$REMOTE_CONTENT" ]; then
-      # File exists — compare content against current template.
+      # File exists — compare only the managed portion (from sentinel onward)
+      # so user-added headers (e.g. license) do not trigger false drift.
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      if [ "$REMOTE_B64" = "$EXPECTED_B64" ]; then
+      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
+      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
 
       # Shim is stale — update via PR to respect branch protection.
+      # Preserve any user-owned content above the sentinel line.
       echo "⟳ $REPO enrolled but shim is stale — creating update PR"
 
-      if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$EXPECTED_B64" "$UPDATE_COMMIT_MSG"; then
+      FINAL_B64=$(shim_with_header_b64 "$REMOTE_B64" "$REPO")
+      if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$FINAL_B64" "$UPDATE_COMMIT_MSG"; then
         FAILED=$((FAILED + 1))
         continue
       fi
