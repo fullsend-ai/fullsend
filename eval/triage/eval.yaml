@@ -118,6 +118,42 @@ judges:
           return False, f"Missing labels: {missing} (actual: {actual})"
       return True, f"All required labels present: {required}"
 
+  - name: max_turns
+    description: Agent must complete within the declared turn budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("num_turns")
+      if actual is None:
+          return False, "num_turns not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_turns")
+      if limit is None:
+          return False, "max_turns not declared in annotations.yaml"
+      if int(actual) > int(limit):
+          return False, f"Exceeded max_turns: {actual} > {limit}"
+      return True, f"Turns OK: {actual} <= {limit}"
+
+  - name: max_cost
+    description: Agent must complete within the declared cost budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("total_cost_usd")
+      if actual is None:
+          return False, "total_cost_usd not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_cost_usd")
+      if limit is None:
+          return False, "max_cost_usd not declared in annotations.yaml"
+      if float(actual) > float(limit):
+          return False, f"Exceeded max_cost_usd: {actual} > {limit}"
+      return True, f"Cost OK: {actual} <= {limit}"
+
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
@@ -128,3 +164,7 @@ thresholds:
     min_mean: 2.5
   required_labels:
     min_pass_rate: 0.9
+  max_turns:
+    min_pass_rate: 1.0
+  max_cost:
+    min_pass_rate: 1.0

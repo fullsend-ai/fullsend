@@ -150,14 +150,11 @@ max_turns: 15
 max_cost_usd: 2.00
 ```
 
-These are mandatory — the orchestrator validates their presence before running
-each case and rejects cases that omit them. This is a test authoring error, not
-a test failure.
-
-After each case runs, the orchestrator compares the agent's actual metrics
-(from `metrics.json`, written by `fullsend run`) against these thresholds.
-A case that passes all quality judges but exceeds a behavioral threshold is a
-failure.
+These are mandatory — `make lint-eval-cases` validates their presence, and the
+`max_turns` and `max_cost` deterministic judges in `eval.yaml` compare the
+agent's actual metrics (from `metrics.json`, written by `fullsend run`) against
+these thresholds. A case that passes all quality judges but exceeds a behavioral
+threshold is a failure.
 
 ### Why these two metrics
 

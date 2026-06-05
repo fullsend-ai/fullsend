@@ -85,31 +85,6 @@ echo "Output:  ${RUN_DIR}"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Phase 0: Pre-flight — verify behavioral thresholds are declared
-# ---------------------------------------------------------------------------
-ERRORS=0
-for case_dir in "$CASES_DIR"/*/; do
-  case_name=$(basename "$case_dir")
-  annotations="$case_dir/annotations.yaml"
-  if [[ ! -f "$annotations" ]]; then
-    echo "FAIL: ${case_name}: annotations.yaml not found"
-    ERRORS=$((ERRORS + 1))
-    continue
-  fi
-  max_turns=$(yq -r '.max_turns // ""' "$annotations")
-  max_cost=$(yq -r '.max_cost_usd // ""' "$annotations")
-  if [[ -z "$max_turns" || -z "$max_cost" ]]; then
-    echo "FAIL: ${case_name}: annotations.yaml missing max_turns and/or max_cost_usd"
-    ERRORS=$((ERRORS + 1))
-  fi
-done
-
-if [[ $ERRORS -gt 0 ]]; then
-  echo "ERROR: $ERRORS pre-flight failures" >&2
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
 # Phase 1: Create workspaces
 # ---------------------------------------------------------------------------
 echo "=== Creating workspaces ==="
@@ -148,57 +123,7 @@ if [[ -d "$WORKSPACE_CASES" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 3: Check behavioral thresholds
-# ---------------------------------------------------------------------------
-echo ""
-echo "=== Behavioral Thresholds ==="
-THRESHOLD_ERRORS=0
-for case_dir in "$CASES_DIR"/*/; do
-  case_name=$(basename "$case_dir")
-  annotations="$case_dir/annotations.yaml"
-  metrics_file="$RUN_DIR/cases/${case_name}/output/metrics.json"
-
-  max_turns=$(yq -r '.max_turns' "$annotations")
-  max_cost=$(yq -r '.max_cost_usd' "$annotations")
-
-  if [[ ! -f "$metrics_file" ]]; then
-    echo "  ${case_name}: FAIL — metrics.json not found, cannot verify thresholds"
-    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
-    continue
-  fi
-
-  actual_turns=$(jq -r '.num_turns' "$metrics_file")
-  actual_cost=$(jq -r '.total_cost_usd' "$metrics_file")
-
-  if ! [[ "$actual_turns" =~ ^[0-9]+$ ]]; then
-    echo "  ${case_name}: FAIL — invalid num_turns value: $actual_turns"
-    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
-    continue
-  fi
-  if ! [[ "$actual_cost" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-    echo "  ${case_name}: FAIL — invalid total_cost_usd value: $actual_cost"
-    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
-    continue
-  fi
-
-  if [[ "$actual_turns" -le "$max_turns" ]] 2>/dev/null; then
-    printf "  %-30s max_turns     %-4s  actual  %-4s  PASS\n" "$case_name" "$max_turns" "$actual_turns"
-  else
-    printf "  %-30s max_turns     %-4s  actual  %-4s  FAIL\n" "$case_name" "$max_turns" "$actual_turns"
-    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
-  fi
-
-  cost_ok=$(awk "BEGIN {print ($actual_cost <= $max_cost) ? 1 : 0}")
-  if [[ "$cost_ok" -eq 1 ]]; then
-    printf "  %-30s max_cost_usd  %-6s  actual  %-6s  PASS\n" "$case_name" "$max_cost" "$actual_cost"
-  else
-    printf "  %-30s max_cost_usd  %-6s  actual  %-6s  FAIL\n" "$case_name" "$max_cost" "$actual_cost"
-    THRESHOLD_ERRORS=$((THRESHOLD_ERRORS + 1))
-  fi
-done
-
-# ---------------------------------------------------------------------------
-# Phase 4: Score — use agent-eval-harness score.py for judging
+# Phase 3: Score — use agent-eval-harness score.py for judging
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Scoring ==="
@@ -213,8 +138,4 @@ AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
     --config "$EVAL_YAML"
 
 echo ""
-if [[ $THRESHOLD_ERRORS -gt 0 ]]; then
-  echo "=== RESULT: $THRESHOLD_ERRORS behavioral threshold failures ==="
-  exit 1
-fi
-echo "=== RESULT: All checks passed ==="
+echo "=== RESULT: All phases complete ==="
