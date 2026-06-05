@@ -8,11 +8,13 @@
 # Checks:
 #   - Every case directory has annotations.yaml
 #   - Every annotations.yaml declares max_turns and max_cost_usd
+#   - eval.yaml declares max_turns and max_cost judges
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
 EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 CASES_DIR="${EVAL_DIR}/${AGENT}/cases"
+EVAL_YAML="${EVAL_DIR}/${AGENT}/eval.yaml"
 
 if [[ ! -d "$CASES_DIR" ]]; then
   echo "ERROR: cases directory not found: $CASES_DIR" >&2
@@ -20,6 +22,21 @@ if [[ ! -d "$CASES_DIR" ]]; then
 fi
 
 ERRORS=0
+
+# Check that eval.yaml has the required behavioral judges
+if [[ ! -f "$EVAL_YAML" ]]; then
+  echo "FAIL: eval.yaml not found: $EVAL_YAML"
+  ERRORS=$((ERRORS + 1))
+else
+  for judge in max_turns max_cost; do
+    if ! yq -e ".judges[] | select(.name == \"${judge}\")" "$EVAL_YAML" >/dev/null 2>&1; then
+      echo "FAIL: eval.yaml missing required judge: ${judge}"
+      ERRORS=$((ERRORS + 1))
+    fi
+  done
+fi
+
+# Check that every case has annotations with thresholds
 for case_dir in "$CASES_DIR"/*/; do
   case_name=$(basename "$case_dir")
   annotations="$case_dir/annotations.yaml"
