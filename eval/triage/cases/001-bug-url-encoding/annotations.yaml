@@ -6,7 +6,7 @@ labels:
     - ready-to-code
     - bug
 
-max_turns: 15
+max_turns: 30
 max_cost_usd: 2.00
 
 # Guidance for the LLM judge — what a good triage looks like for this case.
