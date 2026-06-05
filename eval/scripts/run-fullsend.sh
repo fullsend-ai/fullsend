@@ -82,12 +82,14 @@ fi
 # Remove env file to prevent secrets from being uploaded as artifacts
 rm -f "$ENV_FILE"
 
-# Copy metrics.json to the standard output location
-mkdir -p "$OUTPUT_DIR/output"
-METRICS_FILE=$(find "$OUTPUT_DIR" -maxdepth 3 -name metrics.json -not -path "*/output/*" 2>/dev/null | head -1)
+# Copy metrics.json to the output root so score.py can find it.
+# OUTPUT_DIR is {output_dir} from the harness, which is workspace/output.
+# score.py loads files relative to case_dir/output, so metrics.json needs
+# to be at OUTPUT_DIR/metrics.json (not OUTPUT_DIR/output/metrics.json).
+METRICS_FILE=$(find "$OUTPUT_DIR" -maxdepth 3 -name metrics.json -not -path "$OUTPUT_DIR/metrics.json" 2>/dev/null | head -1)
 if [[ -n "$METRICS_FILE" ]]; then
-  cp "$METRICS_FILE" "$OUTPUT_DIR/output/metrics.json"
-  echo "Copied metrics -> $OUTPUT_DIR/output/metrics.json"
+  cp "$METRICS_FILE" "$OUTPUT_DIR/metrics.json"
+  echo "Copied metrics -> $OUTPUT_DIR/metrics.json"
 fi
 
 exit "$rc"
