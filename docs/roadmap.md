@@ -75,9 +75,9 @@ Problems we are actively thinking about but not yet building. These are informed
 
 ### GitLab support
 
-GitHub is the starting point, not the boundary. GitLab support requires solving webhook-to-pipeline translation, MR-event security models, and forge interface abstraction. The architectural groundwork is laid in [ADR-0028](ADRs/0028-gitlab-support.md).
+GitHub is the starting point, not the boundary. The architectural approach is decided: a webhook bridge Cloud Function for event translation, GitLab OIDC integration with the token mint, and Project Access Tokens for per-role credentials ([ADR 0043](ADRs/0043-gitlab-support-via-webhook-bridge.md), supersedes ADR 0028). A phased implementation plan covers forge interface preparation, GitLab forge client, bridge function, mint extension, CI/CD templates, and CLI integration ([implementation details](plans/gitlab-support.md)). Implementation has not started.
 
-- Related: [gitlab-implementation](problems/gitlab-implementation.md)
+- Related: [gitlab-support](plans/gitlab-support.md)
 
 ### Kubernetes and OpenShift execution
 

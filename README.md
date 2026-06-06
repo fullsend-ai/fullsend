@@ -33,7 +33,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Performance Verification](docs/problems/performance-verification.md) — Catching agent-introduced performance regressions before they reach production
   - [Production Feedback](docs/problems/production-feedback.md) — How platform execution signals feed back into what agents work on and how they assess risk
   - [Testing the Agents](docs/problems/testing-agents.md) — CI for prompts: regression testing, eval frameworks, and behavioral verification for agent instructions
-  - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for GitLab support: webhook security, dispatch pipelines, forge interface evolution
+  - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for the original ADR 0028 approach (superseded)
   - [Operational Observability](docs/problems/operational-observability.md) — How do the humans operating an autonomous software factory understand what it is doing, debug it when it goes wrong, and improve it over time?
   - [Adaptive Agent Selection](docs/problems/adaptive-agent-selection.md) — Learning which agent/team/workflow configurations work best for which problem classes, using evolutionary algorithms and Thompson Sampling
   - [Platform Nativeness](docs/problems/platform-nativeness.md) — When the platform you automate is also the one you build on: which problems are inherent vs. self-inflicted
@@ -47,6 +47,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Agent Execution Environment](docs/plans/agent-execution-environment.md) — Sandbox and runtime environment for agent execution
   - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
   - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
+  - [GitLab Support](docs/plans/gitlab-support.md) — Webhook bridge architecture, token mint extension, credential model, and phased rollout plan for GitLab support
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).

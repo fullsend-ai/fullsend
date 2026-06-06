@@ -38,3 +38,7 @@ The installer checks for existing app installations before creating new ones. If
 - The per-app model scales linearly with roles. Adding a new role means creating a new app — no shared credential rotation needed.
 - GitLab and Forgejo will need equivalent per-role identity mechanisms when their forge implementations are built.
 - **Permission escalation note:** The `fullsend` orchestrator app requires `workflows: write` (combined with `contents: write`) to create and update shim workflow files in enrolled repos during enrollment reconciliation. A compromise of this app's private key would allow an attacker to deploy arbitrary workflow files to all installed repos. Mitigations: (1) the app should be installed on specific repos, not org-wide; (2) the PEM is stored as a repo-level secret on `.fullsend`, limiting access to that repo's workflows; (3) per-role workflows validate `source_repo` against the config allowlist before generating tokens.
+
+## References
+
+- [ADR 0043](0043-gitlab-support-via-webhook-bridge.md): GitLab support via webhook bridge — defines GitLab's per-role identity mechanism (Project Access Tokens with per-role permission levels), which fulfills the forward-looking consequence above for the GitLab forge.

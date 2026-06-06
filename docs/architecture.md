@@ -45,6 +45,7 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
 - Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)).
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
+- GitLab support: a webhook bridge Cloud Function translates GitLab webhook events into pipeline triggers with hardcoded `ref=main`. Child pipelines authenticate to the token mint via GitLab OIDC/WIF to obtain credentials. Project Access Tokens provide per-role credentials (replacing GitHub Apps). Defense-in-depth: protected CI/CD variables, per-project webhook secrets, payload validation ([ADR 0043](ADRs/0043-gitlab-support-via-webhook-bridge.md)).
 
 **Open questions:**
 
@@ -127,7 +128,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow?
+- ~~How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow?~~ GitLab: decided in [ADR 0043](ADRs/0043-gitlab-support-via-webhook-bridge.md) — per-role Project Access Tokens with role-based permissions. Forgejo remains open.
 
 ## Agent Dispatch and Coordination Layer
 

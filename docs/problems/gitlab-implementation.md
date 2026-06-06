@@ -1,6 +1,8 @@
 # GitLab Support Implementation Details
 
-This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md).
+> **Superseded.** This document was written for [ADR 0028](../ADRs/0028-gitlab-support.md), which has been superseded by [ADR 0043](../ADRs/0043-gitlab-support-via-webhook-bridge.md). See [gitlab-support.md](../plans/gitlab-support.md) for the current implementation plan.
+
+This document contains implementation details for the original GitLab support approach in fullsend. For the current architectural decision and rationale, see [ADR 0043](../ADRs/0043-gitlab-support-via-webhook-bridge.md).
 
 ## Table of Contents
 
@@ -36,7 +38,7 @@ This document contains implementation details for GitLab support in fullsend. Fo
 2. **GitLab serverless functions**: Use GitLab's serverless integration to deploy a function that receives webhooks and translates to trigger API calls. Maintains compute-platform agnosticism (runs within GitLab infrastructure) but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Deploy a lightweight translation service (e.g., Cloud Run, Lambda) that receives webhooks and POSTs to the trigger API. This reintroduces the "hosted webhook receiver" concern from ADR-0009 but may be acceptable given GitLab's lack of a direct webhook-to-pipeline primitive.
 
-**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis.
+**Resolved**: [ADR 0043](../ADRs/0043-gitlab-support-via-webhook-bridge.md) chose option 3 (minimal bridge service deployed as a Cloud Function) as the webhook translation mechanism. See that ADR for the full rationale and the companion implementation plan at [gitlab-support.md](../plans/gitlab-support.md).
 
 **Security requirements for webhook translation intermediary**:
 
@@ -594,7 +596,7 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 2. **GitLab serverless functions**: Keeps compute within GitLab infrastructure, but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Works on GitLab Free tier, but reintroduces hosted webhook receiver concern from ADR-0009.
 
-**Status**: For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment. See ADR-0028 "Open Questions" section for full analysis of trade-offs.
+**Status**: Resolved. [ADR 0043](../ADRs/0043-gitlab-support-via-webhook-bridge.md) chose the minimal bridge service (option 3) with a GCP Cloud Function deployment model.
 
 ### Forge Interface Design Details
 
@@ -615,9 +617,10 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 
 ## References
 
-- [ADR-0028: GitLab Support Architecture](../ADRs/0028-gitlab-support.md)
-- [ADR-0005: Forge abstraction layer](../ADRs/0005-forge-abstraction-layer.md)
-- [ADR-0009: pull_request_target security model](../ADRs/0009-pull-request-target-in-shim-workflows.md)
+- [ADR 0028: GitLab Support Architecture](../ADRs/0028-gitlab-support.md) (superseded by [ADR 0043](../ADRs/0043-gitlab-support-via-webhook-bridge.md))
+- [ADR 0043: GitLab Support via Webhook Bridge](../ADRs/0043-gitlab-support-via-webhook-bridge.md)
+- [ADR 0005: Forge abstraction layer](../ADRs/0005-forge-abstraction-layer.md)
+- [ADR 0009: pull_request_target security model](../ADRs/0009-pull-request-target-in-shim-workflows.md)
 - GitLab CI/CD documentation: https://docs.gitlab.com/ee/ci/
 - GitLab Project Access Tokens: https://docs.gitlab.com/ee/user/project/settings/project_access_tokens.html
 - GitLab Pipeline Triggers: https://docs.gitlab.com/ee/ci/triggers/

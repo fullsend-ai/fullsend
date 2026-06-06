@@ -21,7 +21,7 @@ Accepted
 
 ## Context
 
-Fullsend agents execute within isolated sandboxes that enforce security boundaries: filesystem access control, network policy enforcement, and credential isolation (ADR-0017, ADR-0025). The current implementation uses OpenShell with per-agent L7 network policies and runs on GitHub Actions runners. With GitLab support proposed (ADR-0028), the execution architecture needs to work on both GitHub Actions and GitLab CI runners.
+Fullsend agents execute within isolated sandboxes that enforce security boundaries: filesystem access control, network policy enforcement, and credential isolation (ADR 0017, ADR 0025). The current implementation uses OpenShell with per-agent L7 network policies and runs on GitHub Actions runners. With GitLab support proposed (ADR 0028), the execution architecture needs to work on both GitHub Actions and GitLab CI runners.
 
 The sandbox architecture has multiple concerns that need to be resolved together:
 
@@ -31,9 +31,9 @@ The sandbox architecture has multiple concerns that need to be resolved together
 4. **Resource limits**: CPU, memory, and timeout constraints need platform-independent expression
 5. **OpenShell integration**: The sandbox runtime (OpenShell gateway + L7 policies + providers) must work in all executor environments
 
-The GitLab support design (ADR-0028) explicitly deferred this decision: "The agent execution environment is orthogonal to the CI/CD dispatch architecture. GitLab runner configuration, sandbox isolation, and compute architecture should be documented separately."
+The GitLab support design (ADR 0028) explicitly deferred this decision: "The agent execution environment is orthogonal to the CI/CD dispatch architecture. GitLab runner configuration, sandbox isolation, and compute architecture should be documented separately."
 
-The forge abstraction (ADR-0005) keeps dispatch logic platform-neutral. This ADR addresses what happens *after* the dispatch pipeline triggers an agent job: how the agent actually executes.
+The forge abstraction (ADR 0005) keeps dispatch logic platform-neutral. This ADR addresses what happens *after* the dispatch pipeline triggers an agent job: how the agent actually executes.
 
 ## Options
 
@@ -197,7 +197,7 @@ Maintaining environment parity across GitHub and GitLab is a security requiremen
 The Kubernetes SIG Agent Sandbox evaluation (agent-infrastructure.md) identified key mismatches: ephemeral task-scoped execution, poor pipeline integration, and observability gaps. Fullsend agents are triggered by SCM events (issues, PRs, reviews) and run to completion in minutes, not hours or days. This execution pattern maps naturally to CI job steps, not long-lived pod controllers. Additionally, requiring Kubernetes access from GitHub Actions workflows adds a cross-platform dependency and authentication complexity (kubeconfig management, OIDC federation) that container execution avoids. Kubernetes is an option for organizations already running it, but it should not be a mandatory dependency for the reference architecture.
 
 **Why not minimal sandbox + dynamic tools (Option 4):**
-Dynamic tool installation violates the zero-trust execution principle: agents should not perform arbitrary network operations during their run. Installing packages via `apt`, `npm`, or `pip` requires trusting upstream package repositories and running package install scripts (which can execute arbitrary code). The security model (ADR-0017, ADR-0025) prohibits agents from accessing external networks except through controlled proxies with L7 policies. Pre-baking tools into the image moves trust decisions to build time (where the image can be scanned, signed, and versioned) rather than runtime.
+Dynamic tool installation violates the zero-trust execution principle: agents should not perform arbitrary network operations during their run. Installing packages via `apt`, `npm`, or `pip` requires trusting upstream package repositories and running package install scripts (which can execute arbitrary code). The security model (ADR 0017, ADR 0025) prohibits agents from accessing external networks except through controlled proxies with L7 policies. Pre-baking tools into the image moves trust decisions to build time (where the image can be scanned, signed, and versioned) rather than runtime.
 
 ## Implementation Details
 
@@ -285,10 +285,10 @@ The implementation document is structured for iterative evolution as the sandbox
 
 ## References
 
-- ADR-0005: Forge abstraction layer (dispatch is platform-neutral, execution must also be)
-- ADR-0017: Credential isolation for sandboxed agents (zero credentials in sandbox)
-- ADR-0025: Provider credential delivery (OpenShell providers for credential injection)
-- [ADR-0028: GitLab Support Architecture](0028-gitlab-support.md) (dispatch pipelines, explicitly deferred agent execution environment)
-- ADR-0030: OpenShell sandbox interaction model (defines the agent-harness communication protocol)
+- ADR 0005: Forge abstraction layer (dispatch is platform-neutral, execution must also be)
+- ADR 0017: Credential isolation for sandboxed agents (zero credentials in sandbox)
+- ADR 0025: Provider credential delivery (OpenShell providers for credential injection)
+- [ADR 0028: GitLab Support Architecture](0028-gitlab-support.md) (dispatch pipelines, explicitly deferred agent execution environment; superseded by [ADR 0043](0043-gitlab-support-via-webhook-bridge.md))
+- ADR 0030: OpenShell sandbox interaction model (defines the agent-harness communication protocol)
 - [agent-infrastructure.md](../problems/agent-infrastructure.md): Infrastructure layer exploration, SIG Agent Sandbox evaluation
 - [OpenShell](https://github.com/NVIDIA/OpenShell): Sandbox runtime with L7 network policy enforcement
