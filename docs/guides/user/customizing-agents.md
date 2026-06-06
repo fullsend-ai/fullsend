@@ -199,7 +199,8 @@ Each agent role has its own identity, permissions, and purpose:
 │                                                             │
 │  App naming: {org}-{role}                                   │
 │  Bot naming: {org}-{role}[bot]                              │
-│  PEM storage: GCP Secret Manager                            │
+│  PEM storage: GCP Secret Manager (production), disk         │
+│               (dev mint), or repo secrets (fallback)        │
 │  Secret name: fullsend-{org}--{role}-app-pem                │
 │                                                             │
 │  Note: "fix" role reuses the "coder" app — no separate      │

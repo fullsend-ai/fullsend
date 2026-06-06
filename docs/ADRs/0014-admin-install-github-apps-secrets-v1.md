@@ -19,6 +19,8 @@ Date: 2026-04-05
 
 Accepted
 
+Note: The Decision section describes PEMs stored as repo secrets (`FULLSEND_<ROLE>_APP_PRIVATE_KEY`) on `.fullsend`. ADR 0029 moved production PEM storage to GCP Secret Manager; ADR 0043 introduces disk storage for the dev mint. Repo secrets remain the fallback when neither GCP nor `--mint-data-dir` is configured.
+
 ## Context
 
 The admin CLI creates or reuses per-role GitHub Apps and must persist the minimum credentials for Actions and agents to authenticate as those apps. [ADR 0012](0012-admin-install-fullsend-repo-files-v1.md) (when accepted) will fix the org config repo’s files and layout; [ADR 0013](0013-admin-install-repo-enrollment-v1.md) (when accepted) will fix how repos are enrolled. This decision isolates **app lifecycle outcomes** and **where secrets and variables live**, so tooling and docs can stay aligned without bundling enrollment or repo file layout.

@@ -285,6 +285,16 @@ You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery
 
 > **Note:** Multi-org with `--public` requires all orgs to share the same GitHub Apps. Private apps (the default) are single-org only.
 
+## Running a standalone dev mint
+
+For development and evaluation without GCP infrastructure, `fullsend mint run` starts a local HTTP server that implements the mint token API using PEM files on disk instead of Secret Manager.
+
+```bash
+fullsend mint run --data-dir ~/.fullsend-mint
+```
+
+See the [standalone dev mint guide](dev-mint.md) for full setup instructions, tunnel configuration, and security considerations.
+
 ## Troubleshooting
 
 ### Template/traffic revision divergence

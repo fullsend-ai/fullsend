@@ -18,6 +18,8 @@ Date: 2026-04-02
 
 Accepted
 
+Note: The Decision section references App PEMs stored as repo secrets on `.fullsend`. The dev mint introduced later stores PEMs on local disk when `--mint-data-dir` is used. See [ADR 0043](0043-skip-mint-check-updated-semantics.md).
+
 ## Context
 
 Enrolled repos must route events (issues, PRs, comments) to the agent dispatch workflow in the `.fullsend` config repo. The original design used `workflow_call` (reusable workflows), which requires the calling workflow to pass secrets explicitly — every enrolled repo's shim workflow would contain secret references, and the called workflow's secrets are scoped to the *caller's* repo, not the config repo where the App PEMs live.

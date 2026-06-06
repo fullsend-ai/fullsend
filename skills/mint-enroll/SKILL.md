@@ -16,8 +16,9 @@ triggers:
 # Mint Service Enrollment
 
 Enroll a new GitHub org or per-repo into the fullsend token mint using the
-`fullsend mint` CLI. The mint is a stateless GCP Cloud Function that exchanges
-GitHub OIDC JWTs for scoped GitHub App installation tokens.
+`fullsend mint` CLI. The production mint is a stateless GCP Cloud Function that
+exchanges GitHub OIDC JWTs for scoped GitHub App installation tokens. For
+development without GCP, see the [dev mint guide](../../docs/guides/infrastructure/dev-mint.md).
 
 Follow these steps in order. Do not skip steps.
 

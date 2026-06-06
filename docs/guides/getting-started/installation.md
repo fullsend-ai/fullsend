@@ -189,7 +189,7 @@ All prerequisites from the [end-user setup](#prerequisites) above, plus:
   done
   ```
 
-  > **Reducing required roles:** If you supply `--inference-wif-provider` with a pre-existing WIF provider, `roles/iam.workloadIdentityPoolAdmin` is not needed. If you supply `--skip-mint-check` with `--mint-url` **and** `--inference-wif-provider`, no GCP roles are needed (all GCP provisioning is skipped). Without `--inference-wif-provider`, inference WIF auto-provisioning still requires `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin`.
+  > **Reducing required roles:** If you supply `--inference-wif-provider` with a pre-existing WIF provider, `roles/iam.workloadIdentityPoolAdmin` is not needed. If you supply `--skip-mint-check` with `--mint-url` **and** `--inference-wif-provider`, no GCP roles are needed (all GCP provisioning is skipped; GitHub Apps are still created). Without `--inference-wif-provider`, inference WIF auto-provisioning still requires `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin`.
 
 ### OAuth scope reference
 
@@ -248,17 +248,18 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--mint-region` | `us-central1` | Cloud region for the token mint function |
 | `--mint-url` | | Use an existing mint at this URL instead of deploying one |
 | `--mint-provider` | `gcf` | Token mint provider backend |
-| `--mint-source-dir` | `internal/mint/` | Path to mint function source directory. The mint consists of two modules (`internal/mint/` and `internal/mintcore/`); the provisioner bundles `mintcore` from the sibling directory automatically. When the path does not exist (e.g., running from a downloaded binary), the embedded source baked into the binary is used instead |
+| `--mint-source-dir` | `internal/mint/` | Path to mint function source directory. When the path does not exist (e.g., running from a downloaded binary), the embedded source baked into the binary is used automatically |
 | `--public` | `false` | Create public unlisted GitHub Apps (for multi-org) |
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps (see [Custom app sets](#custom-app-sets)) |
 | `--skip-app-setup` | `false` | Skip GitHub App creation (reuse existing apps) |
 | `--skip-mint-deploy` | `false` | Skip Cloud Function deployment, reuse existing mint URL |
-| `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup; requires `--mint-url` |
+| `--skip-mint-check` | `false` | Skip GCP mint provisioning; requires `--mint-url`. Apps are still created. Permits HTTP for localhost/127.0.0.1/::1 |
+| `--mint-data-dir` | | Dev mint data directory — writes PEMs and config directly to disk for the [dev mint](../infrastructure/dev-mint.md) |
 | `--enroll-all` | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | `false` | Skip repository enrollment without prompting (per-org only) |
 | `--vendor-fullsend-binary` | `false` | Cross-compile and vendor the fullsend binary for development iteration |
 
-The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
+The `--skip-mint-check` flag skips GCP mint provisioning (Cloud Function deployment, WIF setup, Secret Manager). It requires `--mint-url` to be set. GitHub Apps are still created and configured. The URL must use HTTPS, except for localhost, `127.0.0.1`, and `::1` which may use HTTP (for use with the [dev mint](../infrastructure/dev-mint.md)). This is useful when the mint infrastructure is managed externally or you are using the dev mint for local evaluation.
 
 The installer automatically detects when the deployed mint function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure, org registration, and PEM secrets. Use `--skip-mint-deploy` to explicitly skip the Cloud Function deployment step.
 
@@ -375,10 +376,10 @@ Per-repo mode installs fullsend for a single repository without requiring an org
 > **Installing fullsend in the `fullsend-ai` org:** When installing fullsend for
 > `fullsend-ai/fullsend` itself, prefer **per-org mode** (`fullsend admin install fullsend-ai`).
 > Per-repo mode technically works but creates a circular reference: the per-repo
-> shim workflow calls `fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@<ref>`,
+> shim workflow calls `fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0`,
 > which in turn calls reusable stage workflows in the same repo, which check out
-> `fullsend-ai/fullsend@<ref>` again for upstream defaults and use
-> `fullsend-ai/fullsend@<ref>` as the composite action. The repo ends up
+> `fullsend-ai/fullsend@v0` again for upstream defaults and use
+> `fullsend-ai/fullsend@v0` as the composite action. The repo ends up
 > simultaneously serving as the source of reusable workflows, the source of the
 > composite action, the caller repo, and the target repo being acted on. Per-org
 > mode avoids this by placing the shim in `fullsend-ai/fullsend` and the agent

@@ -181,7 +181,7 @@ func TestSetup_ExistingApp_Reuse_StoreSecretNotCalled(t *testing.T) {
 	s := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoreSecret(func(_ context.Context, _, _ string) error {
+		WithStoreSecret(func(_ context.Context, _ string, _ int, _ string) error {
 			storeCalled = true
 			return nil
 		})
@@ -925,7 +925,7 @@ func TestSetup_ExistingApp_PEMRecovery_HappyPath(t *testing.T) {
 	prompter := &fakePrompter{confirmResult: true, readLineResult: pemPath}
 	var storedRole, storedPEM string
 	s, _ := existingAppSetup(t, prompter)
-	s = s.WithStoreSecret(func(_ context.Context, role, p string) error {
+	s = s.WithStoreSecret(func(_ context.Context, role string, _ int, p string) error {
 		storedRole = role
 		storedPEM = p
 		return nil
@@ -941,6 +941,24 @@ func TestSetup_ExistingApp_PEMRecovery_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, storedPEM)
 	assert.True(t, prompter.confirmCalled)
 	assert.True(t, prompter.readLineCalled)
+}
+
+func TestSetup_WithStoreSecret_AppIDPropagated(t *testing.T) {
+	pemData := generateTestPEM(t)
+	pemPath := writeTempPEM(t, pemData)
+
+	prompter := &fakePrompter{confirmResult: true, readLineResult: pemPath}
+	var storedAppID int
+	s, _ := existingAppSetup(t, prompter)
+	s = s.WithStoreSecret(func(_ context.Context, _ string, appID int, _ string) error {
+		storedAppID = appID
+		return nil
+	})
+
+	creds, err := s.Run(context.Background(), "myorg", "triage")
+	require.NoError(t, err)
+	assert.Equal(t, 10, creds.AppID)
+	assert.Equal(t, 10, storedAppID, "storeSecret must be called with the app's actual AppID")
 }
 
 func TestSetup_ExistingApp_PEMRecovery_UserDeclines(t *testing.T) {
@@ -993,7 +1011,7 @@ func TestSetup_ExistingApp_StaleAppID_TriggersRecovery(t *testing.T) {
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
 		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"}).
-		WithStoreSecret(func(_ context.Context, _, p string) error {
+		WithStoreSecret(func(_ context.Context, _ string, _ int, p string) error {
 			storedPEM = p
 			return nil
 		})

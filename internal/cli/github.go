@@ -481,7 +481,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 			return err
 		}
 
-		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", cfg.publicApps, nil, cfg.appSet, nil)
+		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", "", cfg.publicApps, nil, cfg.appSet, nil)
 		if credErr != nil {
 			return credErr
 		}
