@@ -669,6 +669,20 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "./.github/actions/")
 }
 
+func TestRepoMaintenanceTokenCoversAllRepos(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/repo-maintenance.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	// The mint-token step must request access to ALL repos (enabled + disabled),
+	// not just enabled ones. Without access to disabled repos, the reconcile
+	// script can't check for or remove the shim workflow, and silently skips
+	// unenrollment (gh api fails, 2>/dev/null hides it, script thinks "already
+	// unenrolled").
+	assert.Contains(t, s, "select(.value.enabled == true or .value.enabled == false)",
+		"repo-list step must extract both enabled and disabled repos so the minted token covers them for unenrollment")
+}
+
 func TestMintTokenActionContent(t *testing.T) {
 	content, err := FullsendRepoFile(".github/actions/mint-token/action.yml")
 	require.NoError(t, err)
