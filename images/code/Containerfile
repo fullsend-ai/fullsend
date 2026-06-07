@@ -77,7 +77,7 @@ ENV PATH="/usr/local/go/bin:${PATH}" \
 
 # ---------------------------------------------------------------------------
 # gopls — Go language server for Claude Code LSP code intelligence.
-ARG GOPLS_VERSION=0.18.1
+ARG GOPLS_VERSION=0.22.0
 RUN GOBIN=/usr/local/go/bin go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" \
     && gopls version
 
