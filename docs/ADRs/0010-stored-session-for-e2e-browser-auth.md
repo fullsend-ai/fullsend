@@ -146,3 +146,5 @@ it does expire, a developer runs `make e2e-upload-session` to refresh it.
   every two weeks (and less often on active repos).
 - Locally, developers can use username/password directly — `make e2e-test`
   auto-generates a session file when credentials are available.
+- CI credential gating and WIF for GCP access are described in
+  [ADR 0043](0043-e2e-wif-shim-and-pr-authorization-gate.md).

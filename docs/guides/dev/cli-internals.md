@@ -516,4 +516,5 @@ var executableFiles = map[string]struct{}{
 - [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup guide
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
+- [E2E testing](e2e-testing.md) — Admin e2e tests locally and in CI
 - [Customizing Agents](../user/customizing-agents.md) — User customization guide

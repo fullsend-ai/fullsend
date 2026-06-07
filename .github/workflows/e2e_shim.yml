@@ -1,0 +1,47 @@
+name: E2E Shim
+
+# Lightweight PR shim: calls trusted e2e.yml@main without checking out PR code.
+# See docs/ADRs/0043-e2e-wif-shim-and-pr-authorization-gate.md
+#
+# Security: pull_request_target runs the BASE branch version of this workflow,
+# preventing PRs from modifying it to exfiltrate credentials. This shim never
+# checks out PR code, so it is not vulnerable to "pwn request" attacks.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'e2e/**'
+      - 'internal/scaffold/fullsend-repo/**'
+      - 'internal/security/hooks/**'
+      - 'internal/dispatch/gcf/mintsrc/**'
+      - 'internal/sentencetoken/english.json'
+      - 'Makefile'
+      - '.github/workflows/e2e.yml'
+      - '.github/workflows/e2e_shim.yml'
+      - '.github/actions/check-e2e-authorization/**'
+      - 'scripts/check-e2e-authorization.sh'
+      - 'scripts/check-e2e-authorization_test.sh'
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  call-e2e:
+    if: >-
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'ok-to-test'
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: fullsend-ai/fullsend/.github/workflows/e2e.yml@refs/heads/main
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      pr_author: ${{ github.event.pull_request.user.login }}
+    secrets: inherit

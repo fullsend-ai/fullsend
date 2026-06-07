@@ -13,6 +13,7 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - Always run `make lint` before submitting changes and fix any failures.
 - Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages. See [CONTRIBUTING.md](CONTRIBUTING.md#commit-messages) for the full specification. This is critical — GoReleaser uses commit prefixes to generate release notes.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
+- **Exception — shared e2e test infrastructure:** The dedicated CI e2e GCP project ID (`it-gcp-konflux-e2e-fullsend`), e2e service account name (`fullsend-e2e`), and WIF pool/provider IDs (`fullsend-e2e-pool`, `github-oidc`) may appear in workflow defaults, tests, and docs. Access is bound by WIF attribute conditions (`repository`, `job_workflow_ref`) — not by hiding these identifiers. See [ADR 0043](docs/ADRs/0043-e2e-wif-shim-and-pr-authorization-gate.md) and [E2E GCP setup](docs/guides/infrastructure/e2e-gcp-setup.md).
 
 ## Go code
 

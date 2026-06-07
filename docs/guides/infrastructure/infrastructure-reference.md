@@ -183,6 +183,54 @@ During installation, the GCF provisioner creates:
 
 ---
 
+## E2E CI WIF
+
+> Manual setup: [E2E GCP setup guide](e2e-gcp-setup.md) (verify-then-create). Architecture: [ADR 0043](../../ADRs/0043-e2e-wif-shim-and-pr-authorization-gate.md).
+
+CI e2e tests use a **third** WIF use case, separate from org mint and inference
+pools. A dedicated provider binds credentials to the trusted
+`fullsend-ai/fullsend/.github/workflows/e2e.yml@refs/heads/main` workflow via
+`job_workflow_ref` in the attribute condition.
+
+This is **incremental** progress toward secretless e2e ([ADR
+0043](../../ADRs/0043-e2e-wif-shim-and-pr-authorization-gate.md)): WIF removes
+long-lived GCP keys, but session/mint secrets remain required today. The
+workflow defaults to the shared konflux e2e project, WIF provider, and service
+account when the corresponding secrets are unset — see [E2E GCP
+setup](e2e-gcp-setup.md#canonical-resource-names). Defaults are hardcoded in
+`e2e.yml` (including the GCP project number in the WIF provider path).
+
+### Inspect existing E2E WIF
+
+```bash
+PROJECT_ID="it-gcp-konflux-e2e-fullsend"
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+SA_EMAIL="fullsend-e2e@${PROJECT_ID}.iam.gserviceaccount.com"
+POOL_ID="fullsend-e2e-pool"
+PROVIDER_ID="github-oidc"
+
+gcloud iam workload-identity-pools describe "${POOL_ID}" \
+  --location=global --project="${PROJECT_ID}"
+
+gcloud iam workload-identity-pools providers describe "${PROVIDER_ID}" \
+  --workload-identity-pool="${POOL_ID}" --location=global --project="${PROJECT_ID}" \
+  --format='yaml(name,oidc.issuerUri,attributeCondition)'
+```
+
+Expected `attributeCondition`:
+
+```
+assertion.repository == 'fullsend-ai/fullsend' &&
+assertion.job_workflow_ref.startsWith('fullsend-ai/fullsend/.github/workflows/e2e.yml@')
+```
+
+GitHub repository secrets `E2E_GCP_WIF_PROVIDER`, `E2E_GCP_SERVICE_ACCOUNT`, and
+`E2E_GCP_PROJECT_ID` are optional when infrastructure matches the canonical
+names above. Values are not readable from the GitHub API — verify names with
+`gh secret list` and match values to the gcloud output when rotating.
+
+---
+
 ## GitHub Secrets & Variables Deployment
 
 > Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) for the full GitHub management guide.
@@ -305,5 +353,7 @@ The GCF provisioner avoids redundant Cloud Function deployments by computing a S
 
 - [Installation Guide](../getting-started/installation.md) — Setup instructions (end-user and all-in-one)
 - [Mint service administration](mint-administration.md) — Deploying and managing the token mint
+- [E2E GCP setup](e2e-gcp-setup.md) — CI e2e GCP and GitHub secrets
 - [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup guide
+- [E2E testing](../dev/e2e-testing.md) — Contributor e2e guide
 - [Local Development](../dev/local-dev.md) — Developer setup

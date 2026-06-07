@@ -72,3 +72,4 @@ slice in the test code. No architectural changes are needed.
   across all orgs; session export and PAT creation remain per-run.
 - Pool expansion is an operational task (provision org, update one slice
   literal), not an architectural change.
+- CI authorization and GCP WIF for e2e workflows: [ADR 0043](0043-e2e-wif-shim-and-pr-authorization-gate.md).

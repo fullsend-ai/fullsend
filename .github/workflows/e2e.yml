@@ -1,10 +1,24 @@
 name: E2E Tests
 
-permissions:
-  contents: read
-  id-token: write
+# PRs invoke this workflow via e2e_shim.yml (workflow_call @ refs/heads/main).
+# See docs/ADRs/0043-e2e-wif-shim-and-pr-authorization-gate.md
 
 on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number to authorize and test
+        required: true
+        type: number
+      head_sha:
+        description: PR head SHA to checkout for tests
+        required: true
+        type: string
+      pr_author:
+        description: PR author login (informational; auth uses API)
+        required: false
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
@@ -18,30 +32,58 @@ on:
       - 'internal/sentencetoken/english.json'
       - 'Makefile'
       - '.github/workflows/e2e.yml'
-  pull_request:
-    paths:
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'e2e/**'
-      - 'internal/scaffold/fullsend-repo/**'
-      - 'internal/security/hooks/**'
-      - 'internal/dispatch/gcf/mintsrc/**'
-      - 'internal/sentencetoken/english.json'
-      - 'Makefile'
-      - '.github/workflows/e2e.yml'
+      - '.github/workflows/e2e_shim.yml'
+      - '.github/actions/check-e2e-authorization/**'
+      - 'scripts/check-e2e-authorization.sh'
+      - 'scripts/check-e2e-authorization_test.sh'
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: e2e-${{ github.event_name == 'workflow_call' && inputs.pr_number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  e2e:
+  gate:
+    if: github.event_name == 'workflow_call'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+
+      - name: Check PR authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ inputs.pr_number }}
+          repository: ${{ github.repository }}
+
+  e2e:
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'workflow_call' || needs.gate.result == 'skipped' || needs.gate.outputs.authorized == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Shared e2e GCP defaults when repository secrets are unset (see ADR 0043).
+      E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID != '' && secrets.E2E_GCP_PROJECT_ID || 'it-gcp-konflux-e2e-fullsend' }}
+      E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT != '' && secrets.E2E_GCP_SERVICE_ACCOUNT || 'fullsend-e2e@it-gcp-konflux-e2e-fullsend.iam.gserviceaccount.com' }}
+      E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER != '' && secrets.E2E_GCP_WIF_PROVIDER || 'projects/208332380190/locations/global/workloadIdentityPools/fullsend-e2e-pool/providers/github-oidc' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_call' && inputs.head_sha || github.sha }}
 
       - uses: actions/setup-go@v5
         with:
@@ -73,10 +115,11 @@ jobs:
 
       - name: Authenticate to GCP
         if: steps.secrets-check.outputs.available == 'true'
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ env.E2E_GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ env.E2E_GCP_PROJECT_ID }}
 
       - name: Run e2e tests
         if: steps.secrets-check.outputs.available == 'true'
@@ -86,13 +129,12 @@ jobs:
           E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
           E2E_GITHUB_TOTP_SECRET: ${{ secrets.E2E_GITHUB_TOTP_SECRET }}
           E2E_MINT_URL: ${{ secrets.E2E_MINT_URL }}
-          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
 
       - name: Upload debug screenshots
         if: always() && steps.secrets-check.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-screenshots
+          name: e2e-screenshots-${{ github.event_name == 'workflow_call' && inputs.pr_number || github.run_id }}
           path: ${{ runner.temp }}/e2e-screenshots/
           if-no-files-found: ignore
           retention-days: 5

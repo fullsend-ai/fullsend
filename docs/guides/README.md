@@ -17,6 +17,7 @@ Guides for platform operators who deploy and manage the GCP-side infrastructure 
 
 - [Mint service administration](infrastructure/mint-administration.md) — Deploying and managing the token mint Cloud Function
 - [Infrastructure reference](infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
+- [E2E GCP setup](infrastructure/e2e-gcp-setup.md) — Verify and configure GCP + GitHub secrets for CI e2e tests
 - [Enabling fullsend on private repositories](infrastructure/private-repositories.md) — Additional guardrails and configuration for private repos
 
 ## User guides
@@ -35,4 +36,5 @@ Guides for contributors developing and testing fullsend itself.
 
 - [Local development](dev/local-dev.md) — Run fullsend agents locally on macOS and Linux (amd64 + arm64)
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
+- [E2E testing](dev/e2e-testing.md) — Local and CI admin e2e tests, ok-to-test, troubleshooting
 - [Testing workflow changes](dev/testing-workflows.md) — Point a live GitHub org at a branch to test workflow, action, and agent changes before release

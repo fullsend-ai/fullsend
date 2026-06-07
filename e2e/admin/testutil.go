@@ -46,6 +46,10 @@ const (
 	staleLockTimeout = 15 * time.Minute
 )
 
+// defaultE2EGCPProjectID is the shared CI inference project when E2E_GCP_PROJECT_ID
+// is unset. Matches the workflow default in .github/workflows/e2e.yml (ADR 0043).
+const defaultE2EGCPProjectID = "it-gcp-konflux-e2e-fullsend"
+
 // orgPool is the set of GitHub orgs available for parallel e2e test runs.
 // Each run acquires a lock on one org before proceeding.
 var orgPool = []string{
@@ -184,6 +188,9 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
+	if gcpProjectID == "" {
+		gcpProjectID = defaultE2EGCPProjectID
+	}
 
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
