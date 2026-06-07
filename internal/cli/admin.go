@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,6 +236,7 @@ func newInstallCmd() *cobra.Command {
 	var skipMintCheck bool
 	var publicApps bool
 	var appSet string
+	var runtimeName string
 	// Per-repo flags.
 	var mintURL string
 
@@ -325,6 +327,17 @@ Inference authentication:
 			roles, err := parseAgentRoles(agents)
 			if err != nil {
 				return err
+			}
+
+			selectedRuntime := runtimeName
+			if !cmd.Flags().Changed("runtime") {
+				selectedRuntime = loadExistingRuntime(ctx, client, org)
+			}
+			if selectedRuntime == "" {
+				selectedRuntime = "claude"
+			}
+			if !slices.Contains(config.ValidRuntimes(), selectedRuntime) {
+				return fmt.Errorf("invalid --runtime %q: must be one of %s", selectedRuntime, strings.Join(config.ValidRuntimes(), ", "))
 			}
 
 			if skipMintCheck {
@@ -486,7 +499,7 @@ Inference authentication:
 			printer.Blank()
 
 			if dryRun {
-				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos)
+				return runDryRun(ctx, client, printer, org, repos, roles, selectedRuntime, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos)
 			}
 
 			if err := checkInstallScopes(ctx, client, printer); err != nil {
@@ -529,7 +542,7 @@ Inference authentication:
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, selectedRuntime, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
 		},
 	}
 
@@ -550,6 +563,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&skipMintCheck, "skip-mint-check", false, "skip mint validation, GCP provisioning, and app setup; requires --mint-url")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "claude", "agent runtime for fullsend run (claude or dummy; dummy is for behaviour test orgs only)")
 	// Shared flags.
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "token mint URL for OIDC token exchange")
 
@@ -1179,7 +1193,7 @@ func newAnalyzeCmd() *cobra.Command {
 
 // runDryRun builds a layer stack with empty credentials and analyzes.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository) error {
+func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, runtimeName string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository) error {
 	printer.Header("Dry run - analyzing what install would do")
 	printer.Blank()
 
@@ -1218,6 +1232,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 
 	// Build config with empty agents for analysis.
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, nil, inferenceProviderName)
+	cfg.Defaults.Runtime = runtimeName
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1514,7 +1529,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, runtimeName string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -1559,6 +1574,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName)
+	cfg.Defaults.Runtime = runtimeName
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1964,6 +1980,21 @@ func printAnalysis(ctx context.Context, stack *layers.Stack, printer *ui.Printer
 	}
 
 	return nil
+}
+
+// loadExistingRuntime reads defaults.runtime from an existing config.yaml in
+// .fullsend, if available. This prevents re-installs without --runtime from
+// silently resetting the runtime selection.
+func loadExistingRuntime(ctx context.Context, client forge.Client, org string) string {
+	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
+	if err != nil {
+		return ""
+	}
+	cfg, err := config.ParseOrgConfig(data)
+	if err != nil {
+		return ""
+	}
+	return cfg.Defaults.Runtime
 }
 
 // loadExistingInferenceProvider reads the inference provider name from

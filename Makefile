@@ -2,7 +2,7 @@
 .PHONY: help bootstrap lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test e2e-playwright e2e-export-session e2e-upload-session
+       e2e-test e2e-playwright e2e-export-session e2e-upload-session behaviour-test
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -30,6 +30,7 @@ help:
 	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_SESSION_FILE or E2E_GITHUB_USERNAME + E2E_GITHUB_PASSWORD)"
 	@echo "  e2e-export-session   - Login to GitHub and export a Playwright session file"
 	@echo "  e2e-upload-session   - Export session and upload it as a GitHub repo secret"
+	@echo "  behaviour-test       - Run Gherkin behaviour tests (requires GITHUB_TOKEN and behaviour org pool)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -131,6 +132,13 @@ e2e-test: e2e-playwright
 		export E2E_GITHUB_SESSION_FILE="$(E2E_SESSION_FILE)"; \
 	fi; \
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
+
+behaviour-test:
+	@if [ -z "$$GITHUB_TOKEN" ] && [ -z "$$GH_TOKEN" ]; then \
+		echo "GITHUB_TOKEN or GH_TOKEN is required for behaviour tests"; \
+		exit 1; \
+	fi
+	cd e2e/behaviour && go test -tags behaviour -v -count=1 -timeout 30m .
 
 e2e-export-session: e2e-playwright
 	@if [ -n "$$E2E_GITHUB_PASSWORD_FILE" ] && [ -z "$$E2E_GITHUB_PASSWORD" ]; then \

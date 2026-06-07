@@ -392,7 +392,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	repoDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
 
 	// 7. Bootstrap sandbox.
-	backend := agentruntime.Default()
+	var backend agentruntime.Backend
+	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
+	if orgConfigData, readErr := os.ReadFile(orgConfigPath); readErr == nil {
+		orgCfg, parseErr := config.ParseOrgConfig(orgConfigData)
+		if parseErr != nil {
+			printer.StepFail("Failed to parse org config")
+			return fmt.Errorf("parsing org config for runtime selection: %w", parseErr)
+		}
+		var resolveErr error
+		backend, resolveErr = agentruntime.ResolveFromConfig(orgCfg)
+		if resolveErr != nil {
+			printer.StepFail("Failed to resolve runtime")
+			return fmt.Errorf("resolving runtime: %w", resolveErr)
+		}
+	} else if !os.IsNotExist(readErr) {
+		printer.StepFail("Failed to load org config")
+		return fmt.Errorf("reading org config for runtime selection: %w", readErr)
+	} else {
+		backend = agentruntime.Default()
+	}
 	rt := backend.Runtime
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
@@ -601,6 +620,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			AgentBaseName: agentBaseName,
 			Model:         h.Model,
 			RepoDir:       repoDir,
+			FullsendDir:   absFullsendDir,
 			PluginDirs:    pluginDirs,
 			Debug:         debug,
 			Timeout:       timeout,

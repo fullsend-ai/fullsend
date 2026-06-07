@@ -31,6 +31,7 @@ type InferenceConfig struct {
 // RepoDefaults holds default settings applied to all repos.
 type RepoDefaults struct {
 	Roles                    []string `yaml:"roles"`
+	Runtime                  string   `yaml:"runtime,omitempty"`
 	MaxImplementationRetries int      `yaml:"max_implementation_retries"`
 	AutoMerge                bool     `yaml:"auto_merge"`
 }
@@ -63,6 +64,11 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
+// ValidRuntimes returns the set of recognized agent runtimes.
+func ValidRuntimes() []string {
+	return []string{"claude", "dummy"}
+}
+
 // DefaultAgentRoles returns the standard set of agent roles installed
 // when no custom roles are specified. The fix stage reuses the coder
 // app (role: coder) so it does not need a separate app or PEM.
@@ -93,6 +99,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 		},
 		Defaults: RepoDefaults{
 			Roles:                    roles,
+			Runtime:                  "claude",
 			MaxImplementationRetries: 2,
 			AutoMerge:                false,
 		},
@@ -158,6 +165,12 @@ func (c *OrgConfig) Validate() error {
 		validProviders := ValidProviders()
 		if !slices.Contains(validProviders, c.Inference.Provider) {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
+		}
+	}
+	if rt := c.Defaults.Runtime; rt != "" {
+		validRuntimes := ValidRuntimes()
+		if !slices.Contains(validRuntimes, rt) {
+			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
 		}
 	}
 	return nil

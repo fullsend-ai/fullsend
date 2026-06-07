@@ -35,4 +35,6 @@ Guides for contributors developing and testing fullsend itself.
 
 - [Local development](dev/local-dev.md) — Run fullsend agents locally on macOS and Linux (amd64 + arm64)
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
+- [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
+- [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests
 - [Testing workflow changes](dev/testing-workflows.md) — Point a live GitHub org at a branch to test workflow, action, and agent changes before release

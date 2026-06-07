@@ -96,3 +96,34 @@ jobs:
           path: ${{ runner.temp }}/e2e-screenshots/
           if-no-files-found: ignore
           retention-days: 5
+
+  behaviour:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check for behaviour test token
+        id: behaviour-secrets
+        run: |
+          if [ -z "$E2E_BEHAVIOUR_GITHUB_TOKEN" ]; then
+            echo "::warning::E2E_BEHAVIOUR_GITHUB_TOKEN not set. Skipping behaviour tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          E2E_BEHAVIOUR_GITHUB_TOKEN: ${{ secrets.E2E_BEHAVIOUR_GITHUB_TOKEN }}
+
+      - name: Run behaviour tests
+        if: steps.behaviour-secrets.outputs.available == 'true'
+        run: make behaviour-test
+        env:
+          GITHUB_TOKEN: ${{ secrets.E2E_BEHAVIOUR_GITHUB_TOKEN }}
+          BEHAVIOUR_SCM: github
+          BEHAVIOUR_CI: githubactions
+          BEHAVIOUR_INSTALL_MODE: per-org

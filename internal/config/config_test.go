@@ -378,6 +378,27 @@ func TestValidProviders(t *testing.T) {
 	assert.Equal(t, []string{"vertex"}, providers)
 }
 
+func TestValidRuntimes(t *testing.T) {
+	runtimes := ValidRuntimes()
+	assert.Contains(t, runtimes, "claude")
+	assert.Contains(t, runtimes, "dummy")
+}
+
+func TestOrgConfigValidateRuntime(t *testing.T) {
+	cfg := &OrgConfig{
+		Version: "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:   []string{"triage"},
+			Runtime: "dummy",
+		},
+	}
+	require.NoError(t, cfg.Validate())
+
+	cfg.Defaults.Runtime = "invalid"
+	require.Error(t, cfg.Validate())
+}
+
 func TestParseOrgConfig_KillSwitch(t *testing.T) {
 	yamlData := `
 version: "1"

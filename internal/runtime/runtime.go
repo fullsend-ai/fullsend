@@ -18,6 +18,7 @@ type RunParams struct {
 	AgentBaseName string
 	Model         string
 	RepoDir       string
+	FullsendDir   string
 	PluginDirs    []string
 	Debug         string
 	Timeout       time.Duration
@@ -48,7 +49,7 @@ type Backend struct {
 	Transcripts TranscriptHandler
 }
 
-// Default returns the configured agent backend (Claude Code today).
+// Default returns the Claude Code backend. Prefer ResolveFromConfig for org-aware selection.
 func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}

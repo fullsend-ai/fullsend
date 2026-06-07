@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || behaviour
 
 package admin
 
@@ -301,4 +301,19 @@ func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) erro
 		}
 	}
 	return err
+}
+
+// AcquireOrg exports org pool acquisition for behaviour tests.
+func AcquireOrg(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+	return acquireOrg(ctx, client, token, runID, pool, timeout, logf)
+}
+
+// OrgPool returns the halfsend org names used for parallel e2e runs.
+func OrgPool() []string {
+	return orgPool
+}
+
+// NewLiveClient creates a GitHub API client from a token.
+func NewLiveClient(token string) *gh.LiveClient {
+	return newLiveClient(token)
 }
