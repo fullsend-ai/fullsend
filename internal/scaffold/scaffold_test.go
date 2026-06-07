@@ -847,23 +847,14 @@ func TestPrioritizeHarnessContent(t *testing.T) {
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
 	// yamllint document-start rule requires --- at the top of every YAML file.
-	// Walk all scaffold YAML/YML files and verify each starts with "---\n".
-	scaffoldRoot := "fullsend-repo"
+	// Walk embedded scaffold YAML/YML files and verify each starts with "---\n".
 	var checked int
-	err := filepath.WalkDir(scaffoldRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return walkErr
-		}
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
 		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
 			return nil
 		}
-		content, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
-		relPath := path[len(scaffoldRoot)+1:]
 		assert.True(t, strings.HasPrefix(string(content), "---\n"),
-			"%s must start with YAML document start marker (---)", relPath)
+			"%s must start with YAML document start marker (---)", path)
 		checked++
 		return nil
 	})
