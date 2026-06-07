@@ -34,5 +34,6 @@ Guides for developers working in repositories where fullsend is active.
 Guides for contributors developing and testing fullsend itself.
 
 - [Local development](dev/local-dev.md) — Run fullsend agents locally on macOS and Linux (amd64 + arm64)
+- [Go developer cookbook](dev/go-cookbook.md) — Go patterns, mint, inference, forge, and workflow internals for contributors
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Testing workflow changes](dev/testing-workflows.md) — Point a live GitHub org at a branch to test workflow, action, and agent changes before release
