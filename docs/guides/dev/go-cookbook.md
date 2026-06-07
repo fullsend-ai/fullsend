@@ -13,7 +13,7 @@ For local environment setup, see [Local Development](local-dev.md). For CLI arch
 3. [Testing Patterns](#testing-patterns)
 4. [The Mint System](#the-mint-system)
 5. [The Inference System](#the-inference-system)
-6. [The Forge Abstraction (GitHub Code Guide)](#the-forge-abstraction)
+6. [The Forge Abstraction](#the-forge-abstraction)
 7. [GitHub Reusable Workflows & Actions](#github-reusable-workflows--actions)
 
 ---
@@ -183,22 +183,22 @@ When a package exposes data that shouldn't be mutated, return deep copies:
 
 // unexported canonical data
 var canonicalRolePermissions = map[string]map[string]string{
-    "triage": {"contents": "read", "issues": "write"},
-    "coder":  {"contents": "write", "pull_requests": "write"},
+    "triage": {"contents": "read", "issues": "write", "metadata": "read"},
+    "coder":  {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
     // ...
 }
 
 // exported accessor returns a copy
 func RolePermissions() map[string]map[string]string {
-    result := make(map[string]map[string]string, len(canonicalRolePermissions))
+    out := make(map[string]map[string]string, len(canonicalRolePermissions))
     for role, perms := range canonicalRolePermissions {
         cp := make(map[string]string, len(perms))
         for k, v := range perms {
             cp[k] = v
         }
-        result[role] = cp
+        out[role] = cp
     }
-    return result
+    return out
 }
 ```
 
@@ -219,17 +219,14 @@ Validation functions are standalone, reusable, and separated from business logic
 ```go
 // internal/mintcore/patterns.go
 var (
-    GitHubOrgPattern = `^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`
-    RepoNamePattern  = `^[a-zA-Z0-9_.][a-zA-Z0-9._-]{0,99}$`
-    RolePattern      = `^[a-z][a-z0-9_-]*$`
+    GitHubOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`)
+    RepoNamePattern  = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9._-]{0,99}$`)
+    RolePattern      = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 )
 
 func ValidateOrgName(org string) error {
-    if !regexp.MustCompile(GitHubOrgPattern).MatchString(org) {
+    if !GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
         return fmt.Errorf("invalid org name %q", org)
-    }
-    if strings.Contains(org, "--") {
-        return fmt.Errorf("org name %q must not contain double-hyphens", org)
     }
     return nil
 }
@@ -354,12 +351,8 @@ func (f *fakePEMAccessor) AccessPEM(_ context.Context, org, role string) ([]byte
 For the forge layer, `forge.FakeClient` provides a full in-memory fake with maps for tracking created secrets, variables, files, and injecting errors:
 
 ```go
-fake := &forge.FakeClient{
-    Secrets:        map[string]string{},
-    Variables:      map[string]string{},
-    CreatedSecrets: map[string]string{},
-    Errors:         map[string]error{},
-}
+fake := forge.NewFakeClient()
+fake.Errors["CreateRepoSecret"] = fmt.Errorf("boom")
 layer := layers.NewInferenceLayer("acme", fake, provider, printer)
 ```
 
@@ -434,7 +427,7 @@ The mint is split into three layers:
 
 | Package | Role | Depends on |
 |---------|------|-----------|
-| `internal/mintcore/` | Shared library: interfaces, handler, verifiers, GitHub API, validation | stdlib only |
+| `internal/mintcore/` | Shared library: interfaces, handler, verifiers, GitHub API, validation | separate `go.mod` — stdlib + testify (test only) |
 | `internal/mint/` | Cloud Function entry point: wires mintcore components | mintcore |
 | `internal/cli/mint.go` | CLI commands: `deploy`, `enroll`, `unenroll`, `status` | mintcore (types/validation only) |
 
@@ -531,13 +524,13 @@ Each role maps to a fixed set of GitHub permissions. Tokens are always downscope
 
 ```go
 var canonicalRolePermissions = map[string]map[string]string{
-    "triage":     {"contents": "read", "issues": "write", "pull_requests": "read"},
-    "coder":      {"contents": "write", "pull_requests": "write", "issues": "write"},
-    "review":     {"contents": "read", "pull_requests": "write"},
-    "fix":        {"contents": "write", "pull_requests": "write", "issues": "write"},
-    "retro":      {"actions": "read", "contents": "read", "issues": "write"},
-    "prioritize": {"contents": "read", "issues": "write"},
-    "fullsend":   {"actions": "write", "contents": "write", "workflows": "write"},
+    "triage":     {"contents": "read", "issues": "write", "metadata": "read"},
+    "coder":      {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+    "review":     {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+    "fix":        {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
+    "retro":      {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
+    "prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
+    "fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
 }
 ```
 
@@ -705,7 +698,7 @@ All GitHub API operations go through `forge.Client` — direct `exec.Command("gh
 
 ### Interface
 
-The `forge.Client` interface is defined in `internal/forge/forge.go` and covers:
+The `forge.Client` interface is defined in `internal/forge/forge.go` (~54 methods). Key categories:
 
 | Category | Methods |
 |----------|---------|
@@ -716,8 +709,11 @@ The `forge.Client` interface is defined in `internal/forge/forge.go` and covers:
 | **Reviews** | `CreatePullRequestReview`, `ListPullRequestReviews`, `DismissPullRequestReview` |
 | **Issues** | `CreateIssue`, `CloseIssue`, `ListOpenIssues`, `ListIssueComments`, `CreateIssueComment` |
 | **Workflows** | `DispatchWorkflow`, `GetLatestWorkflowRun`, `ListWorkflowRuns` |
-| **Secrets & Variables** | `CreateRepoSecret`, `RepoSecretExists`, `CreateOrUpdateRepoVariable`, `RepoVariableExists` |
-| **Auth** | `GetAuthenticatedUser`, `GetTokenScopes` |
+| **Repo Secrets & Variables** | `CreateRepoSecret`, `RepoSecretExists`, `CreateOrUpdateRepoVariable`, `RepoVariableExists`, `GetRepoVariable` |
+| **Org Secrets & Variables** | `CreateOrgSecret`, `OrgSecretExists`, `DeleteOrgSecret`, `SetOrgSecretRepos`, `CreateOrUpdateOrgVariable`, `OrgVariableExists`, `DeleteOrgVariable` |
+| **Auth & Org** | `GetAuthenticatedUser`, `GetTokenScopes`, `GetOrgPlan`, `ListOrgInstallations`, `GetAppClientID` |
+
+See `internal/forge/forge.go` for the complete interface.
 
 ### GitHub Implementation
 
@@ -725,9 +721,9 @@ The `forge.Client` interface is defined in `internal/forge/forge.go` and covers:
 
 ```go
 type LiveClient struct {
-    httpClient *http.Client
-    token      string
-    baseURL    string  // default: "https://api.github.com"
+    http    *http.Client
+    token   string
+    baseURL string
 }
 ```
 
@@ -735,7 +731,7 @@ Key behaviors:
 
 - **API version**: Uses `X-GitHub-Api-Version: 2022-11-28`
 - **Retry logic**: Max 3 retries on rate limit (HTTP 429) with exponential backoff
-- **Error typing**: `APIError` with `StatusCode`, `Message`, `Details`
+- **Error typing**: `APIError` with `StatusCode`, `Message`, `Errors []APIErrorDetail`
 - **404 handling**: Returns `forge.ErrNotFound` for consistent sentinel error checking
 
 ### Atomic Multi-File Commits
@@ -745,28 +741,27 @@ Key behaviors:
 ```go
 type TreeFile struct {
     Path    string  // "scripts/post-code.sh"
-    Content string
+    Content []byte
     Mode    string  // "100644" (regular) or "100755" (executable)
 }
 
-func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (bool, error)
+func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message string, files []TreeFile) (committed bool, err error)
 ```
 
-The method is idempotent — returns `(false, nil)` if the tree already matches HEAD (no-op).
+Commits to the default branch. The method is idempotent — returns `(false, nil)` if the tree already matches HEAD (no-op).
 
 ### FakeClient for Testing
 
-`forge.FakeClient` provides an in-memory implementation for unit tests:
+`forge.FakeClient` provides an in-memory implementation for unit tests. Use the `NewFakeClient()` constructor, which initializes all maps:
 
 ```go
-fake := &forge.FakeClient{
-    Secrets:        map[string]string{"EXISTING_SECRET": "val"},
-    Variables:      map[string]string{},
-    CreatedSecrets: map[string]string{},           // tracks what was created
-    VariablesExist: map[string]bool{},
-    Errors:         map[string]error{"BadOp": fmt.Errorf("boom")},  // inject errors
-}
+fake := forge.NewFakeClient()
+fake.Secrets["acme/.fullsend/EXISTING_SECRET"] = true  // map[string]bool
+fake.VariablesExist["acme/.fullsend/MY_VAR"] = true    // map[string]bool
+fake.Errors["DeleteRepoSecret"] = fmt.Errorf("boom")   // inject errors by method name
 ```
+
+Notable field types: `Secrets` is `map[string]bool` (existence only), `CreatedSecrets` is `[]SecretRecord` (records creation calls), `Variables` is `[]VariableRecord` (records variable operations).
 
 ### Adding a New Forge Operation
 
