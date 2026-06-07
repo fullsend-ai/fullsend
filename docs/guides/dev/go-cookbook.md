@@ -14,7 +14,9 @@ For local environment setup, see [Local Development](local-dev.md). For CLI arch
 4. [The Mint System](#the-mint-system)
 5. [The Inference System](#the-inference-system)
 6. [The Forge Abstraction](#the-forge-abstraction)
-7. [GitHub Reusable Workflows & Actions](#github-reusable-workflows--actions)
+7. [The Sandbox System](#the-sandbox-system)
+8. [The Security Scanner](#the-security-scanner)
+9. [GitHub Reusable Workflows & Actions](#github-reusable-workflows--actions)
 
 ---
 
@@ -769,6 +771,518 @@ Notable field types: `Secrets` is `map[string]bool` (existence only), `CreatedSe
 2. Implement it in `internal/forge/github/github.go`
 3. Add it to `forge.FakeClient` (return zero value or use the `Errors` map)
 4. Write tests using `FakeClient`
+
+---
+
+## The Sandbox System
+
+The sandbox system creates isolated Linux containers for agent execution using OpenShell. It handles container lifecycle, file transfer, and security-hardened extraction of agent output.
+
+### Architecture Overview
+
+```
+Host (macOS / Linux)
+    │
+    │  fullsend run <agent>
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│  CLI Runner (internal/cli/run.go)                            │
+│  1. EnsureAvailable() + CheckGateway()                       │
+│  2. EnsureProvider() — bare-key credential injection         │
+│  3. CreateWithRetry() — exponential backoff, max 3 attempts  │
+│  4. bootstrapCommon() — workspace dirs, fullsend binary      │
+│  5. bootstrapEnv() — .env file, host_files                   │
+│  6. rt.Bootstrap() — agent/skills/plugins/hooks              │
+│  7. UploadDir() — target repo into sandbox                   │
+│  8. scanRepoContextFiles() — host-side security scan         │
+│  9. fullsend scan context — sandbox-side security scan       │
+│ 10. rt.Run() — invoke Claude Code via ExecStreamReader       │
+│ 11. ExtractOutputFiles() + SafeDownload() — extract results  │
+│ 12. Delete() — cleanup                                       │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│  OpenShell Sandbox (persistent container)                     │
+│  /tmp/workspace/                                             │
+│    /{repoName}/         — target repository                  │
+│    /output/             — agent-generated output files        │
+│    /.env                — sourced at agent startup            │
+│    /.env.d/             — additional env file fragments       │
+│    /.security/          — security findings JSONL             │
+│    /bin/                — fullsend binary, helper scripts     │
+│    /.claude/                                                  │
+│      hooks/             — PreToolUse/PostToolUse hooks        │
+│      settings.json      — hook configuration                 │
+│  /tmp/claude-config/                                         │
+│    /agents/             — agent definitions                   │
+│    /skills/             — skill definitions                   │
+│    /plugins/            — plugin definitions                  │
+│    /settings.json       — plugin marketplace config           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Package Structure
+
+| Package | Role | Key types |
+|---------|------|-----------|
+| `internal/sandbox/` | Container lifecycle, file transfer, log collection | Functions only (no exported types) |
+| `internal/runtime/` | Agent execution backend inside the sandbox | `Runtime`, `RunParams`, `BootstrapInput`, `ClaudeRuntime` |
+| `internal/harness/` | Per-agent YAML configuration | `Harness`, `HostFile`, `ProviderDef` |
+| `internal/cli/run.go` | CLI runner that orchestrates the full flow | `runCmd` (Cobra command) |
+
+### Constants
+
+```go
+// internal/sandbox/sandbox.go
+
+const (
+    SandboxWorkspace    = "/tmp/workspace"
+    SandboxClaudeConfig = "/tmp/claude-config"
+
+    readyTimeout             = 120 * time.Second
+    maxReadyTimeout          = 600 * time.Second
+    readyPoll                = 2 * time.Second
+    readyCtxBuffer           = 10 * time.Second
+    transferTimeout          = 5 * time.Minute
+    DefaultMaxCreateAttempts = 3
+    retryInitialBackoff      = 5 * time.Second
+    retryMaxBackoff          = 15 * time.Second
+)
+```
+
+### Container Lifecycle
+
+**Creation with retry:**
+
+```go
+func Create(name string, providers []string, image, policy string) error
+func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error
+```
+
+`CreateWithRetry` uses exponential backoff: `backoff = retryInitialBackoff * (1 << (attempt-1))`, capped at `retryMaxBackoff`. Failed sandboxes are deleted between attempts to avoid name conflicts. The creation polls `openshell sandbox get` until the output contains "Ready" or the timeout expires.
+
+**Deletion:**
+
+```go
+func Delete(name string) error
+```
+
+### Command Execution
+
+Two modes: synchronous (buffered) and streaming:
+
+```go
+func Exec(sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
+
+func ExecStreamReader(sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error)
+```
+
+`ExecStreamReader` returns an `io.ReadCloser` for stdout so the caller can parse structured JSON output in real-time (used by the Claude runtime's `progressParser`). The caller must read stdout to completion, then call `cmd.Wait()`.
+
+### File Transfer
+
+```go
+func Upload(sandboxName, localPath, remotePath string) error
+func UploadDir(sandboxName, localPath, remotePath string) error
+func Download(sandboxName, remotePath, localPath string) error
+func DownloadFile(sandboxName, remotePath, localPath string) error
+func SafeDownload(sandboxName, remoteDir, localDir string) error
+func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, error)
+```
+
+`UploadDir` preserves symlinks by creating a tar.gz archive locally and extracting it inside the sandbox (openshell upload dereferences symlinks by default).
+
+`SafeDownload` sanitizes the result by removing dangerous symlinks (absolute or repo-escaping) and `.git/hooks/` directories.
+
+`ExtractOutputFiles` uses `os.OpenRoot` for kernel-enforced path containment — the OS prevents writes outside the output directory regardless of symlink tricks or path traversal.
+
+### Provider Management
+
+```go
+func EnsureProvider(name, providerType string, credentials, config map[string]string) error
+```
+
+Credentials use the **bare-key form** (`--credential KEY`) so secret values never appear on the process command line. Expanded values are injected into the child process environment, where openshell reads them directly.
+
+### Runtime Interface
+
+```go
+// internal/runtime/runtime.go
+
+type Runtime interface {
+    Name() string
+    ConfigDir() string
+    WorkspaceDir() string
+    EnvExports() []string
+    Bootstrap(input BootstrapInput) error
+    Run(params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (exitCode int, err error)
+    ClearIterationArtifacts(sandboxName string) error
+}
+
+// internal/runtime/bootstrap.go
+
+type BootstrapInput interface {
+    SandboxName() string
+    AgentPath() string
+    SkillDirs() []string
+    PluginDirs() []string
+}
+
+type RunParams struct {
+    SandboxName   string
+    AgentBaseName string
+    Model         string
+    RepoDir       string
+    PluginDirs    []string
+    Debug         string
+    Timeout       time.Duration
+}
+```
+
+### ClaudeRuntime
+
+`ClaudeRuntime` is the only `Runtime` implementation. It stages agent content into the sandbox and invokes Claude Code:
+
+- `Bootstrap()` — uploads agent definitions, skills, and plugins into `/tmp/claude-config/`. If the input implements `ClaudeHooksBootstrap` (defined in `claude_bootstrap.go`), security hooks are installed into `/tmp/workspace/.claude/`
+- `Run()` — builds a `claude --print --verbose --output-format stream-json --agent <name> --dangerously-skip-permissions` command and streams output via `ExecStreamReader`
+- `ClearIterationArtifacts()` — removes `output/*` and `*.jsonl` files between validation loop iterations
+
+Claude Code reads two separate `settings.json` files in the sandbox:
+- `{SandboxClaudeConfig}/settings.json` — plugin marketplace state (managed by `bootstrapPlugins`)
+- `{SandboxWorkspace}/.claude/settings.json` — security hooks (managed by `installClaudeHooks`)
+
+### Harness Configuration
+
+Sandbox-related fields in the harness YAML:
+
+```go
+// internal/harness/harness.go
+
+type Harness struct {
+    Image                string        // container image (overridable via FULLSEND_SANDBOX_IMAGE)
+    Policy               string        // sandbox policy YAML
+    Providers            []string      // OpenShell providers to instantiate
+    HostFiles            []HostFile    // files to copy into sandbox
+    TimeoutMinutes       int           // agent execution timeout
+    SandboxTimeoutSeconds int          // sandbox creation timeout (30-600s, default 120s)
+    // ...
+}
+
+type HostFile struct {
+    Src      string // host path (may use ${VAR} expansion)
+    Dest     string // destination path inside sandbox
+    Expand   bool   // expand ${VAR} in file content before copying
+    Optional bool   // skip if src path is missing or expands to empty
+}
+```
+
+### Timeout Hierarchy
+
+| Scope | Default | Override |
+|-------|---------|----------|
+| Sandbox ready | 120s | `SandboxTimeoutSeconds` in harness, or `FULLSEND_SANDBOX_READY_TIMEOUT` env var (max 600s) |
+| File transfer | 5 min | Not configurable |
+| Agent run | 30 min | `TimeoutMinutes` in harness |
+| Command exec | Per-call | Caller passes timeout to `Exec()`/`ExecStreamReader()` |
+
+---
+
+## The Security Scanner
+
+The security system provides multi-phase scanning at system boundaries — before untrusted text reaches the agent and before agent output is posted. It combines rule-based pattern matching, ML inference, and runtime hooks.
+
+### Architecture Overview
+
+```
+Phase 1: Host Input (GHA pre-step)
+  fullsend scan input
+  ├─ UnicodeNormalizer
+  ├─ ContextInjectionScanner
+  ├─ SSRFValidator
+  └─ ONNXGuardScanner (ML, fail-open)
+         │
+Phase 2: Sandbox Context (pre-agent)
+  fullsend scan context
+  ├─ UnicodeNormalizer
+  └─ ContextInjectionScanner
+         │
+Phase 3: Runtime Hooks (during agent execution)
+  PreToolUse:
+  ├─ tirith_check.py        (Bash)
+  ├─ ssrf_pretool.py         (Bash|WebFetch)
+  ├─ canary_pretool.py       (*)
+  └─ tool_allowlist_pretool.py (*) [opt-in]
+  PostToolUse:
+  ├─ context_suppress_posttool.py ─┐
+  ├─ unicode_posttool.py           ├─ (Bash|WebFetch|Read, chained)
+  ├─ secret_redact_posttool.py   ──┘
+  └─ canary_posttool.py            (*) [separate matcher]
+         │
+Phase 4: Host Output (post-agent)
+  fullsend scan output
+  ├─ UnicodeNormalizer
+  └─ SecretRedactor
+```
+
+Trace IDs (UUID v4) correlate findings across all four phases.
+
+### Core Types
+
+```go
+// internal/security/scanner.go
+
+type Finding struct {
+    Scanner  string // "secret_redactor", "ssrf_validator", "context_injection", "unicode_normalizer"
+    Name     string // pattern name or category
+    Severity string // "critical", "high", "medium"
+    Detail   string // human-readable description
+    Position int    // byte offset in original text, -1 if N/A
+}
+
+type ScanResult struct {
+    Safe      bool
+    Findings  []Finding
+    Sanitized string // cleaned/redacted version of input (empty if unchanged)
+}
+
+type Scanner interface {
+    Name() string
+    Scan(text string) ScanResult
+}
+```
+
+### Pipeline
+
+Scanners are chained into pipelines. Each scanner's sanitized output feeds into the next scanner's input:
+
+```go
+type Pipeline struct {
+    scanners []Scanner
+}
+
+func NewPipeline(scanners ...Scanner) *Pipeline
+func (p *Pipeline) Scan(text string) ScanResult
+```
+
+The pipeline is **fail-open for sanitization** (each scanner transforms the text) but **fail-closed for safety** (any scanner marking unsafe makes the whole result unsafe).
+
+### Standard Pipelines
+
+```go
+func InputPipeline() *Pipeline {
+    return NewPipeline(
+        NewUnicodeNormalizer(),
+        NewContextInjectionScanner(),
+    )
+}
+
+func OutputPipeline() *Pipeline {
+    return NewPipeline(
+        NewUnicodeNormalizer(),
+        NewSecretRedactor(),
+    )
+}
+```
+
+Order matters: unicode normalization runs before detection/redaction so zero-width characters cannot break prefix regexes and reconstruct secrets.
+
+### Scanner Implementations
+
+**UnicodeNormalizer** (`internal/security/unicode.go`):
+
+Strips and normalizes invisible or deceptive Unicode:
+
+| Category | Severity | Examples |
+|----------|----------|---------|
+| Null bytes | high | `\x00` |
+| Zero-width characters | high | U+200B, U+200C, U+200D, U+FEFF |
+| Bidirectional overrides | high | U+202A-U+202E, U+2066-U+2069 |
+| Tag characters | critical | U+E0000-U+E007F (decoded to reveal hidden text) |
+| ANSI escape sequences | medium | CSI/OSC sequences with ST terminators |
+| Variation selectors | medium | U+FE00-U+FE0F, U+E0100-U+E01EF |
+| NFKC normalization | high | fullwidth → ASCII, compatibility decomposition |
+
+**ContextInjectionScanner** (`internal/security/injection.go`):
+
+Detects prompt injection patterns in context files using regex:
+
+| Category | Severity | Example patterns |
+|----------|----------|-----------------|
+| Instruction override | critical | `ignore_instructions`, `system_prompt_override`, `act_no_restrictions` |
+| Instruction override | high | `do_not_tell`, `new_instructions`, `pretend_you_are`, `translate_and_execute` |
+| Credential exfiltration | critical | `curl_with_creds`, `cat_secrets_file`, `base64_env_exfil` |
+| Credential exfiltration | high | `env_exfil_printenv` |
+| Hidden content | high | `hidden_html_comment`, `hidden_div` |
+
+Scans only known context filenames via `ShouldScan()`:
+
+```go
+var ScannableFiles = map[string]bool{
+    "agents.md": true, ".cursorrules": true, "claude.md": true,
+    ".claude.md": true, "soul.md": true, "skill.md": true,
+    "plugin.json": true, ".lsp.json": true,
+    // + .hermes.md, hermes.md, gemini.md, .gemini.md, copilot-instructions.md
+}
+```
+
+**SecretRedactor** (`internal/security/redactor.go`):
+
+Two pattern categories:
+
+*Prefix patterns* (full match is the secret, severity: critical):
+
+| Pattern | Prefix |
+|---------|--------|
+| `openai_proj` | `sk-proj-` |
+| `anthropic_key` | `sk-ant-` |
+| `github_pat` | `ghp_` |
+| `github_fine_pat` | `github_pat_` |
+| `aws_access_key` | `AKIA` |
+| `google_api_key` | `AIza` |
+| `slack_token` | `xox[baprs]-` |
+| ... | 21 patterns total |
+
+*Structural patterns* (capture group is the secret, severity: high):
+
+| Pattern | Matches |
+|---------|---------|
+| `env_assignment` | `export KEY=value` |
+| `json_field` | `"api_key": "value"` |
+| `auth_header` | `Authorization: Bearer ...` |
+| `private_key` | `-----BEGIN PRIVATE KEY-----` (critical) |
+| `db_connection_password` | `postgres://user:pass@host` |
+
+Masking: first 4 chars + `"..."` for secrets >= 10 chars, `"***"` for shorter.
+
+**SSRFValidator** (`internal/security/ssrf.go`):
+
+Validates URLs against blocked networks, hostnames, and schemes:
+
+```go
+type SSRFValidator struct {
+    blockedHosts map[string]bool // metadata.google.internal, 169.254.169.254, etc.
+}
+
+func (s *SSRFValidator) ValidateURL(rawURL string, resolveDNS bool) ScanResult
+func (s *SSRFValidator) ValidateRedirectChain(urls []string) ScanResult
+func (s *SSRFValidator) Scan(text string) ScanResult  // extracts URLs via regex
+```
+
+Blocked schemes: `file`, `ftp`, `gopher`, `data`, `dict`, `ldap`, `tftp`. DNS resolution is fail-closed: if resolution fails, the URL is blocked.
+
+### ML-Based Scanning
+
+**ONNXGuardScanner** (`internal/security/onnxguard.go`, build tag: `ORT`):
+
+Uses the ProtectAI DeBERTa-v3 ONNX model for prompt injection detection via the hugot Go ONNX runtime:
+
+```go
+type ONNXGuardScanner struct {
+    pipeline  *pipelines.TextClassificationPipeline
+    threshold float64 // default: 0.92
+    matchType string  // "sentence" (default) or "full"
+}
+```
+
+In sentence mode, text is split using `sentencetoken.SplitSentences()` (Punkt algorithm), then long sentences are capped at 1000 bytes (~250-400 tokens). Sentences are batched (max 200 per batch) and the maximum injection score across all sentences is compared to the threshold.
+
+Two failure modes controlled by the caller:
+- **Path A** (CLI pre-step, `required=false`): fail-open — warns on stderr, returns safe
+- **Path B** (sandbox, `required=true`): fail-closed — returns critical finding
+
+The scanner name is `"llm_guard"` for backward compatibility with log parsers.
+
+### Claude Code Hooks
+
+Embedded Python scripts installed as Claude Code PreToolUse/PostToolUse hooks:
+
+```go
+// internal/security/hooks.go
+
+//go:embed hooks/tirith_check.py
+var TirithCheckHook []byte
+
+//go:embed hooks/ssrf_pretool.py
+var SSRFPreToolHook []byte
+// ... 8 hooks total
+
+func GenerateClaudeSettings(hooks ClaudeSandboxHooks) ([]byte, error)
+func HookFiles(hooks ClaudeSandboxHooks) map[string][]byte
+```
+
+PostToolUse hooks for `Bash|WebFetch|Read` are combined into a **single matcher** so Claude Code chains them sequentially. Separate matchers would run in parallel on the original result, causing modifications to conflict. The chain order is: context suppress → unicode normalize → secret redact.
+
+The canary hooks use the `*` matcher to cover all tools including MCP tools.
+
+### CLI Commands
+
+```
+fullsend scan input     — scan EVENT_PAYLOAD for injection/SSRF (exit 1 = critical)
+fullsend scan output    — redact secrets from stdin (always succeeds)
+fullsend scan context   — scan context files (AGENTS.md, CLAUDE.md, etc.) for injection
+fullsend scan url       — validate URLs against SSRF blocklists (--resolve-dns)
+```
+
+### Harness Security Configuration
+
+```go
+// internal/harness/harness.go
+
+type SecurityConfig struct {
+    Enabled      *bool             // nil = true (secure by default)
+    FailMode     string            // "closed" or "open". Default: "closed"
+    HostScanners *HostScanners
+    SandboxHooks *SandboxHooks
+    Escalation   *EscalationConfig
+    Trace        *TraceConfig
+}
+
+type HostScanners struct {
+    UnicodeNormalizer *bool           // default: true
+    ContextInjection  *bool           // default: true
+    SSRFValidator     *bool           // default: true
+    SecretRedactor    *bool           // default: true
+    LLMGuard          *LLMGuardConfig
+}
+
+type SandboxHooks struct {
+    Tirith                  *TirithConfig
+    SSRFPreTool             *bool  // default: true
+    SecretRedactPostTool    *bool  // default: true
+    UnicodePostTool         *bool  // default: true
+    ContextSuppressPostTool *bool  // default: true
+    CanaryPreTool           *bool  // default: true
+    CanaryPostTool          *bool  // default: true
+    ToolAllowlistPreTool    *ToolAllowlistConfig  // default: disabled (opt-in)
+}
+
+type EscalationConfig struct {
+    OnCritical  string // "halt" or "review". Default: "halt"
+    ReviewLabel string // Default: "requires-manual-review"
+}
+```
+
+All `*bool` fields default to `true` when `nil` — secure by default. The entire security block can be disabled with `enabled: false`, but this is strongly discouraged.
+
+### Trace & Audit
+
+```go
+// internal/security/trace.go
+
+type TracedFinding struct {
+    TraceID   string `json:"trace_id"`
+    Timestamp string `json:"timestamp"`
+    Phase     string `json:"phase"` // "host_input", "sandbox_context", "hook_pretool", "hook_posttool", "host_output"
+    Finding
+}
+
+func GenerateTraceID() string          // UUID v4
+func IsValidTraceID(id string) bool    // regex validation
+func AppendFinding(path string, tf TracedFinding) error  // JSONL audit log
+```
+
+Findings are written as JSON lines to `/tmp/workspace/.security/findings.jsonl` inside the sandbox, correlating security events across all four scanning phases within a single agent run.
 
 ---
 
