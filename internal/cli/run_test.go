@@ -564,22 +564,56 @@ func TestCrossCompileFullsend_ProducesBinary(t *testing.T) {
 }
 
 func TestResolveLinuxBinary_Download(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping download test in short mode")
-	}
+	// Build a valid tar.gz containing a mock "fullsend" binary.
+	var tarBuf bytes.Buffer
+	gw := gzip.NewWriter(&tarBuf)
+	tw := tar.NewWriter(gw)
+	content := []byte("mock fullsend binary")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	tarBytes := tarBuf.Bytes()
+	h := sha256.Sum256(tarBytes)
+	correctHash := hex.EncodeToString(h[:])
+
+	checksumBody := fmt.Sprintf("%s  fullsend_0.4.0_linux_amd64.tar.gz\n", correctHash)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0.4.0/checksums.txt":
+			fmt.Fprint(w, checksumBody)
+		case "/v0.4.0/fullsend_0.4.0_linux_amd64.tar.gz":
+			w.Write(tarBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	origBaseURL := releaseBaseURL
+	releaseBaseURL = srv.URL
+	defer func() { releaseBaseURL = origBaseURL }()
 
 	tmpDir := t.TempDir()
 	binPath := filepath.Join(tmpDir, "fullsend")
-	err := downloadReleaseBinary("0.4.0", "amd64", binPath)
+	err = downloadReleaseBinary("0.4.0", "amd64", binPath)
 	require.NoError(t, err)
 
 	info, err := os.Stat(binPath)
 	require.NoError(t, err)
 	assert.True(t, info.Size() > 0, "downloaded binary should be non-empty")
 
-	// Verify the downloaded artifact is a valid Linux ELF for the requested arch.
-	t.Setenv("FULLSEND_SANDBOX_ARCH", "amd64")
-	assert.NoError(t, validateLinuxBinary(binPath), "downloaded binary should be a valid Linux/amd64 ELF")
+	data, err := os.ReadFile(binPath)
+	require.NoError(t, err)
+	assert.Equal(t, "mock fullsend binary", string(data))
 }
 
 func TestReadOIDCAuthFile_Success(t *testing.T) {
