@@ -932,3 +932,78 @@ func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	msg := validationFailMessage([]byte("  some output\n"), fmt.Errorf("exit status 1"))
 	assert.Equal(t, "some output", msg)
 }
+
+func TestOpenTeeReader_EmptyPath(t *testing.T) {
+	src := strings.NewReader("hello")
+	printer := ui.New(io.Discard)
+
+	r, close := openTeeReader(src, "", printer)
+	defer close()
+
+	// r should be the original reader — no file created
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(got))
+}
+
+func TestOpenTeeReader_WritesToFile(t *testing.T) {
+	content := "line1\nline2\n"
+	src := strings.NewReader(content)
+	printer := ui.New(io.Discard)
+
+	outPath := filepath.Join(t.TempDir(), "out.jsonl")
+	r, close := openTeeReader(src, outPath, printer)
+	defer close()
+
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got))
+
+	close() // flush before reading file
+	fileData, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(fileData))
+}
+
+func TestOpenTeeReader_CreateFailFallsBackToSource(t *testing.T) {
+	content := "data"
+	src := strings.NewReader(content)
+
+	var warnBuf bytes.Buffer
+	printer := ui.New(&warnBuf)
+
+	// Unwritable path — directory that doesn't exist
+	r, close := openTeeReader(src, "/nonexistent-dir/out.jsonl", printer)
+	defer close()
+
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got), "source stream still readable after create failure")
+	assert.Contains(t, warnBuf.String(), "Failed to create claude-output.jsonl")
+}
+
+func TestOpenTeeReader_FileCompleteOnParserError(t *testing.T) {
+	// Simulate: progressParser reads part of stream, then errors; caller drains
+	// remainder via io.Copy(io.Discard, r). File should contain all bytes.
+	content := "part1\npart2\n"
+	src := strings.NewReader(content)
+	printer := ui.New(io.Discard)
+
+	outPath := filepath.Join(t.TempDir(), "out.jsonl")
+	r, closeFile := openTeeReader(src, outPath, printer)
+
+	// Simulate parser reading only first 6 bytes then returning an error
+	firstPart := make([]byte, 6)
+	_, err := io.ReadFull(r, firstPart)
+	require.NoError(t, err)
+
+	// Simulate drain of remaining bytes (as runAgentWithProgress does on parse error)
+	_, err = io.Copy(io.Discard, r)
+	require.NoError(t, err)
+
+	closeFile()
+
+	fileData, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(fileData), "file should contain all bytes including post-error drain")
+}

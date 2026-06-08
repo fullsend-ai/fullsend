@@ -28,8 +28,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
-	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -604,6 +604,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			PluginDirs:    pluginDirs,
 			Debug:         debug,
 			Timeout:       timeout,
+			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
@@ -1034,6 +1035,21 @@ func envToList(env map[string]string) []string {
 		list = append(list, fmt.Sprintf("%s=%s", k, env[k]))
 	}
 	return list
+}
+
+// openTeeReader wraps r in an io.TeeReader that copies to the file at
+// outputPath, returning the reader and a closer. If outputPath is empty or
+// the file cannot be created, r is returned unchanged and the warn is logged.
+func openTeeReader(r io.Reader, outputPath string, printer *ui.Printer) (io.Reader, func()) {
+	if outputPath == "" {
+		return r, func() {}
+	}
+	f, err := os.Create(outputPath)
+	if err != nil {
+		printer.StepWarn("Failed to create claude-output.jsonl: " + err.Error())
+		return r, func() {}
+	}
+	return io.TeeReader(r, f), func() { f.Close() }
 }
 
 var heartbeatInterval = 30 * time.Second
