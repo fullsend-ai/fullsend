@@ -139,5 +139,5 @@ Both layers are needed. Neither subsumes the other.
 - Should the risk assessment operate at the individual tool call level, or should it also consider sequences (e.g., "read credentials file" followed by "curl to external URL")?
 - How do we handle the cold start problem for behavioral baselines in new repos or with new agent roles?
 - What is the right model for the judge? It needs to be fast and cheap but capable enough to understand security context. Is a small fine-tuned model better than a general-purpose small model?
-- Should risk assessment verdicts feed into a broader risk score that influences approval routing (see [graduated-approval-policy.md](graduated-approval-policy.md))?
+- Should risk assessment verdicts feed into a broader risk score that influences approval routing? A run that triggered multiple high-risk tool call blocks is itself a signal, even if the blocks succeeded.
 - How do we measure the effectiveness of risk assessment? What metrics distinguish "caught a real threat" from "blocked legitimate work"?
