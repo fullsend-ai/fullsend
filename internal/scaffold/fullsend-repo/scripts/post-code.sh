@@ -206,14 +206,51 @@ if [ -f .pre-commit-config.yaml ]; then
 
   if command -v pre-commit >/dev/null 2>&1; then
     mapfile -t changed_array <<< "${CHANGED_FILES}"
-    if pre-commit run --files "${changed_array[@]}"; then
+    PRECOMMIT_OUTPUT="$(mktemp)"
+    if pre-commit run --files "${changed_array[@]}" 2>&1 | tee "${PRECOMMIT_OUTPUT}"; then
       echo "Pre-commit passed — all hooks clean"
     else
       echo "::error::BLOCKED — pre-commit hooks failed on agent's changes"
       echo "::error::The agent's code does not pass the repo's pre-commit hooks."
       echo "::error::Fix the issues and re-run, or update the pre-commit config."
+
+      # Post a failure comment on the source issue so the human gets
+      # actionable feedback without digging into workflow logs.
+      if [ -z "${GH_TOKEN:-}" ]; then
+        export GH_TOKEN="${PUSH_TOKEN}"
+      fi
+      local_run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+      hook_excerpt="$(tail -n 30 "${PRECOMMIT_OUTPUT}")"
+      precommit_comment="⚠️ **Agent wrote code but PR was blocked by pre-commit hooks**
+
+The code agent completed and committed changes on branch \`${BRANCH}\`, \
+but the post-code authoritative pre-commit check failed. No PR was created.
+
+<details>
+<summary>Hook output (last 30 lines)</summary>
+
+\`\`\`
+${hook_excerpt}
+\`\`\`
+
+</details>
+
+**Workflow run:** ${local_run_url}
+
+**Next steps:**
+- Retry with \`/fs-code\` (the agent may fix the issues on the next attempt)
+- Or fix the pre-commit issues locally and push a PR manually"
+
+      echo "::warning::Posting pre-commit failure comment to issue #${ISSUE_NUMBER}..."
+      gh issue comment "${ISSUE_NUMBER}" \
+        --repo "${REPO_FULL_NAME}" \
+        --body "${precommit_comment}" 2>/dev/null || \
+        echo "::warning::Failed to post pre-commit failure comment to issue #${ISSUE_NUMBER}"
+
+      rm -f "${PRECOMMIT_OUTPUT}"
       exit 1
     fi
+    rm -f "${PRECOMMIT_OUTPUT}"
   else
     echo "::warning::pre-commit not available on runner — skipping authoritative check"
     echo "::warning::CI pre-commit will still run on the PR"

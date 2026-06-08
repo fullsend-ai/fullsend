@@ -539,6 +539,138 @@ run_error_comment_test "error-comment-non-org-mode-fallback" \
   "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
   ""
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the pre-commit failure comment builder from
+# post-code.sh. Verifies the comment body distinguishes "agent wrote code,
+# PR blocked by pre-commit" from generic push/PR failure messages.
+# ---------------------------------------------------------------------------
+build_precommit_failure_comment() {
+  local branch="$1"
+  local repo_full_name="$2"
+  local run_id="$3"
+  local hook_output="$4"
+  local github_repository="${5:-}"  # GITHUB_REPOSITORY override (org-mode)
+
+  local run_repo="${github_repository:-${repo_full_name}}"
+  local run_url="https://github.com/${run_repo}/actions/runs/${run_id}"
+  local hook_excerpt
+  hook_excerpt="$(echo "${hook_output}" | tail -n 30)"
+
+  echo "⚠️ **Agent wrote code but PR was blocked by pre-commit hooks**
+
+The code agent completed and committed changes on branch \`${branch}\`, \
+but the post-code authoritative pre-commit check failed. No PR was created.
+
+<details>
+<summary>Hook output (last 30 lines)</summary>
+
+\`\`\`
+${hook_excerpt}
+\`\`\`
+
+</details>
+
+**Workflow run:** ${run_url}
+
+**Next steps:**
+- Retry with \`/fs-code\` (the agent may fix the issues on the next attempt)
+- Or fix the pre-commit issues locally and push a PR manually"
+}
+
+run_precommit_comment_test() {
+  local test_name="$1"
+  local branch="$2"
+  local repo="$3"
+  local run_id="$4"
+  local hook_output="$5"
+  local check_pattern="$6"
+  local expect_present="$7"
+  local github_repository="${8:-}"
+
+  local actual
+  actual="$(build_precommit_failure_comment "${branch}" "${repo}" "${run_id}" "${hook_output}" "${github_repository}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Pre-commit failure comment test cases ---
+
+# Comment should mention pre-commit hooks (not generic push/PR failure)
+run_precommit_comment_test "precommit-comment-mentions-hooks" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "pre-commit hooks" "yes"
+
+# Comment should NOT use generic push/PR failure message
+run_precommit_comment_test "precommit-comment-not-generic-push-failure" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "pushing the branch or creating the PR" "no"
+
+# Comment should include branch name
+run_precommit_comment_test "precommit-comment-has-branch" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "agent/224-fix-slog" "yes"
+
+# Comment should include workflow run URL
+run_precommit_comment_test "precommit-comment-has-run-url" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "https://github.com/my-org/my-repo/actions/runs/12345" "yes"
+
+# Comment should include retry hint
+run_precommit_comment_test "precommit-comment-has-retry-hint" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "/fs-code" "yes"
+
+# Comment should include hook output excerpt
+run_precommit_comment_test "precommit-comment-has-hook-output" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "golangci-lint failed" "yes"
+
+# Comment should say "No PR was created" to distinguish from other failures
+run_precommit_comment_test "precommit-comment-says-no-pr" \
+  "agent/224-fix-slog" "my-org/my-repo" "12345" \
+  "golangci-lint failed" \
+  "No PR was created" "yes"
+
+# Org-mode: URL should use dispatch repo (GITHUB_REPOSITORY)
+run_precommit_comment_test "precommit-comment-org-mode-url" \
+  "agent/224-fix-slog" "test-org/my-app" "12345" \
+  "hook failed" \
+  "https://github.com/test-org/.fullsend/actions/runs/12345" "yes" \
+  "test-org/.fullsend"
+
+# Org-mode: URL should NOT use source repo
+run_precommit_comment_test "precommit-comment-org-mode-not-source" \
+  "agent/224-fix-slog" "test-org/my-app" "12345" \
+  "hook failed" \
+  "https://github.com/test-org/my-app/actions/runs/12345" "no" \
+  "test-org/.fullsend"
+
 # --- Summary ---
 
 echo ""
