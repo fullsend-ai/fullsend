@@ -122,4 +122,3 @@ COPY scan-secrets /usr/local/bin/scan-secrets
 RUN chmod +x /usr/local/bin/scan-secrets
 
 USER sandbox
-
