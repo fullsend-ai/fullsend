@@ -1605,10 +1605,10 @@ func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
 
 func TestFilterSlugsByAppSet(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		appSet string
-		slugs map[string]string
-		want  map[string]string
+		slugs  map[string]string
+		want   map[string]string
 	}{
 		{
 			name:   "matching app-set preserved",
@@ -1672,7 +1672,7 @@ func TestRunUninstall_LegacySlugsIncludedWhenConfigUnavailable(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{})
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -1695,7 +1695,7 @@ func TestRunUninstall_WarnsWhenNoAppsFound(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{})
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -1716,7 +1716,7 @@ func TestRunUninstall_LegacySlugsSkippedWhenAppSetMatchesLegacy(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend", appsetup.NopBrowser{})
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend", appsetup.NopBrowser{}, strings.NewReader(""))
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -1742,13 +1742,13 @@ func TestRunUninstall_DedupsSlugsAcrossAppSets(t *testing.T) {
 
 	// Use "fullsend" which matches a legacy prefix — without dedup,
 	// each slug would appear twice.
-	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend", appsetup.NopBrowser{})
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend", appsetup.NopBrowser{}, strings.NewReader(""))
 	require.NoError(t, err)
 
 	output := buf.String()
-	// Each slug should appear in the "Opening ... settings" line exactly once.
-	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-coder settings"))
-	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-triage settings"))
+	// Each slug should appear in the "Opening ... installation settings" line exactly once.
+	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-coder installation settings"))
+	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-triage installation settings"))
 }
 
 func TestRunUninstall_NopBrowserSkipsBrowserOpen(t *testing.T) {
@@ -1763,13 +1763,13 @@ func TestRunUninstall_NopBrowserSkipsBrowserOpen(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{})
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
 	require.NoError(t, err)
 
 	output := buf.String()
 	// NopBrowser.Open returns nil, so the success path runs.
 	assert.Contains(t, output, "Opened fullsend-ai-coder")
-	assert.Contains(t, output, "fullsend-ai-coder/advanced")
+	assert.Contains(t, output, "settings/installations/1")
 	assert.NotContains(t, output, "Could not open browser")
 }
 

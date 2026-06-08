@@ -149,7 +149,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
   - For each declarative field (Agent, Policy, Skills):
     - Local path: return as-is
     - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → check cache (with re-verification) → if miss and not offline: `fetch.FetchURL` → verify hash → `CachePut` → `AppendFetchAudit` → return cache content path
-  - Phase 1: single-level only (no transitive deps), security scanning deferred
+  - Single-level resolution; transitive deps added in Phase 2 (PR 2 of ADR-0038), security scanning deferred
 
 **Create `internal/resolve/resolve_test.go`:**
 - Tests using `httptest.NewTLSServer`: local pass-through, URL fetch+cache, cache hit, hash mismatch, URL not in allowlist, missing hash, offline+miss, offline+hit, security scan failure, mixed harness, audit entries

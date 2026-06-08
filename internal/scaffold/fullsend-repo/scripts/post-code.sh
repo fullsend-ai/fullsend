@@ -127,6 +127,59 @@ echo "Changed files:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # ---------------------------------------------------------------------------
+# 2b. Strip agent working directories (defense-in-depth)
+#
+# Agent working dirs (.agentready/, .fullsend-workspace/) should never
+# appear in commits. The harness excludes them via .git/info/exclude, but
+# if an agent manages to stage them anyway, strip them here before push.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+STRIPPED_FILES=""
+for file in ${CHANGED_FILES}; do
+  is_artifact=false
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"  # strip trailing slash for prefix matching
+    case "${file}" in
+      "${dir}"/*|"${dir}") is_artifact=true; break ;;
+      */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
+    esac
+  done
+  if [ "${is_artifact}" = "true" ]; then
+    echo "::warning::Stripping agent artifact from commit: ${file}"
+    STRIPPED_FILES="${STRIPPED_FILES} ${file}"
+  fi
+done
+
+if [ -n "${STRIPPED_FILES}" ]; then
+  echo "::warning::Agent committed working directory artifacts — stripping before push"
+  # shellcheck disable=SC2086
+  git rm --cached --quiet ${STRIPPED_FILES}
+  git commit --amend --no-edit
+
+  # Rebuild CHANGED_FILES without the stripped artifacts.
+  CLEAN_FILES=""
+  for file in ${CHANGED_FILES}; do
+    is_stripped=false
+    for sf in ${STRIPPED_FILES}; do
+      if [ "${file}" = "${sf}" ]; then
+        is_stripped=true
+        break
+      fi
+    done
+    if [ "${is_stripped}" = "false" ]; then
+      CLEAN_FILES="${CLEAN_FILES}${CLEAN_FILES:+
+}${file}"
+    fi
+  done
+  CHANGED_FILES="${CLEAN_FILES}"
+
+  if [ -z "${CHANGED_FILES}" ]; then
+    echo "::notice::All changed files were agent artifacts — nothing to push"
+    exit 0
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Authoritative secret scan
 # ---------------------------------------------------------------------------
 echo "Running authoritative secret scan on agent's commit..."

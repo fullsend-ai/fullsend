@@ -27,12 +27,14 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
-	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -42,6 +44,22 @@ const (
 	// (buildScanContextCommand) scans to ensure parity.
 	maxContextScanDepth = 5
 )
+
+// agentWorkingDirExcludes lists directory patterns that agents may create
+// during execution but must never commit. These are added to
+// .git/info/exclude before the agent runs so git ignores them entirely.
+var agentWorkingDirExcludes = []string{
+	".agentready/",
+	".fullsend-workspace/",
+}
+
+// statusOpts holds the optional status notification parameters for a run.
+type statusOpts struct {
+	runURL      string
+	statusRepo  string
+	statusNum   int
+	statusToken string
+}
 
 func newRunCmd() *cobra.Command {
 	var fullsendDir string
@@ -53,6 +71,7 @@ func newRunCmd() *cobra.Command {
 	var debugFilter string
 	var offline bool
 	var keepSandbox bool
+	var sOpts statusOpts
 
 	cmd := &cobra.Command{
 		Use:   "run <agent-name>",
@@ -62,7 +81,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, offline, printer, keepSandbox)
+			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, offline, sOpts, printer, keepSandbox)
 		},
 	}
 
@@ -76,13 +95,17 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable Claude Code debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().BoolVar(&offline, "offline", false, "reject network fetches; only use cached remote resources")
+	cmd.Flags().StringVar(&sOpts.runURL, "run-url", "", "URL of the CI/CD run for status comments")
+	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
+	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
+	cmd.Flags().StringVar(&sOpts.statusToken, "status-token", "", "token for status comments (defaults to GH_TOKEN)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
 }
 
-func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, offline bool, printer *ui.Printer, keepSandbox bool) (runErr error) {
+func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, offline bool, sOpts statusOpts, printer *ui.Printer, keepSandbox bool) (runErr error) {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -250,6 +273,38 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Token scoped to", strings.Join(repos, ", "))
 		} else if repos != nil {
 			printer.StepWarn("Token is an installation token but has access to 0 repositories")
+		}
+	}
+
+	// 1c. Set up status notifications (comments on the issue/PR).
+	// Lives in the CLI layer (not harness or post-script) so it wraps the
+	// entire run lifecycle including sandbox setup, validation loop, and
+	// post-script — and can report cancellation/failure even when the
+	// sandbox never starts. See #1859.
+	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, sOpts, printer)
+		if notifyErr != nil {
+			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
+		} else {
+			description := titleCase(strings.ReplaceAll(agentName, "-", " "))
+			if err := notifier.PostStart(ctx, description); err != nil {
+				printer.StepWarn("Failed to post start status: " + err.Error())
+			} else {
+				printer.StepDone("Posted start status comment")
+			}
+			defer func() {
+				status := "success"
+				if ctx.Err() != nil {
+					status = "cancelled"
+				} else if runErr != nil {
+					status = "failure"
+				}
+				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+				defer dCancel()
+				if err := notifier.PostCompletion(dCtx, description, status); err != nil {
+					printer.StepWarn("Failed to post completion status: " + err.Error())
+				}
+			}()
 		}
 	}
 
@@ -450,6 +505,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// 8a-2. Exclude agent working directories from git tracking.
+	// Agents may create working directories (e.g. .agentready/) during
+	// execution. These must never appear in commits. Adding them to
+	// .git/info/exclude ensures git status/add ignores them entirely.
+	if err := excludeAgentWorkingDirs(sandboxName, repoDir, printer); err != nil {
+		printer.StepWarn("Could not exclude agent working dirs: " + err.Error())
+	}
+
 	// 8b. Copy agent-input files (if configured).
 	if h.AgentInput != "" {
 		inputStart := time.Now()
@@ -604,6 +667,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			PluginDirs:    pluginDirs,
 			Debug:         debug,
 			Timeout:       timeout,
+			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
@@ -694,7 +758,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			break
 		}
 
-		printer.StepFail("Validation failed: " + strings.TrimSpace(string(valOut)))
+		printer.StepFail("Validation failed: " + validationFailMessage(valOut, valErr))
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
 		}
@@ -872,10 +936,10 @@ func bootstrapEnv(sandboxName, repoDir string, h *harness.Harness, runtimeEnvExp
 
 	// Infrastructure vars.
 	pathExport := fmt.Sprintf("export PATH=%s/bin", sandbox.SandboxWorkspace)
-	if len(h.Plugins) > 0 {
-		pathExport += ":/usr/local/go/bin"
-	}
+	pathExport += ":/usr/local/go/bin"
+	pathExport += ":$HOME/go/bin"
 	pathExport += ":$PATH"
+
 	lines = append(lines, pathExport)
 	lines = append(lines, runtimeEnvExports...)
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
@@ -1012,6 +1076,16 @@ func escapeForDoubleQuotes(s string) string {
 	return s
 }
 
+// validationFailMessage returns a human-readable message for a validation
+// script failure. When the script produces output, that output is used;
+// otherwise it falls back to the exec error string (e.g. ENOENT / EACCES).
+func validationFailMessage(output []byte, execErr error) string {
+	if msg := strings.TrimSpace(string(output)); msg != "" {
+		return msg
+	}
+	return execErr.Error()
+}
+
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
 func envToList(env map[string]string) []string {
 	keys := make([]string, 0, len(env))
@@ -1024,6 +1098,21 @@ func envToList(env map[string]string) []string {
 		list = append(list, fmt.Sprintf("%s=%s", k, env[k]))
 	}
 	return list
+}
+
+// openTeeReader wraps r in an io.TeeReader that copies to the file at
+// outputPath, returning the reader and a closer. If outputPath is empty or
+// the file cannot be created, r is returned unchanged and the warn is logged.
+func openTeeReader(r io.Reader, outputPath string, printer *ui.Printer) (io.Reader, func()) {
+	if outputPath == "" {
+		return r, func() {}
+	}
+	f, err := os.Create(outputPath)
+	if err != nil {
+		printer.StepWarn("Failed to create claude-output.jsonl: " + err.Error())
+		return r, func() {}
+	}
+	return io.TeeReader(r, f), func() { f.Close() }
 }
 
 var heartbeatInterval = 30 * time.Second
@@ -1236,6 +1325,25 @@ func relOrAbs(base, path string) string {
 		return path
 	}
 	return rel
+}
+
+// excludeAgentWorkingDirs adds agent working directory patterns to
+// .git/info/exclude so they are invisible to git status and git add.
+func excludeAgentWorkingDirs(sandboxName, repoDir string, printer *ui.Printer) error {
+	var lines []string
+	for _, pattern := range agentWorkingDirExcludes {
+		lines = append(lines, pattern)
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	payload := strings.Join(lines, "\n")
+	excludeCmd := fmt.Sprintf("printf '%%s\\n' '%s' >> %s/.git/info/exclude",
+		payload, repoDir)
+	if _, _, _, err := sandbox.Exec(sandboxName, excludeCmd, 5*time.Second); err != nil {
+		return fmt.Errorf("writing git exclude: %w", err)
+	}
+	return nil
 }
 
 // hasAgentsMD checks whether the repo directory contains an AGENTS.md file
@@ -1760,4 +1868,57 @@ func crossCompileFullsend(arch, destPath string) error {
 		return fmt.Errorf("cross-compiling for linux/%s: %w", arch, err)
 	}
 	return nil
+}
+
+func titleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+func setupStatusNotifier(fullsendDir string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
+	}
+	owner, repo := parts[0], parts[1]
+
+	token := sOpts.statusToken
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token == "" {
+		return nil, fmt.Errorf("no status token available (set --status-token or GH_TOKEN)")
+	}
+
+	var notifyCfg config.StatusNotificationConfig
+	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
+	if data, err := os.ReadFile(orgConfigPath); err == nil {
+		orgCfg, parseErr := config.ParseOrgConfig(data)
+		if parseErr != nil {
+			printer.StepWarn("Failed to parse config.yaml for status notifications: " + parseErr.Error())
+		} else if orgCfg.Defaults.StatusNotifications != nil {
+			notifyCfg = *orgCfg.Defaults.StatusNotifications
+		}
+	} else if !os.IsNotExist(err) {
+		printer.StepWarn("Failed to read config.yaml for status notifications: " + err.Error())
+	}
+
+	client := gh.New(token)
+
+	sha := os.Getenv("GITHUB_SHA")
+	runID := os.Getenv("GITHUB_RUN_ID")
+	if runID == "" {
+		runID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+
+	n := statuscomment.New(client, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	n.SetWarnFunc(func(format string, args ...any) {
+		printer.StepWarn(fmt.Sprintf(format, args...))
+	})
+	return n, nil
 }

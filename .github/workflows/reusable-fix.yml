@@ -377,3 +377,7 @@ jobs:
         with:
           agent: fix
           version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          status-number: ${{ steps.context.outputs.pr_number }}
+          status-token: ${{ steps.app-token.outputs.token }}

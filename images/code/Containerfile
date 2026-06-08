@@ -71,16 +71,6 @@ RUN case "$TARGETARCH" in \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    GOPATH="/sandbox/go" \
-    GOMODCACHE="/sandbox/go/pkg/mod"
-
-# ---------------------------------------------------------------------------
-# gopls — Go language server for Claude Code LSP code intelligence.
-ARG GOPLS_VERSION=0.18.1
-RUN GOBIN=/usr/local/go/bin go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" \
-    && gopls version
-
 # ---------------------------------------------------------------------------
 # lychee — markdown link checker used by pre-commit hooks (lint-md-links).
 # Baked into the image so pre-commit hooks work without network access.
@@ -122,3 +112,9 @@ COPY scan-secrets /usr/local/bin/scan-secrets
 RUN chmod +x /usr/local/bin/scan-secrets
 
 USER sandbox
+
+# ---------------------------------------------------------------------------
+# gopls — Go language server for Claude Code LSP code intelligence.
+ENV PATH="/sandbox/go/bin:/usr/local/go/bin:${PATH}"
+ARG GOPLS_VERSION=0.18.1
+RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version

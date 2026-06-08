@@ -943,19 +943,43 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 }
 
 // GetAuthenticatedUser returns the login of the authenticated user.
+//
+// For classic PATs and OAuth tokens the identity comes from GET /user.
+// GitHub App installation tokens cannot call /user, so when that call
+// fails the method falls back to GET /app and constructs the
+// conventional bot login "{slug}[bot]".
 func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	resp, err := c.get(ctx, "/user")
-	if err != nil {
-		return "", fmt.Errorf("get authenticated user: %w", err)
+	if err == nil {
+		var user struct {
+			Login string `json:"login"`
+		}
+		if err := decodeJSON(resp, &user); err != nil {
+			return "", fmt.Errorf("decode user: %w", err)
+		}
+		return user.Login, nil
 	}
 
-	var user struct {
-		Login string `json:"login"`
+	// /user is not available for GitHub App installation tokens.
+	// Fall back to /app which returns the app's metadata including
+	// its slug, from which we derive the bot login.
+	appResp, appErr := c.get(ctx, "/app")
+	if appErr != nil {
+		// Neither endpoint worked — return the original /user error
+		// because that is the more common path.
+		return "", fmt.Errorf("get authenticated user: %w (app fallback: %v)", err, appErr)
 	}
-	if err := decodeJSON(resp, &user); err != nil {
-		return "", fmt.Errorf("decode user: %w", err)
+
+	var app struct {
+		Slug string `json:"slug"`
 	}
-	return user.Login, nil
+	if appErr := decodeJSON(appResp, &app); appErr != nil {
+		return "", fmt.Errorf("decode app: %w", appErr)
+	}
+	if app.Slug == "" {
+		return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+	}
+	return app.Slug + "[bot]", nil
 }
 
 // GetTokenScopes returns the OAuth scopes granted to the current token
@@ -1419,6 +1443,11 @@ func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string,
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// DeleteIssueComment deletes an issue comment by its numeric ID.
+func (c *LiveClient) DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error {
+	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID))
 }
 
 // MinimizeComment minimizes (hides) an issue or review comment via the

@@ -752,3 +752,130 @@ repos: {}
 		assert.NotContains(t, string(data), "allowed_remote_resources")
 	})
 }
+
+// --- StatusNotifications tests ---
+
+func TestParseOrgConfig_WithStatusNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  status_notifications:
+    comment:
+      start: enabled
+      completion: disabled
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Defaults.StatusNotifications)
+	assert.Equal(t, "enabled", cfg.Defaults.StatusNotifications.Comment.Start)
+	assert.Equal(t, "disabled", cfg.Defaults.StatusNotifications.Comment.Completion)
+}
+
+func TestParseOrgConfig_WithoutStatusNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Defaults.StatusNotifications)
+}
+
+func TestOrgConfigValidate_ValidStatusNotifications(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestOrgConfigValidate_InvalidCommentStart(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "bogus"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Completion: "bogus"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status_notifications.comment.completion")
+}
+
+func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "enabled"},
+			},
+		},
+		Agents: []AgentEntry{},
+		Repos:  map[string]RepoConfig{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "status_notifications:")
+	assert.Contains(t, string(data), "start: enabled")
+}
+
+func TestOrgConfigMarshal_WithoutStatusNotifications(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+		Agents: []AgentEntry{},
+		Repos:  map[string]RepoConfig{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "status_notifications")
+}

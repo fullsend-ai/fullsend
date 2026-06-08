@@ -1,4 +1,5 @@
-# lint-workflow-size: max-lines=390
+---
+# lint-workflow-size: max-lines=392
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -22,6 +23,7 @@ jobs:
       actions: write
       contents: read
       id-token: write
+      pull-requests: read
     steps:
       - name: Determine stage
         id: route
@@ -285,17 +287,18 @@ jobs:
       - name: Block fork PRs for fix stage
         if: steps.route.outputs.stage == 'fix' && steps.role-check.outputs.skipped != 'true' && github.event.issue.pull_request
         env:
-          GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          HEAD_REPO=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name' 2>/dev/null || true)
-          BASE_REPO=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" --jq '.base.repo.full_name' 2>/dev/null || true)
-          if [[ -z "$HEAD_REPO" || -z "$BASE_REPO" ]]; then
-            echo "::error::Cannot determine fork status — blocking fix agent (fail-closed)"
+          REPOS=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" \
+            --jq '[.head.repo.full_name, .base.repo.full_name] | @tsv' 2>/dev/null) || {
+            echo "::error::Could not determine PR repos — blocking fix for safety"
             exit 1
-          fi
+          }
+          HEAD_REPO=$(printf '%s' "$REPOS" | cut -f1)
+          BASE_REPO=$(printf '%s' "$REPOS" | cut -f2)
           if [[ "$HEAD_REPO" != "$BASE_REPO" ]]; then
             echo "::error::Fork PR detected (head=$HEAD_REPO, base=$BASE_REPO) — fix agent blocked"
             exit 1

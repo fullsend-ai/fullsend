@@ -87,10 +87,21 @@ func (ClaudeRuntime) Run(params RunParams, printer *ui.Printer, start time.Time,
 	}
 	defer cancel()
 
-	if parseErr := progressParser(stdout, printer, start, metrics); parseErr != nil {
+	var r io.Reader = stdout
+	if params.OutputPath != "" {
+		f, ferr := os.Create(params.OutputPath)
+		if ferr != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to create %s: ", params.OutputPath) + ferr.Error())
+		} else {
+			defer f.Close()
+			r = io.TeeReader(stdout, f)
+		}
+	}
+
+	if parseErr := progressParser(r, printer, start, metrics); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
-		io.Copy(io.Discard, stdout)
+		io.Copy(io.Discard, r)
 	}
 
 	waitErr := execCmd.Wait()
@@ -218,6 +229,7 @@ func buildRunCommand(params RunParams) string {
 // Claude Code reads two settings.json files in the sandbox:
 //   - {CLAUDE_CONFIG_DIR}/settings.json — plugin marketplace state (bootstrapPlugins)
 //   - {SandboxWorkspace}/.claude/settings.json — security Pre/PostToolUse hooks (here)
+//
 // Keep these paths separate; merging them would mix plugin config with hook wiring.
 func installClaudeHooks(sandboxName string, hooks security.ClaudeSandboxHooks) error {
 	hooksDir := sandbox.SandboxWorkspace + "/.claude/hooks"

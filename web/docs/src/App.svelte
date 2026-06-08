@@ -485,7 +485,7 @@
             />
           </svg>
         </button>
-        <span class="docs-brand">Fullsend docs</span>
+        <a class="docs-brand" href="/">Fullsend</a>
       </header>
 
       <div class="docs-main-wrap">

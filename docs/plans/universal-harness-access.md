@@ -953,8 +953,7 @@ type ResolveOpts struct {
 
 // ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
 // Skills) in the harness to local cache paths. Local paths are left unchanged.
-// The harness is modified in place.
-// Phase 1: single-level resolution only (no transitive deps).
+// The harness is modified in place. Transitive deps supported via MaxDepth.
 func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) ([]Dependency, error) {
     var deps []Dependency
 
@@ -971,18 +970,17 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
     return deps, nil
 }
 
-// resolveResourceWithLimits resolves a single resource with depth and count limits.
-// Phase 1: depth is always 0 (no transitive resolution), parentRef is unused
-// Phase 2+: depth tracking prevents cycles and runaway recursion, parentRef enables relative path resolution
-func resolveResourceWithLimits(ctx context.Context, workspaceRoot, ref string, allowedPrefixes []string, policy fetch.FetchPolicy, depth int, resourceCount *int, parentRef string) (string, error) {
-    // Phase 2+: Check depth limit (Phase 1 always passes since depth=0)
-    if depth > policy.MaxDepth {
-        return "", fmt.Errorf("exceeded maximum dependency depth of %d", policy.MaxDepth)
+// Note: pseudocode below is illustrative. The implemented API uses resolveURL +
+// resolveTransitiveDeps with explicit depth parameters and opts.MaxDepth/MaxResources.
+// resolveResourceWithLimits was the design placeholder name; it was not shipped.
+func resolveResourceWithLimits(ctx context.Context, workspaceRoot, ref string, allowedPrefixes []string, opts ResolveOpts, depth int, resourceCount *int, parentRef string) (string, error) {
+    if depth > opts.MaxDepth {
+        return "", fmt.Errorf("exceeded maximum dependency depth of %d", opts.MaxDepth)
     }
 
     // Check resource count limit (applies to all phases)
-    if *resourceCount >= policy.MaxResources {
-        return "", fmt.Errorf("exceeded maximum resource count of %d", policy.MaxResources)
+    if *resourceCount >= opts.MaxResources {
+        return "", fmt.Errorf("exceeded maximum resource count of %d", opts.MaxResources)
     }
 
     if harness.IsURL(ref) {

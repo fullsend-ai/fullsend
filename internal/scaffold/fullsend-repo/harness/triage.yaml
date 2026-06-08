@@ -1,3 +1,4 @@
+---
 agent: agents/triage.md
 doc: docs/agents/triage.md
 model: opus

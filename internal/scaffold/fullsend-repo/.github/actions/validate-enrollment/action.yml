@@ -1,3 +1,4 @@
+---
 name: Validate Enrollment
 description: Validate that source repository is enrolled and extract repository metadata
 

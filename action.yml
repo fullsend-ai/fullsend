@@ -27,6 +27,18 @@ inputs:
     description: >-
       GitHub token for authenticated API calls (avoids 60 req/hour unauthenticated rate limit).
     default: ${{ github.token }}
+  run-url:
+    description: URL of the CI/CD run for status comments (optional).
+    default: ""
+  status-repo:
+    description: Repository (owner/repo) for status comments (optional).
+    default: ""
+  status-number:
+    description: Issue/PR number for status comments (optional).
+    default: ""
+  status-token:
+    description: Token for status comments (defaults to GH_TOKEN env var).
+    default: ""
 
 runs:
   using: composite
@@ -262,6 +274,10 @@ runs:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
+        STATUS_RUN_URL: ${{ inputs.run-url }}
+        STATUS_REPO: ${{ inputs.status-repo }}
+        STATUS_NUMBER: ${{ inputs.status-number }}
+        STATUS_TOKEN: ${{ inputs.status-token }}
       run: |
         set -euo pipefail
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
@@ -271,10 +287,24 @@ runs:
         # Post-scripts enforce secret scanning, protected-path blocks,
         # and review-downgrade controls. Skipping them in CI bypasses
         # all post-push security gates.
+        if [[ -n "${STATUS_TOKEN}" ]]; then
+          echo "::add-mask::${STATUS_TOKEN}"
+        fi
+        STATUS_FLAGS=()
+        if [[ -n "${STATUS_REPO}" && -n "${STATUS_NUMBER}" ]]; then
+          STATUS_FLAGS+=(--status-repo "${STATUS_REPO}" --status-number "${STATUS_NUMBER}")
+          if [[ -n "${STATUS_RUN_URL}" ]]; then
+            STATUS_FLAGS+=(--run-url "${STATUS_RUN_URL}")
+          fi
+          if [[ -n "${STATUS_TOKEN}" ]]; then
+            STATUS_FLAGS+=(--status-token "${STATUS_TOKEN}")
+          fi
+        fi
         fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
-          --target-repo "${TARGET_REPO}"
+          --target-repo "${TARGET_REPO}" \
+          "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
 
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'

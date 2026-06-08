@@ -109,6 +109,8 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	content, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
 	require.NoError(t, err)
 	s := string(content)
+	// yamllint document-start rule requires --- at the top
+	assert.True(t, strings.HasPrefix(s, "---\n"), "shim workflow must start with YAML document start marker")
 	// ADR 34: shim has 2 jobs (dispatch + stop-fix), not per-stage jobs
 	assert.Contains(t, s, "dispatch:")
 	assert.Contains(t, s, "stop-fix:")
@@ -669,6 +671,20 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "./.github/actions/")
 }
 
+func TestRepoMaintenanceTokenCoversAllRepos(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/repo-maintenance.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	// The mint-token step must request access to ALL repos (enabled + disabled),
+	// not just enabled ones. Without access to disabled repos, the reconcile
+	// script can't check for or remove the shim workflow, and silently skips
+	// unenrollment (gh api fails, 2>/dev/null hides it, script thinks "already
+	// unenrolled").
+	assert.Contains(t, s, "select(.value.enabled == true or .value.enabled == false)",
+		"repo-list step must extract both enabled and disabled repos so the minted token covers them for unenrollment")
+}
+
 func TestMintTokenActionContent(t *testing.T) {
 	content, err := FullsendRepoFile(".github/actions/mint-token/action.yml")
 	require.NoError(t, err)
@@ -841,6 +857,23 @@ func TestPrioritizeHarnessContent(t *testing.T) {
 	assert.Contains(t, s, "post_script")
 	assert.Contains(t, s, "runner_env")
 	assert.Contains(t, s, "PROJECT_NUMBER")
+}
+
+func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
+	// yamllint document-start rule requires --- at the top of every YAML file.
+	// Walk embedded scaffold YAML/YML files and verify each starts with "---\n".
+	var checked int
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
+		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+			return nil
+		}
+		assert.True(t, strings.HasPrefix(string(content), "---\n"),
+			"%s must start with YAML document start marker (---)", path)
+		checked++
+		return nil
+	})
+	require.NoError(t, err)
+	assert.True(t, checked >= 20, "expected at least 20 YAML files, got %d", checked)
 }
 
 func TestValidateTriageDeleted(t *testing.T) {

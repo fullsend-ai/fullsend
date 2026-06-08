@@ -1,3 +1,4 @@
+---
 name: Setup GCP
 description: Authenticate to Google Cloud via Workload Identity Federation, mask credentials, and prepare sandbox credentials
 

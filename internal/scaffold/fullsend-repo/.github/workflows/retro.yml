@@ -1,3 +1,4 @@
+---
 # fullsend-stage: retro
 name: Retro
 
@@ -25,7 +26,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  debounce:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: sleep 60
+
   retro:
+    needs: debounce
     uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
     with:
       event_type: ${{ inputs.event_type }}

@@ -539,6 +539,85 @@ run_error_comment_test "error-comment-non-org-mode-fallback" \
   "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
   ""
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the agent artifact stripping logic from
+# post-code.sh section 2b. Given a list of changed files, returns which
+# files would be stripped as agent artifacts.
+# ---------------------------------------------------------------------------
+strip_agent_artifacts() {
+  local changed_files="$1"
+  local agent_artifact_patterns=".agentready/ .fullsend-workspace/"
+  local stripped=""
+
+  for file in ${changed_files}; do
+    local is_artifact=false
+    for pattern in ${agent_artifact_patterns}; do
+      local dir="${pattern%/}"
+      case "${file}" in
+        "${dir}"/*|"${dir}") is_artifact=true; break ;;
+        */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
+      esac
+    done
+    if [ "${is_artifact}" = "true" ]; then
+      stripped="${stripped} ${file}"
+    fi
+  done
+
+  echo "${stripped}" | xargs
+}
+
+run_artifact_test() {
+  local test_name="$1"
+  local changed_files="$2"
+  local expected_stripped="$3"
+
+  local actual
+  actual="$(strip_agent_artifacts "${changed_files}")"
+
+  if [ "${actual}" != "${expected_stripped}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  changed_files:     '${changed_files}'"
+    echo "  expected stripped: '${expected_stripped}'"
+    echo "  actual stripped:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Agent artifact stripping test cases ---
+
+# .agentready/ files should be stripped
+run_artifact_test "strip-agentready-file" \
+  ".agentready/assessment.json src/main.go" \
+  ".agentready/assessment.json"
+
+# .fullsend-workspace/ files should be stripped
+run_artifact_test "strip-fullsend-workspace-file" \
+  ".fullsend-workspace/scratch.txt src/main.go" \
+  ".fullsend-workspace/scratch.txt"
+
+# Nested paths should also be stripped
+run_artifact_test "strip-nested-agentready" \
+  "subdir/.agentready/data.json src/main.go" \
+  "subdir/.agentready/data.json"
+
+# Normal files should not be stripped
+run_artifact_test "keep-normal-files" \
+  "src/main.go internal/handler.go" \
+  ""
+
+# Multiple artifacts stripped together
+run_artifact_test "strip-multiple-artifacts" \
+  ".agentready/a.json .fullsend-workspace/b.txt src/main.go" \
+  ".agentready/a.json .fullsend-workspace/b.txt"
+
+# Empty input should produce no stripping
+run_artifact_test "strip-empty-input" \
+  "" \
+  ""
+
 # --- Summary ---
 
 echo ""

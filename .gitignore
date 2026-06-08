@@ -14,6 +14,7 @@ __pycache__/
 _site/
 bin/
 .playwright/
+.playwright-mcp/
 .claude/settings.local.json
 .vscode/
 *.env

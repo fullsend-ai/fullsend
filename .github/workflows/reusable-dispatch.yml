@@ -6,9 +6,10 @@
 # Flow: shim (per-repo) → reusable-dispatch.yml → reusable-{stage}.yml
 # Nesting: 3 levels of workflow_call (within GitHub's 4-level limit)
 #
-# Stage workflows are referenced with relative paths (./.github/workflows/...)
-# so a pinned caller (e.g. @v0.10.1) resolves them at that exact tag with
-# no hardcoded version strings.
+# Stage workflows are referenced with fully-qualified paths
+# (fullsend-ai/fullsend/.github/workflows/reusable-{stage}.yml@v0) because
+# relative (./) paths resolve against the *caller's* repo, which breaks
+# per-repo mode where the caller is an external repo.
 #
 # Security: all user-controlled inputs (comment body, labels, usernames)
 # are passed via env: variables, not interpolated in run: blocks.
@@ -338,7 +339,9 @@ jobs:
     name: Triage
     needs: route
     if: needs.route.outputs.stage == 'triage'
-    uses: ./.github/workflows/reusable-triage.yml
+    # @v0 is hardcoded — GHA does not support expressions in uses:.
+    # fullsend_ai_ref controls the ref for composite actions inside stage workflows.
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -356,7 +359,7 @@ jobs:
     name: Code
     needs: route
     if: needs.route.outputs.stage == 'code'
-    uses: ./.github/workflows/reusable-code.yml
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -374,7 +377,7 @@ jobs:
     name: Review
     needs: route
     if: needs.route.outputs.stage == 'review'
-    uses: ./.github/workflows/reusable-review.yml
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -392,7 +395,7 @@ jobs:
     name: Fix
     needs: route
     if: needs.route.outputs.stage == 'fix'
-    uses: ./.github/workflows/reusable-fix.yml
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -411,7 +414,7 @@ jobs:
     name: Retro
     needs: route
     if: needs.route.outputs.stage == 'retro'
-    uses: ./.github/workflows/reusable-retro.yml
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -429,7 +432,7 @@ jobs:
     name: Prioritize
     needs: route
     if: needs.route.outputs.stage == 'prioritize'
-    uses: ./.github/workflows/reusable-prioritize.yml
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}

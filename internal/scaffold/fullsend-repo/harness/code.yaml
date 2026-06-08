@@ -1,3 +1,4 @@
+---
 # harness/code.yaml — code agent with pre/post script pipeline.
 #
 # Flow: pre_script → sandbox (agent) → post_script

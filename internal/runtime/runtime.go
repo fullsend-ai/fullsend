@@ -21,6 +21,7 @@ type RunParams struct {
 	PluginDirs    []string
 	Debug         string
 	Timeout       time.Duration
+	OutputPath    string // if set, tee stream-json stdout to this file
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.

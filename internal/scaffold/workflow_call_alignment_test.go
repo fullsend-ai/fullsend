@@ -215,3 +215,29 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 	assert.True(t, strings.Contains(s, "project_number: ${{ inputs.project_number }}"),
 		"prioritize job should thread project_number from dispatch inputs")
 }
+
+// TestReusableDispatchUsesFullyQualifiedPaths validates that reusable-dispatch.yml
+// references stage workflows with fully-qualified paths, not relative (./) paths.
+// Relative paths resolve against the caller's repo, which breaks per-repo mode
+// where the caller is an external repo without these workflow files.
+func TestReusableDispatchUsesFullyQualifiedPaths(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var caller callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &caller))
+
+	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			job, ok := caller.Jobs[stage]
+			require.True(t, ok, "job %q not found", stage)
+			assert.True(t, strings.HasPrefix(job.Uses, "fullsend-ai/fullsend/"),
+				"job %q uses: must be fully-qualified (got %q); relative paths break per-repo mode",
+				stage, job.Uses)
+			assert.True(t, strings.Contains(job.Uses, "@"),
+				"job %q uses: must include a @ref suffix (got %q)",
+				stage, job.Uses)
+		})
+	}
+}

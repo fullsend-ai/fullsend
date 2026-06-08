@@ -311,6 +311,68 @@ func TestGetAuthenticatedUser(t *testing.T) {
 	assert.Equal(t, "test-bot", user)
 }
 
+func TestGetAuthenticatedUser_FallbackToApp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			// Simulate GitHub App installation token: /user returns 403.
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Resource not accessible by integration",
+			})
+		case "/app":
+			json.NewEncoder(w).Encode(map[string]any{
+				"slug": "fullsend-ai-review",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	user, err := client.GetAuthenticatedUser(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai-review[bot]", user)
+}
+
+func TestGetAuthenticatedUser_BothFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "forbidden",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUser(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get authenticated user")
+}
+
+func TestGetAuthenticatedUser_AppEmptySlug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "forbidden",
+			})
+		case "/app":
+			json.NewEncoder(w).Encode(map[string]any{
+				"slug": "",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUser(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty slug")
+}
+
 func TestCreateRepoSecret(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1352,4 +1414,17 @@ func TestCommitFiles_Empty(t *testing.T) {
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", nil)
 	require.NoError(t, err)
 	assert.False(t, committed)
+}
+
+func TestDeleteIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
 }

@@ -392,3 +392,590 @@ func TestResolveHarness_EmptyFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
+
+// skillFrontmatter returns SKILL.md content with the given YAML frontmatter fields
+// and optional body text after the closing delimiter.
+func skillFrontmatter(fields, body string) []byte {
+	return []byte("---\n" + fields + "---\n" + body)
+}
+
+// TestResolveHarness_TransitiveChain verifies A→B→C transitive resolution:
+// all three dependencies are fetched and added to h.Skills.
+func TestResolveHarness_TransitiveChain(t *testing.T) {
+	cContent := []byte("Skill C content — leaf node")
+	cHash := fetch.ComputeSHA256(cContent)
+
+	var bContent, aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		case "/skills/c.md":
+			w.Write(cContent)
+		}
+	}))
+
+	cURL := fmt.Sprintf("%s/skills/c.md#sha256=%s", srv.URL, cHash)
+	bContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", cURL), "Skill B content")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A content")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	aURL := fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)
+	h := &harness.Harness{
+		Skills:                 []string{aURL},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 3)
+	assert.Len(t, h.Skills, 3)
+
+	urls := make(map[string]bool)
+	for _, d := range deps {
+		urls[d.URL] = true
+	}
+	assert.True(t, urls[srv.URL+"/skills/a.md"])
+	assert.True(t, urls[srv.URL+"/skills/b.md"])
+	assert.True(t, urls[srv.URL+"/skills/c.md"])
+}
+
+// TestResolveHarness_DiamondDedup verifies that a diamond graph (A→C, B→C) resolves C
+// exactly once and produces no duplicate entries in deps or h.Skills.
+func TestResolveHarness_DiamondDedup(t *testing.T) {
+	cContent := []byte("Skill C content — shared dep")
+	cHash := fetch.ComputeSHA256(cContent)
+
+	var aContent, bContent []byte
+	var fetchCount atomic.Int32
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		case "/skills/c.md":
+			fetchCount.Add(1)
+			w.Write(cContent)
+		}
+	}))
+
+	cURL := fmt.Sprintf("%s/skills/c.md#sha256=%s", srv.URL, cHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", cURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+	bContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", cURL), "Skill B")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	h := &harness.Harness{
+		Skills: []string{
+			fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash),
+			fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash),
+		},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 3)  // C, A, B — each exactly once
+	assert.Len(t, h.Skills, 3)
+	assert.Equal(t, int32(1), fetchCount.Load()) // C fetched only once
+
+	urls := make(map[string]bool)
+	for _, d := range deps {
+		assert.False(t, urls[d.URL], "duplicate dep URL %s", d.URL)
+		urls[d.URL] = true
+	}
+}
+
+// TestResolveHarness_CycleDetection verifies that A→B→A is rejected with a cycle error.
+// The cycle is detected via the inProgress DFS stack before any hash check on the repeat visit.
+func TestResolveHarness_CycleDetection(t *testing.T) {
+	// Use a placeholder hash for A in B's dep — cycle is detected before integrity check.
+	placeholderHash := strings.Repeat("a", 64)
+
+	var aContent, bContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		}
+	}))
+
+	aURL := fmt.Sprintf("%s/skills/a.md", srv.URL)
+
+	// B references A with a placeholder hash; cycle fires before hash validation.
+	bContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s#sha256=%s\n", aURL, placeholderHash), "Skill B")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s#sha256=%s", aURL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "circular dependency")
+}
+
+// TestResolveHarness_MaxDepthExceeded verifies that a chain A→B→C fails when MaxDepth=1,
+// allowing one level of transitive resolution (B) but blocking the second (C).
+func TestResolveHarness_MaxDepthExceeded(t *testing.T) {
+	cContent := []byte("Skill C — should not be reached")
+	cHash := fetch.ComputeSHA256(cContent)
+
+	var aContent, bContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		case "/skills/c.md":
+			w.Write(cContent)
+		}
+	}))
+
+	cURL := fmt.Sprintf("%s/skills/c.md#sha256=%s", srv.URL, cHash)
+	bContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", cURL), "Skill B")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeded maximum dependency depth")
+}
+
+// TestResolveHarness_MaxResourcesExceeded verifies that resolution stops when the
+// resource count reaches MaxResources, returning an error on the next fetch attempt.
+func TestResolveHarness_MaxResourcesExceeded(t *testing.T) {
+	bContent := []byte("Skill B content")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		}
+	}))
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	// MaxResources=1: A consumes the single slot; B is rejected.
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+		MaxResources:  1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeded maximum resource count")
+}
+
+// TestResolveHarness_TransitiveNotInAllowlist verifies that a transitive dep whose
+// URL does not match allowed_remote_resources is rejected.
+func TestResolveHarness_TransitiveNotInAllowlist(t *testing.T) {
+	bContent := []byte("Skill B content")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		}
+	}))
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills: []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		// Only /skills/a.md is allowed; /skills/b.md (the transitive dep) is not.
+		AllowedRemoteResources: []string{srv.URL + "/skills/a.md"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+// TestResolveHarness_TransitiveHashMismatch verifies that a transitive dep whose
+// fetched content does not match the declared SHA256 hash is rejected.
+func TestResolveHarness_TransitiveHashMismatch(t *testing.T) {
+	// Declare B with the hash of "expected content" but serve "tampered content".
+	expectedBContent := []byte("expected B content")
+	bHash := fetch.ComputeSHA256(expectedBContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write([]byte("tampered B content"))
+		}
+	}))
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+}
+
+// TestResolveHarness_TransitiveRelativeURL verifies that a relative dependency reference
+// in skill frontmatter is resolved against the parent skill's URL via RFC 3986.
+func TestResolveHarness_TransitiveRelativeURL(t *testing.T) {
+	bContent := []byte("Skill B — resolved via relative URL")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/common/b.md":
+			w.Write(bContent)
+		}
+	}))
+
+	// A is at /skills/a.md; the relative dep "../common/b.md" resolves to /common/b.md.
+	relDep := fmt.Sprintf("../common/b.md#sha256=%s", bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", relDep), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 2)
+
+	urls := make(map[string]bool)
+	for _, d := range deps {
+		urls[d.URL] = true
+	}
+	assert.True(t, urls[srv.URL+"/common/b.md"], "relative URL should resolve to /common/b.md")
+}
+
+// TestResolveHarness_ConflictingHashesForSameURL verifies that two skills declaring the
+// same transitive dep URL with different SHA256 hashes is rejected.
+func TestResolveHarness_ConflictingHashesForSameURL(t *testing.T) {
+	dContent := []byte("Skill D content")
+	dHash := fetch.ComputeSHA256(dContent)
+	fakeHash := strings.Repeat("b", 64)
+
+	var aContent, bContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		case "/skills/d.md":
+			w.Write(dContent)
+		}
+	}))
+
+	dURL := srv.URL + "/skills/d.md"
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s#sha256=%s\n", dURL, dHash), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+	bContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s#sha256=%s\n", dURL, fakeHash), "Skill B")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	h := &harness.Harness{
+		Skills: []string{
+			fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash),
+			fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash),
+		},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "conflicting integrity hashes")
+}
+
+// TestResolveHarness_SkillPolicyLeafNode verifies that a skill-level policy reference
+// is fetched and recorded in deps but is NOT appended to h.Skills.
+func TestResolveHarness_SkillPolicyLeafNode(t *testing.T) {
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/policies/sandbox.yaml":
+			w.Write(policyContent)
+		}
+	}))
+
+	policyURL := fmt.Sprintf("%s/policies/sandbox.yaml#sha256=%s", srv.URL, policyHash)
+	aContent = skillFrontmatter(fmt.Sprintf("policy: %s\n", policyURL), "Skill A content")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 2) // skill A + its policy
+	assert.Len(t, h.Skills, 1) // policy is NOT added to h.Skills
+
+	depURLs := make(map[string]bool)
+	for _, d := range deps {
+		depURLs[d.URL] = true
+	}
+	assert.True(t, depURLs[srv.URL+"/policies/sandbox.yaml"], "policy should be in deps")
+
+	for _, s := range h.Skills {
+		assert.NotContains(t, s, "sandbox.yaml", "policy path must not appear in h.Skills")
+	}
+}
+
+// TestResolveHarness_ZeroMaxDepthDisablesTransitive verifies that MaxDepth=0 prevents
+// any transitive dependency resolution even when skills declare dependencies.
+func TestResolveHarness_ZeroMaxDepthDisablesTransitive(t *testing.T) {
+	bContent := []byte("Skill B — must not be fetched")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+	var bFetched atomic.Int32
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			bFetched.Add(1)
+			w.Write(bContent)
+		}
+	}))
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      0, // disabled
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 1)    // only A
+	assert.Len(t, h.Skills, 1) // only A
+	assert.Equal(t, int32(0), bFetched.Load()) // B never fetched
+}
+
+// TestResolveHarness_MaxDepthDefaultApplied verifies that MaxDepth<0 uses DefaultMaxDepth
+// and enables transitive resolution.
+func TestResolveHarness_MaxDepthDefaultApplied(t *testing.T) {
+	bContent := []byte("Skill B content")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		}
+	}))
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1, // uses DefaultMaxDepth
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 2) // A and B both resolved
+}
+
+// TestResolveHarness_NonHTTPSSchemeRejected verifies that resolveURL rejects URLs whose
+// scheme is not https, providing a defense-in-depth check for transitive deps from frontmatter
+// that bypass the harness.IsURL guard applied to direct harness fields.
+func TestResolveHarness_NonHTTPSSchemeRejected(t *testing.T) {
+	bContent := []byte("Skill B content")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		}
+	}))
+
+	// Embed an http:// (non-HTTPS) transitive dep in A's frontmatter.
+	httpDepURL := fmt.Sprintf("http://example.com/skills/b.md#sha256=%s", bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", httpDepURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash)},
+		AllowedRemoteResources: []string{srv.URL + "/", "http://example.com/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scheme must be https")
+}
+
+// TestResolveHarness_DirectAndTransitiveOverlap verifies that a skill appearing both as a
+// direct harness skill and as a transitive dep of another skill is deduplicated in h.Skills.
+func TestResolveHarness_DirectAndTransitiveOverlap(t *testing.T) {
+	bContent := []byte("Skill B — shared skill")
+	bHash := fetch.ComputeSHA256(bContent)
+
+	var aContent []byte
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/a.md":
+			w.Write(aContent)
+		case "/skills/b.md":
+			w.Write(bContent)
+		}
+	}))
+
+	bURL := fmt.Sprintf("%s/skills/b.md#sha256=%s", srv.URL, bHash)
+	aContent = skillFrontmatter(fmt.Sprintf("dependencies:\n  - %s\n", bURL), "Skill A")
+	aHash := fetch.ComputeSHA256(aContent)
+
+	// Both A and B are direct harness skills; A also depends on B transitively.
+	h := &harness.Harness{
+		Skills: []string{
+			fmt.Sprintf("%s/skills/a.md#sha256=%s", srv.URL, aHash),
+			bURL,
+		},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		MaxDepth:      -1,
+	})
+	require.NoError(t, err)
+	assert.Len(t, deps, 2)    // A and B, each exactly once
+	assert.Len(t, h.Skills, 2) // A's path and B's path, B deduped
+
+	// B must not appear twice in h.Skills.
+	seen := make(map[string]bool)
+	for _, s := range h.Skills {
+		assert.False(t, seen[s], "h.Skills contains duplicate entry %s", s)
+		seen[s] = true
+	}
+}

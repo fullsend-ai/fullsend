@@ -22,12 +22,12 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
-	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -106,7 +106,6 @@ var githubOwnerPattern = regexp.MustCompile(`^[a-zA-Z0-9](-?[a-zA-Z0-9])*$`)
 // (alphanumeric, hyphens, dots, and underscores).
 var githubRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
 
-
 // perOrgOnlyFlags are flags that only apply to per-org mode.
 var perOrgOnlyFlags = []string{
 	"enroll-all", "enroll-none",
@@ -118,9 +117,9 @@ type skipMintDispatcher struct {
 	mintURL string
 }
 
-func (d *skipMintDispatcher) Name() string                        { return "skip-mint-check" }
-func (d *skipMintDispatcher) OrgSecretNames() []string            { return nil }
-func (d *skipMintDispatcher) OrgVariableNames() []string          { return []string{"FULLSEND_MINT_URL"} }
+func (d *skipMintDispatcher) Name() string               { return "skip-mint-check" }
+func (d *skipMintDispatcher) OrgSecretNames() []string   { return nil }
+func (d *skipMintDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
 func (d *skipMintDispatcher) StoreAgentPEM(context.Context, string, string, []byte) error {
 	return nil
 }
@@ -129,23 +128,23 @@ func (d *skipMintDispatcher) Provision(context.Context) (map[string]string, erro
 }
 
 type perRepoInstallConfig struct {
-	RepoFullName        string
-	Agents              string
-	MintURL             string
-	InferenceRegion     string
-	InferenceProject    string
+	RepoFullName         string
+	Agents               string
+	MintURL              string
+	InferenceRegion      string
+	InferenceProject     string
 	InferenceWIFProvider string
-	MintProject         string
-	MintRegion          string
-	DryRun              bool
-	SkipAppSetup        bool
-	PublicApps          bool
-	MintProvider        string
-	MintSourceDir       string
-	MintSkipDeploy      bool
-	SkipMintCheck       bool
-	AppSet              string
-	VendorBinary        bool
+	MintProject          string
+	MintRegion           string
+	DryRun               bool
+	SkipAppSetup         bool
+	PublicApps           bool
+	MintProvider         string
+	MintSourceDir        string
+	MintSkipDeploy       bool
+	SkipMintCheck        bool
+	AppSet               string
+	VendorBinary         bool
 }
 
 // wifProviderPattern validates the full WIF provider resource name format
@@ -283,23 +282,23 @@ Inference authentication:
 					perRepoMintProject = inferenceProject
 				}
 				return runPerRepoInstall(cmd.Context(), perRepoInstallConfig{
-					RepoFullName:        arg,
-					Agents:              perRepoAgents,
-					MintURL:             mintURL,
-					InferenceRegion:     inferenceRegion,
-					InferenceProject:    inferenceProject,
+					RepoFullName:         arg,
+					Agents:               perRepoAgents,
+					MintURL:              mintURL,
+					InferenceRegion:      inferenceRegion,
+					InferenceProject:     inferenceProject,
 					InferenceWIFProvider: inferenceWIFProvider,
-					MintProject:         perRepoMintProject,
-					MintRegion:          mintRegion,
-					DryRun:              dryRun,
-					SkipAppSetup:        skipAppSetup,
-					PublicApps:          publicApps,
-					MintProvider:        mintProvider,
-					MintSourceDir:       mintSourceDir,
-					MintSkipDeploy:      mintSkipDeploy,
-					SkipMintCheck:       skipMintCheck,
-					AppSet:              appSet,
-					VendorBinary:        vendorBinary,
+					MintProject:          perRepoMintProject,
+					MintRegion:           mintRegion,
+					DryRun:               dryRun,
+					SkipAppSetup:         skipAppSetup,
+					PublicApps:           publicApps,
+					MintProvider:         mintProvider,
+					MintSourceDir:        mintSourceDir,
+					MintSkipDeploy:       mintSkipDeploy,
+					SkipMintCheck:        skipMintCheck,
+					AppSet:               appSet,
+					VendorBinary:         vendorBinary,
 				})
 			}
 
@@ -1134,7 +1133,7 @@ func newUninstallCmd() *cobra.Command {
 			if os.Getenv("CI") != "" {
 				browser = appsetup.NopBrowser{}
 			}
-			return runUninstall(ctx, client, printer, org, appSet, browser)
+			return runUninstall(ctx, client, printer, org, appSet, browser, os.Stdin)
 		},
 	}
 
@@ -1631,7 +1630,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 }
 
 // runUninstall tears down the fullsend installation.
-func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string, browser appsetup.BrowserOpener) error {
+func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string, browser appsetup.BrowserOpener, stdin io.Reader) error {
 	// Try to load agent slugs from existing config. If the .fullsend repo
 	// is already gone (e.g., previous partial uninstall), fall back to the
 	// default naming convention so we can still guide the user to delete
@@ -1721,54 +1720,80 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	printer.Blank()
 
 	// Check which apps actually exist before opening browser pages.
-	// GitHub App uninstallation via API (DELETE /app/installations/{id}) requires
-	// JWT auth from the app's own private key, not a PAT. Since we authenticate
-	// with a PAT, we open the browser to the app's advanced settings page instead.
-	// The correct URL for org-scoped apps is /organizations/{org}/settings/apps/{slug}/advanced
-	// (the /advanced suffix is required to see the delete button; /settings/apps/{slug}
-	// alone is for user-scoped apps and will 404 for org-scoped ones).
+	// We open the org's installation settings page (/organizations/{org}/settings/installations/{id})
+	// rather than the app's own /advanced page, because the /advanced delete button is only
+	// accessible to the app owner. Users who installed a third-party app are org admins, not
+	// app owners, so they must uninstall via the installation settings page instead.
 	if len(agentSlugs) > 0 {
 		// Find which slugs correspond to real installed apps.
 		var existingSlugs []string
-		installations, listErr := client.ListOrgInstallations(ctx, org)
+		appIDs := make(map[string]int)
+		appInstallations, listErr := client.ListOrgInstallations(ctx, org)
 		if listErr == nil {
-			installedSet := make(map[string]bool, len(installations))
-			for _, inst := range installations {
-				installedSet[inst.AppSlug] = true
+			for _, inst := range appInstallations {
+				appIDs[inst.AppSlug] = inst.ID
 			}
 			for _, slug := range agentSlugs {
-				if installedSet[slug] {
+				if _, ok := appIDs[slug]; ok {
 					existingSlugs = append(existingSlugs, slug)
-				} else {
-					printer.StepInfo(fmt.Sprintf("App %s not found, skipping", slug))
 				}
 			}
 		} else {
-			// Can't check — fall back to opening all of them.
-			printer.StepWarn("Could not verify which apps exist; opening all")
+			printer.StepWarn(fmt.Sprintf("Could not verify which apps are installed for %s. Assuming all apps are installed.", org))
 			existingSlugs = agentSlugs
 		}
 
 		if len(existingSlugs) > 0 {
-			printer.Header("App cleanup")
-			printer.StepInfo("Opening browser for each app that needs to be deleted.")
-			printer.StepInfo("Click 'Delete GitHub App' on each page, then return here.")
+			printer.Header("App uninstall")
+			printer.StepInfo("Opening browser for each app installation that needs to be removed.")
+			printer.StepInfo("Click 'Uninstall' on each page. Press Enter here after each one to continue.")
 			printer.Blank()
 
+			stdinReader := bufio.NewReader(stdin)
 			for _, slug := range existingSlugs {
-				deleteURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", org, slug)
-				printer.StepStart(fmt.Sprintf("Opening %s settings...", slug))
-				if err := browser.Open(ctx, deleteURL); err != nil {
-					printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
-					printer.StepInfo(fmt.Sprintf("  Delete manually at: %s", deleteURL))
+				var uninstallURL string
+				if id := appIDs[slug]; id != 0 {
+					uninstallURL = fmt.Sprintf("https://github.com/organizations/%s/settings/installations/%d", org, id)
 				} else {
-					printer.StepDone(fmt.Sprintf("Opened %s — %s", slug, deleteURL))
+					uninstallURL = fmt.Sprintf("https://github.com/organizations/%s/settings/installations", org)
+				}
+				printer.StepStart(fmt.Sprintf("Opening %s installation settings...", slug))
+				if err := browser.Open(ctx, uninstallURL); err != nil {
+					printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
+					printer.StepInfo(fmt.Sprintf("  Uninstall manually at: %s", uninstallURL))
+				} else {
+					printer.StepDone(fmt.Sprintf("Opened %s — %s", slug, uninstallURL))
+				}
+				printer.StepInfo(fmt.Sprintf("Press Enter once %s is uninstalled...", slug))
+				if _, err := stdinReader.ReadString('\n'); err != nil && !errors.Is(err, io.EOF) {
+					return fmt.Errorf("reading confirmation: %w", err)
 				}
 			}
 			printer.Blank()
+
+			printer.StepStart("Verifying if apps were removed")
+			freshInstalls, verifyErr := client.ListOrgInstallations(ctx, org)
+			if verifyErr != nil {
+				printer.StepWarn(fmt.Sprintf("Could not get installations for org %s: %v", org, verifyErr))
+			} else {
+				stillInstalledSlugs := []string{}
+				for _, slug := range existingSlugs {
+					for _, inst := range freshInstalls {
+						if inst.AppSlug == slug {
+							stillInstalledSlugs = append(stillInstalledSlugs, inst.AppSlug)
+						}
+					}
+				}
+
+				if len(stillInstalledSlugs) != 0 {
+					printer.StepWarn(fmt.Sprintf("Some fullsend apps are still installed — uninstall manually at: %s", fmt.Sprintf("https://github.com/organizations/%s/settings/installations", org)))
+				} else {
+					printer.StepDone("Apps were uninstalled")
+				}
+			}
 		} else if listErr == nil {
 			printer.StepWarn("No fullsend apps found installed in this organization.")
-			printer.StepInfo("If apps were created under a custom --app-set prefix, re-run with that prefix.")
+			printer.StepWarn("If apps were created under a custom --app-set prefix, re-run with that prefix.")
 		}
 	}
 

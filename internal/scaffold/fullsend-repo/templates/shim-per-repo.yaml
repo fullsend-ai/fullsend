@@ -1,3 +1,4 @@
+---
 # fullsend shim workflow (per-repo installation mode)
 # Routes events to agent workflows via reusable-dispatch.yml.
 # All agent execution happens in this repo's context — no external
