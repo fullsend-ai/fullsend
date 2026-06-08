@@ -414,6 +414,7 @@ body {
   border-radius: 0.25rem;
   background: transparent;
   color: inherit;
+  text-decoration: none;
   cursor: pointer;
 }
 
