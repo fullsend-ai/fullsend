@@ -18,7 +18,8 @@ fullsend
 │   ├── deploy                               # Deploy/update mint Cloud Function
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
-│   └── status       [org]                   # Inspect mint state and PEM health
+│   ├── status       [org]                   # Inspect mint state and PEM health
+│   └── run                                  # Run standalone token mint (no GCP required)
 ├── inference                                # GCP: inference WIF management
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
@@ -106,7 +107,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  For each role in --agents:                                │ │
 │  │    - Create/reuse GitHub App ({appSet}-{role} via --app-set)│ │
 │  │    - Download PEM key from App creation flow               │ │
-│  │    - Store PEM in GCP Secret Manager                       │ │
+│  │    - Store PEM (Secret Manager, disk, or repo secret)      │ │
 │  │    - Record App ID + Client ID                             │ │
 │  │                                                            │ │
 │  │  Shared code: runAppSetup() → []AgentCredentials           │ │
@@ -117,7 +118,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │                                                            │ │
 │  │  If mint not found → deploy GCF (Provision)                │ │
 │  │  If mint exists    → register org (EnsureOrgInMint)        │ │
-│  │                    → store PEMs in Secret Manager          │ │
+│  │                    → store PEMs (Secret Manager or disk)   │ │
 │  │                                                            │ │
 │  │  Both modes use gcf.NewProvisioner with same Config{}      │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
@@ -164,7 +165,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  │ Per-org:  secrets → .fullsend config repo │              │ │
 │  │  │           MINT_URL → org variable         │              │ │
 │  │  │           + repo var (dot-prefix fix)      │              │ │
-│  │  │           + PEM keys as repo secrets       │              │ │
+│  │  │           + PEM keys (Secret Manager, disk, │              │ │
+│  │  │             or repo secrets)               │              │ │
 │  │  │           + client IDs as repo variables   │              │ │
 │  │  │                                           │              │ │
 │  │  │ Per-repo: secrets → target repo            │              │ │

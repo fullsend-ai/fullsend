@@ -18,6 +18,8 @@ Date: 2026-04-02
 
 Accepted
 
+Note: The Decision section describes repo secrets as the PEM storage location. The dev mint introduced later uses three storage backends depending on install flags: Secret Manager (GCP mint), disk (dev mint with `--mint-data-dir`), or repo secrets (fallback). See [ADR 0043](0043-skip-mint-check-updated-semantics.md).
+
 ## Context
 
 Agents need forge credentials to act on repos. A single shared credential for all agent roles violates least-privilege: a review agent would hold write permissions it should never use. The identity model must scope permissions per role while keeping setup automatable. See [agent-architecture.md](../problems/agent-architecture.md) and [security-threat-model.md](../problems/security-threat-model.md).

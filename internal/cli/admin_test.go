@@ -3,9 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +21,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -1465,15 +1470,198 @@ func TestInstallCmd_SkipMintCheckRejectsHTTP(t *testing.T) {
 	assert.Contains(t, err.Error(), "--mint-url must be a valid HTTPS URL")
 }
 
+func TestInstallCmd_MintDataDirRequiresSkipMintCheck_PerOrg(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--mint-data-dir", "/tmp/mint",
+		"--mint-url", "https://mint.example.com",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-data-dir requires --skip-mint-check")
+}
+
+func TestInstallCmd_MintDataDirRequiresSkipMintCheck_PerRepo(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-data-dir", "/tmp/mint",
+		"--mint-url", "https://mint.example.com",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-data-dir requires --skip-mint-check")
+}
+
+func TestResolveAppSetupMintProject(t *testing.T) {
+	tests := []struct {
+		name          string
+		mintProject   string
+		skipMintCheck bool
+		mintDataDir   string
+		want          string
+	}{
+		{"no flags", "proj", false, "", "proj"},
+		{"skip-mint-check alone clears project", "proj", true, "", ""},
+		{"skip-mint-check + data-dir keeps project", "proj", true, "/tmp/mint", "proj"},
+		{"no project, no skip", "", false, "", ""},
+		{"no project, skip + data-dir", "", true, "/tmp/mint", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveAppSetupMintProject(tc.mintProject, tc.skipMintCheck, tc.mintDataDir)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestSkipMintDispatcher(t *testing.T) {
-	d := &skipMintDispatcher{mintURL: "https://mint.example.com/v1/token"}
-	assert.Equal(t, "skip-mint-check", d.Name())
-	assert.Nil(t, d.OrgSecretNames())
-	assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
-	assert.NoError(t, d.StoreAgentPEM(context.Background(), "org", "role", []byte("pem")))
-	vars, err := d.Provision(context.Background())
+	t.Run("no data dir", func(t *testing.T) {
+		d := &skipMintDispatcher{mintURL: "https://mint.example.com"}
+		assert.Equal(t, "skip-mint-check", d.Name())
+		assert.Nil(t, d.OrgSecretNames())
+		assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
+		assert.NoError(t, d.StoreAgentPEM(context.Background(), "org", "role", []byte("pem")))
+		vars, err := d.Provision(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "https://mint.example.com"}, vars)
+	})
+
+	t.Run("with data dir writes PEM to disk", func(t *testing.T) {
+		dataDir := t.TempDir()
+		d := &skipMintDispatcher{mintURL: "http://localhost:8321", dataDir: dataDir}
+		assert.NoError(t, d.StoreAgentPEM(context.Background(), "myorg", "triage", []byte("pem-data")))
+
+		pemData, err := os.ReadFile(filepath.Join(dataDir, "pems", "triage.pem"))
+		require.NoError(t, err)
+		assert.Equal(t, "pem-data", string(pemData))
+
+		// StoreAgentPEM writes PEM only; config.json is managed by WithStoreSecret.
+		_, statErr := os.Stat(filepath.Join(dataDir, "config.json"))
+		assert.True(t, os.IsNotExist(statErr), "StoreAgentPEM should not write config.json")
+
+		vars, err := d.Provision(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "http://localhost:8321"}, vars)
+	})
+}
+
+func TestSkipMintDispatcher_PathTraversal(t *testing.T) {
+	dataDir := t.TempDir()
+	d := &skipMintDispatcher{mintURL: "http://localhost:8321", dataDir: dataDir}
+	err := d.StoreAgentPEM(context.Background(), "myorg", "../evil", []byte("pem-data"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestStorePEMToDisk(t *testing.T) {
+	t.Run("creates config.json on first write", func(t *testing.T) {
+		dir := t.TempDir()
+		err := storePEMToDisk(dir, "myorg", "triage", "42", []byte("pem-data"))
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(dir, "pems", "triage.pem"))
+		require.NoError(t, err)
+		assert.Equal(t, "pem-data", string(data))
+
+		cfgData, err := os.ReadFile(filepath.Join(dir, "config.json"))
+		require.NoError(t, err)
+		var cfg map[string]interface{}
+		require.NoError(t, json.Unmarshal(cfgData, &cfg))
+		assert.Equal(t, "myorg", cfg["org"])
+		roles := cfg["roles"].(map[string]interface{})
+		assert.Equal(t, "42", roles["triage"].(map[string]interface{})["app_id"])
+	})
+
+	t.Run("merges into existing config.json", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, storePEMToDisk(dir, "myorg", "triage", "42", []byte("pem1")))
+		require.NoError(t, storePEMToDisk(dir, "myorg", "coder", "43", []byte("pem2")))
+
+		cfgData, err := os.ReadFile(filepath.Join(dir, "config.json"))
+		require.NoError(t, err)
+		var cfg map[string]interface{}
+		require.NoError(t, json.Unmarshal(cfgData, &cfg))
+		roles := cfg["roles"].(map[string]interface{})
+		assert.Len(t, roles, 2)
+		assert.Equal(t, "42", roles["triage"].(map[string]interface{})["app_id"])
+		assert.Equal(t, "43", roles["coder"].(map[string]interface{})["app_id"])
+	})
+
+	t.Run("rejects invalid role name", func(t *testing.T) {
+		dir := t.TempDir()
+		err := storePEMToDisk(dir, "myorg", "foo--bar", "42", []byte("pem"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid role name")
+	})
+
+	t.Run("errors on corrupted config.json", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte("not json"), 0o600))
+		err := storePEMToDisk(dir, "myorg", "triage", "42", []byte("pem"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parsing existing config.json")
+	})
+}
+
+func TestMintDataDirSecretExistsCallback(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Write a PEM to simulate a prior install.
+	err := storePEMToDisk(dataDir, "myorg", "triage", "42", []byte("pem-data"))
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "https://mint.example.com/v1/token"}, vars)
+
+	// Simulate the SecretExists callback used when mintDataDir is set.
+	secretExists := func(role string) (bool, error) {
+		if err := mintcore.ValidateRoleName(role); err != nil {
+			return false, fmt.Errorf("invalid role name %q", role)
+		}
+		pemPath := filepath.Join(dataDir, "pems", role+".pem")
+		_, statErr := os.Stat(pemPath)
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return statErr == nil, statErr
+	}
+
+	exists, err := secretExists("triage")
+	require.NoError(t, err)
+	assert.True(t, exists, "should detect existing PEM")
+
+	exists, err = secretExists("coder")
+	require.NoError(t, err)
+	assert.False(t, exists, "should not detect missing PEM")
+
+	_, err = secretExists("foo--bar")
+	require.Error(t, err, "double-hyphen role should be rejected")
+}
+
+func TestMintDataDirStoreSecretCallback(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Simulate the WithStoreSecret callback used when mintDataDir is set.
+	storeSecret := func(role string, appID int, pem string) error {
+		appIDStr := ""
+		if appID != 0 {
+			appIDStr = strconv.Itoa(appID)
+		}
+		return storePEMToDisk(dataDir, "myorg", role, appIDStr, []byte(pem))
+	}
+
+	err := storeSecret("triage", 42, "pem-data")
+	require.NoError(t, err)
+
+	cfgData, err := os.ReadFile(filepath.Join(dataDir, "config.json"))
+	require.NoError(t, err)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal(cfgData, &cfg))
+	roles := cfg["roles"].(map[string]interface{})
+	assert.Equal(t, "42", roles["triage"].(map[string]interface{})["app_id"])
+
+	pemData, err := os.ReadFile(filepath.Join(dataDir, "pems", "triage.pem"))
+	require.NoError(t, err)
+	assert.Equal(t, "pem-data", string(pemData))
 }
 
 func TestValidateMintURLHTTPS(t *testing.T) {
@@ -1506,7 +1694,14 @@ func TestValidateMintURLHTTPS(t *testing.T) {
 func TestValidateSkipMintCheck(t *testing.T) {
 	require.Error(t, validateSkipMintCheck(""))
 	require.Error(t, validateSkipMintCheck("http://example.com"))
-	require.NoError(t, validateSkipMintCheck("https://mint.example.com/v1/token"))
+	require.Error(t, validateSkipMintCheck("http://192.168.1.1:8321"))
+	require.Error(t, validateSkipMintCheck("http://10.0.0.1:8321"))
+	require.Error(t, validateSkipMintCheck("http://172.16.0.1:8321"))
+	require.Error(t, validateSkipMintCheck("http://user:pass@localhost:8321"))
+	require.NoError(t, validateSkipMintCheck("https://mint.example.com"))
+	require.NoError(t, validateSkipMintCheck("http://localhost:8321"))
+	require.NoError(t, validateSkipMintCheck("http://127.0.0.1:8321"))
+	require.NoError(t, validateSkipMintCheck("http://[::1]:8321"))
 }
 
 func TestValidateWIFProvider_Valid(t *testing.T) {

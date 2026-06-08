@@ -30,7 +30,13 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 
 These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full authoring guidance is in [`skills/writing-adrs/SKILL.md`](skills/writing-adrs/SKILL.md); invoke that skill when writing a new ADR.
 
-**Immutability:** Once an ADR on `main` has status **Accepted**, its Context, Decision, and Consequences sections are frozen. Do not add post-decision notes, rewrite rationale, or edit consequences in place. When circumstances change, write a **new** ADR that supersedes the old one. The only acceptable edits to an Accepted ADR on `main` are status changes (e.g., to Deprecated or Superseded) and links to the superseding ADR. Typos and broken links are narrow exceptions — call them out in the PR description.
+**Immutability:** Once an ADR on `main` has status **Accepted**, its Context, Decision, and Consequences sections are frozen. Do not add post-decision notes, rewrite rationale, or edit consequences in place. When circumstances change, write a **new** ADR that supersedes the old one. The only acceptable edits to an Accepted ADR on `main` are:
+- Status changes (e.g., to Deprecated or Superseded)
+- Links to a superseding ADR
+- Brief `Note:` paragraphs in the **Status section only** that add discoverability cross-references without modifying the recorded decision (e.g., "Note: this area was expanded in ADR 0043")
+- Typos and broken links (narrow exceptions — call them out in the PR description)
+
+Use a full superseding ADR (not a Status-section Note) when the *decision itself changes* — i.e., when the new behavior would contradict the frozen Decision section if read side-by-side. Use a Note only when the old decision is still correct in its original scope and the new ADR *extends* it for a new scenario.
 
 **New ADRs in pull requests:** Approval happens at **merge**, not when the branch is created. If the decision is made, set status to **Accepted** in the ADR you are proposing (not **Proposed** merely because the PR is open). Use **Proposed** or **Undecided** only when the decision itself is still unsettled. When status is Accepted, update `docs/architecture.md` and related problem docs in the same PR per the writing-adrs skill.
 

@@ -19,7 +19,9 @@ Date: 2026-05-06
 
 ## Status
 
-Accepted
+Accepted (`--skip-mint-check` semantics superseded by [ADR 0043](0043-skip-mint-check-updated-semantics.md))
+
+Note: ADR 0043 describes the updated `--skip-mint-check` behavior: GCP provisioning is skipped but GitHub Apps are still created, and HTTP is permitted for loopback addresses.
 
 ## Context
 

@@ -17,6 +17,8 @@ Date: 2026-04-28
 
 Accepted (Option C superseded by [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) for the event-driven dispatch path)
 
+Note: The Consequences section states "App PEMs stay in the config repo." With the dev mint, PEMs may be stored on local disk (outside any Git repository) when `--mint-data-dir` is used. See [ADR 0043](0043-skip-mint-check-updated-semantics.md).
+
 ## Context
 
 [ADR 0008](0008-workflow-dispatch-for-cross-repo-dispatch.md) established that

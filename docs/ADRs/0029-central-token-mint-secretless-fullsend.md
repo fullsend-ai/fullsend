@@ -20,6 +20,8 @@ Date: 2026-05-05
 
 Accepted
 
+Note: The Decision section assumes PEMs are held exclusively at the GCP Cloud Function mint. The dev mint introduced later stores PEMs on local disk when `--mint-data-dir` is used, without GCP infrastructure. See [ADR 0043](0043-skip-mint-check-updated-semantics.md).
+
 <!-- Once this ADR is Accepted, its content is frozen. Do not edit the Context,
      Decision, or Consequences sections. If circumstances change, write a new
      ADR that supersedes this one. Only status changes and links to superseding

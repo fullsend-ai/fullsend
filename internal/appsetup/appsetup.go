@@ -56,7 +56,8 @@ type BrowserOpener interface {
 type SecretExistsFunc func(role string) (bool, error)
 
 // StoreSecretFunc stores a PEM secret for a given role immediately after app creation.
-type StoreSecretFunc func(ctx context.Context, role, pem string) error
+// The appID is the GitHub App ID associated with the role.
+type StoreSecretFunc func(ctx context.Context, role string, appID int, pem string) error
 
 // NopBrowser is a no-op browser used in CI/automated environments.
 type NopBrowser struct{}
@@ -303,7 +304,7 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 	// Store PEM immediately so it survives partial install failures.
 	if s.storeSecret != nil && creds.PEM != "" {
 		s.ui.StepStart(fmt.Sprintf("Storing private key for %s", role))
-		if err := s.storeSecret(ctx, role, creds.PEM); err != nil {
+		if err := s.storeSecret(ctx, role, creds.AppID, creds.PEM); err != nil {
 			return nil, fmt.Errorf("storing secret for %s: %w", role, err)
 		}
 		s.ui.StepDone(fmt.Sprintf("Stored private key for %s", role))
@@ -418,7 +419,7 @@ func ValidateRSAPEM(data []byte) error {
 
 // recoverPEM guides the user through providing or generating a private key
 // for an existing GitHub App whose key is missing from Secret Manager.
-func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string) (string, error) {
+func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string, appID int) (string, error) {
 	s.ui.StepInfo(fmt.Sprintf("App %s exists but its private key is missing.", slug))
 
 	hasKey, err := s.prompter.Confirm("Do you already have the .pem file?")
@@ -482,7 +483,7 @@ func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string) (string,
 
 	if s.storeSecret != nil {
 		s.ui.StepStart(fmt.Sprintf("Storing recovered private key for %s", role))
-		if err := s.storeSecret(ctx, role, pemStr); err != nil {
+		if err := s.storeSecret(ctx, role, appID, pemStr); err != nil {
 			return "", fmt.Errorf("storing recovered secret for %s: %w", role, err)
 		}
 		s.ui.StepDone(fmt.Sprintf("Stored recovered private key for %s", role))
@@ -578,7 +579,7 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 		}
 
 		// Secret doesn't exist or is stale — try to recover by generating a new key.
-		pemStr, recoverErr := s.recoverPEM(ctx, org, inst.AppSlug, role)
+		pemStr, recoverErr := s.recoverPEM(ctx, org, inst.AppSlug, role, inst.AppID)
 		if recoverErr != nil {
 			return nil, fmt.Errorf("recovering PEM for %s: %w", inst.AppSlug, recoverErr)
 		}
