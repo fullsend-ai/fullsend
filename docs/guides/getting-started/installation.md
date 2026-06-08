@@ -361,6 +361,8 @@ fullsend admin uninstall "$ORG_NAME"
 
 The uninstall preflight will prompt you to add the `delete_repo` scope if it is missing.
 
+After removing the config repo and secrets, the CLI opens a browser tab for each installed fullsend GitHub App. Click **Uninstall** on the page, then press **Enter** in the terminal to continue to the next app. Once all apps have been processed, the CLI re-checks the org's installations and reports whether each app was successfully removed.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--yolo` | `false` | Skip the confirmation prompt |
