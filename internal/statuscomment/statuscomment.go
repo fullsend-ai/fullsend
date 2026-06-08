@@ -173,10 +173,7 @@ func (n *Notifier) analyzeTimeline(ctx context.Context) (agentPosted, startIsLas
 
 	startIsLast = startIdx == len(comments)-1
 
-	botUser, err := n.client.GetAuthenticatedUser(ctx)
-	if err != nil {
-		n.warnf("failed to get authenticated user, falling back to position-only logic: %v", err)
-	}
+	botUser := comments[startIdx].Author
 	if botUser == "" {
 		return false, startIsLast, nil
 	}

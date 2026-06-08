@@ -425,31 +425,32 @@ func TestAnalyzeTimeline_EmptyBotUser_NewCommentWhenNotLast(t *testing.T) {
 	assert.Contains(t, comments[2].Body, "Finished Reviewing this PR")
 }
 
-func TestAnalyzeTimeline_GetAuthenticatedUserError_Warns(t *testing.T) {
+func TestAnalyzeTimeline_UsesStartCommentAuthor(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	fc.AuthenticatedUser = ""
-	fc.Errors["GetAuthenticatedUser"] = fmt.Errorf("token expired")
+	// Set AuthenticatedUser so FakeClient stamps the start comment Author.
+	fc.AuthenticatedUser = "fullsend-bot[bot]"
+	// Inject GetAuthenticatedUser error to prove it is NOT called.
+	fc.Errors["GetAuthenticatedUser"] = fmt.Errorf("should not be called")
 	n := New(fc, cfg, "org", "repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
 	n.now = fixedTime
 
-	var warnings []string
-	n.SetWarnFunc(func(format string, args ...any) {
-		warnings = append(warnings, fmt.Sprintf(format, args...))
-	})
-
-	err := n.PostStart(context.Background(), "Working")
+	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
+
+	// Agent posts output (same bot author, no status marker).
+	fc.CreateIssueComment(context.Background(), "org", "repo", 7, "Review findings here")
 
 	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
-	err = n.PostCompletion(context.Background(), "Working", "success")
+	err = n.PostCompletion(context.Background(), "Reviewing this PR", "success")
 	require.NoError(t, err)
 
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "failed to get authenticated user")
-	assert.Contains(t, warnings[0], "token expired")
+	// Bot user derived from start comment Author → agentPosted = true → edit in place.
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 1, fc.UpdatedComments[0].CommentID)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Reviewing this PR")
 }
 
 func TestShortSHA_NonHexRejected(t *testing.T) {
