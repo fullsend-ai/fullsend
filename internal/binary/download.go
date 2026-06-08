@@ -18,10 +18,17 @@ import (
 )
 
 // ReleaseBaseURL is the GitHub releases download base URL. Tests may override.
+// Not safe for concurrent test mutation.
 var ReleaseBaseURL = "https://github.com/fullsend-ai/fullsend/releases/download"
 
 // HTTPClient is used for release downloads. Tests may override.
+// Not safe for concurrent test mutation.
 var HTTPClient = &http.Client{Timeout: 120 * time.Second}
+
+const defaultMaxDownloadSize = 200 * 1024 * 1024 // 200 MB compressed
+
+// maxDownloadSize caps release asset downloads. Tests may lower temporarily.
+var maxDownloadSize = defaultMaxDownloadSize
 
 const maxBinarySize = 500 * 1024 * 1024 // 500 MB — reasonable upper bound for a Go binary
 
@@ -48,10 +55,13 @@ func DownloadRelease(ver, arch, destPath string) error {
 		return fmt.Errorf("GET %s returned %d", url, resp.StatusCode)
 	}
 
-	const maxDownloadSize = 200 * 1024 * 1024 // 200 MB compressed
+	maxSize := int64(maxDownloadSize)
 	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, io.LimitReader(resp.Body, maxDownloadSize)); err != nil {
+	if _, err := io.Copy(&buf, io.LimitReader(resp.Body, maxSize+1)); err != nil {
 		return fmt.Errorf("reading %s: %w", assetName, err)
+	}
+	if int64(buf.Len()) > maxSize {
+		return fmt.Errorf("download of %s exceeds maximum size (%d bytes)", assetName, maxSize)
 	}
 
 	h := sha256.Sum256(buf.Bytes())

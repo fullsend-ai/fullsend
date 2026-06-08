@@ -13,6 +13,13 @@ import (
 
 const vendorArch = binary.DefaultArch
 
+func validateVendorBinaryFlags(vendorBinary bool, fullsendBinary string) error {
+	if fullsendBinary != "" && !vendorBinary {
+		return fmt.Errorf("--fullsend-binary requires --vendor-fullsend-binary")
+	}
+	return nil
+}
+
 // makeVendorFunc returns a VendorFunc closure that uploads a fullsend binary
 // using the vendoring acquisition policy.
 func makeVendorFunc(fullsendBinary string) layers.VendorFunc {

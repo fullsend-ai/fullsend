@@ -90,6 +90,9 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 			if err := appsetup.ValidateAppSet(cfg.appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
+			if err := validateVendorBinaryFlags(cfg.vendorBinary, cfg.fullsendBinary); err != nil {
+				return err
+			}
 
 			if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
 				return err
@@ -133,7 +136,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
 	cmd.Flags().BoolVar(&cfg.enrollAll, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
-	cmd.Flags().BoolVar(&cfg.vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload the fullsend binary")
+	cmd.Flags().BoolVar(&cfg.vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
 	cmd.Flags().StringVar(&cfg.fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "preview changes without making them")
 

@@ -272,6 +272,9 @@ Inference authentication:
 			if err := appsetup.ValidateAppSet(appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
+			if err := validateVendorBinaryFlags(vendorBinary, fullsendBinary); err != nil {
+				return err
+			}
 
 			arg := args[0]
 			if strings.Contains(arg, "/") {
@@ -543,7 +546,7 @@ Inference authentication:
 	cmd.Flags().StringVar(&agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
-	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "cross-compile and vendor the fullsend binary for development iteration")
+	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
 	cmd.Flags().BoolVar(&enrollAllFlag, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&enrollNoneFlag, "enroll-none", false, "skip repository enrollment without prompting")

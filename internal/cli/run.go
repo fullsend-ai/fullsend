@@ -912,7 +912,7 @@ func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) err
 	}
 	if localBinary != "" {
 		if err := binary.ValidateLinuxBinary(localBinary, sandboxArch()); err != nil {
-			return fmt.Errorf("fullsend binary %q is not valid for the sandbox: %w", localBinary, err)
+			return fmt.Errorf("fullsend binary %q is not valid for the sandbox: %w\nSet FULLSEND_SANDBOX_ARCH to override the target architecture", localBinary, err)
 		}
 		// Use UploadDir (tarball-based) instead of Upload for the binary.
 		// Upload silently fails for large files (~16MB); the tarball
@@ -1233,7 +1233,7 @@ func runOIDCRefresh(ctx context.Context, sandboxName, oidcURL, oidcAuth string, 
 	}
 }
 
-var oidcHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var oidcHTTPClient = &http.Client{Timeout: 120 * time.Second} // matches pre-refactor shared httpClient timeout
 
 func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", oidcURL, nil)

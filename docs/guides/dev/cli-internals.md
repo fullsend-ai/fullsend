@@ -243,7 +243,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 
 | Function | Policy |
 |----------|--------|
-| `ResolveForRun` | Release download (if released CLI) → cross-compile → latest release |
+| `ResolveForRun` | Release download (released CLI only) → cross-compile → latest release |
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 

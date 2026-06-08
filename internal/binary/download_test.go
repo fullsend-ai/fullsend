@@ -16,10 +16,41 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type redirectTransport struct {
+	srvURL string
+	base   http.RoundTripper
+}
+
+func (t redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.Scheme = "http"
+	clone.URL.Host = strings.TrimPrefix(strings.TrimPrefix(t.srvURL, "https://"), "http://")
+	if t.base == nil {
+		t.base = http.DefaultTransport
+	}
+	return t.base.RoundTrip(clone)
+}
+
+func withTestReleaseServer(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	origClient := HTTPClient
+	origBaseURL := ReleaseBaseURL
+	HTTPClient = &http.Client{
+		Transport: redirectTransport{srvURL: srv.URL},
+		Timeout:   120 * time.Second,
+	}
+	ReleaseBaseURL = srv.URL
+	t.Cleanup(func() {
+		HTTPClient = origClient
+		ReleaseBaseURL = origBaseURL
+	})
+}
 
 func TestExtractFullsendFromTarGz_PathTraversal(t *testing.T) {
 	var buf bytes.Buffer
@@ -410,6 +441,132 @@ func TestResolveForRun_PrefersReleaseBeforeCrossCompile(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(result.TmpDir) })
 	assert.Equal(t, SourceReleaseDownload, result.Source)
+}
+
+func TestDownloadRelease_ExceedsMaxSize(t *testing.T) {
+	origLimit := maxDownloadSize
+	maxDownloadSize = 512
+	t.Cleanup(func() { maxDownloadSize = origLimit })
+
+	content := bytes.Repeat([]byte("x"), 2000)
+
+	var tarBuf bytes.Buffer
+	gw, err := gzip.NewWriterLevel(&tarBuf, gzip.NoCompression)
+	require.NoError(t, err)
+	tw := tar.NewWriter(gw)
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err = tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	tarBytes := tarBuf.Bytes()
+	h := sha256.Sum256(tarBytes)
+	checksumBody := fmt.Sprintf("%s  fullsend_1.0.0_linux_amd64.tar.gz\n", hex.EncodeToString(h[:]))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.0.0/checksums.txt" {
+			fmt.Fprint(w, checksumBody)
+		} else if r.URL.Path == "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz" {
+			w.Write(tarBytes)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	withTestReleaseServer(t, srv)
+
+	destPath := filepath.Join(t.TempDir(), "fullsend")
+	err = DownloadRelease("1.0.0", "amd64", destPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+func TestResolveForRun_CrossCompileFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping cross-compilation in short mode")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	withTestReleaseServer(t, srv)
+
+	result, err := ResolveForRun("0.4.0", "amd64")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(result.TmpDir) })
+	assert.Equal(t, SourceCheckoutBuild, result.Source)
+}
+
+func TestResolveForRun_LatestReleaseFallback(t *testing.T) {
+	var tarBuf bytes.Buffer
+	gw := gzip.NewWriter(&tarBuf)
+	tw := tar.NewWriter(gw)
+	content := []byte("latest release binary")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	tarBytes := tarBuf.Bytes()
+	h := sha256.Sum256(tarBytes)
+	correctHash := hex.EncodeToString(h[:])
+	checksumBody := fmt.Sprintf("%s  fullsend_9.9.9_linux_amd64.tar.gz\n", correctHash)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/fullsend-ai/fullsend/releases/latest" {
+			fmt.Fprint(w, `{"tag_name":"v9.9.9"}`)
+		} else if r.URL.Path == "/v9.9.9/checksums.txt" {
+			fmt.Fprint(w, checksumBody)
+		} else if r.URL.Path == "/v9.9.9/fullsend_9.9.9_linux_amd64.tar.gz" {
+			w.Write(tarBytes)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	withTestReleaseServer(t, srv)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	result, err := ResolveForRun("dev", "amd64")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(result.TmpDir) })
+	assert.Equal(t, SourceReleaseDownload, result.Source)
+}
+
+func TestResolveForRun_AllStrategiesFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	withTestReleaseServer(t, srv)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	_, err = ResolveForRun("dev", "amd64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all strategies failed")
 }
 
 func TestResolveExplicit_ValidatesELF(t *testing.T) {

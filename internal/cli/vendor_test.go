@@ -15,6 +15,16 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+func TestValidateVendorBinaryFlags(t *testing.T) {
+	require.NoError(t, validateVendorBinaryFlags(false, ""))
+	require.NoError(t, validateVendorBinaryFlags(true, ""))
+	require.NoError(t, validateVendorBinaryFlags(true, "/tmp/fullsend"))
+
+	err := validateVendorBinaryFlags(false, "/tmp/fullsend")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--fullsend-binary requires --vendor-fullsend-binary")
+}
+
 func TestInstallCmd_HasFullsendBinaryFlag(t *testing.T) {
 	cmd := newInstallCmd()
 	flag := cmd.Flags().Lookup("fullsend-binary")
