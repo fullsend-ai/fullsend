@@ -29,7 +29,7 @@ Instead of a binary verdict, the review agent (or a dedicated scoring layer) ass
 
 **From the diff itself:**
 - Files changed: security-sensitive paths (auth, crypto, permissions, deployment) score higher
-- Change type: deletions and modifications score higher than additions
+- Change type: deletions and modifications to existing code score higher, but additions of new attack surface (API endpoints, dependencies, permission grants) should be scored independently since they can have equal or greater blast radius
 - Change scope: cross-module changes score higher than single-file changes
 - Test coverage: changes without corresponding test changes score higher
 - Binary/opaque files: non-reviewable content scores highest
@@ -89,17 +89,17 @@ Instead of scoring, require multiple independent review agents to agree. Disagre
 - Naturally handles uncertainty (disagreement = uncertainty = escalation)
 - Expensive (multiple LLM runs per PR)
 - Does not produce a continuous risk score, so routing is less granular
-- Already partially implemented via the parallel sub-agent architecture ([PR #1550](https://github.com/fullsend-ai/fullsend/pull/1550)), where the Challenger role contests findings. The gap is that disagreement between sub-agents does not currently influence the approval decision; it only affects whether a finding survives.
+- The parallel sub-agent architecture ([PR #1550](https://github.com/fullsend-ai/fullsend/pull/1550)) includes a Challenger role that contests findings. Note: the Challenger is currently an intra-agent verification step within the orchestrator's own process (step 6e), not disagreement between independent sub-agents. The gap is that Challenger outcomes do not currently influence the approval decision; they only affect whether a finding survives.
 
 ## Relationship to existing mechanisms
 
-**Autonomy spectrum.** The [autonomy-spectrum.md](autonomy-spectrum.md) defines per-repo autonomy tiers (Tier 0-3) based on change type. Graduated approval operates within a tier: even among changes classified at the same tier, some are higher risk than others. The autonomy spectrum determines *whether* an agent can act; graduated approval determines *how confidently* it should act.
+**Autonomy spectrum.** The [autonomy-spectrum.md](autonomy-spectrum.md) defines a binary per-repo autonomy model (autonomous or not). Separately, [intent-representation.md](intent-representation.md) defines per-change intent tiers (Tier 0-3) based on change type (standing rules, tactical, strategic, organizational). Graduated approval operates orthogonally to both: even among changes at the same intent tier within an autonomous repo, some are higher risk than others. The autonomy spectrum determines *whether* an agent can act; graduated approval determines *how confidently* it should act.
 
-**CODEOWNERS.** CODEOWNERS enforces mandatory human approval for specific paths. Graduated approval operates on the paths that CODEOWNERS does not cover. For CODEOWNERS-guarded paths, the graduated policy does not apply (human review is always required).
+**CODEOWNERS.** CODEOWNERS enforces mandatory human approval for specific paths. Graduated approval operates on the paths that CODEOWNERS does not cover. For CODEOWNERS-guarded paths, the graduated policy does not apply (human review is always required). For mixed-path PRs that touch both CODEOWNERS-guarded and non-guarded paths, the CODEOWNERS requirement takes precedence for the entire PR (human review is required regardless of risk score), but the risk score still provides useful context to the human reviewer about the non-guarded portion.
 
 **Security hooks.** The existing PreToolUse/PostToolUse security hooks operate at the tool-call level during agent execution. Graduated approval operates at the PR level after execution. They address different layers: hooks prevent dangerous actions during the run; graduated approval evaluates the output of the run.
 
-**Tool call risk assessment.** If a [tool call risk assessment layer](tool-call-risk-assessment.md) is implemented, its findings during the run could feed into the PR-level risk score. A run that triggered multiple high-risk tool call blocks (even if the blocks succeeded) is itself a signal that the agent was attempting unusual operations.
+**Tool call risk assessment.** If a tool call risk assessment layer is implemented (see PR [#2009](https://github.com/fullsend-ai/fullsend/pull/2009)), its findings during the run could feed into the PR-level risk score. A run that triggered multiple high-risk tool call blocks (even if the blocks succeeded) is itself a signal that the agent was attempting unusual operations.
 
 ## Open questions
 

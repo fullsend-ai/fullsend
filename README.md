@@ -23,6 +23,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Governance](docs/problems/governance.md) — Who controls the agents and their configuration?
   - [Repo Readiness](docs/problems/repo-readiness.md) — Test coverage, CI/CD maturity, what's needed before agents can be trusted
   - [Code Review](docs/problems/code-review.md) — How agents review code, including security-focused sub-agents
+  - [Graduated Approval Policy](docs/problems/graduated-approval-policy.md) — Risk-scored approval routing to replace binary approve/reject verdicts
   - [Architectural Invariants](docs/problems/architectural-invariants.md) — Enforcing things that must always be true, grounded in an organization's existing architecture documentation
   - [Agent-Compatible Code](docs/problems/agent-compatible-code.md) — Language properties that affect agent effectiveness
   - [Codebase Context](docs/problems/codebase-context.md) — How agents acquire codebase understanding and how to structure org-level context
