@@ -54,6 +54,7 @@ MOCKEOF
 # jq filtering. The body field is set to $1.
 make_comment_json() {
   local body="$1"
+  local client_id="${2:-Iv1.abc123}"
   # Escape the body for JSON embedding.
   local escaped_body
   escaped_body="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
@@ -62,7 +63,23 @@ make_comment_json() {
   "id": 12345,
   "user": {"login": "test-org-review[bot]"},
   "body": ${escaped_body},
-  "performed_via_github_app": {"client_id": "Iv1.abc123"}
+  "performed_via_github_app": {"client_id": "${client_id}"}
+}
+ENDJSON
+}
+
+# make_comment_json_no_app builds a comment JSON with no GitHub App
+# provenance (performed_via_github_app is null).
+make_comment_json_no_app() {
+  local body="$1"
+  local escaped_body
+  escaped_body="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+  cat <<ENDJSON
+{
+  "id": 12345,
+  "user": {"login": "test-org-review[bot]"},
+  "body": ${escaped_body},
+  "performed_via_github_app": null
 }
 ENDJSON
 }
@@ -91,6 +108,7 @@ run_test() {
     SOURCE_REPO="test-org/test-repo" \
     GITHUB_OUTPUT="${github_output}" \
     GITHUB_WORKSPACE="${workspace}" \
+    PREFETCH_RETRIES="0" \
     bash "${SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
@@ -107,6 +125,71 @@ run_test() {
 
   if [[ "${actual_sha}" != "${expected_sha}" ]]; then
     echo "FAIL: ${test_name} — expected prior_sha='${expected_sha}', got '${actual_sha}'"
+    echo "--- GITHUB_OUTPUT ---"
+    cat "${github_output}"
+    echo "--- stdout ---"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# run_test_provenance is like run_test but also checks the
+# prior_review_provenance output value.
+run_test_provenance() {
+  local test_name="$1"
+  local comment_json="$2"
+  local expected_sha="$3"
+  local expected_provenance="$4"
+  local expect_exit="$5"
+
+  local mock_bin
+  mock_bin="$(build_mock "${comment_json}")"
+
+  local github_output="${TMPDIR}/github-output.txt"
+  local workspace="${TMPDIR}/workspace"
+  mkdir -p "${workspace}"
+  : > "${github_output}"
+
+  local exit_code=0
+  env \
+    PATH="${mock_bin}:${PATH}" \
+    GH_TOKEN="fake-token" \
+    ORG_NAME="test-org" \
+    PR_NUM="100" \
+    REVIEW_APP_CLIENT_ID="Iv1.abc123" \
+    SOURCE_REPO="test-org/test-repo" \
+    GITHUB_OUTPUT="${github_output}" \
+    GITHUB_WORKSPACE="${workspace}" \
+    PREFETCH_RETRIES="0" \
+    bash "${SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    echo "--- stdout ---"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local actual_sha
+  actual_sha="$(grep '^prior_sha=' "${github_output}" | head -1 | cut -d= -f2)"
+  if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+    echo "FAIL: ${test_name} — expected prior_sha='${expected_sha}', got '${actual_sha}'"
+    echo "--- GITHUB_OUTPUT ---"
+    cat "${github_output}"
+    echo "--- stdout ---"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local actual_provenance
+  actual_provenance="$(grep '^prior_review_provenance=' "${github_output}" | head -1 | cut -d= -f2)"
+  if [[ "${actual_provenance}" != "${expected_provenance}" ]]; then
+    echo "FAIL: ${test_name} — expected provenance='${expected_provenance}', got '${actual_provenance}'"
     echo "--- GITHUB_OUTPUT ---"
     cat "${github_output}"
     echo "--- stdout ---"
@@ -175,6 +258,55 @@ No SHA in this section.
 
 run_test "sha-only-in-history-section" \
   "$(make_comment_json "${BODY_SHA_IN_HISTORY}")" \
+  "" \
+  0
+
+# 6. Head SHA inside an HTML comment (actual production format).
+#    The review agent embeds SHA as: <!-- **Head SHA:** <sha> -->
+BODY_HTML_COMMENT_SHA="<!-- fullsend:review-agent -->
+<!-- **Head SHA:** face0ff1234567 -->
+
+## Review
+
+Some findings here."
+
+run_test "html-comment-format-sha" \
+  "$(make_comment_json "${BODY_HTML_COMMENT_SHA}")" \
+  "face0ff1234567" \
+  0
+
+# 7. Provenance failure — wrong app client_id should discard the comment.
+BODY_WRONG_APP="<!-- fullsend:review-agent -->
+<!-- **Head SHA:** abc1234 -->
+
+## Review"
+
+run_test_provenance "provenance-wrong-app" \
+  "$(make_comment_json "${BODY_WRONG_APP}" "Iv1.WRONG_ID")" \
+  "" \
+  "unverifiable-wrong-app" \
+  0
+
+# 8. Provenance failure — no GitHub App (null performed_via_github_app).
+BODY_NO_APP="<!-- fullsend:review-agent -->
+<!-- **Head SHA:** abc1234 -->
+
+## Review"
+
+run_test_provenance "provenance-no-app" \
+  "$(make_comment_json_no_app "${BODY_NO_APP}")" \
+  "" \
+  "unverifiable-no-app" \
+  0
+
+# 9. SHA with non-hex characters should not match.
+BODY_NONHEX_SHA="<!-- fullsend:review-agent -->
+**Head SHA:** zzz1234notahex
+
+## Review"
+
+run_test "non-hex-sha-no-match" \
+  "$(make_comment_json "${BODY_NONHEX_SHA}")" \
   "" \
   0
 
