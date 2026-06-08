@@ -57,11 +57,11 @@ func testAllowedOrgs() []string {
 	return orgs
 }
 
-func (f *fakePEMAccessor) AccessPEM(_ context.Context, org, role string) ([]byte, error) {
+func (f *fakePEMAccessor) AccessPEM(_ context.Context, role string) ([]byte, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	key := org + "/" + role
+	key := PemSecretRole(role)
 	data, ok := f.pems[key]
 	if !ok {
 		return nil, fmt.Errorf("PEM not found for %s", key)
@@ -408,7 +408,7 @@ func TestHandler_RoleAllowed(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 	token := env.signToken(t, nil)
 
@@ -640,7 +640,7 @@ func TestHandler_FullFlow(t *testing.T) {
 	}
 
 	pemAccessor := &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	}
 	env := newTestOIDCEnv(t, pemAccessor)
 	token := env.signToken(t, nil)
@@ -781,7 +781,7 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 	token := env.signToken(t, nil)
 
@@ -845,7 +845,7 @@ func TestHandler_InstallationNotFound(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 	token := env.signToken(t, nil)
 
@@ -970,7 +970,7 @@ func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"other-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 	token := env.signToken(t, map[string]interface{}{
 		"repository":       "other-org/.fullsend",
@@ -1036,7 +1036,7 @@ func TestHandler_CrossOrgInstallationMismatch(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"org-a/retro": pemData},
+		pems: map[string][]byte{"retro": pemData},
 	})
 	token := env.signToken(t, map[string]interface{}{
 		"repository":       "org-a/.fullsend",
@@ -1093,7 +1093,7 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 	}
 
 	pemAccessor := &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	}
 
 	// Mock STS server that accepts any token and returns a federated access token.
@@ -1214,7 +1214,7 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 		OIDCAudience:       "fullsend-mint",
 	})
 	h := mustNewHandler(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	}, verifier)
 
 	buildToken := func(workflowRef string) string {
@@ -1294,7 +1294,7 @@ func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"org-a/retro": pemData},
+		pems: map[string][]byte{"retro": pemData},
 	})
 	token := env.signToken(t, map[string]interface{}{
 		"repository":       "org-a/.fullsend",
@@ -1343,7 +1343,7 @@ func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
 
 func TestHandler_ErrorMessageLeak(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
-	env := newTestOIDCEnv(t, &fakePEMAccessor{err: fmt.Errorf("secret projects/123/secrets/fullsend-test--coder-app-pem")})
+	env := newTestOIDCEnv(t, &fakePEMAccessor{err: fmt.Errorf("secret projects/123/secrets/fullsend-coder-app-pem")})
 	token := env.signToken(t, nil)
 
 	body := `{"role":"coder","repos":["test-repo"]}`
@@ -1374,7 +1374,7 @@ func TestHandler_RestrictedWorkflowFiles(t *testing.T) {
 	}
 
 	pemAccessor := &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	}
 
 	key, keyErr := rsa.GenerateKey(rand.Reader, 2048)
@@ -1465,7 +1465,7 @@ func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 
 	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
@@ -1543,7 +1543,7 @@ func TestHandler_UpstreamWorkflowRef(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 
 	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
@@ -1689,7 +1689,7 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 
 	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
@@ -1739,6 +1739,7 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 
 func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
+	t.Setenv("ALLOWED_ROLES", "coder")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
 
@@ -1772,7 +1773,7 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 		PerRepoWIFRepos:    map[string]bool{"test-org/custom-repo": true},
 	})
 	h := mustNewHandler(t, &fakePEMAccessor{
-		pems: map[string][]byte{"test-org/coder": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	}, verifier)
 
 	buildToken := func(repo, workflowRef string) string {

@@ -369,8 +369,20 @@ func TestProvisioner_CustomConfig(t *testing.T) {
 }
 
 func TestSecretID(t *testing.T) {
-	assert.Equal(t, "fullsend-test-org--coder-app-pem", secretID("test-org", "coder"))
-	assert.Equal(t, "fullsend-acme--triage-app-pem", secretID("acme", "triage"))
+	assert.Equal(t, "fullsend-coder-app-pem", secretID("coder"))
+	assert.Equal(t, "fullsend-coder-app-pem", secretID("fix"))
+	assert.Equal(t, "fullsend-triage-app-pem", secretID("triage"))
+}
+
+func TestStoreAgentPEM_FixRoleUsesCoderSecret(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+
+	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
+	err := p.StoreAgentPEM(context.Background(), "fix", []byte("pem-data"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "fullsend-coder-app-pem", fake.secretVersionNames[len(fake.secretVersionNames)-1])
 }
 
 // --- StoreAgentPEM tests ---
@@ -380,7 +392,7 @@ func TestStoreAgentPEM_CreatesNewSecret(t *testing.T) {
 	fake.errs["GetSecret"] = ErrSecretNotFound
 
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem-data"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem-data"))
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{
@@ -395,7 +407,7 @@ func TestStoreAgentPEM_ExistingSecretSkipsCreate(t *testing.T) {
 	fake := newFakeGCFClient()
 
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem-data"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem-data"))
 	require.NoError(t, err)
 
 	assert.Contains(t, fake.calls, "GetSecret")
@@ -406,7 +418,7 @@ func TestStoreAgentPEM_ExistingSecretSkipsCreate(t *testing.T) {
 
 func TestStoreAgentPEM_MissingProjectID(t *testing.T) {
 	p := newTestProvisioner(Config{}, newFakeGCFClient())
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
@@ -414,11 +426,11 @@ func TestStoreAgentPEM_MissingProjectID(t *testing.T) {
 func TestStoreAgentPEM_InvalidRole(t *testing.T) {
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, newFakeGCFClient())
 	for _, role := range []string{"CODER", "co der", "../escape", "role;drop"} {
-		err := p.StoreAgentPEM(context.Background(), "test-org", role, []byte("pem"))
+		err := p.StoreAgentPEM(context.Background(), role, []byte("pem"))
 		require.Error(t, err, "role %q should be rejected", role)
 		assert.Contains(t, err.Error(), "invalid role name")
 	}
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.NoError(t, err)
 }
 
@@ -427,7 +439,7 @@ func TestStoreAgentPEM_GetSecretNonNotFoundError(t *testing.T) {
 	fake.errs["GetSecret"] = fmt.Errorf("permission denied")
 
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permission denied")
 }
@@ -1100,7 +1112,7 @@ func TestProvisioner_Provision_BundledMode_NoPEMs_SecretsMissing(t *testing.T) {
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no PEM provided and no existing PEM found to copy")
+	assert.Contains(t, err.Error(), "has no PEM and secret")
 }
 
 func TestProvisioner_Provision_BundledMode_NoPEMs_APIError(t *testing.T) {
@@ -1710,7 +1722,7 @@ func TestProvisioner_Provision_MultiOrg_PEMStorage(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	// PEMs are stored per org×role (org-scoped secrets), so 2 orgs × 1 role = 2 GetSecret + 2 AddSecretVersion.
+	// PEMs are stored once per role (shared across orgs), so 1 role = 1 GetSecret + 1 AddSecretVersion.
 	getSecretCount := 0
 	addVersionCount := 0
 	for _, call := range fake.calls {
@@ -1721,8 +1733,8 @@ func TestProvisioner_Provision_MultiOrg_PEMStorage(t *testing.T) {
 			addVersionCount++
 		}
 	}
-	assert.Equal(t, 2, getSecretCount, "expected GetSecret called once per org×role")
-	assert.Equal(t, 2, addVersionCount, "expected AddSecretVersion called once per org×role")
+	assert.Equal(t, 1, getSecretCount, "expected GetSecret called once per role")
+	assert.Equal(t, 1, addVersionCount, "expected AddSecretVersion called once per role")
 }
 
 func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *testing.T) {
@@ -1751,11 +1763,10 @@ func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *tes
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	// PEMs must only be stored for new-org, not for existing-org.
+	// PEMs are stored once per role regardless of installing org.
 	require.NotEmpty(t, fake.secretVersionNames, "expected at least one PEM to be stored")
 	for _, name := range fake.secretVersionNames {
-		assert.Contains(t, name, "new-org", "PEM should only be stored for installing org")
-		assert.NotContains(t, name, "existing-org", "PEM must not overwrite existing org's secrets")
+		assert.Equal(t, "fullsend-coder-app-pem", name)
 	}
 
 	// WIF condition should include both orgs.
@@ -2253,86 +2264,10 @@ func TestProvisioner_ImplementsDispatcher(t *testing.T) {
 	var _ interface {
 		Name() string
 		Provision(context.Context) (map[string]string, error)
-		StoreAgentPEM(context.Context, string, string, []byte) error
+		StoreAgentPEM(context.Context, string, []byte) error
 		OrgSecretNames() []string
 		OrgVariableNames() []string
 	} = (*Provisioner)(nil)
-}
-
-func TestCopyAgentPEM_CopiesSecret(t *testing.T) {
-	fakePEM := []byte("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...\n-----END RSA PRIVATE KEY-----")
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-srcorg--triage-app-pem": true,
-	}
-	fake.secretData = map[string][]byte{
-		"fullsend-srcorg--triage-app-pem": fakePEM,
-	}
-	fake.errs["GetSecret"] = nil
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.NoError(t, err)
-
-	assert.True(t, fake.secrets["fullsend-dstorg--triage-app-pem"])
-	assert.Equal(t, fakePEM, fake.secretData["fullsend-dstorg--triage-app-pem"])
-}
-
-func TestCopyAgentPEM_DestinationExists_EnsuresIAM(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-srcorg--triage-app-pem": true,
-		"fullsend-dstorg--triage-app-pem": true,
-	}
-	fake.secretData = map[string][]byte{}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.NoError(t, err)
-	assert.NotContains(t, fake.calls, "AccessSecretVersion")
-	assert.Contains(t, fake.calls, "SetSecretIAMBinding")
-}
-
-func TestCopyAgentPEM_DestinationCheckError_Propagated(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.errs = map[string]error{
-		"GetSecret": fmt.Errorf("permission denied"),
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking destination secret")
-	assert.NotContains(t, fake.calls, "AccessSecretVersion")
-}
-
-func TestCopyAgentPEM_SourceMissing_Error(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{}
-	fake.secretData = map[string][]byte{}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading source secret")
-}
-
-func TestCopyAgentPEM_InvalidOrg(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-
-	err := p.CopyAgentPEM(context.Background(), "bad org!", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid org name")
-}
-
-func TestCopyAgentPEM_MissingProjectID(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{}, fake)
-
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
 func TestGetExistingRoleAppIDs_ReturnsMap(t *testing.T) {
@@ -2470,7 +2405,7 @@ func TestProvisioner_Provision_NonActiveFunction_TriggersDeploy(t *testing.T) {
 
 // --- PEM auto-copy in provisionWithExistingMint ---
 
-func TestProvisioner_Provision_BundledMode_PEMAutoCopy(t *testing.T) {
+func TestProvisioner_Provision_BundledMode_RequiresExistingPEM(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://fullsend-mint-abc123.run.app",
@@ -2480,15 +2415,7 @@ func TestProvisioner_Provision_BundledMode_PEMAutoCopy(t *testing.T) {
 			"ALLOWED_ROLES": "coder",
 		},
 	}
-	// SecretExists returns false for target-org's coder PEM (triggers auto-copy).
-	// GetSecret uses the secrets map; missing key → ErrSecretNotFound.
-	fake.secrets = map[string]bool{
-		"fullsend-source-org--coder-app-pem": true,
-	}
-	// AccessSecretVersion uses the secretData map for the source org's PEM.
-	fake.secretData = map[string][]byte{
-		"fullsend-source-org--coder-app-pem": []byte("test-pem-data"),
-	}
+	fake.secrets = map[string]bool{}
 
 	p := newTestProvisioner(Config{
 		ProjectID:   "my-project",
@@ -2497,13 +2424,10 @@ func TestProvisioner_Provision_BundledMode_PEMAutoCopy(t *testing.T) {
 		MintURL:     "https://fullsend-mint-abc123.run.app",
 	}, fake)
 
-	vars, err := p.Provision(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
-
-	// Verify CopyAgentPEM was called (AccessSecretVersion + AddSecretVersion).
-	assert.Contains(t, fake.calls, "AccessSecretVersion")
-	assert.Contains(t, fake.calls, "AddSecretVersion")
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no PEM")
+	assert.NotContains(t, fake.calls, "AccessSecretVersion")
 }
 
 // --- EnsureOrgInMint tests ---
@@ -3328,131 +3252,6 @@ func TestRemoveRepoFromMint_PartialFailureSurfacesRevision(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revision fullsend-mint-00118-jkl created but traffic routing may have failed")
 	assert.Contains(t, err.Error(), "traffic routing failed")
-}
-
-// --- DisablePEMSecrets tests ---
-
-func TestDisablePEMSecrets_DisablesExistingSecrets(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-acme--coder-app-pem":  true,
-		"fullsend-acme--triage-app-pem": true,
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.DisablePEMSecrets(context.Background(), "acme", []string{"coder", "triage"})
-	require.NoError(t, err)
-
-	disableCount := 0
-	for _, call := range fake.calls {
-		if call == "DisableSecretVersion" {
-			disableCount++
-		}
-	}
-	assert.Equal(t, 2, disableCount)
-}
-
-func TestDisablePEMSecrets_SkipsMissingSecrets(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{} // All missing.
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.DisablePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.NoError(t, err)
-
-	assert.NotContains(t, fake.calls, "DisableSecretVersion")
-}
-
-func TestDisablePEMSecrets_GetSecretError(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.errs["GetSecret"] = fmt.Errorf("permission denied")
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.DisablePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking secret")
-}
-
-// --- EnablePEMSecrets tests ---
-
-func TestEnablePEMSecrets_EnablesExistingSecrets(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-acme--coder-app-pem":  true,
-		"fullsend-acme--triage-app-pem": true,
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.EnablePEMSecrets(context.Background(), "acme", []string{"coder", "triage"})
-	require.NoError(t, err)
-
-	enableCount := 0
-	for _, call := range fake.calls {
-		if call == "EnableSecretVersion" {
-			enableCount++
-		}
-	}
-	assert.Equal(t, 2, enableCount)
-}
-
-func TestEnablePEMSecrets_SkipsMissingSecrets(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.EnablePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.NoError(t, err)
-
-	assert.NotContains(t, fake.calls, "EnableSecretVersion")
-}
-
-func TestEnablePEMSecrets_GetSecretError(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.errs["GetSecret"] = fmt.Errorf("permission denied")
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.EnablePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking secret")
-}
-
-func TestEnablePEMSecrets_EnableError(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-acme--coder-app-pem": true,
-	}
-	fake.errs["EnableSecretVersion"] = fmt.Errorf("version destroyed")
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.EnablePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "enabling secret")
-}
-
-// --- DeletePEMSecrets tests ---
-
-func TestDeletePEMSecrets_DeletesExistingSecrets(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-acme--coder-app-pem": true,
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.DeletePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.NoError(t, err)
-
-	assert.Contains(t, fake.calls, "DeleteSecret")
-}
-
-func TestDeletePEMSecrets_SkipsMissingSecrets(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.DeletePEMSecrets(context.Background(), "acme", []string{"coder"})
-	require.NoError(t, err)
-
-	assert.NotContains(t, fake.calls, "DeleteSecret")
 }
 
 // --- DisableWIFProvider tests ---

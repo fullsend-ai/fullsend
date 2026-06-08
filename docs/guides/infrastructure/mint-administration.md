@@ -30,7 +30,7 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
   | `roles/iam.serviceAccountAdmin` | x | | | |
   | `roles/iam.workloadIdentityPoolAdmin` | x | x | x | |
   | `roles/resourcemanager.projectIamAdmin` | \* | \*\* | | |
-  | `roles/secretmanager.admin` | \* | x | x† | |
+  | `roles/secretmanager.admin` | \* | | | |
   | `roles/cloudfunctions.developer` | x | | | |
   | `roles/cloudfunctions.viewer` | | x | x | x |
   | `roles/run.admin` | x | x | x | |
@@ -39,8 +39,6 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
   \*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
-
-  † `roles/secretmanager.admin` is required for `mint unenroll` only in org-scoped mode. Repo-scoped unenroll does not touch PEM secrets.
 
   `roles/owner` covers all of the above for users with broad access.
 
@@ -109,7 +107,7 @@ Deploying to a **different region** (e.g., changing `--region` from `us-central1
 
 ## Enrolling organizations and repositories
 
-`fullsend mint enroll` registers an organization or repository in the mint, copies PEM secrets, and configures WIF to accept OIDC tokens from the target.
+`fullsend mint enroll` registers an organization or repository in the mint and configures WIF to accept OIDC tokens from the target.
 
 ```bash
 # Enroll an organization
@@ -127,7 +125,7 @@ Enrollment does **not** grant Agent Platform (inference) access — use `fullsen
 |------|---------|-------------|
 | `--project` | | GCP project ID (required) |
 | `--region` | `us-central1` | Cloud region for the mint service |
-| `--app-set` | `fullsend-ai` | App set to copy PEMs and app IDs from |
+| `--app-set` | `fullsend-ai` | App set to resolve role→app-id mappings from |
 | `--role-app-ids` | | Explicit JSON map of role→app-id (overrides `--app-set`) |
 | `--roles` | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated roles to enroll |
 | `--dry-run` | `false` | Preview changes without making them |
@@ -135,10 +133,11 @@ Enrollment does **not** grant Agent Platform (inference) access — use `fullsen
 ### What enrollment does
 
 1. Discovers the existing mint infrastructure and resolves role→app-id mappings
-2. Copies GitHub App PEM secrets to the new org's scoped key (`fullsend-{org}--{role}-app-pem`)
-3. Updates the mint Cloud Run service environment variables (`ALLOWED_ORGS`, `ROLE_APP_IDS`) using REVISION-pinned traffic routing
-4. Runs post-enrollment verification (see below)
-5. Configures the mint-side WIF provider to accept OIDC tokens from the organization's repositories
+2. Updates the mint Cloud Run service environment variables (`ALLOWED_ORGS`, `ROLE_APP_IDS`) using REVISION-pinned traffic routing
+3. Runs post-enrollment verification (see below)
+4. Configures the mint-side WIF provider to accept OIDC tokens from the organization's repositories
+
+Role PEM secrets must already exist in Secret Manager (`fullsend-{role}-app-pem`), created during `mint deploy --pem-dir` or `fullsend admin install`. Enrollment does not create or copy PEM secrets.
 
 ### Post-enrollment verification
 
@@ -172,7 +171,7 @@ fullsend mint unenroll acme-corp --project="$GCP_PROJECT"
 fullsend mint unenroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
-Org-scoped unenroll disables PEM secrets (or permanently deletes them with `--delete-secrets`) and removes the org from the shared WIF provider's attribute condition. Repo-scoped unenroll only disables the repo-specific WIF provider (or permanently deletes it with `--delete-provider`) — it does not touch PEM secrets.
+Org-scoped unenroll removes the org from mint env vars and the shared WIF provider's attribute condition. Role PEM secrets are shared across orgs and are not modified. Repo-scoped unenroll only disables the repo-specific WIF provider (or permanently deletes it with `--delete-provider`) — it does not touch PEM secrets.
 
 ### Flags
 
@@ -180,7 +179,6 @@ Org-scoped unenroll disables PEM secrets (or permanently deletes them with `--de
 |------|---------|-------------|
 | `--project` | | GCP project ID (required) |
 | `--region` | `us-central1` | Cloud region for the mint service |
-| `--delete-secrets` | `false` | Permanently delete PEM secrets (org-scoped only) |
 | `--delete-provider` | `false` | Permanently delete WIF provider (repo-scoped only) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation (for automation) |
@@ -270,7 +268,7 @@ fullsend admin install "$ADDITIONAL_ORG" \
   --mint-project "$GCP_PROJECT"
 ```
 
-The installer auto-detects shared public apps by matching installed app IDs against the mint's `ROLE_APP_IDS`. It copies PEM secrets from the app set to the new org's scoped key and records the actual app slug in `config.yaml`, so subsequent operations find the correct app regardless of naming convention.
+The installer auto-detects shared public apps by matching installed app IDs against the mint's `ROLE_APP_IDS`. It records the actual app slug in `config.yaml`, so subsequent operations find the correct app regardless of naming convention.
 
 If the public apps were created with a custom `--app-set`, pass the same value so the CLI uses the correct slug prefix for convention-based lookups:
 
@@ -281,7 +279,7 @@ fullsend admin install "$ADDITIONAL_ORG" \
   --app-set "$FIRST_ORG"
 ```
 
-You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery step. PEMs use org-scoped naming (`fullsend-{org}--{role}-app-pem`), so each org's secrets are stored independently. For public apps (shared across orgs), the provisioner copies the same PEM under each org's scoped key.
+You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery step. PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the mint.
 
 > **Note:** Multi-org with `--public` requires all orgs to share the same GitHub Apps. Private apps (the default) are single-org only.
 
@@ -355,13 +353,12 @@ You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery
 
 ### PEM secret errors
 
-**Symptom:** `mint enroll` fails with "source secret not found" or `mint status` reports PEM secrets as missing.
+**Symptom:** `mint status` reports role PEM secrets as missing.
 
 **Common causes:**
 
-- The app set (`--app-set`) doesn't have PEM secrets bootstrapped yet — run `mint deploy --pem-dir` first
-- PEM secrets were disabled (not deleted) during a previous unenroll — the CLI re-enables them automatically during re-enrollment
-- The GCP service account lacks `roles/secretmanager.admin`
+- Role PEM secrets were never bootstrapped — run `mint deploy --pem-dir` or `fullsend admin install` first
+- The enrolled roles in `ROLE_APP_IDS` reference apps whose PEM secrets do not exist in Secret Manager
 
 ### Debugging with gcloud
 

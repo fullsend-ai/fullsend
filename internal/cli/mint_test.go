@@ -526,10 +526,6 @@ func TestMintUnenrollCmd_Flags(t *testing.T) {
 	regionFlag := cmd.Flags().Lookup("region")
 	require.NotNil(t, regionFlag, "expected --region flag")
 
-	deleteSecretsFlag := cmd.Flags().Lookup("delete-secrets")
-	require.NotNil(t, deleteSecretsFlag, "expected --delete-secrets flag")
-	assert.Equal(t, "false", deleteSecretsFlag.DefValue)
-
 	deleteProviderFlag := cmd.Flags().Lookup("delete-provider")
 	require.NotNil(t, deleteProviderFlag, "expected --delete-provider flag")
 	assert.Equal(t, "false", deleteProviderFlag.DefValue)

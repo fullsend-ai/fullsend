@@ -159,16 +159,14 @@ func (p *Provisioner) OrgVariableNames() []string {
 	return []string{"FULLSEND_MINT_URL"}
 }
 
-// secretID returns the Secret Manager secret ID for the given org and role.
-// Uses "--" as separator between org and role because GitHub org names
-// cannot contain consecutive hyphens.
-func secretID(org, role string) string {
-	return fmt.Sprintf("fullsend-%s--%s-app-pem", org, role)
+// secretID returns the Secret Manager secret ID for the given role.
+func secretID(role string) string {
+	return fmt.Sprintf("fullsend-%s-app-pem", mintcore.PemSecretRole(role))
 }
 
-// SecretExists checks whether the Secret Manager secret for the given org and role exists.
-func (p *Provisioner) SecretExists(ctx context.Context, org, role string) (bool, error) {
-	sid := secretID(org, role)
+// SecretExists checks whether the Secret Manager secret for the given role exists.
+func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, error) {
+	sid := secretID(role)
 	err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid)
 	if err == nil {
 		return true, nil
@@ -189,20 +187,17 @@ func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 	return p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, saName, "Fullsend token mint Cloud Function")
 }
 
-// StoreAgentPEM persists a single org/role's PEM in Secret Manager.
+// StoreAgentPEM persists a role's PEM in Secret Manager.
 // Called during App setup so each PEM is stored immediately after creation.
-func (p *Provisioner) StoreAgentPEM(ctx context.Context, org, role string, pemData []byte) error {
+func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []byte) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
 	}
-	if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
-		return fmt.Errorf("invalid org name %q", org)
-	}
-	if !mintcore.RolePattern.MatchString(role) || strings.Contains(role, "--") {
-		return fmt.Errorf("invalid role name %q: must match %s", role, mintcore.RolePattern.String())
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
 	}
 
-	sid := secretID(org, role)
+	sid := secretID(role)
 
 	secretErr := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid)
 	if secretErr != nil {
@@ -225,51 +220,6 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, org, role string, pemDa
 		return fmt.Errorf("granting secret access for %s: %w", sid, err)
 	}
 
-	return nil
-}
-
-// CopyAgentPEM copies a PEM secret from one org to another.
-// Used when the same public GitHub App is installed in multiple orgs —
-// the PEM is the same (tied to the app), just needs a secret under the
-// target org's naming convention.
-func (p *Provisioner) CopyAgentPEM(ctx context.Context, srcOrg, dstOrg, role string) error {
-	if p.cfg.ProjectID == "" {
-		return fmt.Errorf("GCP project ID is required")
-	}
-	for _, org := range []string{srcOrg, dstOrg} {
-		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
-			return fmt.Errorf("invalid org name %q", org)
-		}
-	}
-	if !mintcore.RolePattern.MatchString(role) || strings.Contains(role, "--") {
-		return fmt.Errorf("invalid role name %q: must match %s", role, mintcore.RolePattern.String())
-	}
-
-	dstID := secretID(dstOrg, role)
-	if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, dstID); err == nil {
-		// Secret exists — still ensure the mint SA has access,
-		// since older installs may have granted a different SA.
-		return p.ensureSecretIAM(ctx, dstID)
-	} else if !errors.Is(err, ErrSecretNotFound) {
-		return fmt.Errorf("checking destination secret %s: %w", dstID, err)
-	}
-
-	srcID := secretID(srcOrg, role)
-	pemData, err := p.gcpAPI.AccessSecretVersion(ctx, p.cfg.ProjectID, srcID)
-	if err != nil {
-		return fmt.Errorf("reading source secret %s: %w", srcID, err)
-	}
-
-	return p.StoreAgentPEM(ctx, dstOrg, role, pemData)
-}
-
-func (p *Provisioner) ensureSecretIAM(ctx context.Context, secretName string) error {
-	saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
-	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, secretName)
-	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
-		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
-		return fmt.Errorf("granting secret access for %s: %w", secretName, err)
-	}
 	return nil
 }
 
@@ -587,75 +537,25 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 		return nil, fmt.Errorf("MintURL %q must be a valid Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
 	}
 
-	// Fetch existing role/app ID mappings once for PEM auto-copy decisions.
-	var existingIDs map[string]string
-	existingIDsErr := error(nil)
-	needsCopy := false
-	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
-		if _, hasPEM := p.cfg.AgentPEMs[role]; !hasPEM {
-			needsCopy = true
-			break
+	// Store new PEMs once per role (shared across orgs on the mint).
+	for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
+		if err := p.StoreAgentPEM(ctx, role, p.cfg.AgentPEMs[role]); err != nil {
+			return nil, fmt.Errorf("storing PEM for role %s: %w", role, err)
 		}
 	}
-	if needsCopy {
-		existingIDs, existingIDsErr = p.GetExistingRoleAppIDs(ctx)
-	}
 
-	for _, org := range p.cfg.GitHubOrgs {
-		if org == PlaceholderOrg {
+	// Verify secrets exist for roles without fresh PEMs (re-install).
+	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
+		if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
 			continue
 		}
-
-		// Store new PEMs (per-org with fresh apps).
-		for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
-			if err := p.StoreAgentPEM(ctx, org, role, p.cfg.AgentPEMs[role]); err != nil {
-				return nil, fmt.Errorf("storing PEM for %s/%s: %w", org, role, err)
+		sid := secretID(role)
+		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+			if errors.Is(err, ErrSecretNotFound) {
+				return nil, fmt.Errorf("role %q has no PEM and secret %s not found in project %s",
+					role, sid, p.cfg.ProjectID)
 			}
-		}
-
-		// Check and auto-copy PEMs for roles without fresh PEMs.
-		for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
-			if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
-				continue
-			}
-			exists, err := p.SecretExists(ctx, org, role)
-			if err != nil {
-				return nil, fmt.Errorf("checking PEM for %s/%s: %w", org, role, err)
-			}
-			if exists {
-				continue
-			}
-			if existingIDsErr != nil {
-				return nil, fmt.Errorf("reading existing role app IDs for PEM auto-copy: %w", existingIDsErr)
-			}
-			// PEM doesn't exist — try to copy from another org that has the
-			// same app (matched by app ID) for this role.
-			copied := false
-			var lastCopyErr error
-			for _, key := range sortedStringMapKeys(existingIDs) {
-				parts := strings.SplitN(key, "/", 2)
-				if len(parts) != 2 || parts[1] != role || parts[0] == org {
-					continue
-				}
-				if p.cfg.AgentAppIDs[role] != "" && existingIDs[key] != p.cfg.AgentAppIDs[role] {
-					continue
-				}
-				if copyErr := p.CopyAgentPEM(ctx, parts[0], org, role); copyErr == nil {
-					log.Printf("copied PEM for %s/%s from %s", org, role, parts[0])
-					copied = true
-					break
-				} else {
-					log.Printf("failed to copy PEM for %s/%s from %s: %v", org, role, parts[0], copyErr)
-					lastCopyErr = copyErr
-				}
-			}
-			if !copied {
-				msg := fmt.Sprintf("role %q: no PEM provided and no existing PEM found to copy for %s", role, org)
-				if lastCopyErr != nil {
-					msg += fmt.Sprintf(" (last error: %v)", lastCopyErr)
-				}
-				return nil, fmt.Errorf("%s", msg)
-			}
+			return nil, fmt.Errorf("checking secret %s for role %q: %w", sid, role, err)
 		}
 	}
 
@@ -797,38 +697,25 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		}
 	}
 
-	// Step 5a: Store new agent PEMs only for installing orgs.
-	// Skip for the deploy-time placeholder org which has no real PEMs.
-	for _, org := range installingOrgs {
-		if org == PlaceholderOrg {
-			continue
-		}
-		for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
-			if err := p.StoreAgentPEM(ctx, org, role, p.cfg.AgentPEMs[role]); err != nil {
-				return nil, fmt.Errorf("storing PEM for %s/%s: %w", org, role, err)
-			}
+	// Step 5a: Store new agent PEMs once per role.
+	for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
+		if err := p.StoreAgentPEM(ctx, role, p.cfg.AgentPEMs[role]); err != nil {
+			return nil, fmt.Errorf("storing PEM for role %s: %w", role, err)
 		}
 	}
 
-	// Step 5b: Verify secrets exist for roles without PEMs (re-install,
-	// only for installing orgs). Skip for the deploy-time placeholder org
-	// which has no real PEMs.
-	for _, org := range installingOrgs {
-		if org == PlaceholderOrg {
+	// Step 5b: Verify secrets exist for roles without PEMs (re-install).
+	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
+		if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
 			continue
 		}
-		for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
-			if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
-				continue
+		sid := secretID(role)
+		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+			if errors.Is(err, ErrSecretNotFound) {
+				return nil, fmt.Errorf("role %q has no PEM and secret %s not found in project %s",
+					role, sid, p.cfg.ProjectID)
 			}
-			sid := secretID(org, role)
-			if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
-				if errors.Is(err, ErrSecretNotFound) {
-					return nil, fmt.Errorf("role %q has no PEM and secret %s not found in project %s",
-						role, sid, p.cfg.ProjectID)
-				}
-				return nil, fmt.Errorf("checking secret %s for role %q: %w", sid, role, err)
-			}
+			return nil, fmt.Errorf("checking secret %s for role %q: %w", sid, role, err)
 		}
 	}
 
@@ -1658,62 +1545,6 @@ func (p *Provisioner) RemoveRepoFromMint(ctx context.Context, repo string) error
 			return fmt.Errorf("removing repo from mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
 		}
 		return fmt.Errorf("removing repo from mint env vars: %w", err)
-	}
-	return nil
-}
-
-// DisablePEMSecrets disables the latest version of each PEM secret for an
-// org's roles. This is reversible — the secrets can be re-enabled.
-// Skips secrets that do not exist (already cleaned up).
-func (p *Provisioner) DisablePEMSecrets(ctx context.Context, org string, roles []string) error {
-	for _, role := range roles {
-		sid := secretID(org, role)
-		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
-			if errors.Is(err, ErrSecretNotFound) {
-				continue // Already gone, skip.
-			}
-			return fmt.Errorf("checking secret %s: %w", sid, err)
-		}
-		if err := p.gcpAPI.DisableSecretVersion(ctx, p.cfg.ProjectID, sid); err != nil {
-			return fmt.Errorf("disabling secret %s: %w", sid, err)
-		}
-	}
-	return nil
-}
-
-// EnablePEMSecrets re-enables the latest version of each PEM secret for an
-// org's roles. This reverses DisablePEMSecrets after a re-enrollment.
-// Skips secrets that do not exist.
-func (p *Provisioner) EnablePEMSecrets(ctx context.Context, org string, roles []string) error {
-	for _, role := range roles {
-		sid := secretID(org, role)
-		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
-			if errors.Is(err, ErrSecretNotFound) {
-				continue
-			}
-			return fmt.Errorf("checking secret %s: %w", sid, err)
-		}
-		if err := p.gcpAPI.EnableSecretVersion(ctx, p.cfg.ProjectID, sid); err != nil {
-			return fmt.Errorf("enabling secret %s: %w", sid, err)
-		}
-	}
-	return nil
-}
-
-// DeletePEMSecrets permanently deletes PEM secrets for an org's roles.
-// Skips secrets that do not exist.
-func (p *Provisioner) DeletePEMSecrets(ctx context.Context, org string, roles []string) error {
-	for _, role := range roles {
-		sid := secretID(org, role)
-		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
-			if errors.Is(err, ErrSecretNotFound) {
-				continue // Already gone, skip.
-			}
-			return fmt.Errorf("checking secret %s: %w", sid, err)
-		}
-		if err := p.gcpAPI.DeleteSecret(ctx, p.cfg.ProjectID, sid); err != nil {
-			return fmt.Errorf("deleting secret %s: %w", sid, err)
-		}
 	}
 	return nil
 }

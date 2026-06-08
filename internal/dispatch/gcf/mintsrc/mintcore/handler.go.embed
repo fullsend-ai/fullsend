@@ -285,7 +285,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
 	}
 
-	pemData, err := h.pemAccessor.AccessPEM(ctx, org, role)
+	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("reading PEM secret for role %s: %v", role, err)}
 	}

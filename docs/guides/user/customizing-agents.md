@@ -200,10 +200,10 @@ Each agent role has its own identity, permissions, and purpose:
 │  App naming: {org}-{role}                                   │
 │  Bot naming: {org}-{role}[bot]                              │
 │  PEM storage: GCP Secret Manager                            │
-│  Secret name: fullsend-{org}--{role}-app-pem                │
+│  Secret name: fullsend-{role}-app-pem                       │
 │                                                             │
-│  Note: "fix" role reuses the "coder" app — no separate      │
-│  GitHub App is created for it.                               │
+│  Note: "fix" role reuses the "coder" app and PEM — no       │
+│  separate GitHub App or secret is created for it.          │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```

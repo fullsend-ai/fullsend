@@ -61,7 +61,7 @@ The `admin install` command performs all setup in a single invocation. The `mint
 | `admin install` Phase | Standalone Command | Required Access |
 |-----------------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin` |
-| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/secretmanager.admin`, `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin`; per-repo mode also needs `roles/resourcemanager.projectIamAdmin` |
+| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin`; per-repo mode also needs `roles/resourcemanager.projectIamAdmin` |
 | Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 

@@ -53,6 +53,44 @@ func resolveRole(role string) string {
 	return role
 }
 
+// enrolledRolesFromDiscovery returns unique role names from ROLE_APP_IDS keys.
+// When orgFilter is non-empty, only roles for that org are included.
+func enrolledRolesFromDiscovery(roleAppIDs map[string]string, orgFilter string) []string {
+	roleSet := make(map[string]bool)
+	for key := range roleAppIDs {
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) != 2 || parts[0] == gcf.PlaceholderOrg {
+			continue
+		}
+		if orgFilter != "" && parts[0] != orgFilter {
+			continue
+		}
+		roleSet[parts[1]] = true
+	}
+	roles := make([]string, 0, len(roleSet))
+	for role := range roleSet {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return roles
+}
+
+// pemSecretRoles maps enrolled roles to Secret Manager PEM keys, deduplicating
+// aliases (e.g., fix and coder both map to coder).
+func pemSecretRoles(roles []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, role := range roles {
+		secretRole := resolveRole(role)
+		if !seen[secretRole] {
+			seen[secretRole] = true
+			result = append(result, secretRole)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
 // githubAPIBaseURL is the base URL for the GitHub API.
 // Overridden in tests to use httptest servers.
 var githubAPIBaseURL = "https://api.github.com"
@@ -445,9 +483,9 @@ func newMintEnrollCmd() *cobra.Command {
 		Long: `Performs full enrollment of an organization or per-repo into an existing mint.
 
 Per-org enrollment (fullsend mint enroll acme):
-  - Copies PEM secrets from the app set
   - Registers the org in ALLOWED_ORGS and ROLE_APP_IDS
   - Re-derives ALLOWED_ROLES
+  - Requires role PEM secrets to already exist (fullsend-{role}-app-pem)
 
 Per-repo enrollment (fullsend mint enroll acme/widget):
   - Same as per-org plus:
@@ -457,7 +495,6 @@ Per-repo enrollment (fullsend mint enroll acme/widget):
 Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
 
 Required IAM roles on the mint project:
-  - roles/secretmanager.admin                  (copy PEM secrets)
   - roles/cloudfunctions.viewer                (read Cloud Function metadata)
   - roles/run.admin                            (update Cloud Run service env vars)
   - roles/iam.workloadIdentityPoolAdmin        (update WIF provider condition; create repo-scoped providers)
@@ -498,7 +535,7 @@ When enrolling a repo (per-repo mode), additionally requires:
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
-	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set to copy PEMs and app IDs from")
+	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set to resolve app IDs from")
 	cmd.Flags().StringVar(&appSet, "source-org", appsetup.DefaultAppSet, "deprecated: use --app-set instead")
 	cmd.Flags().MarkDeprecated("source-org", "use --app-set instead")
 	cmd.Flags().MarkHidden("source-org")
@@ -669,36 +706,13 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 			}
 		}
 		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", org))
-		printer.StepInfo(fmt.Sprintf("  Would copy or re-enable PEMs from %s for %d roles", appSet, len(roleList)))
 		printer.StepInfo(fmt.Sprintf("  Would add %s to WIF provider condition", org))
 		printer.Blank()
 		printer.StepInfo("To grant Agent Platform access, run 'fullsend inference provision' separately")
 		return nil
 	}
 
-	// Step 3: Copy PEM secrets from app set (or re-enable if disabled by unenroll).
-	for _, role := range roleList {
-		exists, existsErr := provisioner.SecretExists(ctx, org, role)
-		if existsErr != nil {
-			return fmt.Errorf("checking PEM for %s/%s: %w", org, role, existsErr)
-		}
-		if exists {
-			if err := provisioner.EnablePEMSecrets(ctx, org, []string{role}); err != nil {
-				printer.StepFail(fmt.Sprintf("Failed to re-enable PEM for %s/%s", org, role))
-				return fmt.Errorf("re-enabling PEM for %s/%s: %w", org, role, err)
-			}
-			printer.StepDone(fmt.Sprintf("PEM ready: %s/%s (re-enabled)", org, role))
-			continue
-		}
-		printer.StepStart(fmt.Sprintf("Copying PEM for %s/%s from %s", org, role, appSet))
-		if err := provisioner.CopyAgentPEM(ctx, appSet, org, role); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to copy PEM for %s", role))
-			return fmt.Errorf("copying PEM for %s/%s: %w", org, role, err)
-		}
-		printer.StepDone(fmt.Sprintf("Copied PEM for %s/%s", org, role))
-	}
-
-	// Step 4: Register org in mint env vars.
+	// Step 3: Register org in mint env vars.
 	printer.StepStart("Registering org in mint")
 	if err := provisioner.EnsureOrgInMint(ctx, discovery.URL, org, appIDs); err != nil {
 		printer.StepFail("Failed to register org")
@@ -708,7 +722,7 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 
 	verifyEnrollment(ctx, printer, provisioner, org, appIDs, project)
 
-	// Step 5: Ensure org is in WIF provider condition.
+	// Step 4: Ensure org is in WIF provider condition.
 	printer.StepStart("Updating WIF provider condition")
 	if err := provisioner.EnsureOrgInWIFCondition(ctx, org); err != nil {
 		printer.StepFail("Failed to update WIF condition")
@@ -786,31 +800,12 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 			}
 		}
 		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", owner))
-		printer.StepInfo(fmt.Sprintf("  Would copy PEMs from %s for %d roles", appSet, len(roleList)))
 		printer.StepInfo(fmt.Sprintf("  Would add %s to PER_REPO_WIF_REPOS", repoFullName))
 		printer.StepInfo(fmt.Sprintf("  Would create WIF provider: %s", mintcore.BuildRepoProviderID(owner, repo)))
 		return nil
 	}
 
-	// Step 3: Copy PEM secrets.
-	for _, role := range roleList {
-		exists, existsErr := provisioner.SecretExists(ctx, owner, role)
-		if existsErr != nil {
-			return fmt.Errorf("checking PEM for %s/%s: %w", owner, role, existsErr)
-		}
-		if exists {
-			printer.StepDone(fmt.Sprintf("PEM exists: %s/%s", owner, role))
-			continue
-		}
-		printer.StepStart(fmt.Sprintf("Copying PEM for %s/%s from %s", owner, role, appSet))
-		if err := provisioner.CopyAgentPEM(ctx, appSet, owner, role); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to copy PEM for %s", role))
-			return fmt.Errorf("copying PEM for %s/%s: %w", owner, role, err)
-		}
-		printer.StepDone(fmt.Sprintf("Copied PEM for %s/%s", owner, role))
-	}
-
-	// Step 4: Register org in mint env vars.
+	// Step 3: Register org in mint env vars.
 	printer.StepStart("Registering org in mint")
 	if err := provisioner.EnsureOrgInMint(ctx, discovery.URL, owner, appIDs); err != nil {
 		printer.StepFail("Failed to register org")
@@ -820,7 +815,7 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 
 	verifyEnrollment(ctx, printer, provisioner, owner, appIDs, project)
 
-	// Step 5: Register per-repo WIF.
+	// Step 4: Register per-repo WIF.
 	printer.StepStart("Registering per-repo WIF")
 	if err := provisioner.RegisterPerRepoWIF(ctx, repoFullName); err != nil {
 		printer.StepFail("Failed to register per-repo WIF")
@@ -828,7 +823,7 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 	}
 	printer.StepDone("Per-repo WIF registered")
 
-	// Step 6: Provision per-repo WIF provider.
+	// Step 5: Provision per-repo WIF provider.
 	printer.StepStart("Provisioning WIF provider for " + repoFullName)
 	wifProvider, err := provisioner.ProvisionWIF(ctx)
 	if err != nil {
@@ -930,7 +925,6 @@ func resolveEnrollAppIDs(roleAppIDsJSON string, existingIDs map[string]string, a
 func newMintUnenrollCmd() *cobra.Command {
 	var project string
 	var region string
-	var deleteSecrets bool
 	var deleteProvider bool
 	var dryRun bool
 	var yolo bool
@@ -940,18 +934,19 @@ func newMintUnenrollCmd() *cobra.Command {
 		Short: "Remove an org or repo from the token mint",
 		Long: `Reverses enrollment by removing the org/repo from mint env vars.
 
-By default, PEM secrets are disabled (not deleted) and WIF providers are
-disabled (not deleted). Use --delete-secrets or --delete-provider for
+Org unenroll removes the org from ALLOWED_ORGS, ROLE_APP_IDS, and the WIF
+provider condition. Role PEM secrets are shared across orgs and are not
+modified during unenroll.
+
+Repo unenroll removes the repo from PER_REPO_WIF_REPOS. By default, the
+repo's WIF provider is disabled (not deleted). Use --delete-provider for
 permanent removal.
 
 Requires typing the org/repo name to confirm (unless --dry-run or --yolo).
 
-Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
-
 Required IAM roles on the mint project:
   - roles/cloudfunctions.viewer                (read Cloud Function metadata)
   - roles/run.admin                            (update Cloud Run service env vars)
-  - roles/secretmanager.admin                  (disable or delete PEM secrets; org-scoped only)
   - roles/iam.workloadIdentityPoolAdmin        (update, disable, or delete WIF providers)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -968,9 +963,6 @@ Required IAM roles on the mint project:
 			arg := args[0]
 			isRepo := strings.Contains(arg, "/")
 
-			if isRepo && deleteSecrets {
-				return fmt.Errorf("--delete-secrets applies to org unenroll, not repo unenroll")
-			}
 			if !isRepo && deleteProvider {
 				return fmt.Errorf("--delete-provider applies to repo unenroll, not org unenroll")
 			}
@@ -984,13 +976,12 @@ Required IAM roles on the mint project:
 			if isRepo {
 				return runMintUnenrollRepo(ctx, printer, arg, project, region, deleteProvider, dryRun, yolo, os.Stdin)
 			}
-			return runMintUnenrollOrg(ctx, printer, arg, project, region, deleteSecrets, dryRun, yolo, os.Stdin)
+			return runMintUnenrollOrg(ctx, printer, arg, project, region, dryRun, yolo, os.Stdin)
 		},
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
-	cmd.Flags().BoolVar(&deleteSecrets, "delete-secrets", false, "permanently delete PEM secrets (default: disable only)")
 	cmd.Flags().BoolVar(&deleteProvider, "delete-provider", false, "permanently delete WIF provider (default: disable only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
@@ -1018,7 +1009,7 @@ func confirmUnenroll(printer *ui.Printer, target string, reader *bufio.Reader, i
 	return nil
 }
 
-func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, region string, deleteSecrets, dryRun, yolo bool, stdin *os.File) error {
+func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, region string, dryRun, yolo bool, stdin *os.File) error {
 	org = strings.ToLower(org)
 	if err := validateOrgName(org); err != nil {
 		return err
@@ -1037,10 +1028,9 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 		GitHubOrgs: []string{org},
 	}, gcpClient)
 
-	// Step 1: Discover enrolled roles for this org from ROLE_APP_IDS.
-	printer.StepStart("Discovering enrolled roles")
-	discovery, err := provisioner.DiscoverMint(ctx)
-	if err != nil {
+	// Step 1: Verify mint exists.
+	printer.StepStart("Verifying mint infrastructure")
+	if _, err := provisioner.DiscoverMint(ctx); err != nil {
 		if errors.Is(err, gcf.ErrFunctionNotFound) {
 			printer.StepFail("Mint not installed")
 			return fmt.Errorf("mint not found in project %s region %s — nothing to unenroll", project, region)
@@ -1048,22 +1038,7 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 		printer.StepFail("Mint discovery failed")
 		return fmt.Errorf("discovering mint: %w", err)
 	}
-
-	// Extract enrolled roles before dry-run so both paths have the full picture.
-	var roles []string
-	prefix := org + "/"
-	for key := range discovery.RoleAppIDs {
-		if strings.HasPrefix(strings.ToLower(key), strings.ToLower(prefix)) {
-			roles = append(roles, strings.TrimPrefix(strings.ToLower(key), strings.ToLower(prefix)))
-		}
-	}
-	sort.Strings(roles)
-	if len(roles) == 0 {
-		roles = defaultMintRoles()
-		printer.StepWarn(fmt.Sprintf("No roles found in ROLE_APP_IDS for %s; falling back to defaults: %s", org, strings.Join(roles, ", ")))
-	} else {
-		printer.StepDone(fmt.Sprintf("Found enrolled roles: %s", strings.Join(roles, ", ")))
-	}
+	printer.StepDone("Mint verified")
 
 	if dryRun {
 		printer.Blank()
@@ -1071,11 +1046,6 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("  Would remove %s from ALLOWED_ORGS and ROLE_APP_IDS", org))
 		printer.StepInfo(fmt.Sprintf("  Would remove %s from WIF provider condition", org))
-		if deleteSecrets {
-			printer.StepInfo(fmt.Sprintf("  Would delete PEM secrets for %s (roles: %s)", org, strings.Join(roles, ", ")))
-		} else {
-			printer.StepInfo(fmt.Sprintf("  Would disable PEM secrets for %s (roles: %s)", org, strings.Join(roles, ", ")))
-		}
 		return nil
 	}
 
@@ -1104,23 +1074,6 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 		return fmt.Errorf("updating WIF condition: %w", err)
 	}
 	printer.StepDone("WIF condition updated")
-
-	// Step 4: Disable or delete PEM secrets.
-	if deleteSecrets {
-		printer.StepStart("Deleting PEM secrets")
-		if err := provisioner.DeletePEMSecrets(ctx, org, roles); err != nil {
-			printer.StepFail("Failed to delete PEM secrets")
-			return fmt.Errorf("deleting PEM secrets: %w", err)
-		}
-		printer.StepDone("PEM secrets deleted")
-	} else {
-		printer.StepStart("Disabling PEM secrets")
-		if err := provisioner.DisablePEMSecrets(ctx, org, roles); err != nil {
-			printer.StepFail("Failed to disable PEM secrets")
-			return fmt.Errorf("disabling PEM secrets: %w", err)
-		}
-		printer.StepDone("PEM secrets disabled (use --delete-secrets to permanently delete)")
-	}
 
 	printer.Blank()
 	printer.Summary("Unenrollment complete", []string{
@@ -1433,33 +1386,30 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 
-	// Step 3: Drill into specific org if provided.
+	// Step 3: Role PEM secret health.
+	rolesToCheck := enrolledRolesFromDiscovery(discovery.RoleAppIDs, org)
+	printer.Blank()
+	header := "Role PEM Secrets"
 	if org != "" {
-		printer.Blank()
-		printer.Header("PEM Status for " + org)
-
-		// Find all roles for this org.
-		var orgRoles []string
-		for key := range discovery.RoleAppIDs {
-			parts := strings.SplitN(key, "/", 2)
-			if len(parts) == 2 && parts[0] == org {
-				orgRoles = append(orgRoles, parts[1])
-			}
-		}
-		sort.Strings(orgRoles)
-
-		if len(orgRoles) == 0 {
+		header = "Role PEM Secrets for " + org
+	}
+	printer.Header(header)
+	if len(rolesToCheck) == 0 {
+		if org != "" {
 			printer.StepWarn(fmt.Sprintf("No roles found for %s in ROLE_APP_IDS", org))
 		} else {
-			for _, role := range orgRoles {
-				exists, existsErr := provisioner.SecretExists(ctx, org, role)
-				if existsErr != nil {
-					printer.StepWarn(fmt.Sprintf("  %s: error checking (%v)", role, existsErr))
-				} else if exists {
-					printer.StepDone(fmt.Sprintf("  %s: present", role))
-				} else {
-					printer.StepFail(fmt.Sprintf("  %s: missing", role))
-				}
+			printer.StepInfo("  (none)")
+		}
+	} else {
+		pemRoles := pemSecretRoles(rolesToCheck)
+		for _, role := range pemRoles {
+			exists, existsErr := provisioner.SecretExists(ctx, role)
+			if existsErr != nil {
+				printer.StepWarn(fmt.Sprintf("  %s: error checking (%v)", role, existsErr))
+			} else if exists {
+				printer.StepDone(fmt.Sprintf("  %s: present", role))
+			} else {
+				printer.StepFail(fmt.Sprintf("  %s: missing", role))
 			}
 		}
 	}

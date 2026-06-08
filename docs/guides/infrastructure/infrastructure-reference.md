@@ -48,7 +48,7 @@ The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped Gi
 │  │     └─ Returns GCP federated access token         │           │
 │  │                                                   │           │
 │  │  3. Lookup PEM from Secret Manager                │           │
-│  │     ├─ Secret name: fullsend-{org}--{role}-app-pem│           │
+│  │     ├─ Secret name: fullsend-{role}-app-pem       │           │
 │  │     └─ Returns PEM private key bytes              │           │
 │  │                                                   │           │
 │  │  4. Generate GitHub App JWT                       │           │
@@ -269,8 +269,8 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
-│  │ Store PEMs in     │ fullsend-{org}--{role}-app-pem           │
-│  │ Secret Manager    │ for each agent role                      │
+│  │ Store PEMs in     │ fullsend-{role}-app-pem                  │
+│  │ Secret Manager    │ once per agent role (shared)           │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │

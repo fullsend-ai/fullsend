@@ -260,7 +260,7 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 
 The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
 
-The installer automatically detects when the deployed mint function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure, org registration, and PEM secrets. Use `--skip-mint-deploy` to explicitly skip the Cloud Function deployment step.
+The installer automatically detects when the deployed mint function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration. Use `--skip-mint-deploy` to explicitly skip the Cloud Function deployment step.
 
 ### Multi-org setup
 
@@ -537,7 +537,7 @@ fullsend admin install "$NEW_ORG" \
   --app-set fullsend-ai
 ```
 
-The installer detects that the public apps are already installed in the org (matched by app ID from the mint's `ROLE_APP_IDS`), copies PEM secrets to the new org's scoped key, and skips app creation. The `--app-set` value ensures convention-based slug lookups match the existing apps.
+The installer detects that the public apps are already installed in the org (matched by app ID from the mint's `ROLE_APP_IDS`) and skips app creation — role PEM secrets are shared and already exist. The `--app-set` value ensures convention-based slug lookups match the existing apps.
 
 > **Migration note:** Prior to this change, the default app set was `fullsend`, producing slugs like `fullsend-coder`. The default is now `fullsend-ai`, producing `fullsend-ai-coder`. Existing installations that used the old default should pass `--app-set fullsend` explicitly to continue matching their existing GitHub App slugs, or re-install with the new default.
 
@@ -556,7 +556,7 @@ fullsend admin uninstall "$ORG_NAME" --app-set "$ORG_NAME"
 ### Constraints
 
 - App set names must be lowercase alphanumeric with optional hyphens (no leading/trailing hyphens, no consecutive hyphens), max 23 characters (GitHub App names are limited to 34 characters, and the role suffix is appended)
-- The app set prefix only affects GitHub App slugs — GCP secret naming (`fullsend-{org}--{role}-app-pem`) and mint `ROLE_APP_IDS` keys (`{org}/{role}`) are independent of the app set
+- The app set prefix only affects GitHub App slugs — GCP secret naming (`fullsend-{role}-app-pem`) and mint `ROLE_APP_IDS` keys (`{org}/{role}`) are independent of the app set
 
 ---
 
@@ -577,7 +577,7 @@ The `admin install` command performs all setup in a single invocation. For organ
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
 | GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
-| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint, store PEMs (does not grant Agent Platform access — use `inference provision`) |
+| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
@@ -592,7 +592,7 @@ When using the split-responsibility workflow, each standalone command requires a
 | `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | x | x | |
 | `roles/resourcemanager.projectIamAdmin` | x | | | \* | \*\* | | |
 | `roles/iam.serviceAccountAdmin` | | | | x | | | |
-| `roles/secretmanager.admin` | | | | \* | x | x† | |
+| `roles/secretmanager.admin` | | | | \* | | | |
 | `roles/cloudfunctions.developer` | | | | x | | | |
 | `roles/cloudfunctions.viewer` | | | | | x | x | x |
 | `roles/run.admin` | | | | x | x | x | |
@@ -602,8 +602,6 @@ When using the split-responsibility workflow, each standalone command requires a
 \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
 \*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
-
-† `roles/secretmanager.admin` is required for `mint unenroll` only in org-scoped mode. Repo-scoped unenroll does not touch PEM secrets.
 
 \*\*\* All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
 

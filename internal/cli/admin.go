@@ -120,7 +120,7 @@ type skipMintDispatcher struct {
 func (d *skipMintDispatcher) Name() string               { return "skip-mint-check" }
 func (d *skipMintDispatcher) OrgSecretNames() []string   { return nil }
 func (d *skipMintDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
-func (d *skipMintDispatcher) StoreAgentPEM(context.Context, string, string, []byte) error {
+func (d *skipMintDispatcher) StoreAgentPEM(context.Context, string, []byte) error {
 	return nil
 }
 func (d *skipMintDispatcher) Provision(context.Context) (map[string]string, error) {
@@ -507,7 +507,7 @@ Inference authentication:
 			var sharedSlugs map[string]string
 			var perOrgStoredIDs map[string]string
 			if mintProject != "" && !skipAppSetup && !skipMintCheck {
-				slugs, storedIDs, err := copySharedAppPEMs(ctx, client, printer, org, roles, mintProject, mintRegion)
+				slugs, storedIDs, err := detectSharedApps(ctx, client, printer, org, roles, mintProject, mintRegion)
 				if err != nil {
 					return err
 				}
@@ -870,7 +870,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 
 		var sharedSlugs map[string]string
 		if mintProject != "" {
-			slugs, storedIDs, slugErr := copySharedAppPEMs(ctx, client, printer, owner, roles, mintProject, mintRegion)
+			slugs, storedIDs, slugErr := detectSharedApps(ctx, client, printer, owner, roles, mintProject, mintRegion)
 			if slugErr != nil {
 				return slugErr
 			}
@@ -1299,14 +1299,12 @@ func resolveSharedRoleAppIDs(ctx context.Context, client forge.Client, existingI
 	return result, nil
 }
 
-// copySharedAppPEMs detects public GitHub Apps shared across orgs and copies
-// their PEM secrets to the target org's naming convention. This runs before
-// app setup so that handleExistingApp finds the PEM and returns credentials
-// without trying to generate a new key.
+// detectSharedApps finds public GitHub Apps shared across orgs so app setup
+// can reuse existing app registrations without generating new keys.
 // Returns a role → app-slug mapping for detected shared apps and the full
 // ROLE_APP_IDS map (org/role → app_id) so callers can pass it to app setup
 // without a redundant GCP API call.
-func copySharedAppPEMs(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject, mintRegion string) (map[string]string, map[string]string, error) {
+func detectSharedApps(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject, mintRegion string) (map[string]string, map[string]string, error) {
 	prov := gcf.NewProvisioner(gcf.Config{
 		ProjectID:  mintProject,
 		Region:     mintRegion,
@@ -1349,17 +1347,6 @@ func copySharedAppPEMs(ctx context.Context, client forge.Client, printer *ui.Pri
 			}
 
 			sharedSlugs[role] = inst.AppSlug
-
-			exists, _ := prov.SecretExists(ctx, org, role)
-			if exists {
-				continue
-			}
-
-			printer.StepStart(fmt.Sprintf("Shared app detected: %s (app %d) — copying PEM from %s", role, inst.AppID, srcOrg))
-			if err := prov.CopyAgentPEM(ctx, srcOrg, org, role); err != nil {
-				return nil, nil, fmt.Errorf("copying shared PEM for %s: %w", role, err)
-			}
-			printer.StepDone(fmt.Sprintf("Copied shared %s PEM", role))
 			break
 		}
 	}
@@ -1405,7 +1392,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 	// Otherwise, check GitHub repo secrets.
 	if pemProvisioner != nil {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
-			return pemProvisioner.SecretExists(ctx, org, role)
+			return pemProvisioner.SecretExists(ctx, role)
 		})
 	} else {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
@@ -1418,7 +1405,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 	// Otherwise, store in GitHub repo secrets.
 	if pemProvisioner != nil {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
-			return pemProvisioner.StoreAgentPEM(sctx, org, role, []byte(pem))
+			return pemProvisioner.StoreAgentPEM(sctx, role, []byte(pem))
 		})
 	} else {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {

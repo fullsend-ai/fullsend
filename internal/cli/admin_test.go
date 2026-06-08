@@ -1470,7 +1470,7 @@ func TestSkipMintDispatcher(t *testing.T) {
 	assert.Equal(t, "skip-mint-check", d.Name())
 	assert.Nil(t, d.OrgSecretNames())
 	assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
-	assert.NoError(t, d.StoreAgentPEM(context.Background(), "org", "role", []byte("pem")))
+	assert.NoError(t, d.StoreAgentPEM(context.Background(), "role", []byte("pem")))
 	vars, err := d.Provision(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "https://mint.example.com/v1/token"}, vars)
