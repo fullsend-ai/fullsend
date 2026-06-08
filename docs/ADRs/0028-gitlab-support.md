@@ -1,6 +1,7 @@
 ---
 title: "28. GitLab Support Architecture"
-status: Deprecated
+status: Superseded
+superseded_by: "0043-gitlab-per-repo-support"
 relates_to:
   - agent-infrastructure
   - agent-architecture
@@ -17,7 +18,7 @@ Date: 2026-04-29
 
 ## Status
 
-Deprecated
+Superseded by [ADR 0043](0043-gitlab-per-repo-support.md)
 
 ## Context
 

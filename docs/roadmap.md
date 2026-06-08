@@ -75,7 +75,7 @@ Problems we are actively thinking about but not yet building. These are informed
 
 ### GitLab support
 
-GitHub is the starting point, not the boundary. GitLab support requires solving webhook-to-pipeline translation, MR-event security models, and forge interface abstraction. The architectural groundwork is laid in [ADR-0028](ADRs/0028-gitlab-support.md).
+GitHub is the starting point, not the boundary. GitLab support requires solving webhook-to-pipeline translation, MR-event security models, and forge interface abstraction. The architectural design is complete — [ADR-0043](ADRs/0043-gitlab-per-repo-support.md) (supersedes [ADR-0028](ADRs/0028-gitlab-support.md)) covers the per-repo credential model, webhook bridge, and security layers — but implementation work has not started. It will move to **Next** once the current secretless deployment and per-repo work for GitHub stabilizes.
 
 - Related: [gitlab-implementation](problems/gitlab-implementation.md)
 

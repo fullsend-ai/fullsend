@@ -127,7 +127,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow?
+- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? (For GitLab: [ADR 0043](ADRs/0043-gitlab-per-repo-support.md) decided on a single bot project access token retrieved via OIDC/WIF — no per-role isolation initially, but WIF attribute conditions enable future per-role scoping. Forgejo remains open.)
 
 ## Agent Dispatch and Coordination Layer
 
@@ -138,6 +138,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
 **Decided:**
 
 - Event-driven stage dispatch runs synchronously via `workflow_call` to preserve run correlation in the GitHub Actions UI (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
+- For GitLab: dispatch uses a webhook bridge Cloud Function that translates GitLab webhook events into Pipeline Trigger API calls with `ref=main` hardcoded. The pipeline's dispatch job routes events to stage-specific jobs via dotenv variables (see [ADR 0043](ADRs/0043-gitlab-per-repo-support.md)).
 
 **Open questions:**
 

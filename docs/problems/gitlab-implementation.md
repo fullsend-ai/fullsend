@@ -1,6 +1,8 @@
 # GitLab Support Implementation Details
 
-This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md).
+> **Note**: ADR-0028 has been superseded by [ADR-0043](../ADRs/0043-gitlab-per-repo-support.md) (per-repo-only GitLab support via OIDC/WIF and bot project access token). This document reflects the earlier per-org design. For the current implementation plan, see [docs/plans/gitlab-per-repo-implementation.md](../plans/gitlab-per-repo-implementation.md).
+
+This document contains implementation details for the original GitLab support design in fullsend. For the superseded architectural decision, see [ADR-0028](../ADRs/0028-gitlab-support.md) (deprecated).
 
 ## Table of Contents
 
