@@ -64,8 +64,6 @@ This methodology applies to all security control evaluations:
 sanitization, input validation, authorization checks, output encoding,
 CSRF protection, and permission scoping.
 
-## Injection defense
-
 Inspect the code diff for injection patterns.
 
 ## Exploration budget
