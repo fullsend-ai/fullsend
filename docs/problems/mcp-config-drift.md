@@ -50,6 +50,7 @@ At the beginning of each agent run, the harness hashes all MCP configuration fil
 - Catches any modification, including legitimate changes (requires a workflow to update the baseline)
 - Does not detect changes to what the MCP server *serves* (the config may be unchanged, but the server's tool surface may have changed)
 - Baseline storage location matters: if the baseline is in the repo, it can be modified alongside the config
+- **Trust-on-first-use (TOFU) bootstrapping risk:** if the first run occurs against an already-compromised config, the baseline captures the malicious state and all subsequent runs pass. The baseline should be established from a known-good state or reviewed by a human before being trusted
 
 ### Approach 2: MCP config as immutable harness input
 
@@ -76,7 +77,13 @@ Beyond hashing, parse the MCP config and validate its contents against a policy:
 
 ## Relationship to existing security hooks
 
-The SSRF validator already blocks connections to private networks and metadata endpoints. MCP config drift detection operates at a different layer: it validates the *configuration* before any connections are attempted, rather than blocking individual requests at runtime. Both are needed. SSRF validation is the last line of defense if a malicious endpoint makes it into the config; drift detection prevents the malicious endpoint from entering the config in the first place.
+The SSRF validator blocks connections to private networks and metadata endpoints for Bash and WebFetch tool calls. However, MCP server connections are established by the runtime's MCP client, which may not flow through the tool-call hook mechanism. This means SSRF validation provides partial coverage for MCP endpoints, not complete coverage. MCP config drift detection operates at a different layer: it validates the *configuration* before any connections are attempted, rather than relying on runtime request-level blocking. Both are needed, but drift detection is the primary defense for MCP specifically because it prevents a malicious endpoint from entering the config in the first place.
+
+## Relationship to other problem areas
+
+- **[Security Threat Model](security-threat-model.md):** MCP config drift is a specific instance of [Threat 1: Persistent injection via externally editable resources](security-threat-model.md#persistent-injection-via-externally-editable-resources). The threat model identifies the general pattern; this doc applies it specifically to MCP configurations, which define the agent's tool surface rather than just influencing its behavior through text.
+- **[Governance](governance.md):** Who controls MCP config policy? If per-repo teams can add arbitrary MCP servers, the org loses visibility into what tools agents can access. Governance determines whether MCP configs are repo-level decisions or org-level policy.
+- **[Agent Architecture](agent-architecture.md):** MCP configs relate to agent roles and trust boundaries. Different agent roles should have different tool surfaces, and MCP configs are the mechanism that defines those surfaces. Drift in one agent's config can expand its effective authority beyond its intended role.
 
 ## Open questions
 

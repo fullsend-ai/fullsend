@@ -17,6 +17,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
 - **[docs/problems/](docs/problems/)** — Deep dives into each major problem domain, each evolving independently:
   - [Intent Representation](docs/problems/intent-representation.md) — How do we capture, verify, and enforce what changes are wanted?
   - [Security Threat Model](docs/problems/security-threat-model.md) — Prompt injection, insider threats, agent drift, supply chain attacks
+  - [MCP Configuration Drift](docs/problems/mcp-config-drift.md) — Detecting unauthorized changes in MCP server configurations that define the agent tool surface
   - [Agent Architecture](docs/problems/agent-architecture.md) — What agents exist, what authority do they have, how do they interact?
   - [Agent Infrastructure](docs/problems/agent-infrastructure.md) — Where agents run, what resources they get, 3rd party vs internal vs build our own
   - [Autonomy Spectrum](docs/problems/autonomy-spectrum.md) — When to auto-merge vs. escalate to humans
