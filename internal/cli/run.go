@@ -730,6 +730,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepDone("Security findings extracted")
 			}
 		}
+
+		findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
+		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
+			cv, verifyErr := security.VerifyChain(findingsJSONL)
+			if verifyErr != nil {
+				printer.StepWarn("Audit log verification error: " + verifyErr.Error())
+			} else if !cv.Valid {
+				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
+			} else if cv.Entries > 0 {
+				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
+			}
+		}
 	}
 
 	// 10. Print results.
