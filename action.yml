@@ -89,6 +89,25 @@ runs:
           mkdir -p "${RUNNER_TEMP}/fullsend"
           cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
           chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+
+          # Validate that the vendored binary is a released version when
+          # the caller requested "latest" or a specific release tag.
+          # A dev-vendored build should never shadow a release download.
+          VENDORED_VERSION="$("${RUNNER_TEMP}/fullsend/fullsend" version 2>/dev/null || echo "unknown")"
+          REQUESTED="${VERSION:-latest}"
+          # is_release_version: true if string is purely digits, dots, and
+          # an optional leading "v" (e.g. "v0.15.0", "0.15.0").
+          is_release_version() {
+            local v="${1#v}"
+            [[ -n "${v}" && "${v}" =~ ^[0-9]+(\.[0-9]+)*$ ]]
+          }
+          if [[ "${REQUESTED}" == "latest" ]] || is_release_version "${REQUESTED}"; then
+            if ! is_release_version "${VENDORED_VERSION}"; then
+              echo "::error::Vendored binary reports version '${VENDORED_VERSION}' which is not a release version. Expected a release version (e.g. v0.15.0) because fullsend_version is '${REQUESTED}'. A dev or dev-vendored build should not shadow released versions. Remove the vendored binary or re-run 'fullsend admin install --vendor-fullsend-binary' with a release build."
+              exit 1
+            fi
+          fi
+
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
           exit 0
         fi
