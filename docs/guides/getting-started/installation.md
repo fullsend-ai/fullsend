@@ -687,6 +687,33 @@ fullsend admin install "$ORG_NAME" \
 
 > **Note:** IAM policy bindings may take several minutes to propagate. If agent workflows fail with a permission error immediately after setup, wait a few minutes and retry.
 
+## Status notifications
+
+Agent workflows post status comments on issues and PRs when they start and
+complete. This behavior is controlled by the `status_notifications` section in
+`config.yaml`:
+
+```yaml
+defaults:
+  status_notifications:
+    comment:
+      start: enabled      # "enabled" (default) | "disabled"
+      completion: enabled  # "enabled" (default) | "disabled"
+```
+
+When `status_notifications` is omitted, comments default to enabled.
+
+The composite action accepts four optional inputs for status notifications:
+
+| Input | Description |
+|-------|-------------|
+| `run-url` | URL of the CI/CD run shown in the status comment |
+| `status-repo` | Repository (`owner/repo`) to post status comments on |
+| `status-number` | Issue or PR number for status comments |
+| `status-token` | Token for posting comments (defaults to `GH_TOKEN`) |
+
+All reusable workflows pass these inputs automatically.
+
 ## See Also
 
 - [Setting up with pre-provisioned infrastructure](github-setup.md) — GitHub-only setup when GCP is already provisioned

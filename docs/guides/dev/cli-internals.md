@@ -32,6 +32,17 @@ fullsend
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── run                                      # Execute an agent in a sandbox
+│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --target-repo <path>                 #   Path to the target repository
+│   ├── --output-dir <path>                  #   Base directory for run output
+│   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
+│   ├── --no-post-script                     #   Skip post-script execution
+│   ├── --debug [filter]                     #   Enable Claude Code debug logging
+│   ├── --offline                            #   Reject network fetches
+│   ├── --run-url <url>                      #   CI/CD run URL for status comments
+│   ├── --status-repo <owner/repo>           #   Repository for status comments
+│   ├── --status-number <int>                #   Issue/PR number for status comments
+│   └── --status-token <token>               #   Token for status comments (default: GH_TOKEN)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
 │   ├── output                               # Scan agent output for leaked secrets

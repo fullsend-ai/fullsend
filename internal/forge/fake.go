@@ -168,6 +168,7 @@ type FakeClient struct {
 	CreatedReviews      []ReviewRecord
 	DismissedReviews    []DismissedReviewRecord
 	CommittedFiles      []CommitFilesRecord
+	DeletedComments []int // comment IDs
 
 	// internal counters
 	proposalCounter int
@@ -782,6 +783,24 @@ func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, c
 		for i, c := range comments {
 			if c.ID == commentID {
 				f.IssueComments[key][i].Body = body
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func (f *FakeClient) DeleteIssueComment(_ context.Context, _, _ string, commentID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DeleteIssueComment"); e != nil {
+		return e
+	}
+	f.DeletedComments = append(f.DeletedComments, commentID)
+	for key, comments := range f.IssueComments {
+		for i, c := range comments {
+			if c.ID == commentID {
+				f.IssueComments[key] = append(comments[:i], comments[i+1:]...)
 				return nil
 			}
 		}

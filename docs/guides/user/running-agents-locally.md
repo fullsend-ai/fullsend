@@ -230,6 +230,34 @@ fullsend run code \
   --env-file fullsend-code.env
 ```
 
+### Status notification flags
+
+When running agents locally you can optionally enable status comments on the
+target issue/PR. These flags mirror what the CI workflows pass automatically:
+
+| Flag | Description |
+|------|-------------|
+| `--run-url` | URL of the CI/CD run shown in the status comment |
+| `--status-repo` | Repository (`owner/repo`) to post status comments on |
+| `--status-number` | Issue or PR number for status comments |
+| `--status-token` | Token for posting comments (defaults to `GH_TOKEN`) |
+
+Example:
+
+```bash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --status-repo myorg/myrepo \
+  --status-number 42 \
+  --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
+```
+
+Status comment behavior is configured via `status_notifications` in
+`config.yaml`. See the [installation guide](../getting-started/installation.md#status-notifications).
+
 ## Simulating Fullsend's real customization layers
 
 Fullsend automatically aggregates different layers of information before running `fullsend run`.

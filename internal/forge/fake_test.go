@@ -464,6 +464,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
 			return err
 		}},
+		{"DeleteIssueComment", func(fc *FakeClient) error {
+			return fc.DeleteIssueComment(ctx, "o", "r", 1)
+		}},
 	}
 
 	for _, m := range methods {
@@ -531,6 +534,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
 			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
 			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
+			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 		}(i)
 	}
 

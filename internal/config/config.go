@@ -28,14 +28,31 @@ type InferenceConfig struct {
 	Provider string `yaml:"provider"`
 }
 
+// StatusNotificationConfig controls status comments posted on issues/PRs
+// when agents start and complete.
+type StatusNotificationConfig struct {
+	Comment CommentNotificationConfig `yaml:"comment,omitempty"`
+}
+
+// CommentNotificationConfig controls start/completion comments.
+// Valid values: "enabled" (default when parent is set), "disabled".
+type CommentNotificationConfig struct {
+	Start      string `yaml:"start,omitempty"`
+	Completion string `yaml:"completion,omitempty"`
+}
+
 // RepoDefaults holds default settings applied to all repos.
 type RepoDefaults struct {
-	Roles                    []string `yaml:"roles"`
-	MaxImplementationRetries int      `yaml:"max_implementation_retries"`
-	AutoMerge                bool     `yaml:"auto_merge"`
+	Roles                    []string                  `yaml:"roles"`
+	MaxImplementationRetries int                       `yaml:"max_implementation_retries"`
+	AutoMerge                bool                      `yaml:"auto_merge"`
+	StatusNotifications      *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 }
 
 // RepoConfig holds per-repo configuration.
+// StatusNotifications is intentionally absent here — notification style is an
+// org-wide UX decision (consistent appearance across all repos), unlike roles
+// and auto_merge which are operationally per-repo.
 type RepoConfig struct {
 	Roles   []string `yaml:"roles,omitempty"`
 	Enabled bool     `yaml:"enabled"`
@@ -159,6 +176,23 @@ func (c *OrgConfig) Validate() error {
 		if !slices.Contains(validProviders, c.Inference.Provider) {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
 		}
+	}
+	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateStatusNotifications(cfg *StatusNotificationConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	validCommentValues := []string{"", "enabled", "disabled"}
+	if !slices.Contains(validCommentValues, cfg.Comment.Start) {
+		return fmt.Errorf("invalid status_notifications.comment.start %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Start)
+	}
+	if !slices.Contains(validCommentValues, cfg.Comment.Completion) {
+		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Completion)
 	}
 	return nil
 }

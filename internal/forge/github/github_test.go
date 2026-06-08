@@ -1415,3 +1415,16 @@ func TestCommitFiles_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, committed)
 }
+
+func TestDeleteIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+}
