@@ -43,6 +43,21 @@ The e2e tests require GitHub credentials. There are three ways to provide them:
 
 If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
 
+## Shell scripting
+
+**`gh api --paginate` and jq:** The `--paginate` flag applies the `--jq` filter independently to each page of results, not to the combined output. This means aggregation functions like `length`, `sort_by`, `group_by`, and `unique` operate per-page and produce one result per page — breaking downstream bash comparisons and logic on multi-page responses.
+
+- **Wrong:** `gh api --paginate '/repos/{owner}/{repo}/comments' --jq '[.[] | select(.body | test("pattern"))] | length'` — returns one number per page, not a single total.
+- **Right:** `gh api --paginate '/repos/{owner}/{repo}/comments' | jq -s '[.[][] | select(.body | test("pattern"))] | length'` — `jq -s` (slurp) collects all pages into a single array before applying the filter.
+
+When you need to aggregate across all pages, pipe to a separate `jq -s` call instead of using `--jq`:
+
+```bash
+# Count matching items across all pages
+gh api --paginate '/repos/{owner}/{repo}/issues/comments' \
+  | jq -s '[.[][] | select(.body | test("pattern"))] | length'
+```
+
 ## Key design decisions made
 
 - **Autonomy model:** Binary per-repo, with CODEOWNERS enforcing human approval on specific paths
