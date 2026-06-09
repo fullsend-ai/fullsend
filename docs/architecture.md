@@ -85,6 +85,12 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   triggers a retry (capped); exhaustion is a hard failure — no unvalidated
   output is emitted
   ([ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md)).
+- Forge-portable harness schema: `role` and `slug` move into the harness
+  YAML (eliminating the config.yaml `agents:` block dependency), and a
+  `forge:` section separates platform-specific config (scripts, skills,
+  runner_env) from platform-neutral fields. Forge blocks inherit from
+  top-level defaults and override only deltas
+  ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
 
 **Open questions:**
 

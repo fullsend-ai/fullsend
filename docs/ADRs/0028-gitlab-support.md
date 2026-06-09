@@ -17,7 +17,11 @@ Date: 2026-04-29
 
 ## Status
 
-Deprecated
+Deprecated — the harness-level forge-specific vs. forge-neutral split
+is now addressed by [ADR 0045](0045-forge-portable-harness-schema.md)
+(forge-portable harness schema). The broader GitLab support architecture
+(CI/CD pipeline mapping, PAT-based auth, webhook bridging) documented
+here remains reference material.
 
 ## Context
 

@@ -75,7 +75,7 @@ Problems we are actively thinking about but not yet building. These are informed
 
 ### GitLab support
 
-GitHub is the starting point, not the boundary. GitLab support requires solving webhook-to-pipeline translation, MR-event security models, and forge interface abstraction. The architectural groundwork is laid in [ADR-0028](ADRs/0028-gitlab-support.md).
+GitHub is the starting point, not the boundary. GitLab support requires solving webhook-to-pipeline translation, MR-event security models, and forge interface abstraction. The architectural groundwork is laid in [ADR 0028](ADRs/0028-gitlab-support.md) (deprecated — CI/CD, auth, and webhook architecture remain reference material; harness portability is superseded by [ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
 
 - Related: [gitlab-implementation](problems/gitlab-implementation.md)
 
