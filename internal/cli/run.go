@@ -1929,6 +1929,12 @@ func setupStatusNotifier(fullsendDir string, sOpts statusOpts, printer *ui.Print
 	client := gh.New(token)
 
 	sha := os.Getenv("GITHUB_SHA")
+	// In cross-repo workflow_dispatch mode, GITHUB_SHA is the dispatching
+	// repo's default branch HEAD — not the PR's head commit. Prefer the
+	// PR head SHA from the event payload when available. See #2045.
+	if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
+		sha = prSHA
+	}
 	runID := os.Getenv("GITHUB_RUN_ID")
 	if runID == "" {
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -1939,4 +1945,38 @@ func setupStatusNotifier(fullsendDir string, sOpts statusOpts, printer *ui.Print
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 	return n, nil
+}
+
+// prHeadSHAFromEventPath extracts pull_request.head.sha from the event
+// payload embedded in a workflow_dispatch event file. For workflow_dispatch
+// events, the file contains {"inputs": {"event_payload": "<json-string>"}}.
+// Returns empty string if the file is unreadable or the field is absent.
+func prHeadSHAFromEventPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	// The workflow_dispatch event has inputs.event_payload as a JSON string.
+	var event struct {
+		Inputs struct {
+			EventPayload string `json:"event_payload"`
+		} `json:"inputs"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil || event.Inputs.EventPayload == "" {
+		return ""
+	}
+	var payload struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal([]byte(event.Inputs.EventPayload), &payload); err != nil {
+		return ""
+	}
+	return payload.PullRequest.Head.SHA
 }

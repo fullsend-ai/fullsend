@@ -317,7 +317,7 @@ jobs:
           EVENT_PAYLOAD=$(jq -c '{
             issue: (.issue // null | if . then {number, html_url} else null end),
             pull_request: (.pull_request // null | if . then {number, html_url,
-              head: {ref: .head.ref, repo: {full_name: .head.repo.full_name}},
+              head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
               base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}} else null end),
             comment: (.comment // null | if . then {body: .body[:4096]} else null end)
           }' "$GITHUB_EVENT_PATH") || {

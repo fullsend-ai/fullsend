@@ -1076,3 +1076,66 @@ func TestOpenTeeReader_FileCompleteOnParserError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, content, string(fileData), "file should contain all bytes including post-error drain")
 }
+
+func TestPRHeadSHAFromEventPath_WithSHA(t *testing.T) {
+	// Simulate a workflow_dispatch event file where the nested event_payload
+	// contains pull_request.head.sha.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"pull_request\":{\"number\":42,\"head\":{\"ref\":\"feature\",\"sha\":\"abc123def\",\"repo\":{\"full_name\":\"org/repo\"}}}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Equal(t, "abc123def", got)
+}
+
+func TestPRHeadSHAFromEventPath_WithoutSHA(t *testing.T) {
+	// Event payload has pull_request but no head.sha — should return empty.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"pull_request\":{\"number\":42,\"head\":{\"ref\":\"feature\",\"repo\":{\"full_name\":\"org/repo\"}}}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_NoPullRequest(t *testing.T) {
+	// Issue-only event — no pull_request in the payload.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"issue\":{\"number\":99}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_EmptyPath(t *testing.T) {
+	got := prHeadSHAFromEventPath("")
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_MissingFile(t *testing.T) {
+	got := prHeadSHAFromEventPath("/nonexistent/path/event.json")
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
+	// Direct event (not workflow_dispatch) — no inputs field.
+	eventJSON := `{"action": "opened", "pull_request": {"number": 1}}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
