@@ -1601,8 +1601,6 @@ func needsCrossCompilation() bool {
 	return runtime.GOOS != "linux"
 }
 
-var validArchs = map[string]bool{"amd64": true, "arm64": true}
-
 // copyFile copies src to dst, preserving permissions.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
@@ -1635,7 +1633,7 @@ func copyFile(src, dst string) error {
 // on an arm64 host via emulation). Only amd64 and arm64 are supported.
 func sandboxArch() string {
 	if arch := os.Getenv("FULLSEND_SANDBOX_ARCH"); arch != "" {
-		if !validArchs[arch] {
+		if !binary.ValidArch(arch) {
 			fmt.Fprintf(os.Stderr, "WARNING: FULLSEND_SANDBOX_ARCH=%q is not a supported architecture (amd64, arm64), using host arch %s\n", arch, runtime.GOARCH)
 			return runtime.GOARCH
 		}

@@ -60,15 +60,6 @@ func acquireAndVendorFullsendBinary(ctx context.Context, client forge.Client, pr
 		tmpDir = result.TmpDir
 		binPath = result.Path
 		source = result.Source
-
-		switch source {
-		case binary.SourceCheckoutBuild:
-			printer.StepStart("Cross-compiling fullsend for linux/amd64")
-			printer.StepDone("Cross-compiled fullsend for linux/amd64")
-		case binary.SourceReleaseDownload:
-			printer.StepStart(fmt.Sprintf("Downloading fullsend %s for linux/amd64 from GitHub Release", version))
-			printer.StepDone(fmt.Sprintf("Downloaded fullsend %s for linux/amd64", version))
-		}
 	}
 
 	if tmpDir != "" {
