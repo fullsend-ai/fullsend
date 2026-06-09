@@ -29,6 +29,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -175,19 +176,57 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
 
-		policy := fetch.DefaultPolicy
-		policy.Offline = rFlags.offline
+		// Check for a lock file with a current entry for this harness.
+		var deps []resolve.Dependency
+		usedLock := false
 
-		deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
-			WorkspaceRoot: absFullsendDir,
-			FetchPolicy:   policy,
-			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-			MaxDepth:      rFlags.maxDepth,
-			MaxResources:  rFlags.maxResources,
-		})
-		if err != nil {
-			printer.StepFail("Remote resource resolution failed")
-			return fmt.Errorf("resolving remote resources: %w", err)
+		lockPath := filepath.Join(absFullsendDir, "lock.yaml")
+		lf, lockErr := lock.Load(lockPath)
+		if lockErr != nil {
+			printer.StepWarn("Could not load lock file: " + lockErr.Error())
+		}
+
+		if lf != nil {
+			if entry := lf.Lookup(agentName); entry != nil {
+				harnessData, hashErr := os.ReadFile(harnessPath)
+				if hashErr != nil {
+					return fmt.Errorf("reading harness file for lock check: %w", hashErr)
+				}
+				harnessHash := fetch.ComputeSHA256(harnessData)
+
+				if entry.IsStale(harnessHash) {
+					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
+				} else {
+					printer.StepStart("Using pinned dependencies from lock file")
+					lockDeps, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, printer)
+					if lockResolveErr != nil {
+						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
+						printer.StepWarn("Falling back to normal resolution")
+					} else {
+						deps = lockDeps
+						usedLock = true
+						printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(deps)))
+					}
+				}
+			}
+		}
+
+		if !usedLock {
+			policy := fetch.DefaultPolicy
+			policy.Offline = rFlags.offline
+
+			var resolveErr error
+			deps, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+				WorkspaceRoot: absFullsendDir,
+				FetchPolicy:   policy,
+				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+				MaxDepth:      rFlags.maxDepth,
+				MaxResources:  rFlags.maxResources,
+			})
+			if resolveErr != nil {
+				printer.StepFail("Remote resource resolution failed")
+				return fmt.Errorf("resolving remote resources: %w", resolveErr)
+			}
 		}
 
 		for _, dep := range deps {
@@ -602,7 +641,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9c. Run agent with validation loop.
-	agentBaseName := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
+	agentBaseName := agentName
 	var pluginDirs []string
 	for _, p := range h.Plugins {
 		pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", rt.ConfigDir(), filepath.Base(p)))

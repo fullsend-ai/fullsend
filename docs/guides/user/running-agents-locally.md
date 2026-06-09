@@ -197,6 +197,23 @@ resolution limits:
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
 
+#### Lock files
+
+If a `lock.yaml` file exists in the fullsend directory, `fullsend run` uses it
+to skip re-resolution when the harness has not changed since the lock was
+generated. Generate or update a lock file with:
+
+```bash
+fullsend lock code --fullsend-dir /path/to/.fullsend
+```
+
+When the lock entry is current (harness SHA256 matches), dependencies are
+resolved from the local cache without network access. If the harness has changed
+or a cached artifact is missing, `fullsend run` falls back to normal network
+resolution and prints a warning suggesting you re-run `fullsend lock`.
+
+Use `--update` to force re-resolution even if the lock entry appears current.
+
 ### Status notification flags
 
 When running agents locally you can optionally enable status comments on the

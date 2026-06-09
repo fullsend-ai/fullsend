@@ -31,6 +31,12 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── lock             <agent-name>             # Pin remote deps to lock.yaml
+│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --update                             #   Force re-resolve even if current
+│   ├── --offline                            #   Reject network fetches
+│   ├── --max-depth <int>                    #   Max transitive dependency depth
+│   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
 │   ├── --target-repo <path>                 #   Path to the target repository

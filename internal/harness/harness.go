@@ -237,9 +237,13 @@ func (h *Harness) Validate() error {
 		return fmt.Errorf("agent field is required")
 	}
 	// Agent name (filename without .md) must be safe for shell interpolation.
-	agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
-	if !validAgentName.MatchString(agentBase) {
-		return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
+	// Skip name validation when agent is a URL — the resolver will replace it
+	// with a local cache path before it reaches the shell.
+	if !IsURL(h.Agent) {
+		agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
+		if !validAgentName.MatchString(agentBase) {
+			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
+		}
 	}
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)

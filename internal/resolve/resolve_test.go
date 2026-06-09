@@ -88,6 +88,98 @@ func TestResolveHarness_URLFetchAndCache(t *testing.T) {
 	assert.Equal(t, agentContent, got)
 }
 
+func TestResolveHarness_DependencyField(t *testing.T) {
+	agentContent := []byte("You are an agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("policy: readonly")
+	policyHash := fetch.ComputeSHA256(policyContent)
+	skillContent := []byte("# Skill\nA skill.")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agents/code.md":
+			w.Write(agentContent)
+		case "/policies/ro.yaml":
+			w.Write(policyContent)
+		case "/skills/rust/SKILL.md":
+			w.Write(skillContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash),
+		Policy:                 fmt.Sprintf("%s/policies/ro.yaml#sha256=%s", srv.URL, policyHash),
+		Skills:                 []string{fmt.Sprintf("%s/skills/rust/SKILL.md#sha256=%s", srv.URL, skillHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.NoError(t, err)
+	require.Len(t, deps, 3)
+
+	assert.Equal(t, "agent", deps[0].Field)
+	assert.Equal(t, "policy", deps[1].Field)
+	assert.Equal(t, "skills[0]", deps[2].Field)
+}
+
+func TestResolveHarness_DiamondDependency(t *testing.T) {
+	// When the same URL appears as both a transitive dep and a direct skill,
+	// the resolver deduplicates: the direct reference is removed from skills,
+	// and the transitive entry is the one kept in the deps list.
+	sharedContent := []byte("---\ndependencies: []\n---\n# Shared skill")
+	sharedHash := fetch.ComputeSHA256(sharedContent)
+	parentContent := []byte(fmt.Sprintf("---\ndependencies:\n  - shared.md#sha256=%s\n---\n# Parent", sharedHash))
+	parentHash := fetch.ComputeSHA256(parentContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/skills/parent.md":
+			w.Write(parentContent)
+		case "/skills/shared.md":
+			w.Write(sharedContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	root := t.TempDir()
+	parentURL := fmt.Sprintf("%s/skills/parent.md#sha256=%s", srv.URL, parentHash)
+	sharedURL := fmt.Sprintf("%s/skills/shared.md#sha256=%s", srv.URL, sharedHash)
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []string{parentURL, sharedURL},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+		MaxDepth:      5,
+	})
+	require.NoError(t, err)
+
+	// Diamond deduplication: deps has transitive entry only.
+	sharedCleanURL := fmt.Sprintf("%s/skills/shared.md", srv.URL)
+	var sharedFields []string
+	for _, d := range deps {
+		if d.URL == sharedCleanURL {
+			sharedFields = append(sharedFields, d.Field)
+		}
+	}
+	require.Len(t, sharedFields, 1)
+	assert.Contains(t, sharedFields[0], "dep0")
+
+	// Skills should have parent + shared (direct URL filtered, transitive kept).
+	require.Len(t, h.Skills, 2)
+}
+
 func TestResolveHarness_CacheHit(t *testing.T) {
 	agentContent := []byte("cached agent definition")
 	agentHash := fetch.ComputeSHA256(agentContent)

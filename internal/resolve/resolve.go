@@ -19,6 +19,7 @@ const (
 
 // Dependency records a single URL that was resolved to a local cache path.
 type Dependency struct {
+	Field     string
 	URL       string
 	LocalPath string
 	SHA256    string
@@ -163,7 +164,9 @@ func resolveURL(ctx context.Context, field, rawURL string, h *harness.Harness,
 				"%s: URL %s has conflicting integrity hashes: previously resolved with %s, now referenced with %s",
 				field, cleanURL, dep.SHA256, expectedHash)
 		}
-		return dep, dep.LocalPath, nil
+		copy := dep
+		copy.Field = field
+		return copy, dep.LocalPath, nil
 	}
 	if state.inProgress[cleanURL] {
 		return Dependency{}, "", fmt.Errorf("%s: circular dependency detected for %s", field, cleanURL)
@@ -236,6 +239,7 @@ func resolveURL(ctx context.Context, field, rawURL string, h *harness.Harness,
 	}
 
 	dep := Dependency{
+		Field:     field,
 		URL:       cleanURL,
 		LocalPath: localPath,
 		SHA256:    expectedHash,
