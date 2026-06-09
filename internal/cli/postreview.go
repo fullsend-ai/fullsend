@@ -81,6 +81,14 @@ has moved, a stale-head failure is posted instead.`,
 				return fmt.Errorf("parsing review result: %w", err)
 			}
 
+			// Ensure the summary body is consistent with the
+			// verdict and findings. A stale or multi-run scenario
+			// can produce a body that says "No findings" while the
+			// action is request-changes with critical findings.
+			if patched := ensureBodyFindingsConsistency(&parsed); patched {
+				printer.StepWarn("Review body was inconsistent with findings — patched summary to include findings")
+			}
+
 			// CLI flag takes precedence over JSON field.
 			if headSHA != "" {
 				parsed.HeadSHA = headSHA
@@ -476,6 +484,65 @@ func minimizeStaleReviews(ctx context.Context, client forge.Client, user string,
 		}
 	}
 	printer.StepDone("Stale reviews minimized")
+}
+
+// noFindingsRe matches variations of "No findings" in the review body,
+// optionally followed by a period. The match is case-insensitive.
+var noFindingsRe = regexp.MustCompile(`(?i)\bNo findings\.?`)
+
+// ensureBodyFindingsConsistency detects when the review body claims
+// "No findings" while the action maps to REQUEST_CHANGES and the
+// findings array contains critical or high severity items. When a
+// contradiction is found, the body is patched to include a summary of
+// those findings so the sticky comment does not mislead reviewers.
+// Returns true if the body was modified.
+func ensureBodyFindingsConsistency(result *ReviewResult) bool {
+	if result == nil || len(result.Findings) == 0 {
+		return false
+	}
+
+	event, ok := reviewActionToEvent(result.Action)
+	if !ok || event != "REQUEST_CHANGES" {
+		return false
+	}
+
+	// Collect critical/high findings.
+	var significant []ReviewFinding
+	for _, f := range result.Findings {
+		switch strings.ToLower(f.Severity) {
+		case "critical", "high":
+			significant = append(significant, f)
+		}
+	}
+	if len(significant) == 0 {
+		return false
+	}
+
+	if !noFindingsRe.MatchString(result.Body) {
+		return false
+	}
+
+	// Build a replacement summary from the significant findings.
+	var b strings.Builder
+	for i, f := range significant {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "- **[%s]** %s", f.Severity, f.Category)
+		if f.File != "" {
+			b.WriteString(" (`")
+			b.WriteString(f.File)
+			if f.Line > 0 {
+				fmt.Fprintf(&b, ":%d", f.Line)
+			}
+			b.WriteString("`)")
+		}
+		b.WriteString(": ")
+		b.WriteString(strings.TrimSpace(f.Description))
+	}
+
+	result.Body = noFindingsRe.ReplaceAllString(result.Body, b.String())
+	return true
 }
 
 // parseReviewResult attempts to parse the body as a JSON ReviewResult.
