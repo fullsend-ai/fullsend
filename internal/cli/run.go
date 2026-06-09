@@ -738,14 +738,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// 9d. Extract target repo back to host. SafeDownload removes dangerous
-		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		if clearErr := os.RemoveAll(hostRepositoryDir); clearErr != nil {
-			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDir, clearErr)
-		}
+		// 9d. Extract target repo back to host. AtomicSafeDownload downloads to
+		// a sibling temp dir and swaps it in via os.Rename, avoiding a window where
+		// the directory is missing or partially populated. It also sanitizes the
+		// result (removes dangerous symlinks and .git/hooks/) to prevent sandbox escape.
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDir); err != nil {
+		if err := sandbox.AtomicSafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDir); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}

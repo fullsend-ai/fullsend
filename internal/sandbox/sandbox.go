@@ -545,6 +545,79 @@ func SafeDownload(sandboxName, remoteDir, localDir string) error {
 	return sanitizeDownload(localDir)
 }
 
+// AtomicSafeDownload downloads a directory from a sandbox and atomically swaps
+// it into localDir. This prevents a window where localDir is missing or
+// partially populated, which matters when external tools (IDEs, file watchers)
+// are reading the directory concurrently.
+//
+// The sequence is:
+//  1. Download into a temporary sibling directory (same parent as localDir to
+//     ensure os.Rename is same-filesystem).
+//  2. Sanitize the download (remove dangerous symlinks, .git/hooks/).
+//  3. Rename the existing localDir to a temporary name (if it exists).
+//  4. Rename the new directory into place.
+//  5. Remove the old directory.
+func AtomicSafeDownload(sandboxName, remoteDir, localDir string) error {
+	parentDir := filepath.Dir(localDir)
+
+	// Download into a temp directory in the same parent (same filesystem mount).
+	tmpDir, err := os.MkdirTemp(parentDir, filepath.Base(localDir)+".new.*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir for atomic download: %w", err)
+	}
+
+	// The openshell download places contents under tmpDir/basename(remoteDir),
+	// so we download into the temp dir, then the actual content ends up at
+	// tmpDir/<basename>. We need to handle this correctly.
+	if err := Download(sandboxName, remoteDir, tmpDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return err
+	}
+
+	// The download places the remote dir content into tmpDir/<basename>.
+	downloadedDir := filepath.Join(tmpDir, filepath.Base(remoteDir))
+	if err := sanitizeDownload(downloadedDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return err
+	}
+
+	// Move existing dir out of the way (if it exists).
+	var oldDir string
+	if _, statErr := os.Stat(localDir); statErr == nil {
+		oldTmp, mkErr := os.MkdirTemp(parentDir, filepath.Base(localDir)+".old.*")
+		if mkErr != nil {
+			os.RemoveAll(tmpDir)
+			return fmt.Errorf("creating temp dir for old content: %w", mkErr)
+		}
+		// Remove the empty temp dir so we can rename into its path.
+		os.Remove(oldTmp)
+		oldDir = oldTmp
+
+		if renameErr := os.Rename(localDir, oldDir); renameErr != nil {
+			os.RemoveAll(tmpDir)
+			return fmt.Errorf("moving old dir out of the way: %w", renameErr)
+		}
+	}
+
+	// Swap the new directory into place.
+	if renameErr := os.Rename(downloadedDir, localDir); renameErr != nil {
+		// Try to restore the old directory on failure.
+		if oldDir != "" {
+			os.Rename(oldDir, localDir) //nolint:errcheck // best-effort restore
+		}
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("renaming downloaded dir into place: %w", renameErr)
+	}
+
+	// Clean up: remove the old directory and the now-empty temp dir.
+	if oldDir != "" {
+		os.RemoveAll(oldDir)
+	}
+	os.RemoveAll(tmpDir)
+
+	return nil
+}
+
 // CollectLogs runs `openshell logs <name> --source <source> -n 0` and returns
 // the log output. The -n 0 flag requests all available log lines (no limit).
 // This is a host-side command that talks to the gateway — no SSH needed.

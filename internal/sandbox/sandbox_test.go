@@ -312,6 +312,51 @@ func TestSanitizeDownload_EmptyDir(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestAtomicSafeDownload_PreservesOriginalOnFailure(t *testing.T) {
+	// When the download fails (openshell not in PATH), the original directory
+	// must still exist — unlike the old os.RemoveAll approach.
+	dir := t.TempDir()
+	hostDir := filepath.Join(dir, "repo")
+	require.NoError(t, os.MkdirAll(hostDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "existing.txt"), []byte("original"), 0o644))
+
+	t.Setenv("PATH", "")
+
+	err := AtomicSafeDownload("fake-sandbox", "/sandbox/workspace/repo", hostDir)
+	assert.Error(t, err)
+
+	// Original directory and content must survive the failed download.
+	data, readErr := os.ReadFile(filepath.Join(hostDir, "existing.txt"))
+	require.NoError(t, readErr, "original directory must still exist after failed download")
+	assert.Equal(t, "original", string(data))
+
+	// No temp directories should be left behind.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		assert.Equal(t, "repo", e.Name(), "no temp directories should remain after cleanup")
+	}
+}
+
+func TestAtomicSafeDownload_WorksWithNonexistentTarget(t *testing.T) {
+	// When the target directory does not exist yet, the function should still
+	// attempt the download (and fail cleanly in tests since openshell is absent).
+	dir := t.TempDir()
+	hostDir := filepath.Join(dir, "new-repo")
+
+	t.Setenv("PATH", "")
+
+	err := AtomicSafeDownload("fake-sandbox", "/sandbox/workspace/repo", hostDir)
+	assert.Error(t, err)
+
+	// Target should still not exist (download failed, nothing to swap).
+	_, statErr := os.Stat(hostDir)
+	assert.True(t, os.IsNotExist(statErr), "target should not exist after failed download")
+
+	// No temp directories should be left behind.
+	entries, _ := os.ReadDir(dir)
+	assert.Empty(t, entries, "no temp directories should remain after cleanup")
+}
+
 func TestEffectiveReadyTimeout_Default(t *testing.T) {
 	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "")
 	got := effectiveReadyTimeout(0)
