@@ -305,3 +305,82 @@ func resolveTransitiveDeps(ctx context.Context, parentURL string, content []byte
 
 	return nil
 }
+
+// ResolveSkillURL resolves a single URL-referenced skill for runtime fetch.
+// It validates the URL against the harness allowlist, checks/fetches from
+// cache, verifies the integrity hash, and logs an audit entry with
+// FetchType "runtime". No transitive resolution — runtime-fetched skills
+// are leaf nodes.
+func ResolveSkillURL(ctx context.Context, rawURL string, h *harness.Harness, opts ResolveOpts) (Dependency, string, error) {
+	cleanURL, expectedHash, hasHash := harness.ParseIntegrityHash(rawURL)
+	if !hasHash {
+		return Dependency{}, "", fmt.Errorf("runtime: URL must include #sha256=... integrity hash")
+	}
+	if !strings.HasPrefix(cleanURL, "https://") {
+		return Dependency{}, "", fmt.Errorf("runtime: URL scheme must be https: %s", cleanURL)
+	}
+
+	allowedBy := h.MatchingAllowedPrefix(cleanURL)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("runtime: URL %q is not in allowed_remote_resources", cleanURL)
+	}
+
+	content, entry, err := fetch.CacheGet(opts.WorkspaceRoot, expectedHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("runtime cache lookup: %w", err)
+	}
+
+	cacheHit := content != nil
+
+	if content == nil {
+		content, err = fetch.FetchURL(ctx, cleanURL, opts.FetchPolicy)
+		if err != nil {
+			return Dependency{}, "", fmt.Errorf("runtime fetch from %s: %w", cleanURL, err)
+		}
+
+		actualHash := fetch.ComputeSHA256(content)
+		if actualHash != expectedHash {
+			return Dependency{}, "", fmt.Errorf("runtime: integrity check failed for %s: expected %s, got %s", cleanURL, expectedHash, actualHash)
+		}
+
+		if err := fetch.CachePut(opts.WorkspaceRoot, cleanURL, content); err != nil {
+			return Dependency{}, "", fmt.Errorf("runtime cache write: %w", err)
+		}
+	}
+
+	cachePath, err := fetch.CachePath(opts.WorkspaceRoot, expectedHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("runtime cache path: %w", err)
+	}
+	localPath := filepath.Join(cachePath, "content")
+
+	fetchedAt := time.Now().UTC()
+	if entry != nil {
+		fetchedAt = entry.FetchTime
+	}
+
+	if opts.AuditLogPath != "" {
+		if err := fetch.AppendFetchAudit(opts.AuditLogPath, fetch.FetchAuditEntry{
+			TraceID:   opts.TraceID,
+			FetchTime: fetchedAt,
+			URL:       cleanURL,
+			SHA256:    expectedHash,
+			FetchType: "runtime",
+			AllowedBy: allowedBy,
+			CacheHit:  cacheHit,
+		}); err != nil {
+			return Dependency{}, "", fmt.Errorf("writing runtime fetch audit: %w", err)
+		}
+	}
+
+	dep := Dependency{
+		Field:     "runtime",
+		URL:       cleanURL,
+		LocalPath: localPath,
+		SHA256:    expectedHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  cacheHit,
+	}
+
+	return dep, localPath, nil
+}

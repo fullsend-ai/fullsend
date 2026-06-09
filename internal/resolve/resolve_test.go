@@ -1071,3 +1071,208 @@ func TestResolveHarness_DirectAndTransitiveOverlap(t *testing.T) {
 		seen[s] = true
 	}
 }
+
+func TestResolveSkillURL_ValidFetch(t *testing.T) {
+	skillContent := []byte("# Runtime Skill\nFetched at runtime.")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(skillContent)
+	}))
+
+	root := t.TempDir()
+	rawURL := fmt.Sprintf("%s/skills/runtime.md#sha256=%s", srv.URL, skillHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	dep, localPath, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "runtime", dep.Field)
+	assert.Equal(t, fmt.Sprintf("%s/skills/runtime.md", srv.URL), dep.URL)
+	assert.Equal(t, skillHash, dep.SHA256)
+	assert.False(t, dep.CacheHit)
+	assert.True(t, strings.HasSuffix(localPath, "/content"))
+
+	got, err := os.ReadFile(localPath)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, got)
+}
+
+func TestResolveSkillURL_CacheHit(t *testing.T) {
+	skillContent := []byte("cached runtime skill")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	var fetchCount atomic.Int32
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetchCount.Add(1)
+		w.Write(skillContent)
+	}))
+
+	root := t.TempDir()
+	cleanURL := fmt.Sprintf("%s/skills/cached.md", srv.URL)
+	require.NoError(t, fetch.CachePut(root, cleanURL, skillContent))
+
+	rawURL := fmt.Sprintf("%s#sha256=%s", cleanURL, skillHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	dep, localPath, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Equal(t, int32(0), fetchCount.Load())
+
+	got, err := os.ReadFile(localPath)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, got)
+}
+
+func TestResolveSkillURL_HashMismatch(t *testing.T) {
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("tampered content"))
+	}))
+
+	wrongHash := fetch.ComputeSHA256([]byte("expected content"))
+	rawURL := fmt.Sprintf("%s/skills/bad.md#sha256=%s", srv.URL, wrongHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+}
+
+func TestResolveSkillURL_URLNotInAllowlist(t *testing.T) {
+	skillContent := []byte("skill content")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(skillContent)
+	}))
+
+	rawURL := fmt.Sprintf("%s/skills/blocked.md#sha256=%s", srv.URL, skillHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestResolveSkillURL_MissingHash(t *testing.T) {
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), "https://example.com/skills/nohash.md", h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity hash")
+}
+
+func TestResolveSkillURL_NonHTTPSRejected(t *testing.T) {
+	skillHash := fetch.ComputeSHA256([]byte("skill"))
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"http://example.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), fmt.Sprintf("http://example.com/skill.md#sha256=%s", skillHash), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scheme must be https")
+}
+
+func TestResolveSkillURL_AuditEntry(t *testing.T) {
+	skillContent := []byte("audited runtime skill")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(skillContent)
+	}))
+
+	root := t.TempDir()
+	auditPath := filepath.Join(root, "audit", "fetch-audit.jsonl")
+	rawURL := fmt.Sprintf("%s/skills/audited.md#sha256=%s", srv.URL, skillHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+		TraceID:       "runtime-trace",
+		AuditLogPath:  auditPath,
+	})
+	require.NoError(t, err)
+
+	f, err := os.Open(auditPath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	var entry fetch.FetchAuditEntry
+	scanner := bufio.NewScanner(f)
+	require.True(t, scanner.Scan())
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &entry))
+
+	assert.Equal(t, "runtime-trace", entry.TraceID)
+	assert.Equal(t, "runtime", entry.FetchType)
+	assert.Equal(t, skillHash, entry.SHA256)
+	assert.False(t, entry.CacheHit)
+}
+
+func TestResolveSkillURL_OfflineMiss(t *testing.T) {
+	skillHash := fetch.ComputeSHA256([]byte("skill"))
+	rawURL := fmt.Sprintf("https://example.com/skills/offline.md#sha256=%s", skillHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "offline")
+}
+
+func TestResolveSkillURL_OfflineHit(t *testing.T) {
+	skillContent := []byte("cached skill for offline runtime")
+	skillHash := fetch.ComputeSHA256(skillContent)
+	root := t.TempDir()
+
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/offline.md", skillContent))
+
+	rawURL := fmt.Sprintf("https://example.com/skills/offline.md#sha256=%s", skillHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	dep, localPath, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+	})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+
+	got, err := os.ReadFile(localPath)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, got)
+}

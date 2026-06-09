@@ -439,12 +439,10 @@ After PR 3 merges, verify Phase 2 end-to-end:
 
 ---
 
-## Future Phases (unchanged from Phase 1 plan)
+## Future Phases
 
-### Phase 3: Lock files (2 PRs)
-- `internal/lock/` package: LockFile struct, parse/generate/write
-- `fullsend lock <harness>` CLI subcommand; prefer lock file entries in resolver
+### Phase 3: Lock files (2 PRs) — COMPLETE
+See `docs/plans/universal-harness-access-phase3.md` for detailed plan.
 
-### Phase 4: Runtime dependency loading (2 PRs)
-- `allow_runtime_fetch` + `max_runtime_fetches` harness fields
-- `fullsend-fetch-skill` binary in sandbox, Unix socket to runner, rate limiting
+### Phase 4: Runtime dependency loading (3 PRs)
+See `docs/plans/universal-harness-access-phase4.md` for detailed plan.
