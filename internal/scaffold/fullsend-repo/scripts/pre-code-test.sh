@@ -342,6 +342,7 @@ run_test "pr-label-created" \
   0
 
 # --- Regression tests: --force bypasses PR search (issue #1697) ---
+TAB=$'\t'
 
 # COMMENT_BODY with --force must exit before PR search is reached.
 run_test_stdout_excludes "force-comment-body-no-pr-search" \
