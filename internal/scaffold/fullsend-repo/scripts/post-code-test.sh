@@ -618,6 +618,92 @@ run_artifact_test "strip-empty-input" \
   "" \
   ""
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the Go toolchain upgrade decision logic from
+# post-code.sh section 5b. Given the go.mod version and the runner's Go
+# version, determines if an upgrade is needed.
+# ---------------------------------------------------------------------------
+decide_go_upgrade() {
+  local gomod_version="$1"
+  local current_go_version="$2"
+
+  if [ -z "${gomod_version}" ]; then
+    echo "skip:no-gomod-version"
+    return 0
+  fi
+
+  if [ -z "${current_go_version}" ]; then
+    echo "upgrade:no-go-installed"
+    return 0
+  fi
+
+  local oldest
+  oldest="$(printf '%s\n%s\n' "${current_go_version}" "${gomod_version}" | sort -V | head -1)"
+  if [ "${oldest}" != "${gomod_version}" ]; then
+    echo "upgrade:version-too-old"
+    return 0
+  fi
+
+  echo "skip:version-sufficient"
+  return 0
+}
+
+run_go_upgrade_test() {
+  local test_name="$1"
+  local gomod_version="$2"
+  local current_version="$3"
+  local expected_prefix="$4"
+
+  local actual
+  actual="$(decide_go_upgrade "${gomod_version}" "${current_version}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  gomod_version:    '${gomod_version}'"
+    echo "  current_version:  '${current_version}'"
+    echo "  expected prefix:  '${expected_prefix}'"
+    echo "  actual:           '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Go toolchain upgrade test cases ---
+
+# Runner Go is older than go.mod → upgrade
+run_go_upgrade_test "go-upgrade-needed" \
+  "1.26.0" "1.25.0" "upgrade:version-too-old"
+
+# Runner Go matches go.mod → no upgrade
+run_go_upgrade_test "go-version-exact-match" \
+  "1.25.0" "1.25.0" "skip:version-sufficient"
+
+# Runner Go is newer than go.mod → no upgrade
+run_go_upgrade_test "go-version-newer" \
+  "1.25.0" "1.26.0" "skip:version-sufficient"
+
+# No Go installed → upgrade
+run_go_upgrade_test "go-not-installed" \
+  "1.26.0" "" "upgrade:no-go-installed"
+
+# No go.mod version → skip
+run_go_upgrade_test "no-gomod-version" \
+  "" "1.25.0" "skip:no-gomod-version"
+
+# Patch version comparison: runner has 1.25.2, go.mod wants 1.25.3
+run_go_upgrade_test "go-patch-upgrade-needed" \
+  "1.25.3" "1.25.2" "upgrade:version-too-old"
+
+# Patch version comparison: runner has 1.25.3, go.mod wants 1.25.2
+run_go_upgrade_test "go-patch-no-upgrade" \
+  "1.25.2" "1.25.3" "skip:version-sufficient"
+
+# Minor version jump: 1.24 → 1.26
+run_go_upgrade_test "go-minor-jump" \
+  "1.26.0" "1.24.0" "upgrade:version-too-old"
+
 # --- Summary ---
 
 echo ""

@@ -244,6 +244,65 @@ if ! command -v uvx >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# 5b. Ensure Go toolchain matches target repo (for golangci-lint hooks)
+#
+# Pre-commit hooks with language: golang (e.g. golangci-lint) are built
+# using the runner's Go. If the target repo's go.mod declares a newer Go
+# version than the runner has, golangci-lint will refuse to run with:
+#   "the Go language version used to build golangci-lint is lower than
+#    the targeted Go version"
+# Detect this and install a matching Go toolchain before pre-commit.
+# ---------------------------------------------------------------------------
+if [ -f go.mod ]; then
+  GOMOD_VERSION="$(grep -m1 '^go ' go.mod | awk '{print $2}')"
+  if [ -n "${GOMOD_VERSION}" ]; then
+    CURRENT_GO_VERSION=""
+    if command -v go >/dev/null 2>&1; then
+      CURRENT_GO_VERSION="$(go version | awk '{print $3}' | sed 's/^go//')"
+    fi
+
+    # Compare versions: check if current Go is older than go.mod target.
+    # Uses sort -V for version comparison; if current < required, upgrade.
+    needs_upgrade=false
+    if [ -z "${CURRENT_GO_VERSION}" ]; then
+      needs_upgrade=true
+    else
+      OLDEST="$(printf '%s\n%s\n' "${CURRENT_GO_VERSION}" "${GOMOD_VERSION}" | sort -V | head -1)"
+      if [ "${OLDEST}" != "${GOMOD_VERSION}" ]; then
+        needs_upgrade=true
+      fi
+    fi
+
+    if [ "${needs_upgrade}" = "true" ]; then
+      echo "Target repo requires Go ${GOMOD_VERSION} but runner has Go ${CURRENT_GO_VERSION:-none} — upgrading..."
+      GO_INSTALL_DIR="${HOME}/.local/go"
+      case "$(uname -m)" in
+        x86_64)  GO_ARCH="amd64" ;;
+        aarch64) GO_ARCH="arm64" ;;
+        *) echo "::warning::Unsupported architecture for Go install: $(uname -m)"; GO_ARCH="" ;;
+      esac
+      if [ -n "${GO_ARCH}" ]; then
+        GO_TARBALL="go${GOMOD_VERSION}.linux-${GO_ARCH}.tar.gz"
+        GO_URL="https://go.dev/dl/${GO_TARBALL}"
+        if curl -fsSL "${GO_URL}" -o "/tmp/${GO_TARBALL}"; then
+          rm -rf "${GO_INSTALL_DIR}"
+          mkdir -p "${GO_INSTALL_DIR}"
+          tar -C "${GO_INSTALL_DIR}" --strip-components=1 -xzf "/tmp/${GO_TARBALL}"
+          rm -f "/tmp/${GO_TARBALL}"
+          export PATH="${GO_INSTALL_DIR}/bin:${PATH}"
+          export GOROOT="${GO_INSTALL_DIR}"
+          echo "Installed Go $(go version | awk '{print $3}')"
+        else
+          echo "::warning::Failed to download Go ${GOMOD_VERSION} — pre-commit golangci-lint hooks may fail"
+        fi
+      fi
+    else
+      echo "Runner Go ${CURRENT_GO_VERSION} satisfies go.mod target ${GOMOD_VERSION}"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
 if [ -f .pre-commit-config.yaml ]; then
