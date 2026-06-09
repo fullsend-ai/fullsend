@@ -299,20 +299,26 @@ The following design questions have been resolved as part of this ADR:
 ```yaml
 # .fullsend/lock.yaml
 version: 1
+generated_at: "2026-05-12T10:00:00Z"
 harnesses:
   rust-linter:
+    source: harness/rust-linter.yaml
+    sha256: abc123...
     resolved_at: "2026-05-12T10:00:00Z"
     dependencies:
-      agent:
+      - field: agent
         url: https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../agents/rust.md
-        sha256: abc123...
+        sha256: def456...
         fetched_at: "2026-05-12T10:00:00Z"
-      skills:
-        - url: https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../skills/cargo-check/SKILL.md
-          sha256: def456...
-          transitive_deps:
-            - url: https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../policies/rust-sandbox.yaml
-              sha256: ghi789...
+      - field: skills[0]
+        url: https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../skills/cargo-check/SKILL.md
+        sha256: ghi789...
+        fetched_at: "2026-05-12T10:00:00Z"
+        transitive_deps:
+          - field: skills[dep0]
+            url: https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../policies/rust-sandbox.yaml
+            sha256: jkl012...
+            fetched_at: "2026-05-12T10:00:00Z"
 ```
 
 **Rationale:** Lock files provide dependency pinning (reproducible builds), transitive closure visibility (auditability), and automated updates (tools can rewrite lock files when dependencies change). Similar to `package-lock.json` in npm.
