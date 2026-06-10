@@ -129,6 +129,7 @@ build_pr_body() {
   local issue_number="$2"
   local branch="$3"
   local scan_range="$4"
+  local issue_ref="${5:-Closes #${issue_number}}"
 
   local description
   if [ -z "${commit_body}" ]; then
@@ -141,7 +142,7 @@ build_pr_body() {
 
 ---
 
-Closes #${issue_number}
+${issue_ref}
 
 ### Post-script verification
 
@@ -149,6 +150,42 @@ Closes #${issue_number}
 - [x] Secret scan passed (gitleaks — \`${scan_range}\`)
 - [x] Pre-commit hooks passed (authoritative run on runner)
 - [x] Tests ran inside sandbox"
+}
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the partial-fix label check from post-code.sh.
+# Given a comma-separated list of labels, returns the issue reference string.
+# ---------------------------------------------------------------------------
+resolve_issue_ref() {
+  local issue_labels="$1"
+  local issue_number="$2"
+
+  if echo "${issue_labels}" | grep -q "partial-fix"; then
+    echo "Part of #${issue_number}"
+  else
+    echo "Closes #${issue_number}"
+  fi
+}
+
+run_issue_ref_test() {
+  local test_name="$1"
+  local labels="$2"
+  local issue_number="$3"
+  local expected="$4"
+
+  local actual
+  actual="$(resolve_issue_ref "${labels}" "${issue_number}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  labels:   '${labels}'"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
 }
 
 run_body_test() {
@@ -617,6 +654,68 @@ run_artifact_test "strip-multiple-artifacts" \
 run_artifact_test "strip-empty-input" \
   "" \
   ""
+
+# --- Issue reference (partial-fix) test cases ---
+
+run_issue_ref_test "no-partial-fix-label-uses-closes" \
+  "ready-to-code,type/bug" "42" "Closes #42"
+
+run_issue_ref_test "partial-fix-label-uses-part-of" \
+  "ready-to-code,partial-fix,type/bug" "42" "Part of #42"
+
+run_issue_ref_test "partial-fix-only-label" \
+  "partial-fix" "99" "Part of #99"
+
+run_issue_ref_test "empty-labels-uses-closes" \
+  "" "42" "Closes #42"
+
+# PR body tests with issue_ref override
+run_body_test_with_ref() {
+  local test_name="$1"
+  local commit_body="$2"
+  local issue_number="$3"
+  local branch="$4"
+  local check_pattern="$5"
+  local expect_present="$6"
+  local issue_ref="$7"
+
+  local actual
+  actual="$(build_pr_body "${commit_body}" "${issue_number}" "${branch}" "abc123..def456" "${issue_ref}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_body_test_with_ref "partial-fix-body-has-part-of" \
+  "Fix one of three bugs." "42" "agent/42-fix-widget" \
+  "Part of #42" "yes" "Part of #42"
+
+run_body_test_with_ref "partial-fix-body-no-closes" \
+  "Fix one of three bugs." "42" "agent/42-fix-widget" \
+  "Closes #42" "no" "Part of #42"
+
+run_body_test_with_ref "full-fix-body-has-closes" \
+  "Fix the bug." "42" "agent/42-fix-widget" \
+  "Closes #42" "yes" "Closes #42"
 
 # --- Summary ---
 

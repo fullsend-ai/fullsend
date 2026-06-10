@@ -84,7 +84,12 @@
         "environment": { "type": "string" },
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
-        "proposed_test_case": { "type": "string", "minLength": 1 }
+        "proposed_test_case": { "type": "string", "minLength": 1 },
+        "partial_fix": {
+          "type": "boolean",
+          "description": "True when the recommended fix addresses only a subset of the problems reported in the issue. When true, the PR will use 'Part of #N' instead of 'Closes #N' so the issue stays open for remaining work.",
+          "default": false
+        }
       },
       "additionalProperties": false
     },

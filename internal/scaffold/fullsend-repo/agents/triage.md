@@ -200,6 +200,8 @@ Information is sufficient for a developer to investigate and fix.
 
 **Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
 
+**Fix completeness assessment (HARD CONSTRAINT):** Before emitting a `sufficient` result, assess whether your `recommended_fix` addresses ALL distinct problems reported in the issue. If the issue describes multiple independent causes or symptoms and your recommended fix only covers a subset, you MUST set `"partial_fix": true` in the `triage_summary`. When `partial_fix` is true, the pipeline uses `Part of #N` instead of `Closes #N` so the issue stays open for remaining work. Set `partial_fix` to `false` (or omit it) only when the recommended fix fully resolves the reported problem.
+
 ```json
 {
   "action": "sufficient",
@@ -221,7 +223,8 @@ Information is sufficient for a developer to investigate and fix.
     "environment": "Relevant environment details",
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
-    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
+    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
+    "partial_fix": false
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
   "label_actions": {
