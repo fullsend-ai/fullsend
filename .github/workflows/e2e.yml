@@ -72,12 +72,13 @@ jobs:
           repository: ${{ github.repository }}
 
   e2e:
-    # Runs only after gate approves (or gate skipped for push/merge_group/dispatch).
+    # For pull_request_target, runs only when gate sets authorized=true.
+    # Do not treat a skipped gate as authorized (e.g. labeled events for non-ok-to-test labels).
     # This job checks out untrusted PR head code — no pull-requests: write here.
     needs: gate
     if: >-
       !cancelled() &&
-      (needs.gate.result == 'skipped' || needs.gate.outputs.authorized == 'true')
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

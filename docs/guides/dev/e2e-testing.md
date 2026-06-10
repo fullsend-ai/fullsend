@@ -27,7 +27,7 @@ Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 ## CI authorization
 
 Pull requests trigger e2e via `pull_request_target` in
-[`.github/workflows/e2e.yml`](../../.github/workflows/e2e.yml) so fork PRs can
+[`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) so fork PRs can
 use repository secrets. Because that exposes credentials to untrusted code, a
 **gate job** runs first (see workflow comments for why it is a separate job).
 
@@ -47,7 +47,8 @@ in GitHub repo settings (Settings → Labels).
 
 If new commits are pushed after `ok-to-test` was applied, the label is removed
 automatically and e2e is skipped until a maintainer re-applies it after
-reviewing the latest changes.
+reviewing the latest changes. The label must be applied **strictly after** the
+latest push (same-second labels are treated as stale).
 
 ### Blocked runs
 
