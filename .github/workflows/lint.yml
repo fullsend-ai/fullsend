@@ -36,13 +36,15 @@ jobs:
           echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum -c
           tar xzf /tmp/lychee.tar.gz -C /usr/local/bin --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
 
-      - run: make test
+      - run: make lint-all
 
-      - name: Generate coverage profile
+      - name: Run Go tests with coverage
         run: go test -race -coverprofile=coverage.out ./...
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
+
+      - run: make script-test
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
