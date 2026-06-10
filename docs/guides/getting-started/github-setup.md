@@ -12,7 +12,7 @@ For the all-in-one setup that provisions both GCP and GitHub in a single command
 - **GitHub CLI** (`gh`) authenticated — the installer runs a preflight check and tells you which scopes are missing. When prompted, run the `gh auth refresh -s <scopes>` command it suggests.
 - **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
 - **From your Mint service provider admin** (currently GCP-managed; other providers planned):
-  - Token mint URL (`--mint-url`) — the HTTPS endpoint of the deployed mint Cloud Function
+  - Token mint URL (`--mint-url`) — the HTTPS endpoint of the deployed mint Cloud Function. If you are using the fullsend hosted mint, the URL is `https://fullsend-mint-gljhbkcloq-uc.a.run.app` (see [Hosted mint](../infrastructure/mint-administration.md#hosted-mint)).
 - **From your Inference provider admin** (currently GCP Agent Platform, formerly Vertex AI; other providers planned):
   - GCP project ID (`--inference-project`) — the project where Agent Platform is enabled (e.g., `my-gcp-project`)
   - WIF provider resource name (`--inference-wif-provider`) — the full resource path, e.g., `projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc` (note: the leading number is the GCP **project number**, not the project ID string; your GCP admin can find it with `gcloud projects describe <project-id> --format='value(projectNumber)'`)

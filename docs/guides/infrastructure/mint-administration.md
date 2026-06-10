@@ -2,7 +2,17 @@
 
 This guide covers deploying and managing the fullsend token mint Cloud Function. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories.
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Installing fullsend](../getting-started/installation.md) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed. Work is in progress to offer a hosted public mint service, which will further reduce the need for per-org mint administration.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Installing fullsend](../getting-started/installation.md) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+
+## Hosted mint
+
+The fullsend team operates a public hosted mint service. If your organization is enrolled, you can use it directly without deploying your own:
+
+```
+https://fullsend-mint-gljhbkcloq-uc.a.run.app
+```
+
+Pass this URL as `--mint-url` when running `fullsend admin install`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
 
 ## Prerequisites
 
