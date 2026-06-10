@@ -5,7 +5,7 @@
 #   - lychee (markdown link checker for pre-commit hooks)
 #   - scan-secrets (gitleaks wrapper for code-implementation skill)
 #
-# The base image already provides Claude Code, rsync, gitleaks, tirith,
+# The base image already provides Claude Code, jq, gitleaks, tirith,
 # pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model.
 # See images/sandbox/Containerfile in fullsend-ai/fullsend for the base definition.
 #
