@@ -84,10 +84,11 @@ func CollectPerRepoInstallFiles(vendored bool) ([]InstallFile, error) {
 	return files, nil
 }
 
-// ManagedPaths returns install-managed relative paths for analyze/sync.
-func ManagedPaths(vendored bool, pathPrefix string) ([]string, error) {
+// ManagedPaths returns embed-derived scaffold paths for analyze/sync.
+// Vendored content is reported separately by the vendor layer.
+func ManagedPaths(_ bool, pathPrefix string) ([]string, error) {
 	opts := CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(vendored, pathPrefix != ""),
+		RenderOptions: RenderOptionsForInstall(false, pathPrefix != ""),
 		PathPrefix:    pathPrefix,
 	}
 	files, err := CollectInstallFiles(opts)
@@ -97,13 +98,6 @@ func ManagedPaths(vendored bool, pathPrefix string) ([]string, error) {
 	paths := make([]string, len(files))
 	for i, f := range files {
 		paths[i] = f.Path
-	}
-	if vendored {
-		vendoredPaths, err := ManagedVendoredContentPaths(pathPrefix)
-		if err != nil {
-			return nil, err
-		}
-		paths = append(paths, vendoredPaths...)
 	}
 	return paths, nil
 }

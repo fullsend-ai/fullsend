@@ -1099,6 +1099,7 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		nil,   // inferenceProvider
 		false, // vendorBinary
 		nil,   // vendorFn
+		"",    // analyzeFullsendSource
 		nil,   // dispatcher
 	)
 
@@ -1133,7 +1134,7 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 		"test-org", nil, cfg, printer, "user",
 		false,
 		[]string{}, // explicitly empty (not nil)
-		nil, nil, nil, false, nil, nil,
+		nil, nil, nil, false, nil, "", nil,
 	)
 
 	// The enrollment layer should have disabled repos to reconcile.

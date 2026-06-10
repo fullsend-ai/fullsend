@@ -48,6 +48,35 @@ Source resolution (shared by binary and content) in `internal/binary`:
 Without `--vendor`, install removes stale vendored binary and content paths and
 renders thin callers with upstream `uses: fullsend-ai/fullsend/.../reusable-*.yml@v0`.
 
+### Vendor manifest
+
+`--vendor` writes `vendor-manifest.yaml` listing every vendored path plus
+`binary_path`:
+
+| Install mode | Manifest path |
+|--------------|---------------|
+| Per-org (`.fullsend` config repo) | `vendor-manifest.yaml` |
+| Per-repo | `.fullsend/vendor-manifest.yaml` |
+
+The manifest is committed in the same batch as vendored content. Cleanup when
+`--vendor` is off reads the manifest from the target repo (via forge API) and
+deletes listed paths — no local fullsend checkout required. Legacy installs
+without a manifest fall back to embed-derived path enumeration.
+
+### Analyze behavior
+
+Scaffold and vendored assets are reported separately:
+
+- **Workflows layer** — always checks embed-derived managed paths
+  (`ManagedPaths(false)`): thin callers, shim, `customized/` gitkeeps, and
+  `CODEOWNERS`. Vendored marker presence does not expand this list.
+- **Vendor layer** — reports vendored binary/marker presence, manifest
+  alignment (missing paths, legacy installs without manifest), and optional
+  source alignment when `--fullsend-source` is passed to `fullsend admin analyze`
+  (or when the CLI version can resolve a source tree).
+
+Vendored misalignment surfaces under the **vendor** layer, not workflows.
+
 ### Runtime: file-presence detection
 
 Reusable workflows detect vendored installs before sparse checkout:

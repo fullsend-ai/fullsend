@@ -55,68 +55,14 @@ func CollectVendoredAssets(root, workflowPrefix string) ([]InstallFile, error) {
 	return files, nil
 }
 
-// ManagedVendoredContentPaths returns install-managed paths written when --vendor is set.
+// ManagedVendoredContentPaths returns embed-derived paths for the current vendor layout.
 func ManagedVendoredContentPaths(workflowPrefix string) ([]string, error) {
-	root, err := sourceRootForManagedPaths()
-	if err != nil {
-		return nil, err
-	}
-	files, err := CollectVendoredAssets(root, workflowPrefix)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, len(files))
-	for i, f := range files {
-		paths[i] = f.Path
-	}
-	return paths, nil
+	return enumerateVendoredPaths(workflowPrefix)
 }
 
-// LegacyFlatVendoredPaths lists pre-.defaults flat layout paths to remove on re-install.
+// LegacyFlatVendoredPaths lists pre-.defaults flat layout paths for legacy cleanup.
 func LegacyFlatVendoredPaths(workflowPrefix string) ([]string, error) {
-	root, err := sourceRootForManagedPaths()
-	if err != nil {
-		return nil, err
-	}
-	return legacyFlatVendoredPathsFromRoot(root, workflowPrefix)
-}
-
-func legacyFlatVendoredPathsFromRoot(root, workflowPrefix string) ([]string, error) {
-	var paths []string
-	add := func(p string) { paths = append(paths, p) }
-
-	if err := walkVendoredUpstreamFromRoot(root, func(path string, _ []byte) error {
-		if isVendoredReusableWorkflow(path) {
-			add(workflowPrefix + path)
-		}
-		if isVendoredDefaultsInfra(path) {
-			add(path) // was at repo root, e.g. action.yml
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	layeredRoot := filepath.Join(root, "internal", "scaffold", "fullsend-repo")
-	if err := walkLayeredFromRoot(layeredRoot, func(path string, _ []byte) error {
-		add(path) // was flat at repo root, e.g. agents/triage.md
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	if workflowPrefix != "" {
-		add(workflowPrefix + "action.yml")
-	}
-
-	return paths, nil
-}
-
-func sourceRootForManagedPaths() (string, error) {
-	if root, err := moduleRootFromScaffold(); err == nil {
-		return root, nil
-	}
-	return "", fmt.Errorf("cannot enumerate vendored paths outside a fullsend checkout")
+	return enumerateLegacyFlatVendoredPaths(workflowPrefix)
 }
 
 func moduleRootFromScaffold() (string, error) {

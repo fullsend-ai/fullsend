@@ -195,6 +195,32 @@ func TestWorkflowsLayer_Analyze_NonePresent(t *testing.T) {
 	assert.Len(t, report.WouldInstall, len(managed)+1)
 }
 
+func TestWorkflowsLayer_Analyze_WithVendoredMarkerUsesEmbedOnly(t *testing.T) {
+	managed, err := scaffold.ManagedPaths(false, "")
+	require.NoError(t, err)
+
+	fileContents := map[string][]byte{
+		"test-org/.fullsend/CODEOWNERS":                            []byte("* @admin-user"),
+		"test-org/.fullsend/.defaults/action.yml":                  []byte("marker"),
+		"test-org/.fullsend/bin/fullsend":                          []byte("binary"),
+		"test-org/.fullsend/.github/workflows/reusable-triage.yml": []byte("reusable"),
+	}
+	for _, path := range managed {
+		fileContents["test-org/.fullsend/"+path] = []byte("content")
+	}
+
+	client := &forge.FakeClient{FileContents: fileContents}
+	layer, _ := newWorkflowsLayer(t, client, true)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, StatusInstalled, report.Status)
+	joined := strings.Join(report.Details, " ")
+	assert.NotContains(t, joined, ".defaults/action.yml")
+	assert.NotContains(t, joined, "reusable-triage.yml")
+}
+
 func TestWorkflowsLayer_Analyze_Partial(t *testing.T) {
 	client := &forge.FakeClient{
 		FileContents: map[string][]byte{
@@ -231,11 +257,11 @@ func TestManagedPathsMatchLayeredScaffold(t *testing.T) {
 	}
 }
 
-func TestManagedPathsVendoredIncludeContent(t *testing.T) {
-	managed, err := scaffold.ManagedPaths(true, "")
+func TestManagedVendoredContentPathsFromEmbed(t *testing.T) {
+	paths, err := scaffold.ManagedVendoredContentPaths("")
 	require.NoError(t, err)
 
-	assert.Contains(t, managed, ".github/workflows/reusable-triage.yml")
-	assert.Contains(t, managed, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
-	assert.Contains(t, managed, scaffold.VendoredMarkerPath())
+	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, scaffold.VendoredMarkerPath())
 }

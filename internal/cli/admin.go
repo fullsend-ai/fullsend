@@ -1096,6 +1096,7 @@ func newUninstallCmd() *cobra.Command {
 }
 
 func newAnalyzeCmd() *cobra.Command {
+	var analyzeFullsendSource string
 	cmd := &cobra.Command{
 		Use:   "analyze <org>",
 		Short: "Analyze fullsend installation status",
@@ -1121,9 +1122,10 @@ func newAnalyzeCmd() *cobra.Command {
 			printer.Header("Analyzing fullsend installation for " + org)
 			printer.Blank()
 
-			return runAnalyze(ctx, client, printer, org)
+			return runAnalyze(ctx, client, printer, org, analyzeFullsendSource)
 		},
 	}
+	cmd.Flags().StringVar(&analyzeFullsendSource, "fullsend-source", "", "fullsend source checkout for vendored alignment reporting (default: auto-detect or GitHub fetch)")
 
 	return cmd
 }
@@ -1191,7 +1193,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	} else {
 		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
 	}
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, makeVendorFunc(fullsendBinary, fullsendSource), dispatcher)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, makeVendorFunc(fullsendBinary, fullsendSource), "", dispatcher)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1544,7 +1546,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		}, gcf.NewLiveGCFClient(mintProject))
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, makeVendorFunc(fullsendBinary, fullsendSource), disp)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, makeVendorFunc(fullsendBinary, fullsendSource), "", disp)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1753,7 +1755,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 }
 
 // runAnalyze assesses the current installation state.
-func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, org, analyzeFullsendSource string) error {
 	allRepos, err := client.ListOrgRepos(ctx, org)
 	if err != nil {
 		return fmt.Errorf("listing org repos: %w", err)
@@ -1789,7 +1791,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, dispatcher)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, analyzeFullsendSource, dispatcher)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -1800,6 +1802,12 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 }
 
 // buildLayerStack creates the ordered layer stack.
+func newVendorLayer(org string, client forge.Client, printer *ui.Printer, vendor bool, vendorFn layers.VendorFunc, analyzeFullsendSource string) *layers.VendorBinaryLayer {
+	layer := layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendor, vendorFn)
+	layer.SetAnalyzeOptions(analyzeFullsendSource, version)
+	return layer
+}
+
 func buildLayerStack(
 	org string,
 	client forge.Client,
@@ -1813,6 +1821,7 @@ func buildLayerStack(
 	inferenceProvider inference.Provider,
 	vendor bool,
 	vendorFn layers.VendorFunc,
+	analyzeFullsendSource string,
 	dispatcher dispatch.Dispatcher,
 ) *layers.Stack {
 	dispatchLayer := layers.NewOIDCDispatchLayer(org, client, enrolledRepoIDs, dispatcher, printer)
@@ -1830,7 +1839,7 @@ func buildLayerStack(
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
 		layers.NewWorkflowsLayer(org, client, printer, user, version, vendor),
-		layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendor, vendorFn),
+		newVendorLayer(org, client, printer, vendor, vendorFn, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		dispatchLayer,

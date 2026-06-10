@@ -3,7 +3,9 @@ package layers
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -17,12 +19,14 @@ type VendorFunc func(ctx context.Context, client forge.Client, printer *ui.Print
 // When enabled (--vendor), it calls VendorFunc to upload binary and content.
 // When disabled, it removes stale vendored assets from prior installs.
 type VendorBinaryLayer struct {
-	org      string
-	repo     string
-	client   forge.Client
-	ui       *ui.Printer
-	enabled  bool
-	vendorFn VendorFunc
+	org                   string
+	repo                  string
+	client                forge.Client
+	ui                    *ui.Printer
+	enabled               bool
+	vendorFn              VendorFunc
+	analyzeFullsendSource string
+	cliVersion            string
 }
 
 // Compile-time check that VendorBinaryLayer implements Layer.
@@ -40,6 +44,12 @@ func NewVendorBinaryLayer(org, repo string, client forge.Client, printer *ui.Pri
 	}
 }
 
+// SetAnalyzeOptions configures optional source-tree alignment during Analyze.
+func (l *VendorBinaryLayer) SetAnalyzeOptions(fullsendSource, cliVersion string) {
+	l.analyzeFullsendSource = fullsendSource
+	l.cliVersion = cliVersion
+}
+
 func (l *VendorBinaryLayer) Name() string { return "vendor" }
 
 func (l *VendorBinaryLayer) binaryPath() string {
@@ -47,6 +57,13 @@ func (l *VendorBinaryLayer) binaryPath() string {
 		return VendoredBinaryPathPerRepo
 	}
 	return VendoredBinaryPath
+}
+
+func (l *VendorBinaryLayer) workflowPrefix() string {
+	if l.perRepo() {
+		return ".fullsend/"
+	}
+	return ""
 }
 
 func (l *VendorBinaryLayer) perRepo() bool {
@@ -72,34 +89,10 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 		return l.vendorFn(ctx, l.client, l.ui, l.org, l.repo)
 	}
 
-	path := l.binaryPath()
-	_, err := l.client.GetFileContent(ctx, l.org, l.repo, path)
-	if err != nil && !forge.IsNotFound(err) {
-		return fmt.Errorf("checking for vendored binary: %w", err)
-	}
-	if err == nil {
-		l.ui.StepStart("removing stale vendored binary")
-		deleteMsg := RemoveStaleBinaryCommitMessage(path)
-		if err := l.client.DeleteFile(ctx, l.org, l.repo, path, deleteMsg); err != nil {
-			l.ui.StepFail("failed to remove vendored binary")
-			return fmt.Errorf("deleting vendored binary: %w", err)
-		}
-		l.ui.StepDone("removed stale vendored binary")
-	}
-
-	pathPrefix := ""
-	if l.perRepo() {
-		pathPrefix = ".fullsend/"
-	}
-	paths, err := scaffold.ManagedVendoredContentPaths(pathPrefix)
+	paths, err := scaffold.ResolveVendoredCleanupPaths(ctx, l.client, l.org, l.repo, l.workflowPrefix(), l.binaryPath())
 	if err != nil {
-		return fmt.Errorf("enumerating vendored content paths: %w", err)
+		return fmt.Errorf("resolving vendored cleanup paths: %w", err)
 	}
-	legacy, err := scaffold.LegacyFlatVendoredPaths(pathPrefix)
-	if err != nil {
-		return fmt.Errorf("enumerating legacy vendored paths: %w", err)
-	}
-	paths = append(paths, legacy...)
 
 	var removed int
 	for _, p := range paths {
@@ -112,14 +105,21 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 		}
 		l.ui.StepStart("removing stale vendored content")
 		deleteMsg := RemoveStaleContentCommitMessage(p)
+		if p == l.binaryPath() {
+			deleteMsg = RemoveStaleBinaryCommitMessage(p)
+		}
 		if err := l.client.DeleteFile(ctx, l.org, l.repo, p, deleteMsg); err != nil {
+			if p == l.binaryPath() {
+				l.ui.StepFail("failed to remove vendored binary")
+				return fmt.Errorf("deleting vendored binary: %w", err)
+			}
 			l.ui.StepFail("failed to remove vendored content")
 			return fmt.Errorf("deleting vendored content at %s: %w", p, err)
 		}
 		removed++
 	}
 	if removed > 0 {
-		l.ui.StepDone(fmt.Sprintf("removed %d stale vendored content files", removed))
+		l.ui.StepDone(fmt.Sprintf("removed %d stale vendored files", removed))
 	}
 	return nil
 }
@@ -130,7 +130,6 @@ func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
 	marker := scaffold.VendoredMarkerPath()
-
 	_, markerErr := l.client.GetFileContent(ctx, l.org, l.repo, marker)
 	if markerErr != nil && !forge.IsNotFound(markerErr) {
 		return nil, fmt.Errorf("checking vendored marker at %s: %w", marker, markerErr)
@@ -143,34 +142,138 @@ func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	}
 	hasBinary := binErr == nil
 
+	hasVendoredAssets := hasMarker || hasBinary
+
+	if hasBinary {
+		report.Details = append(report.Details, fmt.Sprintf("vendored binary present at %s", l.binaryPath()))
+	} else {
+		report.Details = append(report.Details, "vendored binary absent")
+	}
+	if hasMarker {
+		report.Details = append(report.Details, "vendored content marker present")
+	} else {
+		report.Details = append(report.Details, "vendored content marker absent")
+	}
+
+	manifestMisaligned := false
+	manifest, manifestFound, err := scaffold.ReadVendorManifest(ctx, l.client, l.org, l.repo, l.workflowPrefix())
+	if err != nil {
+		return nil, err
+	}
+	if manifestFound {
+		report.Details = append(report.Details, fmt.Sprintf("vendor manifest present at %s", scaffold.VendorManifestPath(l.workflowPrefix())))
+		missing, err := scaffold.ComparePathPresence(ctx, l.client, l.org, l.repo, manifest.Paths)
+		if err != nil {
+			return nil, err
+		}
+		if len(missing) > 0 {
+			manifestMisaligned = true
+			report.Details = append(report.Details, fmt.Sprintf("manifest alignment: %d missing path(s)", len(missing)))
+			for _, p := range missing {
+				report.WouldFix = append(report.WouldFix, "restore vendored path "+p)
+			}
+		} else {
+			report.Details = append(report.Details, "manifest alignment: ok")
+		}
+		if hasBinary || manifest.BinaryPath != "" {
+			_, err := l.client.GetFileContent(ctx, l.org, l.repo, manifest.BinaryPath)
+			if err != nil {
+				if forge.IsNotFound(err) {
+					manifestMisaligned = true
+					report.Details = append(report.Details, "manifest binary_path missing in repo")
+					report.WouldFix = append(report.WouldFix, "restore vendored binary at "+manifest.BinaryPath)
+				} else {
+					return nil, fmt.Errorf("checking manifest binary_path: %w", err)
+				}
+			}
+		}
+	} else if hasVendoredAssets {
+		manifestMisaligned = true
+		report.Details = append(report.Details, "legacy vendored install (no manifest)")
+		report.WouldFix = append(report.WouldFix, "re-run install with --vendor to write vendor-manifest.yaml")
+	} else {
+		report.Details = append(report.Details, "vendor manifest absent")
+	}
+
+	sourceMisaligned := false
+	if err := l.reportSourceAlignment(ctx, report, &sourceMisaligned); err != nil {
+		return nil, err
+	}
+
 	switch {
 	case l.enabled:
-		if hasBinary || hasMarker {
+		if hasVendoredAssets && !manifestMisaligned && !sourceMisaligned {
 			report.Status = StatusInstalled
-			if hasBinary {
-				report.Details = append(report.Details, fmt.Sprintf("vendored binary present at %s", l.binaryPath()))
-			}
-			if hasMarker {
-				report.Details = append(report.Details, "vendored content marker present")
-			}
+		} else if hasVendoredAssets {
+			report.Status = StatusDegraded
 		} else {
 			report.Status = StatusNotInstalled
 			report.WouldInstall = append(report.WouldInstall, "upload vendored binary and content")
 		}
-	case hasBinary || hasMarker:
+	case hasVendoredAssets:
 		report.Status = StatusDegraded
 		if hasBinary {
-			report.Details = append(report.Details, fmt.Sprintf("stale vendored binary at %s", l.binaryPath()))
 			report.WouldFix = append(report.WouldFix, "delete vendored binary")
 		}
 		if hasMarker {
-			report.Details = append(report.Details, "stale vendored content present")
 			report.WouldFix = append(report.WouldFix, "delete vendored content")
 		}
 	default:
 		report.Status = StatusInstalled
-		report.Details = append(report.Details, "no vendored assets present")
+		if len(report.Details) == 0 {
+			report.Details = append(report.Details, "no vendored assets present")
+		}
 	}
 
 	return report, nil
+}
+
+func (l *VendorBinaryLayer) reportSourceAlignment(ctx context.Context, report *LayerReport, misaligned *bool) error {
+	if l.analyzeFullsendSource == "" && l.cliVersion == "" {
+		report.Details = append(report.Details, "source alignment: skipped (no source tree)")
+		return nil
+	}
+
+	root, err := binary.ResolveVendorRoot(l.analyzeFullsendSource, l.cliVersion)
+	if err != nil {
+		report.Details = append(report.Details, "source alignment: skipped (no source tree)")
+		return nil
+	}
+	if root.Cleanup != nil {
+		defer root.Cleanup()
+	}
+
+	expectedFiles, err := scaffold.CollectVendoredAssets(root.Path, l.workflowPrefix())
+	if err != nil {
+		return fmt.Errorf("collecting source vendored paths: %w", err)
+	}
+	expected := scaffold.PathsFromInstallFiles(expectedFiles)
+
+	missing, err := scaffold.ComparePathPresence(ctx, l.client, l.org, l.repo, expected)
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		report.Details = append(report.Details, "source alignment: ok")
+		return nil
+	}
+
+	*misaligned = true
+	report.Details = append(report.Details, fmt.Sprintf("source alignment: %d missing path(s)", len(missing)))
+	for _, p := range missing {
+		if !containsWouldFix(report.WouldFix, p) {
+			report.WouldFix = append(report.WouldFix, "sync vendored path "+p)
+		}
+	}
+	return nil
+}
+
+func containsWouldFix(fixes []string, path string) bool {
+	suffix := path
+	for _, f := range fixes {
+		if strings.HasSuffix(f, suffix) {
+			return true
+		}
+	}
+	return false
 }

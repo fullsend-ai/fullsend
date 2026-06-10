@@ -96,14 +96,7 @@ func (l *WorkflowsLayer) Uninstall(_ context.Context) error { return nil }
 func (l *WorkflowsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
-	vendored := l.vendored
-	if marker, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, scaffold.VendoredMarkerPath()); err == nil && len(marker) > 0 {
-		vendored = true
-	} else if !forge.IsNotFound(err) {
-		return nil, fmt.Errorf("checking vendored marker: %w", err)
-	}
-
-	managed, err := scaffold.ManagedPaths(vendored, "")
+	managed, err := scaffold.ManagedPaths(false, "")
 	if err != nil {
 		return nil, err
 	}

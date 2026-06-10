@@ -112,6 +112,12 @@ func acquireAndVendor(ctx context.Context, client forge.Client, printer *ui.Prin
 		return fmt.Errorf("collecting vendored content: %w", err)
 	}
 
+	manifest := scaffold.NewVendorManifest(version, fullsendSource, destPath, scaffold.PathsFromInstallFiles(assets))
+	manifestYAML, err := manifest.MarshalYAML()
+	if err != nil {
+		return fmt.Errorf("building vendor manifest: %w", err)
+	}
+
 	var files []forge.TreeFile
 	for _, f := range assets {
 		files = append(files, forge.TreeFile{
@@ -120,8 +126,13 @@ func acquireAndVendor(ctx context.Context, client forge.Client, printer *ui.Prin
 			Mode:    f.Mode,
 		})
 	}
+	files = append(files, forge.TreeFile{
+		Path:    scaffold.VendorManifestPath(pathPrefix),
+		Content: manifestYAML,
+		Mode:    "100644",
+	})
 
-	printer.StepStart(fmt.Sprintf("Uploading %d vendored content files", len(files)))
+	printer.StepStart(fmt.Sprintf("Uploading %d vendored content files", len(assets)))
 	contentMsg := layers.VendorContentCommitMessage(version, pathPrefix, len(files))
 	committed, err := client.CommitFiles(ctx, owner, repo, contentMsg, files)
 	if err != nil {
@@ -147,20 +158,11 @@ func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer
 	if perRepo {
 		destPath = layers.VendoredBinaryPathPerRepo
 	}
-	if err := removeStaleVendoredBinary(ctx, client, printer, owner, repo, destPath); err != nil {
-		return err
-	}
 
-	paths, err := scaffold.ManagedVendoredContentPaths(pathPrefix)
+	paths, err := scaffold.ResolveVendoredCleanupPaths(ctx, client, owner, repo, pathPrefix, destPath)
 	if err != nil {
-		return fmt.Errorf("enumerating vendored content paths: %w", err)
+		return fmt.Errorf("resolving vendored cleanup paths: %w", err)
 	}
-
-	legacy, err := scaffold.LegacyFlatVendoredPaths(pathPrefix)
-	if err != nil {
-		return fmt.Errorf("enumerating legacy vendored paths: %w", err)
-	}
-	paths = append(paths, legacy...)
 
 	var removed int
 	for _, path := range paths {
@@ -171,35 +173,29 @@ func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer
 			}
 			return fmt.Errorf("checking for vendored content at %s: %w", path, err)
 		}
+		if path == destPath {
+			printer.StepStart("removing stale vendored binary")
+		} else {
+			printer.StepStart("removing stale vendored content")
+		}
 		deleteMsg := layers.RemoveStaleContentCommitMessage(path)
+		if path == destPath {
+			deleteMsg = layers.RemoveStaleBinaryCommitMessage(path)
+		}
 		if err := client.DeleteFile(ctx, owner, repo, path, deleteMsg); err != nil {
+			if path == destPath {
+				printer.StepFail("failed to remove vendored binary")
+			} else {
+				printer.StepFail("failed to remove vendored content")
+			}
 			return fmt.Errorf("deleting vendored content at %s: %w", path, err)
 		}
 		removed++
 	}
 
 	if removed > 0 {
-		printer.StepDone(fmt.Sprintf("Removed %d stale vendored content files", removed))
+		printer.StepDone(fmt.Sprintf("Removed %d stale vendored files", removed))
 	}
-	return nil
-}
-
-func removeStaleVendoredBinary(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, destPath string) error {
-	_, err := client.GetFileContent(ctx, owner, repo, destPath)
-	if err != nil {
-		if forge.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("checking for vendored binary: %w", err)
-	}
-
-	printer.StepStart("removing stale vendored binary")
-	deleteMsg := layers.RemoveStaleBinaryCommitMessage(destPath)
-	if err := client.DeleteFile(ctx, owner, repo, destPath, deleteMsg); err != nil {
-		printer.StepFail("failed to remove vendored binary")
-		return fmt.Errorf("deleting vendored binary: %w", err)
-	}
-	printer.StepDone("removed stale vendored binary")
 	return nil
 }
 
