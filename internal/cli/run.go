@@ -524,10 +524,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	runDir := filepath.Join(outputBase, sandboxName)
 
-	// hostDownloadDir is outside outputBase because outputBase is uploaded
-	// as artifact in action.yml, we don't want to upload the source code as
-	// an artifact
+	// hostDownloadDir is separate from outputBase so the downloaded source
+	// code is not included when outputBase is collected as a build artifact.
 	hostDownloadDir := filepath.Join(os.TempDir(), "fullsend-downloads", sandboxName)
+	// lastDownloadDir represents the latest path, within hostDownloadDir, where
+	// fullsend download the repository within the sandbox to the host. Defined
+	// here so the defer can act on it, set later.
 	var lastDownloadDir string
 
 	// validationPassed is declared here (before the post-script defer) so the
@@ -561,7 +563,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
 			postCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
-			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", lastDownloadDir))
+			postCmd.Env = append(postCmd.Env,
+				fmt.Sprintf("REPO_DIR=%s", lastDownloadDir),
+				fmt.Sprintf("TARGET_REPO_DIR=%s", lastDownloadDir),
+			)
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -948,10 +953,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// 9d. Extract target repo back to host. SafeDownload removes dangerous
+		// 9d. Extract target repo from sandbox. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
 		iterDownloadDir := filepath.Join(hostDownloadDir, fmt.Sprintf("iteration-%d", iteration))
+		if lastDownloadDir != "" {
+			os.RemoveAll(lastDownloadDir)
+		}
 		lastDownloadDir = iterDownloadDir
+		if err := os.MkdirAll(iterDownloadDir, 0o755); err != nil {
+			return fmt.Errorf("creating download dir: %w", err)
+		}
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, iterDownloadDir); err != nil {
@@ -1015,6 +1026,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err := scanOutputFiles(runDir, traceID, printer); err != nil {
 			printer.StepWarn("Output scan error: " + err.Error())
 		}
+		if err := scanOutputFiles(hostDownloadDir, traceID, printer); err != nil {
+			printer.StepWarn("Output scan error (download dir): " + err.Error())
+		}
 
 		// Extract sandbox-side security findings for audit trail.
 		findingsDir := filepath.Join(runDir, "security")
@@ -1045,7 +1059,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Blank()
 	printer.Header("Results")
 	printer.KeyValue("Run directory", runDir)
-	printer.KeyValue("Download directory", hostDownloadDir)
+	printer.KeyValue("Extracted repo", hostDownloadDir)
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
 	printer.KeyValue("Trace ID", traceID)
