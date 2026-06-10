@@ -634,6 +634,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// 9b-2. Pre-flight GitHub API connectivity check.
+	// Validates that the sandbox can reach api.github.com through the proxy
+	// before starting the agent. Without this, agents that depend on gh CLI
+	// burn their entire timeout on doomed API calls. See #2143.
+	{
+		preflightStart := time.Now()
+		printer.StepStart("Checking GitHub API connectivity from sandbox")
+		result, connectErr := checkSandboxGitHubConnectivity(sandboxName)
+		if connectErr != nil {
+			printer.StepFail("GitHub API unreachable from sandbox")
+			return fmt.Errorf("pre-flight connectivity check: %w", connectErr)
+		}
+		if result.Skipped {
+			printer.StepInfo("GitHub API check skipped: " + result.SkipReason)
+		} else {
+			printer.StepDone(fmt.Sprintf("GitHub API reachable from sandbox (%.1fs)", time.Since(preflightStart).Seconds()))
+		}
+	}
+
 	// 9c. Run agent with validation loop.
 	agentBaseName := agentName
 	var pluginDirs []string
