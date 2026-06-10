@@ -61,6 +61,7 @@ type githubSetupConfig struct {
 	enrollNone           bool
 	vendorBinary         bool
 	fullsendBinary       string
+	upstreamRef          string
 	dryRun               bool
 }
 
@@ -138,6 +139,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
 	cmd.Flags().StringVar(&cfg.fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
+	cmd.Flags().StringVar(&cfg.upstreamRef, "upstream-ref", "", "pin workflow references to this git ref instead of v0 (e.g. v0.15.0 or a commit SHA)")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "preview changes without making them")
 
 	return cmd
@@ -323,6 +325,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	} else {
 		if err := removeStaleVendoredBinary(ctx, client, printer, owner, repo, layers.VendoredBinaryPathPerRepo); err != nil {
+			return err
+		}
+	}
+
+	if cfg.upstreamRef != "" {
+		printer.Blank()
+		if err := pinUpstreamRef(ctx, client, printer, owner, repo, cfg.upstreamRef, perRepoWorkflowPaths); err != nil {
 			return err
 		}
 	}
@@ -526,6 +535,13 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 
 	if err := stack.InstallAll(ctx); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
+	}
+
+	if cfg.upstreamRef != "" {
+		printer.Blank()
+		if err := pinUpstreamRef(ctx, client, printer, org, forge.ConfigRepoName, cfg.upstreamRef, perOrgWorkflowPaths); err != nil {
+			return err
+		}
 	}
 
 	printer.Blank()

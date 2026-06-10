@@ -146,6 +146,9 @@ func TestAdminInstallUninstall(t *testing.T) {
 	if env.cfg.gcpProjectID != "" {
 		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
 	}
+	if ref := os.Getenv("E2E_UPSTREAM_REF"); ref != "" {
+		installArgs = append(installArgs, "--upstream-ref", ref)
+	}
 	runCLI(t, env.binary, env.token, installArgs...)
 
 	// Verify install artifacts.

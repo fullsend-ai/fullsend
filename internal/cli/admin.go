@@ -151,6 +151,7 @@ type perRepoInstallConfig struct {
 	AppSet               string
 	VendorBinary         bool
 	FullsendBinary       string
+	UpstreamRef          string
 }
 
 // wifProviderPattern validates the full WIF provider resource name format
@@ -228,6 +229,7 @@ func newInstallCmd() *cobra.Command {
 	var skipAppSetup bool
 	var vendorBinary bool
 	var fullsendBinary string
+	var upstreamRef string
 	var enrollAllFlag bool
 	var enrollNoneFlag bool
 	var inferenceProject string
@@ -310,6 +312,7 @@ Inference authentication:
 					AppSet:               appSet,
 					VendorBinary:         vendorBinary,
 					FullsendBinary:       fullsendBinary,
+					UpstreamRef:          upstreamRef,
 				})
 			}
 
@@ -539,7 +542,7 @@ Inference authentication:
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, fullsendBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, fullsendBinary, upstreamRef, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
 		},
 	}
 
@@ -548,6 +551,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
 	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
+	cmd.Flags().StringVar(&upstreamRef, "upstream-ref", "", "pin workflow references to this git ref instead of v0 (e.g. v0.15.0 or a commit SHA)")
 	cmd.Flags().BoolVar(&enrollAllFlag, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&enrollNoneFlag, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().StringVar(&inferenceProject, "inference-project", "", "GCP project ID for inference (Agent Platform)")
@@ -1035,6 +1039,13 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		}
 	}
 
+	if c.UpstreamRef != "" {
+		printer.Blank()
+		if err := pinUpstreamRef(ctx, client, printer, owner, repo, c.UpstreamRef, perRepoWorkflowPaths); err != nil {
+			return err
+		}
+	}
+
 	printer.Blank()
 	printer.StepDone(fmt.Sprintf("Per-repo installation complete for %s/%s", owner, repo))
 	return nil
@@ -1455,7 +1466,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, fullsendBinary, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, fullsendBinary, upstreamRef, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -1559,6 +1570,13 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 	if err := stack.InstallAll(ctx); err != nil {
 		return fmt.Errorf("installation failed: %w", err)
+	}
+
+	if upstreamRef != "" {
+		printer.Blank()
+		if err := pinUpstreamRef(ctx, client, printer, org, forge.ConfigRepoName, upstreamRef, perOrgWorkflowPaths); err != nil {
+			return err
+		}
 	}
 
 	printer.Blank()
