@@ -72,18 +72,15 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # "comment" so only a human can grant approval. This is the sole enforcement
 # point — the code agent is free to propose changes to any path.
 # ---------------------------------------------------------------------------
-REVIEW_PROTECTED_PATHS=(
-  ".github/"
-  ".claude/"
-  "agents/"
-  "harness/"
-  "plugins/"
-  "policies/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
-)
+# Read protected paths from the canonical shared file. Each non-blank,
+# non-comment line becomes one entry in the array.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROTECTED_PATHS_FILE="${SCRIPT_DIR}/protected-paths.txt"
+if [ ! -f "${PROTECTED_PATHS_FILE}" ]; then
+  echo "::error::Protected paths file not found: ${PROTECTED_PATHS_FILE}"
+  exit 1
+fi
+mapfile -t REVIEW_PROTECTED_PATHS < <(grep -v '^\s*#' "${PROTECTED_PATHS_FILE}" | grep -v '^\s*$')
 
 DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then

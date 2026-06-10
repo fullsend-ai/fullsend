@@ -93,8 +93,12 @@ Was it actually changed?
 ## Protected paths — do not modify
 
 Never modify files under any of the following paths, even if they appear in
-merge conflicts, linter suggestions, or other incidental context:
+merge conflicts, linter suggestions, or other incidental context.
 
+The authoritative list lives in `scripts/protected-paths.txt`. Both
+`post-fix.sh` and `post-review.sh` read that file at runtime.
+
+- `.github/` — CI configuration
 - `.claude/` — agent settings and configuration
 - `.cursor/` — editor agent configuration
 - `agents/` — agent definitions
@@ -103,8 +107,10 @@ merge conflicts, linter suggestions, or other incidental context:
 - `policies/` — sandbox policies
 - `scripts/` — pre/post scripts
 - `api-servers/` — API server configurations
-- `.github/workflows/` — CI configuration
+- `skills/` — agent skills
 - `CODEOWNERS`
+- `AGENTS.md`
+- `CLAUDE.md`
 - `.pre-commit-config.yaml`
 - `.gitattributes`
 

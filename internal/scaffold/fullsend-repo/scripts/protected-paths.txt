@@ -1,0 +1,28 @@
+# Canonical list of protected paths.
+#
+# Governance and infrastructure files that require human approval.
+# The review agent cannot approve PRs that touch these paths, and
+# the fix agent is blocked from modifying them.
+#
+# Shell scripts (post-fix.sh, post-review.sh) read this file at
+# runtime. LLM-facing instructions (pr-review/SKILL.md, agents/fix.md)
+# reference this file as the authoritative source.
+#
+# Format: one path per line. Directories end with '/'. Lines starting
+# with '#' and blank lines are ignored.
+
+.github/
+.claude/
+.cursor/
+agents/
+harness/
+plugins/
+policies/
+scripts/
+api-servers/
+skills/
+CODEOWNERS
+AGENTS.md
+CLAUDE.md
+.pre-commit-config.yaml
+.gitattributes

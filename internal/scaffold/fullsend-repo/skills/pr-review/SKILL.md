@@ -575,17 +575,21 @@ governance and infrastructure files that require human approval — the
 review agent MUST NEVER approve changes to them without raising
 findings.
 
-Protected paths (kept in sync with `post-review.sh`):
+Protected paths (authoritative source: `scripts/protected-paths.txt`):
 
 - `.github/`
 - `.claude/`
+- `.cursor/`
 - `agents/`
 - `harness/`
 - `plugins/`
 - `policies/`
 - `scripts/`
 - `api-servers/`
+- `skills/`
 - `CODEOWNERS`
+- `AGENTS.md`
+- `CLAUDE.md`
 - `.pre-commit-config.yaml`
 - `.gitattributes`
 

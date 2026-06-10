@@ -55,18 +55,15 @@ is_bot_user() {
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PROTECTED_PATHS=(
-  ".github/"
-  ".claude/"
-  "agents/"
-  "harness/"
-  "plugins/"
-  "policies/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
-)
+# Read protected paths from the canonical shared file. Each non-blank,
+# non-comment line becomes one entry in the array.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROTECTED_PATHS_FILE="${SCRIPT_DIR}/protected-paths.txt"
+if [ ! -f "${PROTECTED_PATHS_FILE}" ]; then
+  echo "::error::Protected paths file not found: ${PROTECTED_PATHS_FILE}"
+  exit 1
+fi
+mapfile -t PROTECTED_PATHS < <(grep -v '^\s*#' "${PROTECTED_PATHS_FILE}" | grep -v '^\s*$')
 
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
@@ -278,8 +275,7 @@ fi
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
-# Locate process-fix-result.py relative to this script.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Locate process-fix-result.py relative to this script (SCRIPT_DIR set above).
 PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
 
 # Find fix-result.json in the output directory.
