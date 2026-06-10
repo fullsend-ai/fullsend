@@ -208,8 +208,9 @@ type Harness struct {
 	RunnerEnv              map[string]string `yaml:"runner_env,omitempty"`
 	TimeoutMinutes         int               `yaml:"timeout_minutes,omitempty"`
 	SandboxTimeoutSeconds  int               `yaml:"sandbox_timeout_seconds,omitempty"`
-	Security               *SecurityConfig   `yaml:"security,omitempty"`
-	AllowedRemoteResources []string          `yaml:"allowed_remote_resources,omitempty"`
+	Security               *SecurityConfig         `yaml:"security,omitempty"`
+	AllowedRemoteResources []string               `yaml:"allowed_remote_resources,omitempty"`
+	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -275,6 +276,9 @@ func (h *Harness) Validate() error {
 		return err
 	}
 	if err := h.ValidateResourceTypes(); err != nil {
+		return err
+	}
+	if err := h.validateForge(); err != nil {
 		return err
 	}
 	// ValidateAllowedRemoteResources requires the org allowlist and is called
