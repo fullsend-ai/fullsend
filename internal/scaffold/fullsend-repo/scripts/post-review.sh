@@ -83,6 +83,9 @@ REVIEW_PROTECTED_PATHS=(
   "CODEOWNERS"
   ".pre-commit-config.yaml"
   ".gitattributes"
+  "skills/"
+  "AGENTS.md"
+  "CLAUDE.md"
 )
 
 DOWNGRADED=false

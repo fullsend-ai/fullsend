@@ -588,6 +588,9 @@ Protected paths (kept in sync with `post-review.sh`):
 - `CODEOWNERS`
 - `.pre-commit-config.yaml`
 - `.gitattributes`
+- `skills/`
+- `AGENTS.md`
+- `CLAUDE.md`
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the list above.
