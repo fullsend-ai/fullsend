@@ -260,10 +260,7 @@ func (l *EnrollmentLayer) Uninstall(ctx context.Context) error {
 	}
 	l.ui.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
 
-	// Report unenrollment PRs.
-	for _, repo := range l.disabledRepos {
-		l.reportPRByTitle(ctx, repo, "chore: disconnect from fullsend agent pipeline")
-	}
+	l.reportReconciliationPRs(ctx)
 
 	return nil
 }
