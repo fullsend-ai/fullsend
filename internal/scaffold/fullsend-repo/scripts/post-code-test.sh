@@ -618,6 +618,356 @@ run_artifact_test "strip-empty-input" \
   "" \
   ""
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the PR template population logic from
+# post-code.sh so we can test it without a git repo or network access.
+# ---------------------------------------------------------------------------
+populate_pr_template() {
+  local template_content="$1"
+  local description="$2"
+  local issue_number="$3"
+  local commit_type="$4"
+
+  # Strip HTML comments (template instructions to the PR author)
+  local clean
+  clean="$(printf '%s\n' "${template_content}" | perl -0777 -pe 's/<!--.*?-->\s*\n?//gs')"
+
+  # Collapse runs of blank lines left by comment stripping
+  clean="$(printf '%s\n' "${clean}" | cat -s)"
+
+  # If template has no markdown headers, prepend description and return
+  if ! printf '%s\n' "${clean}" | grep -qE '^#{1,3} '; then
+    printf '%s\n\n%s\n' "${description}" "${clean}"
+    return
+  fi
+
+  local output=""
+  local skip_body=false
+  local description_placed=false
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^#{1,3}[[:space:]] ]]; then
+      local header_lower
+      header_lower="$(printf '%s' "${line}" | tr '[:upper:]' '[:lower:]')"
+      skip_body=false
+      output+="${line}"$'\n'
+
+      case "${header_lower}" in
+        *description*|*summary*|*what*changed*|*overview*)
+          output+=$'\n'"${description}"$'\n\n'
+          skip_body=true
+          description_placed=true
+          ;;
+        *type*of*change*|*change*type*)
+          output+=$'\n'"This is a \`${commit_type}\` change."$'\n\n'
+          skip_body=true
+          ;;
+        *how*to*test*|*test*plan*|*how*to*reproduc*|*how*to*verif*|*testing*instruction*)
+          output+=$'\n'"See #${issue_number} for reproduction steps and testing details."$'\n\n'
+          skip_body=true
+          ;;
+        *related*issue*|*related*pr*|*reference*|*linked*issue*)
+          output+=$'\n'"#${issue_number}"$'\n\n'
+          skip_body=true
+          ;;
+        *screenshot*|*screen*capture*|*visual*change*)
+          output+=$'\n'"N/A — no visual changes."$'\n\n'
+          skip_body=true
+          ;;
+        *)
+          skip_body=false
+          ;;
+      esac
+      continue
+    fi
+
+    if "${skip_body}"; then
+      if echo "${line}" | grep -qE '^\s*-\s*\[[ xX]\]'; then
+        output+="${line}"$'\n'
+      fi
+    else
+      output+="${line}"$'\n'
+    fi
+  done <<< "${clean}"
+
+  if ! "${description_placed}"; then
+    output="${description}"$'\n\n'"${output}"
+  fi
+
+  printf '%s' "${output}"
+}
+
+run_template_test() {
+  local test_name="$1"
+  local template="$2"
+  local description="$3"
+  local issue_number="$4"
+  local commit_type="$5"
+  local check_pattern="$6"
+  local expect_present="$7"  # "yes" or "no"
+
+  local actual
+  actual="$(populate_pr_template "${template}" "${description}" "${issue_number}" "${commit_type}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF -- "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in output:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF -- "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in output:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- PR template test cases ---
+
+# Template with Description section → description is filled
+run_template_test "template-fills-description" \
+  "## Description
+Describe your changes here." \
+  "Fix rendering bug in the widget." \
+  "42" "fix" \
+  "Fix rendering bug in the widget." "yes"
+
+# Template with Description section → placeholder is removed
+run_template_test "template-removes-placeholder" \
+  "## Description
+Describe your changes here." \
+  "Fix rendering bug in the widget." \
+  "42" "fix" \
+  "Describe your changes here" "no"
+
+# Template with Type of change section → commit type is filled
+run_template_test "template-fills-type-of-change" \
+  "## Type of change
+- [ ] Bug fix
+- [ ] New feature" \
+  "Fix rendering bug." \
+  "42" "fix" \
+  'This is a `fix` change.' "yes"
+
+# Template with How to test section → testing note is filled
+run_template_test "template-fills-how-to-test" \
+  "## How to test
+Describe how to test your changes." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "See #42 for reproduction steps and testing details." "yes"
+
+# Template with Related issues section → issue reference is filled
+run_template_test "template-fills-related-issues" \
+  "## Related issues
+Link to related issues." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "#42" "yes"
+
+# Template with Screenshots section → N/A is filled
+run_template_test "template-fills-screenshots" \
+  "## Screenshots
+Add screenshots here." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "N/A" "yes"
+
+# HTML comments are stripped
+run_template_test "template-strips-html-comments" \
+  "## Description
+<!-- Please describe your changes -->
+Placeholder text." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "Please describe your changes" "no"
+
+# Unrecognized section is preserved
+run_template_test "template-preserves-unrecognized-section" \
+  "## Description
+Placeholder.
+## Custom section
+This content should be preserved." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "This content should be preserved." "yes"
+
+# Checkboxes in filled sections are preserved
+run_template_test "template-preserves-checkboxes" \
+  "## Type of change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Breaking change" \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "- [ ] Bug fix" "yes"
+
+# No headers → description is prepended
+run_template_test "template-no-headers-prepends-description" \
+  "Please fill in the details of your pull request." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "Fix rendering bug." "yes"
+
+# No headers → template content is preserved
+run_template_test "template-no-headers-preserves-content" \
+  "Please fill in the details of your pull request." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "Please fill in the details of your pull request." "yes"
+
+# Summary section also works as description
+run_template_test "template-fills-summary" \
+  "## Summary
+Placeholder." \
+  "Add CSV export support." \
+  "99" "feat" \
+  "Add CSV export support." "yes"
+
+# No description section → description prepended before template
+run_template_test "template-no-desc-section-prepends" \
+  "## How to test
+Describe testing." \
+  "Fix rendering bug." \
+  "42" "fix" \
+  "Fix rendering bug." "yes"
+
+# feat commit type is correctly used
+run_template_test "template-feat-type" \
+  "## Type of change
+Select one." \
+  "Add new feature." \
+  "99" "feat" \
+  'This is a `feat` change.' "yes"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the PR body assembly with template support from
+# post-code.sh so we can verify the full body construction.
+# ---------------------------------------------------------------------------
+build_pr_body_with_template() {
+  local commit_body="$1"
+  local issue_number="$2"
+  local branch="$3"
+  local scan_range="$4"
+  local template_content="$5"  # empty string if no template
+  local commit_type="$6"
+
+  local description
+  if [ -z "${commit_body}" ]; then
+    description="Automated implementation for issue #${issue_number}."
+  else
+    description="${commit_body}"
+  fi
+
+  local verification_footer="---
+
+Closes #${issue_number}
+
+### Post-script verification
+
+- [x] Branch is not main/master (\`${branch}\`)
+- [x] Secret scan passed (gitleaks — \`${scan_range}\`)
+- [x] Pre-commit hooks passed (authoritative run on runner)
+- [x] Tests ran inside sandbox"
+
+  if [ -n "${template_content}" ]; then
+    local template_body
+    template_body="$(populate_pr_template "${template_content}" "${description}" "${issue_number}" "${commit_type}")"
+    echo "${template_body}
+${verification_footer}"
+  else
+    echo "${description}
+
+${verification_footer}"
+  fi
+}
+
+run_full_body_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local issue_number="$3"
+  local branch="$4"
+  local template_content="$5"
+  local commit_type="$6"
+  local check_pattern="$7"
+  local expect_present="$8"
+
+  local actual
+  actual="$(build_pr_body_with_template "${commit_body}" "${issue_number}" "${branch}" "abc..def" "${template_content}" "${commit_type}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF -- "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF -- "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Full body with template test cases ---
+
+# With template → body uses template and has verification footer
+run_full_body_test "full-body-template-has-footer" \
+  "Fix the bug." "42" "agent/42-fix" \
+  "## Description
+Placeholder." \
+  "fix" \
+  "Post-script verification" "yes"
+
+# With template → description appears in body
+run_full_body_test "full-body-template-has-description" \
+  "Fix the bug." "42" "agent/42-fix" \
+  "## Description
+Placeholder." \
+  "fix" \
+  "Fix the bug." "yes"
+
+# Without template → falls back to current freeform format
+run_full_body_test "full-body-no-template-fallback" \
+  "Fix the bug." "42" "agent/42-fix" \
+  "" \
+  "fix" \
+  "Fix the bug." "yes"
+
+# Without template → still has Closes line
+run_full_body_test "full-body-no-template-has-closes" \
+  "Fix the bug." "42" "agent/42-fix" \
+  "" \
+  "fix" \
+  "Closes #42" "yes"
+
+# With template → Closes line in footer
+run_full_body_test "full-body-template-has-closes" \
+  "Fix the bug." "42" "agent/42-fix" \
+  "## Description
+Placeholder." \
+  "fix" \
+  "Closes #42" "yes"
+
 # --- Summary ---
 
 echo ""

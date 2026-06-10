@@ -323,6 +323,93 @@ if [ "${PUSH_RC}" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# PR template support
+#
+# If the target repo has .github/PULL_REQUEST_TEMPLATE.md, populate its
+# sections with context from the agent's commit instead of using the
+# freeform default body. HTML comments (author instructions) are stripped,
+# recognized sections are filled, and unrecognized sections are preserved.
+# ---------------------------------------------------------------------------
+populate_pr_template() {
+  local template_content="$1"
+  local description="$2"
+  local issue_number="$3"
+  local commit_type="$4"
+
+  # Strip HTML comments (template instructions to the PR author)
+  local clean
+  clean="$(printf '%s\n' "${template_content}" | perl -0777 -pe 's/<!--.*?-->\s*\n?//gs')"
+
+  # Collapse runs of blank lines left by comment stripping
+  clean="$(printf '%s\n' "${clean}" | cat -s)"
+
+  # If template has no markdown headers, prepend description and return
+  if ! printf '%s\n' "${clean}" | grep -qE '^#{1,3} '; then
+    printf '%s\n\n%s\n' "${description}" "${clean}"
+    return
+  fi
+
+  local output=""
+  local skip_body=false
+  local description_placed=false
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Detect section headers (# to ###)
+    if [[ "${line}" =~ ^#{1,3}[[:space:]] ]]; then
+      local header_lower
+      header_lower="$(printf '%s' "${line}" | tr '[:upper:]' '[:lower:]')"
+      skip_body=false
+      output+="${line}"$'\n'
+
+      case "${header_lower}" in
+        *description*|*summary*|*what*changed*|*overview*)
+          output+=$'\n'"${description}"$'\n\n'
+          skip_body=true
+          description_placed=true
+          ;;
+        *type*of*change*|*change*type*)
+          output+=$'\n'"This is a \`${commit_type}\` change."$'\n\n'
+          skip_body=true
+          ;;
+        *how*to*test*|*test*plan*|*how*to*reproduc*|*how*to*verif*|*testing*instruction*)
+          output+=$'\n'"See #${issue_number} for reproduction steps and testing details."$'\n\n'
+          skip_body=true
+          ;;
+        *related*issue*|*related*pr*|*reference*|*linked*issue*)
+          output+=$'\n'"#${issue_number}"$'\n\n'
+          skip_body=true
+          ;;
+        *screenshot*|*screen*capture*|*visual*change*)
+          output+=$'\n'"N/A — no visual changes."$'\n\n'
+          skip_body=true
+          ;;
+        *)
+          # Unrecognized section — preserve template content as-is
+          skip_body=false
+          ;;
+      esac
+      continue
+    fi
+
+    if "${skip_body}"; then
+      # In a filled section — preserve checkbox lines, skip placeholder text
+      if echo "${line}" | grep -qE '^\s*-\s*\[[ xX]\]'; then
+        output+="${line}"$'\n'
+      fi
+    else
+      output+="${line}"$'\n'
+    fi
+  done <<< "${clean}"
+
+  # If no recognized description/summary section, prepend description
+  if ! "${description_placed}"; then
+    output="${description}"$'\n\n'"${output}"
+  fi
+
+  printf '%s' "${output}"
+}
+
+# ---------------------------------------------------------------------------
 # 8. Create PR
 # ---------------------------------------------------------------------------
 
@@ -376,9 +463,27 @@ else
   DESCRIPTION="${COMMIT_BODY}"
 fi
 
-PR_BODY="${DESCRIPTION}
+# Extract commit type from conventional commit subject (e.g., "fix" from "fix(#42): ...")
+COMMIT_TYPE="$(echo "${COMMIT_SUBJECT}" | grep -oE '^[a-z]+' || echo "change")"
 
----
+# Check for PR template in the target repo (GitHub-supported locations)
+PR_TEMPLATE_FILE=""
+for candidate in \
+  ".github/PULL_REQUEST_TEMPLATE.md" \
+  ".github/pull_request_template.md" \
+  ".github/PULL_REQUEST_TEMPLATE" \
+  ".github/pull_request_template" \
+  "PULL_REQUEST_TEMPLATE.md" \
+  "pull_request_template.md" \
+  "docs/PULL_REQUEST_TEMPLATE.md" \
+  "docs/pull_request_template.md"; do
+  if [ -f "${candidate}" ]; then
+    PR_TEMPLATE_FILE="${candidate}"
+    break
+  fi
+done
+
+VERIFICATION_FOOTER="---
 
 Closes #${ISSUE_NUMBER}
 
@@ -388,6 +493,18 @@ Closes #${ISSUE_NUMBER}
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
 - [x] Pre-commit hooks passed (authoritative run on runner)
 - [x] Tests ran inside sandbox"
+
+if [ -n "${PR_TEMPLATE_FILE}" ]; then
+  echo "Using PR template: ${PR_TEMPLATE_FILE}"
+  TEMPLATE_CONTENT="$(cat "${PR_TEMPLATE_FILE}")"
+  TEMPLATE_BODY="$(populate_pr_template "${TEMPLATE_CONTENT}" "${DESCRIPTION}" "${ISSUE_NUMBER}" "${COMMIT_TYPE}")"
+  PR_BODY="${TEMPLATE_BODY}
+${VERIFICATION_FOOTER}"
+else
+  PR_BODY="${DESCRIPTION}
+
+${VERIFICATION_FOOTER}"
+fi
 
 PR_URL="$(gh pr create \
   --repo "${REPO_FULL_NAME}" \
