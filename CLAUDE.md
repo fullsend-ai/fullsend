@@ -24,6 +24,8 @@ When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
+**Dispatch workflows:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other.
+
 **Forge abstraction:** All git forge operations must go through the `forge.Client` interface in `internal/forge/forge.go`. Do not use `exec.Command("gh", ...)` or direct GitHub API calls outside `internal/forge/github/`. See [AGENTS.md](AGENTS.md#forge-abstraction) for details.
 
 When making changes to Go code under `cmd/` or `internal/`:
