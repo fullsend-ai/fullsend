@@ -118,8 +118,15 @@ fullsend github setup acme-corp \
 | `--app-set` | No | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--enroll-all` | No | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | No | `false` | Skip enrollment without prompting (per-org only) |
-| `--vendor-fullsend-binary` | No | `false` | Build and upload the fullsend binary to the config repo for local dev testing (e.g., macOS with a Podman Linux VM) |
+| `--vendor-fullsend-binary` | No | `false` | Resolve and upload a linux/amd64 fullsend binary for CI (see [Vendoring the CLI binary](#vendoring-the-cli-binary)) |
+| `--fullsend-binary` | No | | Path to a Linux fullsend binary when vendoring (skips auto-resolution) |
 | `--dry-run` | No | `false` | Preview changes without making them |
+
+### Vendoring the CLI binary
+
+Same policy as [admin install](installation.md#vendoring-the-cli-binary): `--fullsend-binary` → checkout cross-compile → matching release (released CLI only) → fail. Per-repo setup now wires vendoring and stale-binary cleanup when the flag is off.
+
+`fullsend admin analyze <org>` reports when a stale vendored binary is present (no install-intent flags on analyze).
 
 ## Per-repo setup
 

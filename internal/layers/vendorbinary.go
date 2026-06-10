@@ -83,7 +83,8 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 	}
 
 	l.ui.StepStart("removing stale vendored binary")
-	if err := l.client.DeleteFile(ctx, l.org, l.repo, path, "chore: remove vendored binary"); err != nil {
+	deleteMsg := RemoveStaleBinaryCommitMessage(path)
+	if err := l.client.DeleteFile(ctx, l.org, l.repo, path, deleteMsg); err != nil {
 		l.ui.StepFail("failed to remove vendored binary")
 		return fmt.Errorf("deleting vendored binary: %w", err)
 	}
@@ -117,10 +118,10 @@ func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 
 	if l.enabled {
 		report.Status = StatusInstalled
-		report.Details = append(report.Details, "vendored binary present")
+		report.Details = append(report.Details, fmt.Sprintf("vendored binary present at %s", l.binaryPath()))
 	} else {
 		report.Status = StatusDegraded
-		report.Details = append(report.Details, "stale vendored binary present")
+		report.Details = append(report.Details, fmt.Sprintf("stale vendored binary present at %s", l.binaryPath()))
 		report.WouldFix = append(report.WouldFix, "delete vendored binary")
 	}
 	return report, nil

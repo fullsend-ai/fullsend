@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/layers"
 )
 
 // e2eEnv holds the shared state for an e2e test run.
@@ -650,4 +651,34 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	_, err = env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
 	require.True(t, forge.IsNotFound(err), "shim should be removed from %s after unenrollment", testRepo)
 	t.Log("Verified shim is gone")
+}
+
+// TestVendorFromSubdirectory verifies that --vendor-fullsend-binary cross-compiles
+// when the CLI is run from a subdirectory inside the module (GOMOD discovery).
+func TestVendorFromSubdirectory(t *testing.T) {
+	env := setupE2ETest(t)
+	ctx := context.Background()
+
+	subdir := filepath.Join(moduleRoot(t), "internal", "cli")
+	installArgs := []string{
+		"admin", "install", env.org,
+		"--skip-app-setup",
+		"--skip-mint-check",
+		"--mint-url", env.cfg.mintURL,
+		"--app-set", e2eAppSet,
+		"--enroll-none",
+		"--vendor-fullsend-binary",
+	}
+	runCLIFromDir(t, env.binary, env.token, subdir, installArgs...)
+
+	_, err := env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
+	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
+
+	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
+
+	runCLI(t, env.binary, env.token,
+		"admin", "uninstall", env.org,
+		"--yolo",
+		"--app-set", e2eAppSet,
+	)
 }

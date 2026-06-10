@@ -60,6 +60,7 @@ type githubSetupConfig struct {
 	enrollAll            bool
 	enrollNone           bool
 	vendorBinary         bool
+	fullsendBinary       string
 	dryRun               bool
 }
 
@@ -88,6 +89,9 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 			if err := appsetup.ValidateAppSet(cfg.appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
+			}
+			if err := validateVendorBinaryFlags(cfg.vendorBinary, cfg.fullsendBinary); err != nil {
+				return err
 			}
 
 			if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
@@ -132,7 +136,8 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
 	cmd.Flags().BoolVar(&cfg.enrollAll, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
-	cmd.Flags().BoolVar(&cfg.vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload the fullsend binary")
+	cmd.Flags().BoolVar(&cfg.vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
+	cmd.Flags().StringVar(&cfg.fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "preview changes without making them")
 
 	return cmd
@@ -266,6 +271,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		for _, name := range secretNames {
 			printer.StepInfo(fmt.Sprintf("  %s", name))
 		}
+		if cfg.vendorBinary {
+			printer.Blank()
+			printer.StepInfo(vendorDryRunMessage(cfg.fullsendBinary, layers.VendoredBinaryPathPerRepo))
+		} else {
+			printer.Blank()
+			printer.StepInfo(fmt.Sprintf("Would remove stale vendored binary at %s (if present)", layers.VendoredBinaryPathPerRepo))
+		}
 		return nil
 	}
 
@@ -304,6 +316,16 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 	printer.StepDone(fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
+
+	if cfg.vendorBinary {
+		if err := acquireAndVendorFullsendBinary(ctx, client, printer, owner, repo, cfg.fullsendBinary); err != nil {
+			return fmt.Errorf("vendoring binary: %w", err)
+		}
+	} else {
+		if err := removeStaleVendoredBinary(ctx, client, printer, owner, repo, layers.VendoredBinaryPathPerRepo); err != nil {
+			return err
+		}
+	}
 
 	printer.Blank()
 	printer.StepDone(fmt.Sprintf("Per-repo setup complete for %s/%s", owner, repo))
@@ -452,7 +474,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 
 	var vendorFn layers.VendorFunc
 	if cfg.vendorBinary {
-		vendorFn = vendorFullsendBinary
+		vendorFn = makeVendorFunc(cfg.fullsendBinary)
 	}
 
 	stack := buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendorBinary, vendorFn, dispatcher)

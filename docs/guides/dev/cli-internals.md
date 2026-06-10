@@ -235,7 +235,19 @@ Install:      process 1→7 (forward)
 Uninstall:    process 7→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` since there's no need for composable uninstall ordering with a single repo. Binary vendoring (when `--vendor-fullsend-binary` is set) and stale binary cleanup are handled inline rather than through `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` and `runGitHubSetupPerRepo()` since there's no need for composable uninstall ordering with a single repo. Binary vendoring (when `--vendor-fullsend-binary` is set) and stale binary cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+
+### Binary acquisition (`internal/binary`)
+
+Linux binary resolution for `fullsend run` and vendoring lives in `internal/binary`:
+
+| Function | Policy |
+|----------|--------|
+| `ResolveForRun` | Release download (released CLI only) → cross-compile → latest release |
+| `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
+| `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
+
+Vendoring commit messages use title + body (upload and stale delete). `admin analyze` reports stale vendored binaries at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
 
 ---
 

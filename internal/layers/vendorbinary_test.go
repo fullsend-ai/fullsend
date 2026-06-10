@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -89,6 +90,8 @@ func TestVendorBinaryLayer_DisabledDeletesBinary(t *testing.T) {
 	assert.Equal(t, "test-org", client.DeletedFiles[0].Owner)
 	assert.Equal(t, ".fullsend", client.DeletedFiles[0].Repo)
 	assert.Equal(t, "bin/fullsend", client.DeletedFiles[0].Path)
+	assert.Contains(t, client.DeletedFiles[0].Message, "\n\n")
+	assert.Contains(t, client.DeletedFiles[0].Message, "Path: bin/fullsend")
 
 	// File should no longer be in FileContents
 	_, ok := client.FileContents["test-org/.fullsend/bin/fullsend"]
@@ -143,7 +146,7 @@ func TestVendorBinaryLayer_Analyze_EnabledPresent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "vendor-binary", report.Name)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Contains(t, report.Details, "vendored binary present")
+	assert.True(t, strings.Contains(strings.Join(report.Details, " "), "vendored binary present at"))
 }
 
 func TestVendorBinaryLayer_Analyze_EnabledAbsent(t *testing.T) {
@@ -169,7 +172,7 @@ func TestVendorBinaryLayer_Analyze_DisabledPresent(t *testing.T) {
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusDegraded, report.Status)
-	assert.Contains(t, report.Details, "stale vendored binary present")
+	assert.True(t, strings.Contains(strings.Join(report.Details, " "), "stale vendored binary present at"))
 	assert.Contains(t, report.WouldFix, "delete vendored binary")
 }
 
@@ -245,7 +248,7 @@ func TestVendorBinaryLayer_PerRepo_Analyze_EnabledPresent(t *testing.T) {
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusInstalled, report.Status)
-	assert.Contains(t, report.Details, "vendored binary present")
+	assert.True(t, strings.Contains(strings.Join(report.Details, " "), "vendored binary present at"))
 }
 
 func TestVendorBinaryLayer_PerRepo_Analyze_DisabledPresent(t *testing.T) {
@@ -261,7 +264,7 @@ func TestVendorBinaryLayer_PerRepo_Analyze_DisabledPresent(t *testing.T) {
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusDegraded, report.Status)
-	assert.Contains(t, report.Details, "stale vendored binary present")
+	assert.True(t, strings.Contains(strings.Join(report.Details, " "), "stale vendored binary present at"))
 }
 
 func TestVendorBinaryLayer_PerRepo_EnabledCallsVendorFn(t *testing.T) {
