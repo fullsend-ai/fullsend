@@ -378,6 +378,10 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
+│  │                   │ Env includes REPO_DIR pointing to        │
+│  │                   │ /tmp/fullsend-downloads/<sandbox>/       │
+│  │                   │ iteration-N/ (persists until OS clears   │
+│  │                   │ /tmp; not explicitly cleaned up)         │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

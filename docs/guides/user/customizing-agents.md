@@ -43,8 +43,12 @@ validation_loop:
 runner_env:
   PUSH_TOKEN: "${PUSH_TOKEN}"
   REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"  # sandbox-side path seen by the agent
 ```
+
+> **Note:** `REPO_DIR` in `runner_env` sets the path the agent sees inside the sandbox.
+> The post-script receives a separate `REPO_DIR` injected by the runner, pointing to
+> the extracted copy of the repo on the host (`/tmp/fullsend-downloads/<sandbox>/iteration-N/`).
 
 **Optional fields** (all have secure defaults and can be omitted):
 
@@ -283,7 +287,7 @@ validation_loop:
 runner_env:
   PUSH_TOKEN: "${PUSH_TOKEN}"
   REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"  # sandbox-side path seen by the agent
 ```
 
 Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.

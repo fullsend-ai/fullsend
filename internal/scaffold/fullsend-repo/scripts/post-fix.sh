@@ -34,7 +34,9 @@
 #   PUSH_TOKEN        — token with contents:write + pull-requests:write
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
-#   REPO_DIR          — path to extracted repo (default: current directory)
+#   REPO_DIR          — path to extracted repo; injected by the runner to
+#                       /tmp/fullsend-downloads/<sandbox>/iteration-N/
+#                       (persists until OS clears /tmp; always set in production)
 #   TRIGGER_SOURCE    — GitHub username that triggered the fix (usernames ending in [bot] are bot triggers)
 #
 # Optional environment variables:
@@ -68,7 +70,7 @@ UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-REPO_DIR="${REPO_DIR:-repo}"
+REPO_DIR="${REPO_DIR:-.}"
 RUN_DIR="$(pwd)"
 
 if [ "${REPO_DIR}" != "." ]; then
