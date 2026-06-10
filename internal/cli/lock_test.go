@@ -89,7 +89,7 @@ func TestRunLock_GeneratesLockFile(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
 
 	printer := ui.New(os.Stdout)
-	err := runLock(context.Background(), "code", dir, false, resolveFlags{}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")
@@ -168,7 +168,7 @@ allowed_remote_resources:
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
 
 	printer := ui.New(os.Stdout)
-	err := runLock(context.Background(), "code", dir, false, resolveFlags{forgeClient: fakeClient}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{forgeClient: fakeClient}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")
@@ -257,7 +257,7 @@ allowed_remote_resources:
 	printer := ui.New(os.Stdout)
 
 	// Step 1: Generate the lock file.
-	err := runLock(context.Background(), "code", dir, false, resolveFlags{forgeClient: fakeClient}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{forgeClient: fakeClient}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")
@@ -313,7 +313,7 @@ skills:
 	))
 
 	printer := ui.New(os.Stdout)
-	err := runLock(context.Background(), "local", dir, false, resolveFlags{}, printer)
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, printer)
 	require.NoError(t, err)
 
 	_, err = os.Stat(filepath.Join(dir, "lock.yaml"))
@@ -339,10 +339,10 @@ func TestRunLock_AlreadyUpToDate(t *testing.T) {
 	printer := ui.New(os.Stdout)
 
 	// First lock.
-	require.NoError(t, runLock(context.Background(), "code", dir, false, resolveFlags{}, printer))
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer))
 
 	// Second lock without --update should detect it's current.
-	require.NoError(t, runLock(context.Background(), "code", dir, false, resolveFlags{}, printer))
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer))
 
 	// Verify lock file still exists and is valid.
 	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
@@ -369,19 +369,185 @@ func TestRunLock_UpdateForceReResolve(t *testing.T) {
 	printer := ui.New(os.Stdout)
 
 	// First lock.
-	require.NoError(t, runLock(context.Background(), "code", dir, false, resolveFlags{}, printer))
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer))
 
 	lf1, _ := lock.Load(filepath.Join(dir, "lock.yaml"))
 	entry1 := lf1.Lookup("code")
 	resolvedAt1 := entry1.ResolvedAt
 
 	// Second lock with --update should re-resolve.
-	require.NoError(t, runLock(context.Background(), "code", dir, true, resolveFlags{}, printer))
+	require.NoError(t, runLock(context.Background(), "code", dir, "", true, resolveFlags{}, printer))
 
 	lf2, _ := lock.Load(filepath.Join(dir, "lock.yaml"))
 	entry2 := lf2.Lookup("code")
 
 	assert.True(t, entry2.ResolvedAt.After(resolvedAt1) || entry2.ResolvedAt.Equal(resolvedAt1))
+}
+
+func TestRunLock_MultiForgeLockAllVariants(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/agents/code.md":        agentContent,
+		"/policies/sandbox.yaml": policyContent,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	// Forge overrides use local skills (no URL validation needed) and the
+	// agent/policy URLs are shared. Each variant adds a different pre_script.
+	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+policy: "%s/policies/sandbox.yaml#sha256=%s"
+allowed_remote_resources:
+  - "%s/"
+forge:
+  github:
+    pre_script: scripts/gh-pre.sh
+  gitlab:
+    pre_script: scripts/gl-pre.sh
+`, srv.URL, agentHash, srv.URL, policyHash, srv.URL)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "multi.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+
+	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "multi", dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+
+	entry := lf.Lookup("multi")
+	require.NotNil(t, entry)
+
+	// Both variants share the same agent+policy URLs → 2 deps (deduped).
+	assert.Equal(t, 2, len(entry.Dependencies))
+
+	urls := make(map[string]bool)
+	for _, dep := range entry.Dependencies {
+		urls[dep.URL] = true
+	}
+	assert.True(t, urls[fmt.Sprintf("%s/agents/code.md", srv.URL)])
+	assert.True(t, urls[fmt.Sprintf("%s/policies/sandbox.yaml", srv.URL)])
+}
+
+func TestRunLock_ForgeSelectsSingleVariant(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/agents/code.md":        agentContent,
+		"/policies/sandbox.yaml": policyContent,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+policy: "%s/policies/sandbox.yaml#sha256=%s"
+allowed_remote_resources:
+  - "%s/"
+forge:
+  github:
+    pre_script: scripts/gh-pre.sh
+  gitlab:
+    pre_script: scripts/gl-pre.sh
+`, srv.URL, agentHash, srv.URL, policyHash, srv.URL)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "single.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+
+	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	// Lock only the github variant — should still lock all URL deps.
+	err := runLock(context.Background(), "single", dir, "github", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+
+	entry := lf.Lookup("single")
+	require.NotNil(t, entry)
+
+	// Single variant still resolves agent+policy URLs.
+	assert.Equal(t, 2, len(entry.Dependencies))
+}
+
+func TestRunLock_ForgeDeduplicatesAcrossVariants(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/agents/code.md":        agentContent,
+		"/policies/sandbox.yaml": policyContent,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	// Both forge variants share the same base agent+policy URLs. Each variant
+	// adds a different local pre_script. The lock should deduplicate the
+	// shared URLs across variants.
+	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+policy: "%s/policies/sandbox.yaml#sha256=%s"
+allowed_remote_resources:
+  - "%s/"
+forge:
+  github:
+    pre_script: scripts/gh-pre.sh
+  gitlab:
+    pre_script: scripts/gl-pre.sh
+`, srv.URL, agentHash, srv.URL, policyHash, srv.URL)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "dedup.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+
+	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "dedup", dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+
+	entry := lf.Lookup("dedup")
+	require.NotNil(t, entry)
+
+	// Agent + policy = 2 deps (deduped across both forge variants).
+	assert.Equal(t, 2, len(entry.Dependencies))
 }
 
 func TestResolveFromLock_Success(t *testing.T) {

@@ -239,6 +239,55 @@ func Load(path string) (*Harness, error) {
 	return &h, nil
 }
 
+// LoadOpts configures forge-aware harness loading.
+type LoadOpts struct {
+	ForgePlatform string
+}
+
+// LoadWithOpts reads a harness YAML file and applies forge resolution before
+// validation. The pipeline is: Unmarshal → validateForge → ResolveForge →
+// Validate. validateForge runs first to reject malformed forge maps before
+// ResolveForge consumes (nils out) the map. When ForgePlatform is empty,
+// ResolveForge is a no-op but validateForge still runs.
+func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
+	h, err := LoadRaw(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.validateForge(); err != nil {
+		return nil, fmt.Errorf("invalid harness: %w", err)
+	}
+
+	if err := h.ResolveForge(opts.ForgePlatform); err != nil {
+		return nil, fmt.Errorf("resolving forge config: %w", err)
+	}
+
+	if err := h.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid harness: %w", err)
+	}
+
+	return h, nil
+}
+
+// LoadRaw reads and unmarshals a harness YAML file without calling Validate
+// or ResolveForge. Used by base composition to load base harnesses without
+// consuming their forge maps before merging, and by the lock command to
+// discover forge keys without resolving them.
+func LoadRaw(path string) (*Harness, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading harness file: %w", err)
+	}
+
+	var h Harness
+	if err := yaml.Unmarshal(data, &h); err != nil {
+		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	}
+
+	return &h, nil
+}
+
 // Validate checks that required fields are present.
 func (h *Harness) Validate() error {
 	if h.Agent == "" {

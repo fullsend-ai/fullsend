@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 func newLockCmd() *cobra.Command {
 	var fullsendDir string
 	var update bool
+	var forgeFlag string
 	var rFlags resolveFlags
 
 	cmd := &cobra.Command{
@@ -31,6 +33,10 @@ func newLockCmd() *cobra.Command {
 		Long: `Resolve all remote dependencies for a harness and record their URLs
 and SHA256 hashes in .fullsend/lock.yaml. Subsequent fullsend run invocations
 use the lock file to skip re-resolution when dependencies have not changed.
+
+When --forge is specified, the named platform's forge overrides are applied
+before locking. When --forge is omitted and the harness has a forge: section,
+all forge variants are resolved and the union of dependencies is locked.
 
 The lock file should be committed to version control so all environments
 use the same pinned dependencies.`,
@@ -44,12 +50,13 @@ use the same pinned dependencies.`,
 			}
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runLock(cmd.Context(), agentName, fullsendDir, update, rFlags, printer)
+			return runLock(cmd.Context(), agentName, fullsendDir, forgeFlag, update, rFlags, printer)
 		},
 	}
 
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
 	cmd.Flags().BoolVar(&update, "update", false, "force re-resolve even if lock entry is current")
+	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to lock (e.g. "github"); omit to lock all forge variants`)
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
@@ -58,7 +65,7 @@ use the same pinned dependencies.`,
 	return cmd
 }
 
-func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rFlags resolveFlags, printer *ui.Printer) error {
+func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, update bool, rFlags resolveFlags, printer *ui.Printer) error {
 	printer.Banner(Version())
 	printer.Header("Locking dependencies: " + agentName)
 	printer.Blank()
@@ -68,59 +75,32 @@ func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rF
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
 
+	// Validate the --forge flag value if explicitly provided, but do NOT
+	// auto-detect from CI env vars. Auto-detection is appropriate for `run`
+	// (pick one platform), but `lock` without --forge means "lock all
+	// forge variants" — auto-detecting would silently lock only one.
+	if forgeFlag != "" && !harness.ValidForgePlatform(forgeFlag) {
+		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s)", forgeFlag, harness.ForgeKeyList())
+	}
+
 	harnessPath := filepath.Join(absFullsendDir, "harness", agentName+".yaml")
-	h, err := harness.Load(harnessPath)
-	if err != nil {
-		printer.StepFail("Failed to load harness")
-		return fmt.Errorf("loading harness: %w", err)
-	}
+	lockPath := filepath.Join(absFullsendDir, "lock.yaml")
 
-	if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
-		printer.StepFail("Path validation failed")
-		return fmt.Errorf("resolving paths: %w", err)
-	}
-
-	if !h.HasURLReferences() {
-		printer.StepDone("Harness has no remote dependencies — nothing to lock")
-		return nil
-	}
-
-	// Load and validate org config for allowed_remote_resources.
-	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgConfigData, err := os.ReadFile(orgConfigPath)
-	if err != nil {
-		printer.StepFail("Failed to load org config")
-		if os.IsNotExist(err) {
-			return fmt.Errorf("URL-referenced resources require an org-level config.yaml with allowed_remote_resources (expected at %s)", orgConfigPath)
-		}
-		return fmt.Errorf("reading org config: %w", err)
-	}
-	orgCfg, err := config.ParseOrgConfig(orgConfigData)
-	if err != nil {
-		printer.StepFail("Failed to parse org config")
-		return fmt.Errorf("parsing org config: %w", err)
-	}
-	if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedRemoteResources); err != nil {
-		printer.StepFail("Remote resource allowlist validation failed")
-		return fmt.Errorf("validating allowed remote resources: %w", err)
-	}
-
-	// Compute harness source hash.
+	// Compute harness source hash and check staleness before doing any
+	// network resolution. This avoids resolving all forge variants when the
+	// lock entry is already current.
 	harnessData, err := os.ReadFile(harnessPath)
 	if err != nil {
-		return fmt.Errorf("reading harness file for hashing: %w", err)
+		return fmt.Errorf("reading harness file: %w", err)
 	}
 	harnessHash := fetch.ComputeSHA256(harnessData)
 
-	// Load existing lock file.
-	lockPath := filepath.Join(absFullsendDir, "lock.yaml")
 	lf, err := lock.Load(lockPath)
 	if err != nil {
 		printer.StepWarn("Could not load existing lock file: " + err.Error())
 		lf = nil
 	}
 
-	// Check if lock entry is already current.
 	if !update && lf != nil {
 		if entry := lf.Lookup(agentName); entry != nil && !entry.IsStale(harnessHash) {
 			printer.StepDone(fmt.Sprintf("Lock entry for %s is up to date (%d dependencies)", agentName, len(entry.Dependencies)))
@@ -128,45 +108,107 @@ func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rF
 		}
 	}
 
-	// Resolve all dependencies.
-	printer.StepStart("Resolving dependencies")
-
-	policy := fetch.DefaultPolicy
-	policy.Offline = rFlags.offline
-
-	var forgeClient forge.Client
-	if h.HasURLSkills() {
-		if rFlags.forgeClient != nil {
-			forgeClient = rFlags.forgeClient
-		} else {
-			token, err := resolveToken()
-			if err != nil {
-				printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
-				return fmt.Errorf("skill URLs require a GitHub token: %w", err)
-			}
-			forgeClient = gh.New(token)
-		}
-	}
-
-	deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
-		WorkspaceRoot: absFullsendDir,
-		FetchPolicy:   policy,
-		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-		MaxDepth:      rFlags.maxDepth,
-		MaxResources:  rFlags.maxResources,
-		ForgeClient:   forgeClient,
-	})
+	// Determine which forge variants to lock. When --forge is specified, lock
+	// only that variant. When omitted, load the raw harness to discover all
+	// forge keys and lock each variant's URL set (union of dependencies).
+	forgePlatforms, err := lockForgePlatforms(harnessPath, forgeFlag)
 	if err != nil {
-		printer.StepFail("Resolution failed")
-		return fmt.Errorf("resolving remote resources: %w", err)
+		return err
 	}
 
-	printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(deps)))
+	// Resolve each forge variant and collect the union of dependencies.
+	var allDeps []resolve.Dependency
+	seen := make(map[string]bool)
+	var orgCfg *config.OrgConfig
+
+	for _, platform := range forgePlatforms {
+		h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{
+			ForgePlatform: platform,
+		})
+		if loadErr != nil {
+			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
+			return fmt.Errorf("loading harness for forge %q: %w", platform, loadErr)
+		}
+
+		if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
+			printer.StepFail("Path validation failed")
+			return fmt.Errorf("resolving paths: %w", err)
+		}
+
+		if !h.HasURLReferences() {
+			if platform != "" {
+				printer.StepInfo(fmt.Sprintf("Forge variant %q has no remote dependencies", platform))
+			}
+			continue
+		}
+
+		if orgCfg == nil {
+			var orgErr error
+			orgCfg, orgErr = loadOrgConfig(absFullsendDir, printer)
+			if orgErr != nil {
+				return orgErr
+			}
+		}
+		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedRemoteResources); err != nil {
+			printer.StepFail("Remote resource allowlist validation failed")
+			return fmt.Errorf("validating allowed remote resources: %w", err)
+		}
+
+		if platform != "" {
+			printer.StepStart(fmt.Sprintf("Resolving dependencies (forge: %s)", platform))
+		} else {
+			printer.StepStart("Resolving dependencies")
+		}
+
+		policy := fetch.DefaultPolicy
+		policy.Offline = rFlags.offline
+
+		var forgeClient forge.Client
+		if h.HasURLSkills() {
+			if rFlags.forgeClient != nil {
+				forgeClient = rFlags.forgeClient
+			} else {
+				token, tokenErr := resolveToken()
+				if tokenErr != nil {
+					printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
+					return fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
+				}
+				forgeClient = gh.New(token)
+			}
+		}
+
+		deps, resolveErr := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+			WorkspaceRoot: absFullsendDir,
+			FetchPolicy:   policy,
+			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+			MaxDepth:      rFlags.maxDepth,
+			MaxResources:  rFlags.maxResources,
+			ForgeClient:   forgeClient,
+		})
+		if resolveErr != nil {
+			printer.StepFail("Resolution failed")
+			return fmt.Errorf("resolving remote resources: %w", resolveErr)
+		}
+
+		for _, dep := range deps {
+			if !seen[dep.URL] {
+				seen[dep.URL] = true
+				allDeps = append(allDeps, dep)
+			}
+		}
+
+		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(deps)))
+	}
+
+	if len(allDeps) == 0 {
+		printer.StepDone("Harness has no remote dependencies — nothing to lock")
+		return nil
+	}
 
 	// Build lock entry from resolved deps.
 	now := time.Now().UTC()
-	lockDeps := make([]lock.DependencyEntry, 0, len(deps))
-	for _, dep := range deps {
+	lockDeps := make([]lock.DependencyEntry, 0, len(allDeps))
+	for _, dep := range allDeps {
 		entry := lock.DependencyEntry{
 			Field:     dep.Field,
 			URL:       dep.URL,
@@ -210,9 +252,9 @@ func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rF
 		printer.StepFail("Failed to write lock file")
 		return fmt.Errorf("saving lock file: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Locked %d dependencies for %s -> %s", len(deps), agentName, lockPath))
+	printer.StepDone(fmt.Sprintf("Locked %d dependencies for %s -> %s", len(allDeps), agentName, lockPath))
 
-	for _, dep := range deps {
+	for _, dep := range allDeps {
 		if dep.CacheHit {
 			printer.StepInfo(fmt.Sprintf("  %s: %s (cached)", dep.Field, dep.URL))
 		} else {
@@ -221,6 +263,56 @@ func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rF
 	}
 
 	return nil
+}
+
+// lockForgePlatforms determines which forge platform(s) to lock. When a
+// specific platform is requested, returns just that one. When empty,
+// loads the raw harness to discover forge keys and returns all of them.
+// If the harness has no forge section, returns a single empty string
+// (lock the harness as-is).
+func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
+	if forgePlatform != "" {
+		return []string{forgePlatform}, nil
+	}
+
+	h, err := harness.LoadRaw(harnessPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading harness for forge discovery: %w", err)
+	}
+
+	if len(h.Forge) == 0 {
+		return []string{""}, nil
+	}
+
+	platforms := make([]string, 0, len(h.Forge))
+	for key := range h.Forge {
+		if !harness.ValidForgePlatform(key) {
+			return nil, fmt.Errorf("forge: unrecognized key %q in harness (valid: %s)", key, harness.ForgeKeyList())
+		}
+		platforms = append(platforms, key)
+	}
+	sort.Strings(platforms)
+	return platforms, nil
+}
+
+// loadOrgConfig reads and parses the org config.yaml for remote resource
+// validation.
+func loadOrgConfig(absFullsendDir string, printer *ui.Printer) (*config.OrgConfig, error) {
+	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
+	orgConfigData, err := os.ReadFile(orgConfigPath)
+	if err != nil {
+		printer.StepFail("Failed to load org config")
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("URL-referenced resources require an org-level config.yaml with allowed_remote_resources (expected at %s)", orgConfigPath)
+		}
+		return nil, fmt.Errorf("reading org config: %w", err)
+	}
+	orgCfg, err := config.ParseOrgConfig(orgConfigData)
+	if err != nil {
+		printer.StepFail("Failed to parse org config")
+		return nil, fmt.Errorf("parsing org config: %w", err)
+	}
+	return orgCfg, nil
 }
 
 // resolveFromLock resolves harness dependencies using a lock file entry instead

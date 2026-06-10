@@ -885,3 +885,79 @@ func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
 	got := prHeadSHAFromEventPath(f)
 	assert.Empty(t, got)
 }
+
+// --- detectForgePlatform tests ---
+
+func TestDetectForgePlatform_ExplicitFlag(t *testing.T) {
+	p, err := detectForgePlatform("github")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+
+	p, err = detectForgePlatform("gitlab")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_InvalidFlag(t *testing.T) {
+	_, err := detectForgePlatform("bitbucket")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestDetectForgePlatform_GitHubActions(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_GitLabCI(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "true")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_NoEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "", p)
+}
+
+func TestDetectForgePlatform_FlagOverridesEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	p, err := detectForgePlatform("gitlab")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_GitHubPrecedesGitLab(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "true")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestRunCommand_HasForgeFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestLockCommand_HasForgeFlag(t *testing.T) {
+	cmd := newLockCmd()
+	flag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+}

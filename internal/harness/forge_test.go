@@ -254,7 +254,7 @@ func TestValidate_ForgeUnrecognizedKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized key")
 	assert.Contains(t, err.Error(), "gihub")
-	assert.Contains(t, err.Error(), "valid keys are: github, gitlab")
+	assert.Contains(t, err.Error(), "valid: github, gitlab")
 }
 
 func TestValidate_ForgeScriptURL(t *testing.T) {

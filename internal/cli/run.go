@@ -74,6 +74,7 @@ func newRunCmd() *cobra.Command {
 	var noPostScript bool
 	var debugFilter string
 	var keepSandbox bool
+	var forgeFlag string
 	var rFlags resolveFlags
 	var sOpts statusOpts
 
@@ -85,7 +86,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, rFlags, sOpts, printer, keepSandbox)
+			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox)
 		},
 	}
 
@@ -98,6 +99,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox deletion after the run (useful for post-failure inspection)")
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable Claude Code debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
+	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
@@ -111,7 +113,7 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool) (runErr error) {
+func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool) (runErr error) {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -136,7 +138,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	harnessStart := time.Now()
 	printer.StepStart("Loading harness: " + harnessPath)
 
-	h, err := harness.Load(harnessPath)
+	forgePlatform, err := detectForgePlatform(forgeFlag)
+	if err != nil {
+		printer.StepFail("Invalid --forge flag")
+		return err
+	}
+
+	h, err := harness.LoadWithOpts(harnessPath, harness.LoadOpts{
+		ForgePlatform: forgePlatform,
+	})
 	if err != nil {
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
@@ -294,6 +304,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// Print plan.
 	printer.KeyValue("Agent", h.Agent)
+	if h.Role != "" {
+		printer.KeyValue("Role", h.Role)
+	}
+	if h.Slug != "" {
+		printer.KeyValue("Slug", h.Slug)
+	}
 	if h.Policy != "" {
 		printer.KeyValue("Policy", h.Policy)
 	}
@@ -1657,6 +1673,25 @@ func sandboxArch() string {
 		return arch
 	}
 	return runtime.GOARCH
+}
+
+// detectForgePlatform determines the forge platform from the CLI flag or CI
+// environment variables. Precedence: explicit flag > GITHUB_ACTIONS > GITLAB_CI.
+// Returns an error if the flag value is not a recognized forge key.
+func detectForgePlatform(flag string) (string, error) {
+	if flag != "" {
+		if !harness.ValidForgePlatform(flag) {
+			return "", fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s)", flag, harness.ForgeKeyList())
+		}
+		return flag, nil
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		return "github", nil
+	}
+	if os.Getenv("GITLAB_CI") == "true" {
+		return "gitlab", nil
+	}
+	return "", nil
 }
 
 func titleCase(s string) string {

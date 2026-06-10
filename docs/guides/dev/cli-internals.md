@@ -33,6 +33,7 @@ fullsend
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── lock             <agent-name>             # Pin remote deps to lock.yaml
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
@@ -42,6 +43,7 @@ fullsend
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
 │   ├── --debug [filter]                     #   Enable Claude Code debug logging
 │   ├── --offline                            #   Reject network fetches
@@ -261,7 +263,8 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────┐                                                │
-│  │ Load harness │ Parse YAML config for agent                   │
+│  │ Load harness │ LoadWithOpts: unmarshal → validateForge →     │
+│  │              │ ResolveForge(--forge / env) → Validate        │
 │  └──────┬──────┘                                                │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
