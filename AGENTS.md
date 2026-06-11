@@ -4,7 +4,11 @@ See [CLAUDE.md](CLAUDE.md) for project rules and design decisions.
 
 ## Commit messages
 
-You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages. Getting the prefix right is not optional — GoReleaser uses it to build release notes.
+Use [Conventional Commits](https://www.conventionalcommits.org/) format for every commit. The allowed types are: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `perf`, `build`. See [CONTRIBUTING.md](CONTRIBUTING.md#commit-messages) for the full specification.
+
+This is not optional — GoReleaser parses commit prefixes to build release notes. A missing or wrong prefix produces incorrect changelogs.
+
+When reviewing PRs, check that commit messages and PR titles follow this format. Flag violations as a required change — they are not cosmetic.
 
 ## Forge abstraction
 

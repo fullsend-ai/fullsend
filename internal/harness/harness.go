@@ -217,6 +217,8 @@ type Harness struct {
 	SandboxTimeoutSeconds  int               `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string               `yaml:"allowed_remote_resources,omitempty"`
+	AllowRuntimeFetch      bool                   `yaml:"allow_runtime_fetch,omitempty"`
+	MaxRuntimeFetches      int                    `yaml:"max_runtime_fetches,omitempty"`
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 }
 
@@ -289,6 +291,12 @@ func (h *Harness) Validate() error {
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
+	}
+	if h.MaxRuntimeFetches < 0 {
+		return fmt.Errorf("max_runtime_fetches must be non-negative, got %d", h.MaxRuntimeFetches)
+	}
+	if !h.AllowRuntimeFetch && h.MaxRuntimeFetches != 0 {
+		return fmt.Errorf("max_runtime_fetches requires allow_runtime_fetch: true")
 	}
 	if err := h.validateSecurity(); err != nil {
 		return err

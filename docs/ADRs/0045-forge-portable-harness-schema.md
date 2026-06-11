@@ -265,6 +265,8 @@ compatibility.
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
 | `security`         | Security scanning is forge-agnostic                |
 | `allowed_remote_resources` | URL allowlist for resource fetching (ADR 0038) |
+| `allow_runtime_fetch` | Opt-in for runtime dependency loading (ADR 0038) |
+| `max_runtime_fetches` | Rate limit for runtime fetches (ADR 0038)       |
 | `description`      | Documentation, no runtime effect                   |
 | `role`             | Agent identity is forge-agnostic                   |
 | `slug`             | Kept top-level; per-forge slug differences handled via `base` composition or a future `forge.<platform>.slug` extension — see trade-off note below |

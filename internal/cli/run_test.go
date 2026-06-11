@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -498,15 +501,16 @@ func TestSandboxArch_InvalidFallsBack(t *testing.T) {
 }
 
 func TestValidateLinuxBinary_RejectsNonELF(t *testing.T) {
+	// A plain text file should be rejected.
 	tmp := filepath.Join(t.TempDir(), "not-elf")
 	require.NoError(t, os.WriteFile(tmp, []byte("#!/bin/sh\necho hello"), 0o755))
-	err := binary.ValidateLinuxBinary(tmp, "amd64")
+	err := validateLinuxBinary(tmp)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid ELF binary")
 }
 
 func TestValidateLinuxBinary_RejectsMissing(t *testing.T) {
-	err := binary.ValidateLinuxBinary("/tmp/nonexistent-fullsend-binary-12345", "amd64")
+	err := validateLinuxBinary("/tmp/nonexistent-fullsend-binary-12345")
 	require.Error(t, err)
 }
 
@@ -516,7 +520,115 @@ func TestValidateLinuxBinary_AcceptsHostBinary(t *testing.T) {
 	}
 	exe, err := os.Executable()
 	require.NoError(t, err)
-	assert.NoError(t, binary.ValidateLinuxBinary(exe, runtime.GOARCH))
+	assert.NoError(t, validateLinuxBinary(exe))
+}
+
+func TestIsReleasedVersion(t *testing.T) {
+	tests := []struct {
+		version  string
+		expected bool
+	}{
+		{"0.4.0", true},
+		{"v0.4.0", true},
+		{"1.0.0", true},
+		{"dev", false},
+		{"", false},
+		{"0.4.0-3-gabcdef", false},
+		{"0.4.0-vendored", false},
+		{"0.4.0-crosscompiled", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isReleasedVersion(tt.version), "version=%q", tt.version)
+		})
+	}
+}
+
+func TestExtractFullsendFromTarGz_PathTraversal(t *testing.T) {
+	// Create a tar.gz with a path-traversal entry named "../../../tmp/fullsend".
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	content := []byte("malicious binary content")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "../../../tmp/fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	destPath := filepath.Join(t.TempDir(), "fullsend")
+	err = extractFullsendFromTarGz(&buf, destPath)
+	assert.Error(t, err, "should reject traversal entry and report binary not found")
+	assert.Contains(t, err.Error(), "not found in archive")
+}
+
+func TestExtractFullsendFromTarGz_ValidEntry(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	content := []byte("valid binary content")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend_0.4.0_linux_amd64/fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	destPath := filepath.Join(t.TempDir(), "fullsend")
+	err = extractFullsendFromTarGz(&buf, destPath)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(destPath)
+	require.NoError(t, err)
+	assert.Equal(t, "valid binary content", string(data))
+}
+
+func TestCrossCompileFullsend_ProducesBinary(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("cross-compilation test only meaningful on non-Linux hosts")
+	}
+	if testing.Short() {
+		t.Skip("skipping cross-compilation in short mode")
+	}
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "fullsend")
+	err := crossCompileFullsend(runtime.GOARCH, binPath)
+	require.NoError(t, err)
+
+	info, err := os.Stat(binPath)
+	require.NoError(t, err)
+	assert.True(t, info.Size() > 0, "binary should be non-empty")
+}
+
+func TestResolveLinuxBinary_Download(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping download test in short mode")
+	}
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "fullsend")
+	err := downloadReleaseBinary("0.4.0", "amd64", binPath)
+	require.NoError(t, err)
+
+	info, err := os.Stat(binPath)
+	require.NoError(t, err)
+	assert.True(t, info.Size() > 0, "downloaded binary should be non-empty")
+
+	// Verify the downloaded artifact is a valid Linux ELF for the requested arch.
+	t.Setenv("FULLSEND_SANDBOX_ARCH", "amd64")
+	assert.NoError(t, validateLinuxBinary(binPath), "downloaded binary should be a valid Linux/amd64 ELF")
 }
 
 func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
@@ -726,6 +838,148 @@ func TestRunHeartbeat_NoNoticeWhenNotCI(t *testing.T) {
 	}
 
 	assert.Empty(t, buf.String(), "should not emit any ::notice:: when not in CI")
+}
+
+func TestDownloadChecksumForAsset_ParsesLine(t *testing.T) {
+	body := "1b4f0e9851971998e732078544c96b36c3d01cedf7caa332359d6f1d83567014  fullsend_1.0.0_linux_arm64.tar.gz\n" +
+		"60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752  fullsend_1.0.0_linux_amd64.tar.gz\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	origBaseURL := releaseBaseURL
+	releaseBaseURL = srv.URL
+	defer func() { releaseBaseURL = origBaseURL }()
+
+	hash, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_amd64.tar.gz")
+	require.NoError(t, err)
+	assert.Equal(t, "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752", hash)
+}
+
+func TestDownloadChecksumForAsset_AssetNotFound(t *testing.T) {
+	body := "1b4f0e9851971998e732078544c96b36c3d01cedf7caa332359d6f1d83567014  fullsend_1.0.0_linux_amd64.tar.gz\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	origBaseURL := releaseBaseURL
+	releaseBaseURL = srv.URL
+	defer func() { releaseBaseURL = origBaseURL }()
+
+	_, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_arm64.tar.gz")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in checksums.txt")
+}
+
+func TestDownloadChecksumForAsset_InvalidHex(t *testing.T) {
+	body := "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ  fullsend_1.0.0_linux_amd64.tar.gz\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	origBaseURL := releaseBaseURL
+	releaseBaseURL = srv.URL
+	defer func() { releaseBaseURL = origBaseURL }()
+
+	_, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_amd64.tar.gz")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid hex hash")
+}
+
+func TestDownloadReleaseBinary_ChecksumMismatch(t *testing.T) {
+	// Build a valid tar.gz containing a "fullsend" binary.
+	var tarBuf bytes.Buffer
+	gw := gzip.NewWriter(&tarBuf)
+	tw := tar.NewWriter(gw)
+	content := []byte("fake binary")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	tarBytes := tarBuf.Bytes()
+
+	// Serve a checksums.txt with a WRONG hash for the asset.
+	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
+	checksumBody := fmt.Sprintf("%s  fullsend_1.0.0_linux_amd64.tar.gz\n", wrongHash)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.0.0/checksums.txt" {
+			fmt.Fprint(w, checksumBody)
+		} else if r.URL.Path == "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz" {
+			w.Write(tarBytes)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	origBaseURL := releaseBaseURL
+	releaseBaseURL = srv.URL
+	defer func() { releaseBaseURL = origBaseURL }()
+
+	destPath := filepath.Join(t.TempDir(), "fullsend")
+	err = downloadReleaseBinary("1.0.0", "amd64", destPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checksum mismatch")
+}
+
+func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
+	var tarBuf bytes.Buffer
+	gw := gzip.NewWriter(&tarBuf)
+	tw := tar.NewWriter(gw)
+	content := []byte("good binary")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	tarBytes := tarBuf.Bytes()
+	h := sha256.Sum256(tarBytes)
+	correctHash := hex.EncodeToString(h[:])
+
+	checksumBody := fmt.Sprintf("%s  fullsend_2.0.0_linux_amd64.tar.gz\n", correctHash)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.0.0/checksums.txt" {
+			fmt.Fprint(w, checksumBody)
+		} else if r.URL.Path == "/v2.0.0/fullsend_2.0.0_linux_amd64.tar.gz" {
+			w.Write(tarBytes)
+		} else {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	origBaseURL := releaseBaseURL
+	releaseBaseURL = srv.URL
+	defer func() { releaseBaseURL = origBaseURL }()
+
+	destPath := filepath.Join(t.TempDir(), "fullsend")
+	err = downloadReleaseBinary("2.0.0", "amd64", destPath)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(destPath)
+	require.NoError(t, err)
+	assert.Equal(t, "good binary", string(data))
 }
 
 func TestValidationFailMessage_UsesOutputWhenPresent(t *testing.T) {

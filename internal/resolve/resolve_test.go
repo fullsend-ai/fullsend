@@ -1192,3 +1192,241 @@ func TestResolveHarness_NilForgeClientWithSkillURL(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ForgeClient is required")
 }
+
+// --- ResolveSkillURL tests (runtime fetch, directory model) ---
+
+func TestResolveSkillURL_ValidFetch(t *testing.T) {
+	fc := &forge.FakeClient{}
+	files := map[string][]byte{
+		"SKILL.md": []byte("# Runtime Skill\nFetched at runtime."),
+	}
+	treeHash := registerSkillDir(fc, "skills/runtime", files)
+
+	root := t.TempDir()
+	rawURL := forgeSkillURL("skills/runtime", treeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	dep, localPath, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		ForgeClient:   fc,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "runtime_skill", dep.Field)
+	assert.Equal(t, forgeSkillCleanURL("skills/runtime"), dep.URL)
+	assert.Equal(t, treeHash, dep.SHA256)
+	assert.Equal(t, "directory", dep.Type)
+	assert.False(t, dep.CacheHit)
+	assert.True(t, strings.HasSuffix(localPath, "/tree"))
+
+	got, err := os.ReadFile(filepath.Join(localPath, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, files["SKILL.md"], got)
+}
+
+func TestResolveSkillURL_CacheHit(t *testing.T) {
+	fc := &forge.FakeClient{}
+	files := map[string][]byte{
+		"SKILL.md": []byte("cached runtime skill"),
+	}
+	treeHash := registerSkillDir(fc, "skills/cached", files)
+
+	root := t.TempDir()
+	cleanURL := forgeSkillCleanURL("skills/cached")
+	_, err := fetch.CachePutDir(root, cleanURL, files)
+	require.NoError(t, err)
+
+	rawURL := forgeSkillURL("skills/cached", treeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	dep, localPath, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		ForgeClient:   fc,
+	})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+
+	got, err := os.ReadFile(filepath.Join(localPath, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, files["SKILL.md"], got)
+}
+
+func TestResolveSkillURL_HashMismatch(t *testing.T) {
+	fc := &forge.FakeClient{}
+	files := map[string][]byte{
+		"SKILL.md": []byte("tampered content"),
+	}
+	registerSkillDir(fc, "skills/bad", files)
+
+	wrongHash := fetch.ComputeTreeHash(map[string][]byte{
+		"SKILL.md": []byte("expected content"),
+	})
+	rawURL := forgeSkillURL("skills/bad", wrongHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		ForgeClient:   fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+}
+
+func TestResolveSkillURL_URLNotInAllowlist(t *testing.T) {
+	fc := &forge.FakeClient{}
+	files := map[string][]byte{
+		"SKILL.md": []byte("skill content"),
+	}
+	treeHash := registerSkillDir(fc, "skills/blocked", files)
+
+	rawURL := forgeSkillURL("skills/blocked", treeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		ForgeClient:   fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestResolveSkillURL_MissingHash(t *testing.T) {
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	rawURL := forgeSkillCleanURL("skills/nohash")
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity hash")
+}
+
+func TestResolveSkillURL_NonHTTPSRejected(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"http://github.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), fmt.Sprintf("http://github.com/test-org/test-repo/tree/main/skills/test#sha256=%s", fakeHash), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scheme must be https")
+}
+
+func TestResolveSkillURL_NonForgeURLRejected(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), fmt.Sprintf("https://example.com/skills/test#sha256=%s", fakeHash), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "supported forge")
+}
+
+func TestResolveSkillURL_AuditEntry(t *testing.T) {
+	fc := &forge.FakeClient{}
+	files := map[string][]byte{
+		"SKILL.md": []byte("audited runtime skill"),
+	}
+	treeHash := registerSkillDir(fc, "skills/audited", files)
+
+	root := t.TempDir()
+	auditPath := filepath.Join(root, "audit", "fetch-audit.jsonl")
+	rawURL := forgeSkillURL("skills/audited", treeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		ForgeClient:   fc,
+		TraceID:       "runtime-trace",
+		AuditLogPath:  auditPath,
+	})
+	require.NoError(t, err)
+
+	f, err := os.Open(auditPath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	var entry fetch.FetchAuditEntry
+	scanner := bufio.NewScanner(f)
+	require.True(t, scanner.Scan())
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &entry))
+
+	assert.Equal(t, "runtime-trace", entry.TraceID)
+	assert.Equal(t, "runtime", entry.FetchType)
+	assert.Equal(t, treeHash, entry.SHA256)
+	assert.False(t, entry.CacheHit)
+}
+
+func TestResolveSkillURL_OfflineMiss(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	rawURL := forgeSkillURL("skills/offline", fakeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "offline")
+}
+
+func TestResolveSkillURL_OfflineHit(t *testing.T) {
+	files := map[string][]byte{
+		"SKILL.md": []byte("cached skill for offline runtime"),
+	}
+	treeHash := fetch.ComputeTreeHash(files)
+	root := t.TempDir()
+
+	cleanURL := forgeSkillCleanURL("skills/offline")
+	_, err := fetch.CachePutDir(root, cleanURL, files)
+	require.NoError(t, err)
+
+	rawURL := forgeSkillURL("skills/offline", treeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	dep, localPath, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+	})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+
+	got, err := os.ReadFile(filepath.Join(localPath, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, files["SKILL.md"], got)
+}
+
+func TestResolveSkillURL_NilForgeClient(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	rawURL := forgeSkillURL("skills/test", fakeHash)
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, _, err := ResolveSkillURL(context.Background(), rawURL, h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ForgeClient is required")
+}

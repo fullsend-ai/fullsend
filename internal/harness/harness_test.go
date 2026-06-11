@@ -1074,6 +1074,67 @@ func TestMatchingAllowedPrefix(t *testing.T) {
 	})
 }
 
+func TestValidate_AllowRuntimeFetch(t *testing.T) {
+	t.Run("allow_runtime_fetch true with max is valid", func(t *testing.T) {
+		h := &Harness{
+			Agent:             "code",
+			AllowRuntimeFetch: true,
+			MaxRuntimeFetches: 5,
+		}
+		assert.NoError(t, h.Validate())
+	})
+
+	t.Run("allow_runtime_fetch true with zero max is valid", func(t *testing.T) {
+		h := &Harness{
+			Agent:             "code",
+			AllowRuntimeFetch: true,
+		}
+		assert.NoError(t, h.Validate())
+	})
+
+	t.Run("max without allow is invalid", func(t *testing.T) {
+		h := &Harness{
+			Agent:             "code",
+			MaxRuntimeFetches: 5,
+		}
+		err := h.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_runtime_fetches requires allow_runtime_fetch")
+	})
+
+	t.Run("negative max is invalid", func(t *testing.T) {
+		h := &Harness{
+			Agent:             "code",
+			AllowRuntimeFetch: true,
+			MaxRuntimeFetches: -1,
+		}
+		err := h.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_runtime_fetches must be non-negative")
+	})
+
+	t.Run("backward compatible without new fields", func(t *testing.T) {
+		h := &Harness{Agent: "code"}
+		assert.NoError(t, h.Validate())
+		assert.False(t, h.AllowRuntimeFetch)
+		assert.Equal(t, 0, h.MaxRuntimeFetches)
+	})
+}
+
+func TestLoad_RuntimeFetchFields(t *testing.T) {
+	content := `agent: code
+allow_runtime_fetch: true
+max_runtime_fetches: 10
+`
+	path := filepath.Join(t.TempDir(), "harness.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, h.AllowRuntimeFetch)
+	assert.Equal(t, 10, h.MaxRuntimeFetches)
+}
+
 // --- Role and slug field tests ---
 
 func TestLoad_RoleAndSlug(t *testing.T) {

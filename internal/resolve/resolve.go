@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	DefaultMaxDepth     = 10
-	DefaultMaxResources = 50
+	DefaultMaxDepth          = 10
+	DefaultMaxResources      = 50
+	DefaultMaxRuntimeFetches = 10
 )
 
 // Dependency records a single URL that was resolved to a local cache path.
@@ -465,4 +466,118 @@ func resolveSkillTransitiveDeps(ctx context.Context, parentURL, skillDirPath str
 	}
 
 	return nil
+}
+
+// ResolveSkillURL resolves a single URL-referenced skill directory for runtime
+// fetch. Like static skill resolution, it uses the forge API to list and fetch
+// the skill directory contents, verifies the tree hash, and caches the result.
+// The audit entry uses FetchType "runtime" to distinguish from static resolution.
+// No transitive resolution — runtime-fetched skills are leaf nodes.
+//
+// Callers must gate on h.AllowRuntimeFetch and enforce MaxRuntimeFetches
+// (or DefaultMaxRuntimeFetches when zero) before calling this function.
+func ResolveSkillURL(ctx context.Context, rawURL string, h *harness.Harness, opts ResolveOpts) (Dependency, string, error) {
+	const field = "runtime_skill"
+
+	cleanURL, expectedHash, hasHash := harness.ParseIntegrityHash(rawURL)
+	if !hasHash {
+		return Dependency{}, "", fmt.Errorf("%s: URL must include #sha256=... integrity hash", field)
+	}
+	if !strings.HasPrefix(cleanURL, "https://") {
+		return Dependency{}, "", fmt.Errorf("%s: URL scheme must be https: %s", field, cleanURL)
+	}
+
+	allowedBy := h.MatchingAllowedPrefix(cleanURL)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("%s: URL %q is not in allowed_remote_resources", field, cleanURL)
+	}
+
+	forgeInfo, err := forge.ParseForgeURL(cleanURL)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("%s: skill URLs must be hosted on a supported forge: %w", field, err)
+	}
+
+	treePath, dirEntry, err := fetch.CacheGetDir(opts.WorkspaceRoot, expectedHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("%s: cache lookup: %w", field, err)
+	}
+
+	cacheHit := treePath != ""
+	fetchedAt := time.Now().UTC()
+
+	if !cacheHit {
+		if opts.ForgeClient == nil {
+			return Dependency{}, "", fmt.Errorf("%s: ForgeClient is required to resolve skill URL %s (not cached)", field, cleanURL)
+		}
+		if opts.FetchPolicy.Offline {
+			return Dependency{}, "", fmt.Errorf("%s: offline mode, no cache entry for %s", field, cleanURL)
+		}
+
+		dirPath := forgeInfo.Path
+		entries, err := opts.ForgeClient.ListDirectoryContents(ctx, forgeInfo.Owner, forgeInfo.Repo, dirPath, forgeInfo.Ref, true)
+		if err != nil {
+			return Dependency{}, "", fmt.Errorf("%s: listing directory at %s: %w", field, cleanURL, err)
+		}
+
+		files := make(map[string][]byte)
+		for _, e := range entries {
+			if e.Type != "file" {
+				continue
+			}
+			var fullPath string
+			if dirPath == "" {
+				fullPath = e.Path
+			} else {
+				fullPath = dirPath + "/" + e.Path
+			}
+			content, err := opts.ForgeClient.GetFileContentAtRef(ctx, forgeInfo.Owner, forgeInfo.Repo, fullPath, forgeInfo.Ref)
+			if err != nil {
+				return Dependency{}, "", fmt.Errorf("%s: fetching file %s from %s: %w", field, e.Path, cleanURL, err)
+			}
+			files[e.Path] = content
+		}
+
+		actualHash := fetch.ComputeTreeHash(files)
+		if actualHash != expectedHash {
+			return Dependency{}, "", fmt.Errorf("%s: integrity check failed for %s: expected %s, got %s", field, cleanURL, expectedHash, actualHash)
+		}
+
+		if _, err := fetch.CachePutDir(opts.WorkspaceRoot, cleanURL, files); err != nil {
+			return Dependency{}, "", fmt.Errorf("%s: cache write: %w", field, err)
+		}
+
+		cachePath, err := fetch.CachePath(opts.WorkspaceRoot, expectedHash)
+		if err != nil {
+			return Dependency{}, "", fmt.Errorf("%s: computing cache path: %w", field, err)
+		}
+		treePath = filepath.Join(cachePath, "tree")
+	} else {
+		fetchedAt = dirEntry.FetchTime
+	}
+
+	if opts.AuditLogPath != "" {
+		if err := fetch.AppendFetchAudit(opts.AuditLogPath, fetch.FetchAuditEntry{
+			TraceID:   opts.TraceID,
+			FetchTime: fetchedAt,
+			URL:       cleanURL,
+			SHA256:    expectedHash,
+			FetchType: "runtime",
+			AllowedBy: allowedBy,
+			CacheHit:  cacheHit,
+		}); err != nil {
+			return Dependency{}, "", fmt.Errorf("%s: writing fetch audit: %w", field, err)
+		}
+	}
+
+	dep := Dependency{
+		Field:     field,
+		URL:       cleanURL,
+		LocalPath: treePath,
+		SHA256:    expectedHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  cacheHit,
+		Type:      "directory",
+	}
+
+	return dep, treePath, nil
 }

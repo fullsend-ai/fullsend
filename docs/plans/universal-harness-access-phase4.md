@@ -44,12 +44,12 @@ A `fullsend-fetch-skill` binary available inside the sandbox. When the agent run
 
 ### Implementation steps
 
-#### PR 1: Runner-side fetch service
-- Unix socket listener in the runner process
-- Request/response protocol: URL -> local path or error
-- Rate limiting enforcement
-- Forge API integration for skill directory fetching (reuses Phase 1 forge client)
-- Audit logging with `fetch_type: "runtime"`
+#### PR 1: Harness schema and ResolveSkillURL (this PR)
+- Add `allow_runtime_fetch` and `max_runtime_fetches` to harness schema with validation
+- Export `ResolveSkillURL` in `internal/resolve/` for single-URL runtime skill resolution
+- Uses forge API for directory-based skill fetching (same model as static resolution)
+- Audit logging with `fetch_type: "runtime"` to distinguish from static resolution
+- No transitive resolution for runtime-fetched skills (leaf nodes only)
 
 #### PR 2: In-sandbox fetch binary
 - `fullsend-fetch-skill` binary compiled and uploaded to sandbox during bootstrap
@@ -57,10 +57,12 @@ A `fullsend-fetch-skill` binary available inside the sandbox. When the agent run
 - Reports errors to stderr, success path to stdout
 - Returns the sandbox-local skill directory path (not a single file path)
 
-#### PR 3: Harness schema and CLI integration
-- Add `allow_runtime_fetch` and `max_runtime_fetches` to harness schema
-- Validation: reject runtime fetch fields if `allowed_remote_resources` is empty
+#### PR 3: Runner-side fetch service and CLI wiring
+- Unix socket listener in the runner process
+- Request/response protocol: URL -> local path or error
+- Rate limiting enforcement (uses `MaxRuntimeFetches` / `DefaultMaxRuntimeFetches`)
 - Socket setup in sandbox provisioning
+- Wire `ResolveSkillURL` into the socket handler
 
 ## Verification
 

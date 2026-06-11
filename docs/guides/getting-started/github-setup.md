@@ -12,7 +12,7 @@ For the all-in-one setup that provisions both GCP and GitHub in a single command
 - **GitHub CLI** (`gh`) authenticated — the installer runs a preflight check and tells you which scopes are missing. When prompted, run the `gh auth refresh -s <scopes>` command it suggests.
 - **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
 - **From your Mint service provider admin** (currently GCP-managed; other providers planned):
-  - Token mint URL (`--mint-url`) — the HTTPS endpoint of the deployed mint Cloud Function. If you are using the fullsend hosted mint, the URL is `https://fullsend-mint-gljhbkcloq-uc.a.run.app` (see [Hosted mint](../infrastructure/mint-administration.md#hosted-mint)).
+  - Token mint URL (`--mint-url`) — the HTTPS endpoint of the deployed mint Cloud Function
 - **From your Inference provider admin** (currently GCP Agent Platform, formerly Vertex AI; other providers planned):
   - GCP project ID (`--inference-project`) — the project where Agent Platform is enabled (e.g., `my-gcp-project`)
   - WIF provider resource name (`--inference-wif-provider`) — the full resource path, e.g., `projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc` (note: the leading number is the GCP **project number**, not the project ID string; your GCP admin can find it with `gcloud projects describe <project-id> --format='value(projectNumber)'`)
@@ -118,15 +118,8 @@ fullsend github setup acme-corp \
 | `--app-set` | No | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--enroll-all` | No | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | No | `false` | Skip enrollment without prompting (per-org only) |
-| `--vendor-fullsend-binary` | No | `false` | Resolve and upload a linux/amd64 fullsend binary for CI (see [Vendoring the CLI binary](#vendoring-the-cli-binary)) |
-| `--fullsend-binary` | No | | Path to a Linux fullsend binary when vendoring (skips auto-resolution) |
+| `--vendor-fullsend-binary` | No | `false` | Build and upload the fullsend binary to the config repo for local dev testing (e.g., macOS with a Podman Linux VM) |
 | `--dry-run` | No | `false` | Preview changes without making them |
-
-### Vendoring the CLI binary
-
-Same policy as [admin install](installation.md#vendoring-the-cli-binary): `--fullsend-binary` → checkout cross-compile → matching release (released CLI only) → fail. Per-repo setup now wires vendoring and stale-binary cleanup when the flag is off.
-
-`fullsend admin analyze <org>` reports when a stale vendored binary is present (no install-intent flags on analyze).
 
 ## Per-repo setup
 

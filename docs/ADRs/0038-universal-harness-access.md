@@ -364,4 +364,9 @@ The proposed model follows the GitHub Actions approach: URL-based references wit
 
 ## Implementation Plan
 
-See `docs/plans/universal-harness-access.md` for full implementation details, security analysis, and migration path. See `docs/plans/universal-harness-access-phase1.md` for the phased PR breakdown (Phase 1 MVP), `docs/plans/universal-harness-access-phase2.md` for Phase 2 (transitive dependency resolution), `docs/plans/universal-harness-access-phase3.md` for Phase 3 (lock files), and `docs/plans/universal-harness-access-phase4.md` for Phase 4 (runtime dependency loading).
+See `docs/plans/universal-harness-access.md` for full implementation details, security analysis, and migration path. Per-phase PR breakdowns:
+
+- `docs/plans/universal-harness-access-phase1.md` — Phase 1: URL detection, fetch, cache, schema, resolver, CLI (complete)
+- `docs/plans/universal-harness-access-phase2.md` — Phase 2: Transitive dependency resolution (complete)
+- `docs/plans/universal-harness-access-phase3.md` — Phase 3: Lock files (complete)
+- `docs/plans/universal-harness-access-phase4.md` — Phase 4: Runtime dependency loading (in progress)

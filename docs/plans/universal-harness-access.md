@@ -317,9 +317,9 @@ Resolution algorithm:
 
 **Implementation:** New package `internal/resolve/` provides `ResolveHarness(ctx, h *harness.Harness, opts ResolveOpts) ([]Dependency, error)`.
 
-### Runtime Dependency Loading (Future)
+### Runtime Dependency Loading (In Progress — Phase 4)
 
-The current design requires all dependencies to be declared in the harness. A future enhancement would allow agents to discover and load resources at runtime:
+The current design requires all dependencies to be declared in the harness. Phase 4 adds runtime dependency loading, allowing agents to discover and load resources during execution:
 
 ```markdown
 # Agent encounters unfamiliar code
@@ -340,7 +340,7 @@ This requires:
 - Fetch requests are rate-limited (max 10 per agent run)
 - Anomalous fetch patterns trigger alerts
 
-**Status:** Not implemented in initial design. Tracked in a future issue.
+**Status:** In progress. Schema fields (`allow_runtime_fetch`, `max_runtime_fetches`) and `ResolveSkillURL` are implemented. See `docs/plans/universal-harness-access-phase4.md` for the full plan.
 
 ### Access Policy Model
 
@@ -367,7 +367,7 @@ The runner enforces:
 - Transitive dependencies must also match an allowed prefix
 - No runtime fetches are allowed (agent cannot fetch new resources during execution)
 
-**Phase 2: Runtime fetch with policy (future)**
+**Phase 2: Runtime fetch with policy (in progress — Phase 4)**
 
 The harness declares allowed prefixes, and the agent can fetch resources at runtime if they match:
 
@@ -1420,14 +1420,14 @@ harnesses:
 - If harness YAML references change but lock file is stale, warn: "harness/code.yaml has changed since lock file was generated. Run `fullsend lock harness/code.yaml` to update."
 - `fullsend lock --update` re-resolves all dependencies and updates lock file
 
-### Phase 4: Runtime dependency loading
+### Phase 4: Runtime dependency loading (in progress)
 
-- Implement `fullsend-fetch-skill` binary for sandbox use
-- Add `allow_runtime_fetch: true` flag to harness schema
-- Enforce runtime fetches against `allowed_remote_resources`
-- Audit log all runtime fetches
+- ~~Add `allow_runtime_fetch: true` flag to harness schema~~ (done — PR 1)
+- ~~Add `ResolveSkillURL` for runtime fetch resolution~~ (done — PR 1)
+- Implement `fullsend-fetch-skill` script for sandbox use (PR 2)
+- Wire runtime fetch handler goroutine into `fullsend run` (PR 3)
 
-**Deliverable:** Agents can fetch skills mid-run if the harness allows it
+**Deliverable:** Agents can fetch skills mid-run if the harness allows it. See `docs/plans/universal-harness-access-phase4.md` for the detailed plan.
 
 ## Testing Strategy
 

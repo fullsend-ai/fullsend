@@ -256,8 +256,7 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup; requires `--mint-url` |
 | `--enroll-all` | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | `false` | Skip repository enrollment without prompting (per-org only) |
-| `--vendor-fullsend-binary` | `false` | Resolve and upload a linux/amd64 fullsend binary for CI (see [Vendoring the CLI binary](#vendoring-the-cli-binary)) |
-| `--fullsend-binary` | | Path to a Linux fullsend binary to upload when `--vendor-fullsend-binary` is set (skips auto-resolution) |
+| `--vendor-fullsend-binary` | `false` | Cross-compile and vendor the fullsend binary for development iteration |
 
 The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
 
@@ -266,25 +265,6 @@ The installer automatically detects when the deployed mint function is up-to-dat
 ### Multi-org setup
 
 A single token mint can serve multiple GitHub organizations. See [Mint service administration — Multi-org setup](../infrastructure/mint-administration.md#multi-org-setup) for the complete multi-org workflow.
-
-### Vendoring the CLI binary
-
-Use `--vendor-fullsend-binary` to upload a linux/amd64 `fullsend` binary into the config repo (`bin/fullsend`) or per-repo path (`.fullsend/bin/fullsend`). CI workflows prefer this file over downloading from GitHub releases.
-
-When the flag is set, the binary is resolved in this order:
-
-1. **`--fullsend-binary <path>`** — upload that file (validated as linux/amd64 ELF)
-2. **Checkout build** — cross-compile from the fullsend module root (`go env GOMOD`), stamped `{version}-vendored`
-3. **Release fetch** — only if step 2 is unavailable **and** the running CLI is a released version (e.g. `0.4.0`); downloads the matching GitHub release (no `-vendored` suffix)
-4. **Fail** — dev CLI outside a checkout fails with a clear error (no “latest release” fallback)
-
-When the flag is **off**, any existing vendored binary is removed so CI uses released versions.
-
-**Notes:**
-
-- Vendoring the CLI alone does not air-gap the full pipeline (OpenShell, gateway, sandbox image, upstream scaffold still download at runtime).
-- Release fallback requires network access at install time; CI consumes the uploaded file.
-- Works from any directory inside the module checkout (module root discovery via `GOMOD`).
 
 ### Merge enrollment PRs
 

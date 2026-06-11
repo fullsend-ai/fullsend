@@ -303,7 +303,7 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 - Check that it's registered: `openshell gateway list`
 
 **`Syntax error: "(" unexpected` inside sandbox**
-- The macOS Mach-O binary was injected instead of a Linux ELF. Update to fullsend 0.4.0+ which auto-resolves the correct binary, or provide one explicitly with `--fullsend-binary`
+- The macOS Mach-O binary was injected instead of a Linux ELF. The CLI auto-resolves the correct binary (download or cross-compile). If auto-resolution fails, provide one explicitly with `--fullsend-binary`
 
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)
