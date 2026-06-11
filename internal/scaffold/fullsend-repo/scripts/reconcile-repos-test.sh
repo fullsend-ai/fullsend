@@ -155,6 +155,10 @@ case "\$endpoint" in
     json='{"status":"404","message":"Not Found"}'
     rc=1
     ;;
+  repos/test-org/*/contents/.gitlint)
+    # No .gitlint in any test-1 repos.
+    rc=1
+    ;;
   repos/test-org/test-repo/contents/*)
     # Remote shim with user license header + sentinel + stale managed content.
     json='{"content":"IyBDb3B5cmlnaHQgMjAyNiBDb25mb3JtYQojIFNQRFgtTGljZW5zZS1JZGVudGlmaWVyOiBBcGFjaGUtMi4wCiMgLS0tIGZ1bGxzZW5kIG1hbmFnZWQgYmVsb3cgLSBkbyBub3QgZWRpdCAtLS0Kc3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"file-sha"}'
@@ -743,3 +747,485 @@ if ! grep -q "::warning::test-repo: non-comment content above sentinel was rejec
 fi
 
 echo "PASS: non-comment YAML above sentinel rejected by content-injection guard"
+
+# ===========================
+# Test 5: .gitlint patching adds bot author exemptions during enrollment
+# ===========================
+
+# Reset state for test 5.
+rm -f "${GH_LOG}" "${COMMIT_MSGS_LOG}" "${TMPDIR}/blob-input-"*.json "${TMPDIR}/blob-counter-"*
+
+# Create a minimal config with just one repo.
+cat > "${CONFIG_DIR}/config.yaml" <<'T5CFG'
+version: 1
+repos:
+  gitlint-repo:
+    enabled: true
+T5CFG
+
+# The remote .gitlint content (has body-max-line-length but no ignore-by-author-name).
+GITLINT_CONTENT_RAW="[general]
+contrib=CT1
+
+[title-max-length]
+line-length=72
+
+[body-max-line-length]
+line-length=72"
+GITLINT_B64=$(printf '%s' "$GITLINT_CONTENT_RAW" | /usr/bin/base64 | tr -d '\r\n')
+
+cat > "${MOCK_BIN}/yq" <<'T5YQ'
+#!/usr/bin/env bash
+query="${1:-}"
+if [[ "$query" == *"enabled == true"* ]]; then
+  echo "gitlint-repo"
+elif [[ "$query" == *"enabled == false"* ]]; then
+  true
+else
+  echo "unexpected yq query: $*" >&2
+  exit 1
+fi
+T5YQ
+chmod +x "${MOCK_BIN}/yq"
+
+cat > "${MOCK_BIN}/gh" <<EOF5
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  if [[ "\$2" == "create" ]]; then
+    echo "https://github.com/test-org/gitlint-repo/pull/1"
+  fi
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+has_input=false
+method="GET"
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method) method="\$2"; shift 2 ;;
+    --field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+input_data=""
+if [[ "\$has_input" == "true" ]]; then
+  input_data=\$(cat)
+  if [[ "\$endpoint" == */git/commits ]]; then
+    printf '%s\0' "\$input_data" >> "${COMMIT_MSGS_LOG}"
+  elif [[ "\$endpoint" == *"/git/blobs" ]]; then
+    # Track blob index via a counter file to avoid pipefail issues.
+    if [ -f "${TMPDIR}/blob-counter-gitlint-repo" ]; then
+      blob_count=\$(cat "${TMPDIR}/blob-counter-gitlint-repo")
+    else
+      blob_count=0
+    fi
+    printf '%s' "\$((blob_count + 1))" > "${TMPDIR}/blob-counter-gitlint-repo"
+    printf '%s' "\$input_data" > "${TMPDIR}/blob-input-gitlint-repo-\${blob_count}.json"
+  fi
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/gitlint-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/contents/.github/workflows/fullsend.yaml)
+    # No shim exists.
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/contents/.gitlint)
+    json='{"content":"${GITLINT_B64}","sha":"gitlint-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/ref/heads/fullsend/onboard)
+    json='{"object":{"sha":"desired-commit-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits/desired-commit-sha)
+    json='{"tree":{"sha":"shim-tree-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/git/refs/heads/*)
+    rc=0
+    ;;
+  repos/test-org/gitlint-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF5
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout5.log" 2>&1 || true
+
+# Verify the gitlint patch message was logged.
+if ! grep -q "Patching .gitlint with bot author exemptions" "${TMPDIR}/stdout5.log"; then
+  echo "FAIL: .gitlint patching was not attempted during enrollment"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+# The second blob should be the patched .gitlint (first is the shim).
+if [ ! -f "${TMPDIR}/blob-input-gitlint-repo-1.json" ]; then
+  echo "FAIL: no second blob created (expected .gitlint patch)"
+  ls "${TMPDIR}"/blob-input-* 2>/dev/null
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+GITLINT_BLOB_B64=$(jq -r '.content' "${TMPDIR}/blob-input-gitlint-repo-1.json")
+GITLINT_DECODED=$(printf '%s' "$GITLINT_BLOB_B64" | /usr/bin/base64 -d)
+
+if ! printf '%s' "$GITLINT_DECODED" | grep -q '\[ignore-by-author-name\]'; then
+  echo "FAIL: patched .gitlint missing [ignore-by-author-name] section"
+  echo "Got:"
+  printf '%s\n' "$GITLINT_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$GITLINT_DECODED" | grep -q 'fullsend-ai-coder'; then
+  echo "FAIL: patched .gitlint missing fullsend-ai-coder in regex"
+  echo "Got:"
+  printf '%s\n' "$GITLINT_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$GITLINT_DECODED" | grep -q 'fullsend-ai-fullsend'; then
+  echo "FAIL: patched .gitlint missing fullsend-ai-fullsend in regex"
+  echo "Got:"
+  printf '%s\n' "$GITLINT_DECODED"
+  exit 1
+fi
+
+# Verify original content is preserved.
+if ! printf '%s' "$GITLINT_DECODED" | grep -q '\[body-max-line-length\]'; then
+  echo "FAIL: patched .gitlint lost original [body-max-line-length] section"
+  echo "Got:"
+  printf '%s\n' "$GITLINT_DECODED"
+  exit 1
+fi
+
+echo "PASS: .gitlint patched with bot author exemptions during enrollment"
+
+# ===========================
+# Test 6: .gitlint with existing ignore-by-author-name gets bots appended
+# ===========================
+
+rm -f "${GH_LOG}" "${COMMIT_MSGS_LOG}" "${TMPDIR}/blob-input-"*.json "${TMPDIR}/blob-counter-"*
+
+GITLINT_EXISTING_RAW="[general]
+contrib=CT1
+
+[ignore-by-author-name]
+regex=dependabot
+
+[body-max-line-length]
+line-length=72"
+GITLINT_EXISTING_B64=$(printf '%s' "$GITLINT_EXISTING_RAW" | /usr/bin/base64 | tr -d '\r\n')
+
+# Update the mock to return the .gitlint with existing regex.
+cat > "${MOCK_BIN}/gh" <<EOF6
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  if [[ "\$2" == "create" ]]; then
+    echo "https://github.com/test-org/gitlint-repo/pull/2"
+  fi
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+has_input=false
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+input_data=""
+if [[ "\$has_input" == "true" ]]; then
+  input_data=\$(cat)
+  if [[ "\$endpoint" == *"/git/blobs" ]]; then
+    if [ -f "${TMPDIR}/blob-counter-gitlint-repo" ]; then
+      blob_count=\$(cat "${TMPDIR}/blob-counter-gitlint-repo")
+    else
+      blob_count=0
+    fi
+    printf '%s' "\$((blob_count + 1))" > "${TMPDIR}/blob-counter-gitlint-repo"
+    printf '%s' "\$input_data" > "${TMPDIR}/blob-input-gitlint-repo-\${blob_count}.json"
+  fi
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/gitlint-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/contents/.github/workflows/fullsend.yaml)
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/contents/.gitlint)
+    json='{"content":"${GITLINT_EXISTING_B64}","sha":"gitlint-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/ref/heads/fullsend/onboard)
+    json='{"object":{"sha":"desired-commit-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits/desired-commit-sha)
+    json='{"tree":{"sha":"shim-tree-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/git/refs/heads/*)
+    rc=0
+    ;;
+  repos/test-org/gitlint-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF6
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout6.log" 2>&1 || true
+
+if [ ! -f "${TMPDIR}/blob-input-gitlint-repo-1.json" ]; then
+  echo "FAIL: no .gitlint blob created for existing regex append"
+  cat "${TMPDIR}/stdout6.log"
+  exit 1
+fi
+
+GITLINT6_B64=$(jq -r '.content' "${TMPDIR}/blob-input-gitlint-repo-1.json")
+GITLINT6_DECODED=$(printf '%s' "$GITLINT6_B64" | /usr/bin/base64 -d)
+
+# Verify the original regex is preserved with bots appended.
+if ! printf '%s' "$GITLINT6_DECODED" | grep -q 'regex=dependabot|fullsend-ai-coder|fullsend-ai-fullsend'; then
+  echo "FAIL: bot names not appended to existing regex"
+  echo "Got:"
+  printf '%s\n' "$GITLINT6_DECODED"
+  exit 1
+fi
+
+echo "PASS: bot names appended to existing ignore-by-author-name regex"
+
+# ===========================
+# Test 7: .gitlint already containing bot names is not modified (idempotent)
+# ===========================
+
+rm -f "${GH_LOG}" "${COMMIT_MSGS_LOG}" "${TMPDIR}/blob-input-"*.json "${TMPDIR}/blob-counter-"*
+
+GITLINT_ALREADY_RAW="[general]
+contrib=CT1
+
+[ignore-by-author-name]
+regex=dependabot|fullsend-ai-coder|fullsend-ai-fullsend
+
+[body-max-line-length]
+line-length=72"
+GITLINT_ALREADY_B64=$(printf '%s' "$GITLINT_ALREADY_RAW" | /usr/bin/base64 | tr -d '\r\n')
+
+cat > "${MOCK_BIN}/gh" <<EOF7
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  if [[ "\$2" == "create" ]]; then
+    echo "https://github.com/test-org/gitlint-repo/pull/3"
+  fi
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+has_input=false
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ "\$has_input" == "true" ]]; then
+  input_data=\$(cat)
+  if [[ "\$endpoint" == *"/git/blobs" ]]; then
+    if [ -f "${TMPDIR}/blob-counter-gitlint-repo" ]; then
+      blob_count=\$(cat "${TMPDIR}/blob-counter-gitlint-repo")
+    else
+      blob_count=0
+    fi
+    printf '%s' "\$((blob_count + 1))" > "${TMPDIR}/blob-counter-gitlint-repo"
+    printf '%s' "\$input_data" > "${TMPDIR}/blob-input-gitlint-repo-\${blob_count}.json"
+  fi
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/gitlint-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/contents/.github/workflows/fullsend.yaml)
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/contents/.gitlint)
+    json='{"content":"${GITLINT_ALREADY_B64}","sha":"gitlint-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/gitlint-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/gitlint-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/gitlint-repo/git/refs/heads/*)
+    rc=0
+    ;;
+  repos/test-org/gitlint-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF7
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout7.log" 2>&1 || true
+
+# Verify no .gitlint blob was created (already patched).
+if ls "${TMPDIR}/blob-input-gitlint-repo-1.json" 2>/dev/null; then
+  echo "FAIL: .gitlint blob created when bot names already present (not idempotent)"
+  cat "${TMPDIR}/stdout7.log"
+  exit 1
+fi
+
+if ! grep -q "already has bot author exemptions" "${TMPDIR}/stdout7.log"; then
+  echo "FAIL: idempotency message not logged"
+  cat "${TMPDIR}/stdout7.log"
+  exit 1
+fi
+
+echo "PASS: .gitlint with existing bot names not modified (idempotent)"

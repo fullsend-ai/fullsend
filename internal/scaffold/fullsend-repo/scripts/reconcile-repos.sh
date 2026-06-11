@@ -61,6 +61,16 @@ UNENROLL_COMMIT_MSG="chore: remove fullsend shim workflow
 Remove the shim workflow. The repo has been set to
 enabled: false in the fullsend config."
 
+GITLINT_PATH=".gitlint"
+# Bot author names whose commit trailers (e.g. Signed-off-by)
+# inherently exceed 72 characters due to GitHub noreply emails.
+BOT_AUTHOR_NAMES="fullsend-ai-coder|fullsend-ai-fullsend"
+GITLINT_COMMIT_MSG="chore: exempt fullsend bots from gitlint
+
+Add bot authors to ignore-by-author-name so
+Signed-off-by trailers do not fail the
+body-max-line-length rule."
+
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
   exit 1
@@ -159,6 +169,156 @@ managed_content_b64() {
   else
     printf '%s\n' "$managed" | base64 -w0
   fi
+}
+
+# patch_gitlint_content reads a .gitlint file from stdin and prints
+# the patched version with bot author exemptions added. If the content
+# already contains all bot names, prints nothing (no change needed).
+patch_gitlint_content() {
+  local content
+  content=$(cat)
+
+  # Check if all bot names are already present.
+  local all_present=true
+  local IFS='|'
+  for bot in $BOT_AUTHOR_NAMES; do
+    if ! printf '%s\n' "$content" | grep -qF "$bot"; then
+      all_present=false
+      break
+    fi
+  done
+  unset IFS
+  if [ "$all_present" = "true" ]; then
+    return 0
+  fi
+
+  # Build the list of bot names not yet present.
+  local bots_to_add=""
+  local IFS='|'
+  for bot in $BOT_AUTHOR_NAMES; do
+    if ! printf '%s\n' "$content" | grep -qF "$bot"; then
+      if [ -n "$bots_to_add" ]; then
+        bots_to_add="${bots_to_add}|${bot}"
+      else
+        bots_to_add="$bot"
+      fi
+    fi
+  done
+  unset IFS
+
+  if printf '%s\n' "$content" | grep -q '^\[ignore-by-author-name\]'; then
+    # Section exists — append bot names to the regex line, or add one.
+    printf '%s\n' "$content" | awk -v bots="$bots_to_add" '
+      /^\[ignore-by-author-name\]/ { in_section=1; print; next }
+      in_section && /^regex=/ {
+        printf "%s|%s\n", $0, bots
+        in_section=0
+        added=1
+        next
+      }
+      in_section && /^\[/ {
+        printf "regex=%s\n", bots
+        in_section=0
+        added=1
+      }
+      { print }
+      END {
+        if (in_section && !added) {
+          printf "regex=%s\n", bots
+        }
+      }
+    '
+  else
+    # No section — append it.
+    printf '%s\n\n[ignore-by-author-name]\nregex=%s\n' "$content" "$bots_to_add"
+  fi
+}
+
+# patch_gitlint_on_branch checks whether a repo has a .gitlint config on
+# its default branch and, if so, patches it to exempt bot authors. The
+# patch is added as a new commit on the given branch.
+# Args: $1 = repo name, $2 = branch name
+# Returns 0 always (failures are logged as warnings, not fatal).
+patch_gitlint_on_branch() {
+  local repo="$1"
+  local branch="$2"
+
+  # Check if .gitlint exists on default branch.
+  local gitlint_resp
+  gitlint_resp=$(gh api "repos/$ORG/$repo/contents/$GITLINT_PATH" --jq '.content' 2>/dev/null || true)
+  if [ -z "$gitlint_resp" ]; then
+    return 0
+  fi
+
+  local gitlint_raw
+  gitlint_raw=$(printf '%s' "$gitlint_resp" | tr -d '\r\n' | base64 -d)
+
+  local patched
+  patched=$(printf '%s\n' "$gitlint_raw" | patch_gitlint_content)
+  if [ -z "$patched" ]; then
+    echo "  .gitlint already has bot author exemptions"
+    return 0
+  fi
+
+  echo "  Patching .gitlint with bot author exemptions"
+
+  # Get current branch tip to build on top of the shim commit.
+  local branch_sha
+  branch_sha=$(gh api "repos/$ORG/$repo/git/ref/heads/$branch" --jq .object.sha 2>/dev/null || true)
+  if [ -z "$branch_sha" ]; then
+    echo "::warning::Could not get branch SHA for $branch on $repo — skipping .gitlint patch"
+    return 0
+  fi
+
+  local branch_tree_sha
+  branch_tree_sha=$(gh api "repos/$ORG/$repo/git/commits/$branch_sha" --jq .tree.sha 2>/dev/null || true)
+  if [ -z "$branch_tree_sha" ]; then
+    echo "::warning::Could not get tree SHA for $branch on $repo — skipping .gitlint patch"
+    return 0
+  fi
+
+  local patched_b64
+  patched_b64=$(printf '%s\n' "$patched" | base64 -w0)
+
+  local blob_sha
+  if ! blob_sha=$(jq -n \
+    --arg content "$patched_b64" \
+    '{content: $content, encoding: "base64"}' |
+    gh api "repos/$ORG/$repo/git/blobs" --method POST --input - --jq .sha); then
+    echo "::warning::Failed to create .gitlint blob for $repo — skipping patch"
+    return 0
+  fi
+
+  local tree_sha
+  if ! tree_sha=$(jq -n \
+    --arg base_tree "$branch_tree_sha" \
+    --arg sha "$blob_sha" \
+    '{base_tree: $base_tree, tree: [{path: ".gitlint", mode: "100644", type: "blob", sha: $sha}]}' |
+    gh api "repos/$ORG/$repo/git/trees" --method POST --input - --jq .sha); then
+    echo "::warning::Failed to create .gitlint tree for $repo — skipping patch"
+    return 0
+  fi
+
+  local commit_sha
+  if ! commit_sha=$(jq -n \
+    --arg message "$GITLINT_COMMIT_MSG" \
+    --arg tree "$tree_sha" \
+    --arg parent "$branch_sha" \
+    '{message: $message, tree: $tree, parents: [$parent]}' |
+    gh api "repos/$ORG/$repo/git/commits" --method POST --input - --jq .sha); then
+    echo "::warning::Failed to create .gitlint commit for $repo — skipping patch"
+    return 0
+  fi
+
+  if ! gh api "repos/$ORG/$repo/git/refs/heads/$branch" \
+    --method PATCH \
+    --field "sha=$commit_sha" \
+    --silent; then
+    echo "::warning::Failed to update branch $branch on $repo — .gitlint patch may be lost"
+    return 0
+  fi
+
+  echo "  ✓ Patched .gitlint on $branch"
 }
 
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
@@ -421,6 +581,7 @@ if [ -n "$ENABLED_REPOS" ]; then
         FAILED=$((FAILED + 1))
         continue
       fi
+      patch_gitlint_on_branch "$REPO" "$ENROLL_BRANCH"
 
       # Create or update the PR.
       EXISTING_PR=$(gh pr list --repo "$ORG/$REPO" --head "$ENROLL_BRANCH" --json url --jq '.[0].url // empty' 2>/dev/null || true)
@@ -452,6 +613,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$(shim_content_b64)" "$UPDATE_COMMIT_MSG"; then
         FAILED=$((FAILED + 1))
       else
+        patch_gitlint_on_branch "$REPO" "$ENROLL_BRANCH"
         ENROLLED=$((ENROLLED + 1))
       fi
       continue
@@ -471,6 +633,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       FAILED=$((FAILED + 1))
       continue
     fi
+    patch_gitlint_on_branch "$REPO" "$ENROLL_BRANCH"
 
     # Create PR.
     if ! PR_URL=$(gh pr create \
