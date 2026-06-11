@@ -1,0 +1,57 @@
+---
+version: 1
+
+# Sandbox policy for the jira-triage agent.
+#
+# Needs GitHub API for cross-repo issue/PR search and Vertex AI for inference.
+# Jira API access is intentionally excluded from the sandbox: JIRA_EMAIL and
+# JIRA_API_TOKEN are never injected as sandbox env vars. All Jira data is
+# pre-fetched by the host-side pre-script and written to
+# $FULLSEND_WORKSPACE/issue-context.json before the sandbox starts.
+# curl intentionally excluded from vertex_ai binaries to prevent
+# disallowedTools bypass via raw HTTP with the injected GH_TOKEN.
+
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  vertex_ai:
+    name: vertex-ai
+    endpoints:
+      - host: "api.anthropic.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: "*.googleapis.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: "**/claude"
+      - path: "**/node"
+
+  github_api:
+    name: github-api
+    endpoints:
+      - host: "api.github.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: "github.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: "**/gh"
+      - path: "**/node"

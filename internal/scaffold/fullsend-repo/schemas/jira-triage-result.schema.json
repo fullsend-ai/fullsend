@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jira-triage-result.schema.json",
+  "title": "Jira Triage Agent Result",
+  "description": "Structured output from the jira-triage agent, validated by the harness before the post-script runs (ADR 0022).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "reasoning", "comment"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["insufficient", "duplicate", "sufficient", "blocked", "question"]
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1
+    },
+    "comment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "clarity_scores": {
+      "$ref": "#/$defs/clarity_scores"
+    },
+    "duplicate_of": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$",
+      "description": "Jira issue key of the canonical duplicate (e.g., PROJ-123)"
+    },
+    "triage_summary": {
+      "$ref": "#/$defs/triage_summary"
+    },
+    "blocked_by": {
+      "type": "string",
+      "pattern": "^https://[a-zA-Z0-9.-]+\\.atlassian\\.net/browse/[A-Z][A-Z0-9]+-[0-9]+$",
+      "description": "Jira browse URL of the blocking issue (e.g., https://company.atlassian.net/browse/PROJ-99)"
+    },
+    "label_actions": {
+      "$ref": "#/$defs/label_actions"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "insufficient" } }, "required": ["action"] },
+      "then": { "required": ["clarity_scores"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "duplicate" } }, "required": ["action"] },
+      "then": { "required": ["duplicate_of"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "sufficient" } }, "required": ["action"] },
+      "then": { "required": ["clarity_scores", "triage_summary"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "blocked" } }, "required": ["action"] },
+      "then": { "required": ["blocked_by"] }
+    }
+  ],
+  "$defs": {
+    "clarity_scores": {
+      "type": "object",
+      "required": ["symptom", "cause", "reproduction", "impact", "overall"],
+      "properties": {
+        "symptom": { "type": "number", "minimum": 0, "maximum": 1 },
+        "cause": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reproduction": { "type": "number", "minimum": 0, "maximum": 1 },
+        "impact": { "type": "number", "minimum": 0, "maximum": 1 },
+        "overall": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "triage_summary": {
+      "type": "object",
+      "required": ["title", "severity", "category", "problem", "root_cause_hypothesis",
+                    "reproduction_steps", "impact", "recommended_fix", "proposed_test_case"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+        "category": { "type": "string", "enum": ["bug", "performance", "security", "documentation", "feature", "other"] },
+        "problem": { "type": "string", "minLength": 1 },
+        "root_cause_hypothesis": { "type": "string", "minLength": 1 },
+        "reproduction_steps": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "environment": { "type": "string" },
+        "impact": { "type": "string", "minLength": 1 },
+        "recommended_fix": { "type": "string", "minLength": 1 },
+        "proposed_test_case": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "label_actions": {
+      "type": "object",
+      "required": ["reason", "actions"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Single sentence explaining why these labels are being applied or removed"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["action", "label"],
+            "properties": {
+              "action": { "type": "string", "enum": ["add", "remove"] },
+              "label": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._/: +-]+$" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,190 @@
+# Reusable Jira triage agent workflow. Called by thin callers in .fullsend repos
+# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+name: Jira Triage Agent
+
+on:
+  workflow_call:
+    inputs:
+      issue_key:
+        required: true
+        type: string
+      project_key:
+        required: true
+        type: string
+      mint_url:
+        required: true
+        type: string
+      gcp_region:
+        required: true
+        type: string
+      fullsend_version:
+        required: false
+        type: string
+        default: "latest"
+      install_mode:
+        required: false
+        type: string
+        default: "per-org"
+      fullsend_ai_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+        default: v0
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER:
+        required: true
+      FULLSEND_GCP_PROJECT_ID:
+        required: true
+      JIRA_EMAIL:
+        required: true
+      JIRA_API_TOKEN:
+        required: true
+
+jobs:
+  triage:
+    name: Triage
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream defaults
+        uses: actions/checkout@v6
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace (upstream defaults + org/repo overrides)
+        env:
+          INSTALL_MODE: ${{ inputs.install_mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+            echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+            exit 1
+          fi
+          SRC=".defaults/internal/scaffold/fullsend-repo"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${SRC}/${dir}" ]]; then
+              mkdir -p "${dir}"
+              cp -r "${SRC}/${dir}/." "${dir}/"
+            fi
+          done
+          CUSTOM_BASE="customized"
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            CUSTOM_BASE=".fullsend/customized"
+          fi
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
+              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
+                | while IFS= read -r -d '' f; do
+                    rel="${f#"${CUSTOM_BASE}"/}"
+                    mkdir -p "$(dirname "${rel}")"
+                    cp "${f}" "${rel}"
+                  done
+            fi
+          done
+          mkdir -p .github/scripts
+          cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
+      - name: Validate Jira enrollment
+        id: validate
+        env:
+          PROJECT_KEY: ${{ inputs.project_key }}
+        run: |
+          set -euo pipefail
+          CONFIG_FILE="config.yaml"
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "::error::config.yaml not found in .fullsend repo"
+            exit 1
+          fi
+          ENROLLED=$(python3 -c "
+          import yaml
+          with open('${CONFIG_FILE}') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          keys = [p.get('project_key','') for p in projects]
+          print('true' if '${PROJECT_KEY}' in keys else 'false')
+          " 2>/dev/null || echo "false")
+          if [[ "${ENROLLED}" != "true" ]]; then
+            echo "::error::Jira project ${PROJECT_KEY} is not enrolled in fullsend"
+            exit 1
+          fi
+          echo "::notice::Jira project ${PROJECT_KEY} is enrolled — proceeding with triage"
+
+      - name: Extract Jira project config
+        id: jira-config
+        env:
+          PROJECT_KEY: ${{ inputs.project_key }}
+        run: |
+          set -euo pipefail
+          JIRA_HOST=$(python3 -c "
+          import yaml
+          with open('config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          for p in projects:
+              if p.get('project_key') == '${PROJECT_KEY}':
+                  print(p.get('host', ''))
+                  break
+          ")
+          LINKED_REPOS=$(python3 -c "
+          import yaml
+          with open('config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          for p in projects:
+              if p.get('project_key') == '${PROJECT_KEY}':
+                  print(' '.join(p.get('linked_github_repos', [])))
+                  break
+          ")
+          echo "jira_host=${JIRA_HOST}" >> "$GITHUB_OUTPUT"
+          echo "linked_repos=${LINKED_REPOS}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint jira-triage token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: jira-triage
+          repos: ${{ steps.jira-config.outputs.linked_repos || github.event.repository.name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: JIRA_TRIAGE_
+          JIRA_TRIAGE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          JIRA_TRIAGE_ISSUE_KEY: ${{ inputs.issue_key }}
+          JIRA_TRIAGE_JIRA_HOST: ${{ steps.jira-config.outputs.jira_host }}
+          JIRA_TRIAGE_LINKED_GITHUB_REPOS: ${{ steps.jira-config.outputs.linked_repos }}
+          JIRA_TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          JIRA_TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run jira-triage agent
+        uses: ./.defaults/
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        with:
+          agent: jira-triage
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
