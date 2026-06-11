@@ -13,12 +13,17 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+var validRunID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+const terminalTag = "<!-- fullsend:status:terminal -->"
 
 // Notifier manages status comment lifecycle for a single agent run.
 type Notifier struct {
@@ -38,6 +43,7 @@ type Notifier struct {
 
 // New creates a Notifier. The runID is embedded in the HTML marker comment
 // so multiple concurrent runs on the same issue don't collide.
+// It panics if runID contains characters outside [a-zA-Z0-9_-].
 func New(client forge.Client, cfg config.StatusNotificationConfig,
 	owner, repo string, number int, runURL, sha, runID string) *Notifier {
 	return &Notifier{
@@ -48,7 +54,7 @@ func New(client forge.Client, cfg config.StatusNotificationConfig,
 		number: number,
 		runURL: runURL,
 		sha:    sha,
-		marker: fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID),
+		marker: mustBuildMarker(runID),
 		now:    time.Now,
 		warnf:  func(string, ...any) {},
 	}
@@ -192,6 +198,8 @@ func (n *Notifier) buildCompletionBody(description, status string, completionTim
 	var b strings.Builder
 	b.WriteString(n.marker)
 	b.WriteString("\n")
+	b.WriteString(terminalTag)
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "🤖 Finished %s · %s · Started %s · Completed %s",
 		description, statusLabel, formatTime(n.startTime), formatTime(completionTime))
 
@@ -261,6 +269,21 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+func buildMarker(runID string) (string, error) {
+	if !validRunID.MatchString(runID) {
+		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
+	}
+	return fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID), nil
+}
+
+func mustBuildMarker(runID string) string {
+	m, err := buildMarker(runID)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
+
 func statusEmoji(status string) string {
 	switch status {
 	case "success":
@@ -270,4 +293,77 @@ func statusEmoji(status string) string {
 	default:
 		return "⚠️"
 	}
+}
+
+// ReconcileOrphaned finds and finalizes a status comment that was left in
+// "Started" state because the process was hard-killed (SIGKILL, OOM, etc.)
+// before the deferred PostCompletion call could run.
+//
+// It searches for a comment matching the run's HTML marker
+// (<!-- fullsend:agent-status:<runID> -->) that has not yet reached a
+// terminal state. Terminal states are detected by the
+// <!-- fullsend:status:terminal --> tag, which is included in both
+// completion and interrupted comment bodies. If found in a non-terminal
+// state, it updates the comment to "Interrupted" and tags it as terminal.
+//
+// This function is designed to be called from an out-of-process cleanup
+// mechanism (e.g., a GitHub Actions post-job step) that runs even when the
+// fullsend process is killed. It does not require a Notifier instance since
+// the process that created it is gone.
+//
+// Returns an error if runID contains characters outside [a-zA-Z0-9_-].
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string) error {
+	marker, err := buildMarker(runID)
+	if err != nil {
+		return fmt.Errorf("building marker: %w", err)
+	}
+
+	comments, err := client.ListIssueComments(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("listing comments: %w", err)
+	}
+
+	for _, c := range comments {
+		if !strings.Contains(c.Body, marker) {
+			continue
+		}
+		// Already finalized — nothing to do.
+		if strings.Contains(c.Body, terminalTag) {
+			return nil
+		}
+		// Still in "Started" state — finalize it.
+		body := buildInterruptedBody(marker, runURL, sha)
+		if err := client.UpdateIssueComment(ctx, owner, repo, c.ID, body); err != nil {
+			return fmt.Errorf("updating orphaned comment: %w", err)
+		}
+		return nil
+	}
+
+	// No matching comment found — either PostStart never ran, or the comment
+	// was already deleted. Both are fine.
+	return nil
+}
+
+// buildInterruptedBody constructs the comment body for an orphaned status
+// comment that was interrupted by a hard process kill.
+func buildInterruptedBody(marker, runURL, sha string) string {
+	var b strings.Builder
+	b.WriteString(marker)
+	b.WriteString("\n")
+	b.WriteString(terminalTag)
+	b.WriteString("\n")
+	b.WriteString("🤖 Agent run interrupted (process terminated)")
+
+	var parts []string
+	if short := shortSHA(sha); short != "" {
+		parts = append(parts, fmt.Sprintf("Commit: `%s`", short))
+	}
+	if runURL != "" && isSafeURL(runURL) {
+		parts = append(parts, fmt.Sprintf("[View workflow run →](%s)", runURL))
+	}
+	if len(parts) > 0 {
+		b.WriteString("\n")
+		b.WriteString(strings.Join(parts, " · "))
+	}
+	return b.String()
 }

@@ -59,7 +59,14 @@ fullsend
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
 ├── post-review                              # Post PR review comments to GitHub
-└── post-comment                             # Post issue/PR comments to GitHub
+├── post-comment                             # Post issue/PR comments to GitHub
+└── reconcile-status                         # Finalize orphaned status comments
+    ├── --repo <owner/repo>                  #   Repository in owner/repo format
+    ├── --number <int>                       #   Issue/PR number
+    ├── --run-id <string>                    #   Workflow run ID (marker key)
+    ├── --run-url <url>                      #   Workflow run URL (optional)
+    ├── --sha <string>                       #   Commit SHA (optional)
+    └── --token <token>                      #   GitHub token (default: $GITHUB_TOKEN)
 ```
 
 ### Command Decomposition

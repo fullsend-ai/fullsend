@@ -369,6 +369,39 @@ runs:
           --target-repo "${TARGET_REPO}" \
           "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
 
+    - name: Finalize orphaned status comment
+      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != ''
+      shell: bash
+      env:
+        STATUS_TOKEN: ${{ inputs.status-token }}
+        STATUS_REPO: ${{ inputs.status-repo }}
+        STATUS_NUMBER: ${{ inputs.status-number }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_URL: ${{ inputs.run-url }}
+        COMMIT_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
+        # the deferred PostCompletion call never runs and the status comment
+        # remains in "Started" state. This step runs unconditionally (if:
+        # always()) to detect and finalize orphaned comments. See #2149.
+        TOKEN="${STATUS_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -z "${TOKEN}" ]]; then
+          echo "::warning::No token available for status comment reconciliation"
+          exit 0
+        fi
+        echo "::add-mask::${TOKEN}"
+        RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}" --token "${TOKEN}")
+        if [[ -n "${RUN_URL}" ]]; then
+          RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
+        fi
+        if [[ -n "${COMMIT_SHA}" ]]; then
+          RECONCILE_FLAGS+=(--sha "${COMMIT_SHA}")
+        fi
+        fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
+          echo "::warning::Could not reconcile orphaned status comment"
+        }
+
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'
       uses: actions/upload-artifact@v7

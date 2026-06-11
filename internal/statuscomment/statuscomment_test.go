@@ -325,6 +325,43 @@ func TestMarkerUniqueness(t *testing.T) {
 	assert.Contains(t, n2.marker, "run-2")
 }
 
+func TestBuildMarker_SanitizesRunID(t *testing.T) {
+	m, err := buildMarker("run-42")
+	require.NoError(t, err)
+	assert.Contains(t, m, "run-42")
+
+	m, err = buildMarker("123_abc")
+	require.NoError(t, err)
+	assert.Contains(t, m, "123_abc")
+
+	_, err = buildMarker("-->injected")
+	assert.Error(t, err)
+
+	_, err = buildMarker("run id with spaces")
+	assert.Error(t, err)
+
+	_, err = buildMarker("")
+	assert.Error(t, err)
+}
+
+func TestMustBuildMarker_PanicsOnInvalid(t *testing.T) {
+	assert.Panics(t, func() { mustBuildMarker("-->bad") })
+}
+
+func TestMustBuildMarker_ValidInput(t *testing.T) {
+	assert.NotPanics(t, func() {
+		m := mustBuildMarker("run-42")
+		assert.Contains(t, m, "run-42")
+	})
+}
+
+func TestReconcileOrphaned_InvalidRunID(t *testing.T) {
+	fc := forge.NewFakeClient()
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "-->bad", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid run ID")
+}
+
 func TestPostCompletion_CompletionDisabled_CleansUpStartComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{
@@ -487,6 +524,145 @@ func TestShortSHA_NonHexRejected(t *testing.T) {
 	assert.Equal(t, "abc123", shortSHA("abc123"))
 	assert.Equal(t, "a1b2c3d", shortSHA("a1b2c3d4e5f6789"))
 	assert.Equal(t, "ABCDEF0", shortSHA("ABCDEF0123456789"))
+}
+
+func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	// Simulate a "Started" comment left by a killed process.
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC\nCommit: `abc1234` · [View workflow run →](https://ci/run/99)",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 42, fc.UpdatedComments[0].CommentID)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "interrupted")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "<!-- fullsend:agent-status:run-99 -->")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "<!-- fullsend:status:terminal -->")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Commit: `abc1234`")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "[View workflow run →](https://ci/run/99)")
+}
+
+func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	// Comment already reached terminal state (via PostCompletion).
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n🤖 Finished Code · ✅ Success · Started 6:43 AM UTC · Completed 6:50 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
+}
+
+func TestReconcileOrphaned_NoMatchingComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	// No comments at all.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	require.NoError(t, err)
+	assert.Empty(t, fc.UpdatedComments)
+}
+
+func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	// Comment from a different run.
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-50 -->\n🤖 Code · Started 6:43 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.UpdatedComments, "should not touch comment from different run")
+}
+
+func TestReconcileOrphaned_ListError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListIssueComments"] = fmt.Errorf("api error")
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listing comments")
+}
+
+func TestReconcileOrphaned_NoURLOrSHA(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "interrupted")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "Commit:")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "View workflow run")
+}
+
+func TestReconcileOrphaned_SkipsAlreadyInterrupted(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n🤖 Agent run interrupted (process terminated)",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.UpdatedComments, "should not re-update already-interrupted comment")
+}
+
+func TestReconcileOrphaned_UpdateError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Working · Started 1:00 PM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	fc.Errors["UpdateIssueComment"] = fmt.Errorf("api rate limited")
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating orphaned comment")
 }
 
 func TestPostStart_ErrorPropagated(t *testing.T) {
