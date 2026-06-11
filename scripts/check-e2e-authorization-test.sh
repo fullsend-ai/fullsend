@@ -156,6 +156,13 @@ run_case "falls back to pull updated_at when PR_UPDATED_AT unset" "true" "ok_to_
 write_pr "MEMBER" '[]'
 export GH_FAIL="events"
 run_case "trusted author not blocked by events API failure" "true" "trusted_author" "false"
+
+export EVENT_ACTION="synchronize"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
+write_pr "NONE" '[{"name":"ok-to-test"}]'
+write_events '[]'
+export GH_FAIL="events"
+run_case "events API failure for untrusted ok-to-test returns error" "false" "error" "false"
 export GH_FAIL="false"
 
 export EVENT_ACTION="synchronize"

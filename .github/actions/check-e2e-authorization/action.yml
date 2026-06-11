@@ -58,6 +58,7 @@ runs:
         REASON: ${{ steps.check.outputs.reason }}
         LABEL_REMOVED: ${{ steps.check.outputs.label_removed }}
         DOCS_URL: ${{ inputs.docs_url }}
+        BOT_LOGIN: ${{ github.actor }}
       run: |
         set -euo pipefail
 
@@ -96,9 +97,8 @@ runs:
         body+="
         See [E2E testing guide](${DOCS_URL}) for details."
 
-        bot_login="$(gh api user --jq .login)"
         existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
-          | jq -r --arg login "${bot_login}" --arg marker "${marker}" \
+          | jq -r --arg login "${BOT_LOGIN}" --arg marker "${marker}" \
             '.[] | select(.user.login == $login and (.body | contains($marker))) | .id' \
           | head -n1 || true)"
 
@@ -117,6 +117,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
         REPOSITORY: ${{ inputs.repository }}
         PR_NUMBER: ${{ inputs.pr_number }}
+        BOT_LOGIN: ${{ github.actor }}
       run: |
         set -euo pipefail
 
@@ -124,9 +125,8 @@ runs:
         owner="${REPOSITORY%%/*}"
         repo="${REPOSITORY#*/}"
 
-        bot_login="$(gh api user --jq .login)"
         existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
-          | jq -r --arg login "${bot_login}" --arg marker "${marker}" \
+          | jq -r --arg login "${BOT_LOGIN}" --arg marker "${marker}" \
             '.[] | select(.user.login == $login and (.body | contains($marker))) | .id' \
           | head -n1 || true)"
 
