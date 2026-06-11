@@ -1073,3 +1073,74 @@ func TestMatchingAllowedPrefix(t *testing.T) {
 		assert.Equal(t, "https://Example.Com/Skills/", h2.MatchingAllowedPrefix("https://example.com/skills/test.md"))
 	})
 }
+
+// --- Role and slug field tests ---
+
+func TestLoad_RoleAndSlug(t *testing.T) {
+	content := `
+agent: agents/triage.md
+role: triage
+slug: fullsend-ai-triage
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "triage.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "triage", h.Role)
+	assert.Equal(t, "fullsend-ai-triage", h.Slug)
+}
+
+func TestLoad_RoleAndSlugAbsent(t *testing.T) {
+	content := `
+agent: agents/test.md
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, h.Role)
+	assert.Empty(t, h.Slug)
+}
+
+func TestValidate_RoleValid(t *testing.T) {
+	for _, role := range []string{"triage", "code-reviewer", "bug_triage", "a"} {
+		h := &Harness{Agent: "agents/test.md", Role: role}
+		require.NoError(t, h.Validate(), "role %q should be valid", role)
+	}
+}
+
+func TestValidate_RoleInvalid(t *testing.T) {
+	for _, role := range []string{"Triage", "1role", "role!"} {
+		h := &Harness{Agent: "agents/test.md", Role: role}
+		err := h.Validate()
+		require.Error(t, err, "role %q should be invalid", role)
+		assert.Contains(t, err.Error(), "contains invalid characters")
+	}
+}
+
+func TestValidate_RoleDoubleHyphen(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "my--role"}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "double hyphens")
+}
+
+func TestValidate_SlugValid(t *testing.T) {
+	for _, slug := range []string{"fullsend-ai-triage", "Custom_App", "a1"} {
+		h := &Harness{Agent: "agents/test.md", Slug: slug}
+		require.NoError(t, h.Validate(), "slug %q should be valid", slug)
+	}
+}
+
+func TestValidate_SlugInvalid(t *testing.T) {
+	for _, slug := range []string{"-slug", "slug!name", "my slug"} {
+		h := &Harness{Agent: "agents/test.md", Slug: slug}
+		err := h.Validate()
+		require.Error(t, err, "slug %q should be invalid", slug)
+		assert.Contains(t, err.Error(), "slug")
+	}
+}

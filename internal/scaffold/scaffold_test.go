@@ -57,8 +57,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		".github/workflows/review.yml",
 		".github/workflows/fix.yml",
 		".github/workflows/repo-maintenance.yml",
-		".github/actions/setup-gcp/action.yml",
-		".github/actions/validate-enrollment/action.yml",
 		".github/scripts/setup-agent-env.sh",
 		"agents/triage.md",
 		"agents/code.md",
@@ -484,59 +482,6 @@ func TestRetroWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "issues: write")
 }
 
-func TestSetupGcpActionContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/actions/setup-gcp/action.yml")
-	require.NoError(t, err)
-	s := string(content)
-	// Verify inputs (composite actions cannot access vars/secrets directly)
-	assert.Contains(t, s, "inputs:")
-	assert.Contains(t, s, "gcp_wif_provider:")
-	assert.Contains(t, s, "gcp_project_id:")
-	assert.NotContains(t, s, "gcp_wif_sa_email:")
-	assert.NotContains(t, s, "gcp_auth_mode:")
-	assert.NotContains(t, s, "gcp_sa_key_json:")
-	assert.NotContains(t, s, "credentials_json:")
-	// Verify pre-mask step
-	assert.Contains(t, s, "Pre-mask GCP credential file path")
-	assert.Contains(t, s, "GITHUB_WORKSPACE}/gha-creds-")
-	// Verify WIF authentication
-	assert.Contains(t, s, "google-github-actions/auth@v3")
-	assert.Contains(t, s, "workload_identity_provider:")
-	assert.Contains(t, s, "project_id:")
-	assert.NotContains(t, s, "service_account:")
-	// Verify credential masking
-	assert.Contains(t, s, "Mask GCP credential file paths")
-	assert.Contains(t, s, "::add-mask::")
-	assert.Contains(t, s, "GOOGLE_GHA_CREDS_PATH")
-	assert.Contains(t, s, "GOOGLE_APPLICATION_CREDENTIALS")
-	assert.Contains(t, s, "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE")
-	// Verify sandbox preparation
-	assert.Contains(t, s, "prepare-sandbox-credentials.sh")
-}
-
-func TestValidateEnrollmentActionContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/actions/validate-enrollment/action.yml")
-	require.NoError(t, err)
-	s := string(content)
-	// Verify inputs declarations
-	assert.Contains(t, s, "inputs:")
-	assert.Contains(t, s, "source_repo:")
-	assert.Contains(t, s, "required: true")
-	// Verify outputs contract
-	assert.Contains(t, s, "outputs:")
-	assert.Contains(t, s, "name:")
-	assert.Contains(t, s, "steps.extract.outputs.name")
-	// Verify step ID matches output reference
-	assert.Contains(t, s, "id: extract")
-	// Verify SOURCE_REPO env var wiring
-	assert.Contains(t, s, "SOURCE_REPO: ${{ inputs.source_repo }}")
-	// Verify enrollment validation is inlined (not a script reference that
-	// could be overwritten by customized/scripts/).
-	assert.NotContains(t, s, "validate-source-repo.sh")
-	assert.Contains(t, s, "config.yaml not found")
-	assert.Contains(t, s, "repo is not enabled in config.yaml")
-}
-
 func TestValidateSourceRepoContent(t *testing.T) {
 	content, err := FullsendRepoFile("scripts/validate-source-repo.sh")
 	require.NoError(t, err)
@@ -688,22 +633,6 @@ func TestRepoMaintenanceTokenCoversAllRepos(t *testing.T) {
 	// unenrolled").
 	assert.Contains(t, s, "select(.value.enabled == true or .value.enabled == false)",
 		"repo-list step must extract both enabled and disabled repos so the minted token covers them for unenrollment")
-}
-
-func TestMintTokenActionContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/actions/mint-token/action.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "Mint Token")
-	assert.Contains(t, s, "OIDC")
-	assert.Contains(t, s, "audience=fullsend-mint")
-	assert.Contains(t, s, "/v1/token")
-	assert.Contains(t, s, "::add-mask::$OIDC_TOKEN")
-	assert.Contains(t, s, "::add-mask::$TOKEN")
-	assert.Contains(t, s, "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-	assert.Contains(t, s, "ACTIONS_ID_TOKEN_REQUEST_URL")
-	assert.Contains(t, s, "jq -nc --arg role")
-	assert.NotContains(t, s, "create-github-app-token")
 }
 
 func TestReconcileReposContent(t *testing.T) {

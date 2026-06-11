@@ -12,6 +12,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -132,12 +134,27 @@ func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rF
 	policy := fetch.DefaultPolicy
 	policy.Offline = rFlags.offline
 
+	var forgeClient forge.Client
+	if h.HasURLSkills() {
+		if rFlags.forgeClient != nil {
+			forgeClient = rFlags.forgeClient
+		} else {
+			token, err := resolveToken()
+			if err != nil {
+				printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
+				return fmt.Errorf("skill URLs require a GitHub token: %w", err)
+			}
+			forgeClient = gh.New(token)
+		}
+	}
+
 	deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
 		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 		MaxDepth:      rFlags.maxDepth,
 		MaxResources:  rFlags.maxResources,
+		ForgeClient:   forgeClient,
 	})
 	if err != nil {
 		printer.StepFail("Resolution failed")
@@ -150,12 +167,29 @@ func runLock(ctx context.Context, agentName, fullsendDir string, update bool, rF
 	now := time.Now().UTC()
 	lockDeps := make([]lock.DependencyEntry, 0, len(deps))
 	for _, dep := range deps {
-		lockDeps = append(lockDeps, lock.DependencyEntry{
+		entry := lock.DependencyEntry{
 			Field:     dep.Field,
 			URL:       dep.URL,
 			SHA256:    dep.SHA256,
+			Type:      dep.Type,
 			FetchedAt: dep.FetchedAt,
-		})
+		}
+		if dep.Type == "directory" {
+			_, dirEntry, err := fetch.CacheGetDir(absFullsendDir, dep.SHA256)
+			if err != nil {
+				return fmt.Errorf("reading cached directory for %s: %w", dep.Field, err)
+			}
+			if dirEntry == nil {
+				return fmt.Errorf("directory %s (%s) was just resolved but is missing from cache", dep.Field, dep.URL)
+			}
+			for _, f := range dirEntry.Files {
+				entry.Files = append(entry.Files, lock.FileEntry{
+					Path:   f.Path,
+					SHA256: f.SHA256,
+				})
+			}
+		}
+		lockDeps = append(lockDeps, entry)
 	}
 
 	harnessLock := lock.HarnessLock{
@@ -207,20 +241,36 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	var deps []resolve.Dependency
 
 	for _, lockDep := range entry.Dependencies {
-		content, _, err := fetch.CacheGet(workspaceRoot, lockDep.SHA256)
-		if err != nil {
-			return nil, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
-		}
-		if content == nil {
-			return nil, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+		var localPath string
+
+		if lockDep.Type == "directory" {
+			treePath, _, err := fetch.CacheGetDir(workspaceRoot, lockDep.SHA256)
+			if err != nil {
+				return nil, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
+			}
+			if treePath == "" {
+				return nil, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+			}
+			localPath = treePath
+		} else {
+			content, _, err := fetch.CacheGet(workspaceRoot, lockDep.SHA256)
+			if err != nil {
+				return nil, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
+			}
+			if content == nil {
+				return nil, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+			}
+			cachePath, err := fetch.CachePath(workspaceRoot, lockDep.SHA256)
+			if err != nil {
+				return nil, fmt.Errorf("computing cache path for %s: %w", lockDep.Field, err)
+			}
+			localPath = filepath.Join(cachePath, "content")
 		}
 
-		cachePath, err := fetch.CachePath(workspaceRoot, lockDep.SHA256)
-		if err != nil {
-			return nil, fmt.Errorf("computing cache path for %s: %w", lockDep.Field, err)
+		depType := lockDep.Type
+		if depType == "" {
+			depType = "file"
 		}
-		localPath := filepath.Join(cachePath, "content")
-
 		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
 		deps = append(deps, resolve.Dependency{
 			Field:     lockDep.Field,
@@ -229,6 +279,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			SHA256:    lockDep.SHA256,
 			FetchedAt: lockDep.FetchedAt,
 			CacheHit:  true,
+			Type:      depType,
 		})
 	}
 

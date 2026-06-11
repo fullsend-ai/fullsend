@@ -103,7 +103,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 **Modify `internal/harness/harness.go`:**
 - Add `AllowedRemoteResources []string` with `yaml:"allowed_remote_resources,omitempty"` to `Harness` struct (after existing fields)
 - Add `ValidateAllowedRemoteResources(orgAllowlist []string) error` — new method (does NOT modify existing `Validate()` to preserve `Load()` behavior). Validates entries are HTTPS URLs with trailing `/`, validates harness entries are subset of org allowlist.
-- Add `ValidateResourceTypes() error` — new method. Rejects URLs in executable fields (PreScript, PostScript, ValidationLoop.Script, HostFiles[].Src, APIServers). Requires integrity hash on URLs in declarative fields (Agent, Policy, Skills). Uses `IsURL`/`ParseIntegrityHash` from PR 1.
+- Add `ValidateResourceTypes() error` — new method. Rejects URLs in executable fields (PreScript, PostScript, ValidationLoop.Script, HostFiles[].Src, APIServers). Requires integrity hash on URLs in declarative fields (Agent, Policy, Skills). Validates that skill URLs are from supported forges (GitHub, GitLab) since skills are directories that require forge API access. Uses `IsURL`/`ParseIntegrityHash` from PR 1.
 - Add `MatchesAllowedPrefix(rawURL string) bool` — URL canonicalization, double-encoding rejection, prefix matching against `AllowedRemoteResources`
 
 **Modify `internal/config/config.go`:**
@@ -142,14 +142,18 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 **Scope:** New package that orchestrates fetch + cache + validation + audit for URL-referenced resources. This is the core logic.
 
 **Create `internal/resolve/resolve.go`:**
-- `Dependency` struct: URL, LocalPath (cache path), SHA256, FetchedAt, CacheHit
-- `ResolveOpts` struct: WorkspaceRoot, FetchPolicy, TraceID, AuditLogPath
+- `Dependency` struct: URL, LocalPath (cache path), SHA256, FetchedAt, CacheHit, Type (`"file"` or `"directory"`)
+- `ResolveOpts` struct: WorkspaceRoot, FetchPolicy, TraceID, AuditLogPath, ForgeClient (`forge.Client` for skill directory resolution)
 - `ResolveHarness(ctx, h *harness.Harness, opts) ([]Dependency, error)`:
   - Modifies the harness in place, replacing URL fields with local cache paths
-  - For each declarative field (Agent, Policy, Skills):
+  - For each declarative field (Agent, Policy):
     - Local path: return as-is
-    - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → check cache (with re-verification) → if miss and not offline: `fetch.FetchURL` → verify hash → `CachePut` → `AppendFetchAudit` → return cache content path
-  - Single-level resolution; transitive deps added in Phase 2 (PR 2 of ADR-0038), security scanning deferred
+    - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → check cache (with re-verification) → if miss and not offline: `fetch.FetchURL` → verify hash → `CachePut` → `AppendFetchAudit` → return cache `content` path
+  - For Skills (directory resources):
+    - Local path: return as-is
+    - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → use `ParseForgeURL` to extract forge components (owner, repo, path, ref) → check directory cache via `CacheGetDir` (with re-verification) → if miss and not offline: call `ForgeClient.ListDirectoryContents` to discover files, fetch each file with `ForgeClient.GetFileContentAtRef`, reconstruct directory tree, verify tree hash, store via `CachePutDir` → `AppendFetchAudit` → return cache `tree/` path
+    - Non-forge HTTPS URLs for skills are rejected with error: "skill URLs must use a supported forge (GitHub, GitLab)"
+  - Single-level resolution; transitive deps added in Phase 2, security scanning deferred
 
 **Create `internal/resolve/resolve_test.go`:**
 - Tests using `httptest.NewTLSServer`: local pass-through, URL fetch+cache, cache hit, hash mismatch, URL not in allowlist, missing hash, offline+miss, offline+hit, security scan failure, mixed harness, audit entries
@@ -185,9 +189,9 @@ agent: https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../agents/c
 policy: policies/local-policy.yaml
 skills:
   - skills/local-skill
-  - https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../skills/rust/SKILL.md#sha256=def456...
+  - https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust#sha256=<tree-hash>...
 allowed_remote_resources:
-  - https://raw.githubusercontent.com/fullsend-ai/library/
+  - https://github.com/fullsend-ai/library/
 ```
 
 ---
@@ -195,7 +199,7 @@ allowed_remote_resources:
 ## Future Phases (high-level)
 
 ### Phase 2: Transitive dependency resolution (2-3 PRs)
-- Parse `dependencies:` field from SKILL.md YAML frontmatter
+- Parse `dependencies:` field from SKILL.md YAML frontmatter (read from resolved skill directory, whether local or cached from forge)
 - Recursive resolution with cycle detection (visited set), depth limit (10), breadth limit (50)
 - Relative URL resolution for URL-fetched resources (RFC 3986 base URL semantics)
 

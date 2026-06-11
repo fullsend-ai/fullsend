@@ -184,6 +184,12 @@ readability or correctness.
 - Do documentation files reference behavior, APIs, or configurations
   changed by this PR?
 - Are any docs now stale as a result of the change?
+- **Rename/deprecation completeness:** When a PR renames or removes an
+  identifier, grep for stale references using a bare-word pattern
+  (`\bOLD_NAME\b`) in addition to any syntax-specific pattern (e.g.,
+  `OLD_NAME:` for YAML). Documentation files (`.md`, `.adoc`, `.rst`)
+  often reference field names in prose without syntax suffixes and will
+  be missed by syntax-specific patterns alone.
 
 #### Cross-repo contracts
 

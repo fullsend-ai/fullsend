@@ -10,12 +10,17 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 var (
 	validAgentName  = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	validModelName  = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
 	validPluginName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	// validRoleName mirrors mintcore.RolePattern — duplicated to avoid coupling harness→mintcore.
+	validRoleName   = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+	validSlugName   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 	envVarRef      = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
@@ -193,6 +198,8 @@ type Harness struct {
 	Agent          string            `yaml:"agent"`
 	Doc            string            `yaml:"doc,omitempty"` // source-repo-only; not resolved at runtime, used by lint-agent-docs
 	Description    string            `yaml:"description,omitempty"`
+	Role           string            `yaml:"role,omitempty"`
+	Slug           string            `yaml:"slug,omitempty"`
 	Image          string            `yaml:"image,omitempty"`
 	Policy         string            `yaml:"policy,omitempty"`
 	Skills         []string          `yaml:"skills,omitempty"`
@@ -208,8 +215,9 @@ type Harness struct {
 	RunnerEnv              map[string]string `yaml:"runner_env,omitempty"`
 	TimeoutMinutes         int               `yaml:"timeout_minutes,omitempty"`
 	SandboxTimeoutSeconds  int               `yaml:"sandbox_timeout_seconds,omitempty"`
-	Security               *SecurityConfig   `yaml:"security,omitempty"`
-	AllowedRemoteResources []string          `yaml:"allowed_remote_resources,omitempty"`
+	Security               *SecurityConfig         `yaml:"security,omitempty"`
+	AllowedRemoteResources []string               `yaml:"allowed_remote_resources,omitempty"`
+	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -248,6 +256,17 @@ func (h *Harness) Validate() error {
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
 	}
+	if h.Role != "" {
+		if !validRoleName.MatchString(h.Role) {
+			return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
+		}
+		if strings.Contains(h.Role, "--") {
+			return fmt.Errorf("role %q must not contain double hyphens", h.Role)
+		}
+	}
+	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
+		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
+	}
 	for i, p := range h.Plugins {
 		pluginBase := filepath.Base(p)
 		if !validPluginName.MatchString(pluginBase) {
@@ -275,6 +294,9 @@ func (h *Harness) Validate() error {
 		return err
 	}
 	if err := h.ValidateResourceTypes(); err != nil {
+		return err
+	}
+	if err := h.validateForge(); err != nil {
 		return err
 	}
 	// ValidateAllowedRemoteResources requires the org allowlist and is called
@@ -606,10 +628,25 @@ func (h *Harness) ValidateResourceTypes() error {
 			if _, _, hasHash := ParseIntegrityHash(s); !hasHash {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
+			cleanURL, _, _ := ParseIntegrityHash(s)
+			if _, err := forge.ParseForgeURL(cleanURL); err != nil {
+				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
 		}
 	}
 
 	return nil
+}
+
+// HasURLSkills reports whether any skill field contains a URL. Used to determine
+// whether a forge client is needed for resolution.
+func (h *Harness) HasURLSkills() bool {
+	for _, s := range h.Skills {
+		if IsURL(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills)
