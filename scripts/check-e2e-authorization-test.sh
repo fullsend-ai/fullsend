@@ -107,6 +107,20 @@ else
 fi
 unset PR_AUTHOR_ASSOCIATION
 
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export EVENT_ACTION="synchronize"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
+write_pr "NONE" '[{"name":"ok-to-test"}]'
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
+run_case "untrusted event payload falls through to ok-to-test label check" "true" "ok_to_test" "false"
+if ! grep -q '/pulls/' "${GH_LOG}"; then
+  echo "FAIL: untrusted event payload should fetch pulls API for labels"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: untrusted event payload fetches pulls API for labels"
+fi
+unset PR_AUTHOR_ASSOCIATION EVENT_ACTION PR_UPDATED_AT
+
 write_pr "OWNER" '[]'
 run_case "trusted owner author" "true" "trusted_author" "false"
 
