@@ -10,6 +10,14 @@ inputs:
   repository:
     description: Repository in owner/name form
     required: true
+  pr_updated_at:
+    description: github.event.pull_request.updated_at (server-side push time)
+    required: false
+    default: ""
+  event_action:
+    description: github.event.action
+    required: false
+    default: ""
   docs_url:
     description: Link to e2e testing documentation
     required: false
@@ -36,6 +44,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
         PR_NUMBER: ${{ inputs.pr_number }}
         REPOSITORY: ${{ inputs.repository }}
+        PR_UPDATED_AT: ${{ inputs.pr_updated_at }}
+        EVENT_ACTION: ${{ inputs.event_action }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     - name: Post gate comment
@@ -88,7 +98,9 @@ runs:
 
         bot_login="$(gh api user --jq .login)"
         existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
-          --jq ".[] | select(.user.login == \"${bot_login}\" and (.body | contains(\"${marker}\"))) | .id" | head -n1 || true)"
+          | jq -r --arg login "${bot_login}" --arg marker "${marker}" \
+            '.[] | select(.user.login == $login and (.body | contains($marker))) | .id' \
+          | head -n1 || true)"
 
         if [[ -n "${existing_id}" ]]; then
           jq -n --arg body "${body}" '{body: $body}' | \
@@ -114,7 +126,9 @@ runs:
 
         bot_login="$(gh api user --jq .login)"
         existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
-          --jq ".[] | select(.user.login == \"${bot_login}\" and (.body | contains(\"${marker}\"))) | .id" | head -n1 || true)"
+          | jq -r --arg login "${bot_login}" --arg marker "${marker}" \
+            '.[] | select(.user.login == $login and (.body | contains($marker))) | .id' \
+          | head -n1 || true)"
 
         if [[ -n "${existing_id}" ]]; then
           body="${marker}

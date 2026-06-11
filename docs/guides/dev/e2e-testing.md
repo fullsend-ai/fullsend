@@ -48,8 +48,10 @@ in GitHub repo settings (Settings → Labels).
 
 If new commits are pushed after `ok-to-test` was applied, the label is removed
 automatically and e2e is skipped until a maintainer re-applies it after
-reviewing the latest changes. The label must be applied **strictly after** the
-latest push (same-second labels are treated as stale).
+reviewing the latest changes. Freshness uses the server-side PR `updated_at`
+from the workflow event (not commit author dates). Applying the label triggers
+immediate authorization; subsequent pushes require the label timestamp to be
+strictly after the latest push time.
 
 ### Blocked runs
 

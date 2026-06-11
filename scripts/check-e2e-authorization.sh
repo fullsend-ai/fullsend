@@ -2,13 +2,18 @@
 # check-e2e-authorization.sh — Decide whether a PR may run e2e tests in CI.
 #
 # Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, or when a fresh
-# ok-to-test label was applied after the latest commit on the PR head.
-# Push time uses GitHub issue timeline timestamps: head_ref_force_pushed.created_at
-# (server-side) and committed.committer.date (commit metadata; maintainer ok-to-test
-# is required for untrusted authors). Empty timeline fails closed for ok-to-test.
-# Removes stale ok-to-test labels (applied at or before the latest push).
+# ok-to-test label was applied after the latest push.
+#
+# Push time for ok-to-test freshness uses PR updated_at from the workflow event
+# (server-side; passed as PR_UPDATED_AT). On ok-to-test labeled events, the
+# label is treated as fresh (maintainer just applied it). Does not use
+# committer.date (author-controlled).
 #
 # Usage: check-e2e-authorization.sh PR_NUMBER OWNER/REPO
+#
+# Environment (optional, from workflow):
+#   PR_UPDATED_AT — github.event.pull_request.updated_at
+#   EVENT_ACTION  — github.event.action
 #
 # Writes authorized, reason, and label_removed to GITHUB_OUTPUT when set.
 # Exits 0 always; callers inspect outputs.
@@ -47,47 +52,39 @@ pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
 author_association="$(jq -r '.author_association' <<<"${pr_json}")"
 has_ok_label="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '[.labels[].name] | index($label) != null' <<<"${pr_json}")"
 
-timeline_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline" --paginate \
-  -H "Accept: application/vnd.github+json" | jq -s 'add')"
-last_push_at="$(jq -r '
-  [.[] | select(.event == "head_ref_force_pushed") | .created_at] +
-  [.[] | select(.event == "committed") | .committer.date] | max // empty
-' <<<"${timeline_json}")"
-
-events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add')"
-ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
-  [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
-' <<<"${events_json}")"
-
-is_trusted=false
-if is_trusted_author "${author_association}"; then
-  is_trusted=true
-fi
-
 has_fresh_label=false
 label_removed=false
 authorized=false
 reason="unauthorized"
 
-if [[ "${has_ok_label}" == "true" && "${is_trusted}" != "true" ]]; then
+if is_trusted_author "${author_association}"; then
+  authorized=true
+  reason="trusted_author"
+elif [[ "${has_ok_label}" == "true" && "${EVENT_ACTION:-}" == "labeled" ]]; then
+  authorized=true
+  reason="ok_to_test"
+elif [[ "${has_ok_label}" == "true" ]]; then
+  events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
+  ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
+    [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
+  ' <<<"${events_json}")"
+
+  last_push_at="${PR_UPDATED_AT:-}"
+  if [[ -z "${last_push_at}" ]]; then
+    last_push_at="$(jq -r '.updated_at // empty' <<<"${pr_json}")"
+  fi
+
   if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
     has_fresh_label=true
+    authorized=true
+    reason="ok_to_test"
   else
     if [[ "${CHECK_E2E_AUTH_DRY_RUN:-}" != "true" ]]; then
       gh api -X DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/${OK_TO_TEST_LABEL}" >/dev/null
     fi
     label_removed=true
+    reason="stale_ok_to_test"
   fi
-fi
-
-if [[ "${is_trusted}" == "true" ]]; then
-  authorized=true
-  reason="trusted_author"
-elif [[ "${has_fresh_label}" == "true" ]]; then
-  authorized=true
-  reason="ok_to_test"
-elif [[ "${label_removed}" == "true" ]]; then
-  reason="stale_ok_to_test"
 fi
 
 trap - ERR

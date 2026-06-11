@@ -16,8 +16,6 @@ MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
 PR_JSON="${TMPDIR}/pr.json"
-COMMITS_JSON="${TMPDIR}/commits.json"
-TIMELINE_JSON="${TMPDIR}/timeline.json"
 EVENTS_JSON="${TMPDIR}/events.json"
 GH_LOG="${TMPDIR}/gh.log"
 GH_FAIL="false"
@@ -25,19 +23,9 @@ GH_FAIL="false"
 write_pr() {
   local assoc="$1"
   local labels_json="$2"
-  jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" \
-    '{author_association: $assoc, labels: $labels}' >"${PR_JSON}"
-}
-
-write_commits() {
-  local dates_json="$1"
-  jq -n --argjson dates "${dates_json}" \
-    '[ $dates[] | {commit: {committer: {date: .}}}]' >"${COMMITS_JSON}"
-}
-
-write_timeline() {
-  local events_json="$1"
-  echo "${events_json}" >"${TIMELINE_JSON}"
+  local updated_at="${3:-2026-06-01T10:00:00Z}"
+  jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" --arg updated_at "${updated_at}" \
+    '{author_association: $assoc, labels: $labels, updated_at: $updated_at}' >"${PR_JSON}"
 }
 
 write_events() {
@@ -52,13 +40,11 @@ if [[ "\${GH_FAIL}" == "true" ]]; then
   echo "simulated gh failure" >&2
   exit 1
 fi
+if [[ "\${GH_FAIL}" == "events" && "\$*" == *"/issues/"*"/events"* ]]; then
+  echo "simulated events API failure" >&2
+  exit 1
+fi
 case "\$*" in
-  *"/issues/"*"/timeline"*)
-    cat "${TIMELINE_JSON}"
-    ;;
-  *"/pulls/"*"/commits"*)
-    cat "${COMMITS_JSON}"
-    ;;
   *"/issues/"*"/events"*)
     cat "${EVENTS_JSON}"
     ;;
@@ -80,6 +66,7 @@ export PATH="${MOCK_BIN}:${PATH}"
 export GH_TOKEN="test-token"
 export CHECK_E2E_AUTH_DRY_RUN="true"
 export GH_FAIL="false"
+unset EVENT_ACTION PR_UPDATED_AT
 
 run_case() {
   local name="$1"
@@ -107,48 +94,34 @@ run_case() {
 }
 
 write_pr "MEMBER" '[]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T10:00:00Z"}}]'
-write_events '[]'
 run_case "trusted member author" "true" "trusted_author" "false"
 
 write_pr "OWNER" '[]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T10:00:00Z"}}]'
-write_events '[]'
 run_case "trusted owner author" "true" "trusted_author" "false"
 
 write_pr "COLLABORATOR" '[]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T10:00:00Z"}}]'
-write_events '[]'
 run_case "trusted collaborator author" "true" "trusted_author" "false"
 
 write_pr "CONTRIBUTOR" '[]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T10:00:00Z"}}]'
-write_events '[]'
 run_case "contributor author denied" "false" "unauthorized" "false"
 
 write_pr "MEMBER" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T12:00:00Z"}}]'
-write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
 run_case "trusted member ignores stale ok-to-test label" "true" "trusted_author" "false"
 
+export EVENT_ACTION="synchronize"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T10:00:00Z"}}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "fresh ok-to-test label" "true" "ok_to_test" "false"
+run_case "fresh ok-to-test label after push" "true" "ok_to_test" "false"
 
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T12:00:00Z"}}]'
+export PR_UPDATED_AT="2026-06-01T12:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "stale ok-to-test label" "false" "stale_ok_to_test" "true"
+run_case "stale ok-to-test label after newer push" "false" "stale_ok_to_test" "true"
 
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T12:00:00Z"}}]'
+export PR_UPDATED_AT="2026-06-01T12:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T12:00:00Z"}]'
 run_case "ok-to-test label at push time is stale" "false" "stale_ok_to_test" "true"
 
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T12:00:00Z"}}]'
-write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
 unset CHECK_E2E_AUTH_DRY_RUN
 run_case "stale ok-to-test removes label" "false" "stale_ok_to_test" "true"
 if ! grep -q DELETE "${GH_LOG}"; then
@@ -159,37 +132,39 @@ else
 fi
 export CHECK_E2E_AUTH_DRY_RUN="true"
 
+unset EVENT_ACTION PR_UPDATED_AT
 write_pr "NONE" '[]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T10:00:00Z"}}]'
-write_events '[]'
 run_case "untrusted author without label" "false" "unauthorized" "false"
 
+export EVENT_ACTION="labeled"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"committed","committer":{"date":"2026-06-01T12:00:00Z"}}]'
-write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "timeline committer date used for push time" "false" "stale_ok_to_test" "true"
-
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T10:00:00Z"}]'
-write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "head_ref_force_pushed created_at authorizes fresh ok-to-test" "true" "ok_to_test" "false"
-
-write_pr "NONE" '[]'
-write_timeline '[]'
 write_events '[]'
-run_case "empty timeline without label is unauthorized" "false" "unauthorized" "false"
+run_case "labeled ok-to-test authorizes without events lookup" "true" "ok_to_test" "false"
+if grep -q '/events' "${GH_LOG}"; then
+  echo "FAIL: labeled path should not call events API"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: labeled path skips events API"
+fi
 
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_timeline '[]'
+export EVENT_ACTION="synchronize"
+unset PR_UPDATED_AT
+write_pr "NONE" '[{"name":"ok-to-test"}]' "2026-06-01T10:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "empty timeline treats ok-to-test as stale" "false" "stale_ok_to_test" "true"
+run_case "falls back to pull updated_at when PR_UPDATED_AT unset" "true" "ok_to_test" "false"
 
-GH_FAIL="true"
-write_pr "NONE" '[]'
-write_timeline '[]'
+write_pr "MEMBER" '[]'
+export GH_FAIL="events"
+run_case "trusted author not blocked by events API failure" "true" "trusted_author" "false"
+export GH_FAIL="false"
+
+export EVENT_ACTION="synchronize"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
+write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[]'
-run_case "gh api failure returns error reason" "false" "error" "false"
-GH_FAIL="false"
+export GH_FAIL="true"
+run_case "gh api failure on events returns error reason" "false" "error" "false"
+export GH_FAIL="false"
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
