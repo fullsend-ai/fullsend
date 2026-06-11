@@ -123,6 +123,13 @@ type TreeFile struct {
 	Mode    string // "100644" or "100755"
 }
 
+// DirectoryEntry represents a file or subdirectory in a repository directory listing.
+type DirectoryEntry struct {
+	Path string // relative path within the listed directory
+	Type string // "file" or "dir"
+	Size int    // file size in bytes (0 for directories)
+}
+
 // Client abstracts all git forge operations.
 // Implementations exist for GitHub (and eventually GitLab, Forgejo).
 type Client interface {
@@ -160,6 +167,18 @@ type Client interface {
 
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	DeleteFile(ctx context.Context, owner, repo, path, message string) error
+
+	// ListDirectoryContents returns all files and subdirectories at the given
+	// path in a repository at the specified ref (commit SHA, branch, or tag).
+	// When recursive is true, nested subdirectories are flattened into the
+	// result with paths relative to the listed directory.
+	// Returns forge.ErrNotFound if the path does not exist or is not a directory.
+	ListDirectoryContents(ctx context.Context, owner, repo, path, ref string, recursive bool) ([]DirectoryEntry, error)
+
+	// GetFileContentAtRef retrieves the content of a file at a specific ref
+	// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
+	// the default branch, this reads from the specified ref.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 
 	// CommitFiles atomically commits multiple files to the repository's
 	// default branch in a single commit. It is idempotent: if all files

@@ -12,12 +12,14 @@ var _ Client = (*FakeClient)(nil)
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:   make(map[string][]byte),
-		WorkflowRuns:   make(map[string]*WorkflowRun),
-		Secrets:        make(map[string]bool),
-		VariablesExist: make(map[string]bool),
-		VariableValues: make(map[string]string),
-		Errors:         make(map[string]error),
+		FileContents:    make(map[string][]byte),
+		WorkflowRuns:    make(map[string]*WorkflowRun),
+		Secrets:         make(map[string]bool),
+		VariablesExist:  make(map[string]bool),
+		VariableValues:  make(map[string]string),
+		Errors:          make(map[string]error),
+		DirContents:     make(map[string][]DirectoryEntry),
+		FileContentsRef: make(map[string][]byte),
 	}
 }
 
@@ -123,6 +125,12 @@ type FakeClient struct {
 	OrgVariables       map[string]bool    // key: "org/name"
 	OrgVariableValues  map[string]string  // key: "org/name" → value
 	OrgVariableRepoIDs map[string][]int64 // key: "org/name" → repo IDs
+
+	// Directory listings for ListDirectoryContents.
+	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
+
+	// File contents at specific refs for GetFileContentAtRef.
+	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
@@ -380,6 +388,38 @@ func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message st
 		Message: message,
 	})
 	return nil
+}
+
+func (f *FakeClient) ListDirectoryContents(_ context.Context, owner, repo, path, ref string, _ bool) ([]DirectoryEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListDirectoryContents"); e != nil {
+		return nil, e
+	}
+
+	key := fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, ref)
+	entries, ok := f.DirContents[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	return entries, nil
+}
+
+func (f *FakeClient) GetFileContentAtRef(_ context.Context, owner, repo, path, ref string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetFileContentAtRef"); e != nil {
+		return nil, e
+	}
+
+	key := fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, ref)
+	content, ok := f.FileContentsRef[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	return content, nil
 }
 
 func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string, files []TreeFile) (bool, error) {

@@ -205,6 +205,147 @@ func TestCacheSymlinkProtection(t *testing.T) {
 	assert.Nil(t, entry)
 }
 
+func TestComputeTreeHash(t *testing.T) {
+	t.Run("Deterministic", func(t *testing.T) {
+		files := map[string][]byte{
+			"a.txt": []byte("alpha"),
+			"b.txt": []byte("bravo"),
+			"c.txt": []byte("charlie"),
+		}
+		// Compute the hash multiple times — map iteration order varies but hash must be stable.
+		hash1 := ComputeTreeHash(files)
+		hash2 := ComputeTreeHash(files)
+		hash3 := ComputeTreeHash(files)
+		assert.Equal(t, hash1, hash2)
+		assert.Equal(t, hash2, hash3)
+	})
+
+	t.Run("SingleFile", func(t *testing.T) {
+		files := map[string][]byte{
+			"SKILL.md": []byte("# My Skill"),
+		}
+		hash := ComputeTreeHash(files)
+		assert.Len(t, hash, 64, "should be a 64-char hex SHA256")
+	})
+
+	t.Run("DifferentFilesProduceDifferentHashes", func(t *testing.T) {
+		files1 := map[string][]byte{"a.txt": []byte("hello")}
+		files2 := map[string][]byte{"a.txt": []byte("world")}
+		files3 := map[string][]byte{"b.txt": []byte("hello")}
+		hash1 := ComputeTreeHash(files1)
+		hash2 := ComputeTreeHash(files2)
+		hash3 := ComputeTreeHash(files3)
+		assert.NotEqual(t, hash1, hash2, "different content should produce different hashes")
+		assert.NotEqual(t, hash1, hash3, "different paths should produce different hashes")
+	})
+
+	t.Run("NestedPaths", func(t *testing.T) {
+		files := map[string][]byte{
+			"SKILL.md":           []byte("# Skill"),
+			"scripts/helper.sh":  []byte("#!/bin/bash\necho hi"),
+			"sub-agents/code.md": []byte("# Code agent"),
+		}
+		hash := ComputeTreeHash(files)
+		assert.Len(t, hash, 64)
+	})
+}
+
+func TestCachePutDir_CacheGetDir_RoundTrip(t *testing.T) {
+	root := t.TempDir()
+	url := "https://github.com/example/repo/tree/main/skills/review"
+	files := map[string][]byte{
+		"SKILL.md":            []byte("# Review Skill\nA skill for reviews."),
+		"scripts/helper.sh":   []byte("#!/bin/bash\necho helper"),
+		"sub-agents/triage.md": []byte("# Triage sub-agent"),
+	}
+
+	treeHash, err := CachePutDir(root, url, files)
+	require.NoError(t, err)
+	assert.Len(t, treeHash, 64)
+
+	treeDir, entry, err := CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+
+	// Verify metadata.
+	assert.Equal(t, url, entry.URL)
+	assert.Equal(t, treeHash, entry.SHA256)
+	assert.Equal(t, "directory", entry.Type)
+	assert.False(t, entry.FetchTime.IsZero())
+	assert.Len(t, entry.Files, 3)
+
+	// Files should be sorted by path in metadata.
+	assert.Equal(t, "SKILL.md", entry.Files[0].Path)
+	assert.Equal(t, "scripts/helper.sh", entry.Files[1].Path)
+	assert.Equal(t, "sub-agents/triage.md", entry.Files[2].Path)
+
+	// Verify file content on disk.
+	for relPath, expectedContent := range files {
+		got, err := os.ReadFile(filepath.Join(treeDir, relPath))
+		require.NoError(t, err, "reading %s", relPath)
+		assert.Equal(t, expectedContent, got, "content mismatch for %s", relPath)
+	}
+}
+
+func TestCacheGetDir_Miss(t *testing.T) {
+	root := t.TempDir()
+	hash := ComputeSHA256([]byte("nonexistent dir"))
+
+	treeDir, entry, err := CacheGetDir(root, hash)
+	require.NoError(t, err)
+	assert.Empty(t, treeDir)
+	assert.Nil(t, entry)
+}
+
+func TestCacheGetDir_IntegrityVerification(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{
+		"SKILL.md": []byte("# Original content"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/skill", files)
+	require.NoError(t, err)
+
+	// Tamper with the cached file.
+	dir, err := CachePath(root, treeHash)
+	require.NoError(t, err)
+	tamperedPath := filepath.Join(dir, "tree", "SKILL.md")
+	require.NoError(t, os.WriteFile(tamperedPath, []byte("# Tampered!"), 0o600))
+
+	treeDir, entry, err := CacheGetDir(root, treeHash)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cache integrity check failed")
+	assert.Empty(t, treeDir)
+	assert.Nil(t, entry)
+}
+
+func TestCachePutDir_NestedDirectories(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{
+		"SKILL.md":                      []byte("# Skill"),
+		"scripts/helper.sh":             []byte("#!/bin/bash\necho hi"),
+		"sub-agents/review.md":          []byte("# Review"),
+		"sub-agents/deep/nested/file.md": []byte("# Deep nested"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/nested-skill", files)
+	require.NoError(t, err)
+
+	treeDir, entry, err := CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+
+	// Verify all files exist with correct content.
+	for relPath, expectedContent := range files {
+		got, err := os.ReadFile(filepath.Join(treeDir, relPath))
+		require.NoError(t, err, "reading %s", relPath)
+		assert.Equal(t, expectedContent, got, "content mismatch for %s", relPath)
+	}
+
+	// Verify metadata has all files.
+	assert.Len(t, entry.Files, 4)
+}
+
 func TestCacheConcurrentPut(t *testing.T) {
 	root := t.TempDir()
 	content := []byte("concurrent content")

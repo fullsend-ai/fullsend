@@ -21,6 +21,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
@@ -53,6 +54,7 @@ type resolveFlags struct {
 	offline      bool
 	maxDepth     int
 	maxResources int
+	forgeClient  forge.Client // injected by tests; nil means construct from env
 }
 
 // statusOpts holds the optional status notification parameters for a run.
@@ -209,6 +211,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			policy := fetch.DefaultPolicy
 			policy.Offline = rFlags.offline
 
+			var forgeClient forge.Client
+			if h.HasURLSkills() {
+				if rFlags.forgeClient != nil {
+					forgeClient = rFlags.forgeClient
+				} else {
+					token, tokenErr := resolveToken()
+					if tokenErr != nil {
+						printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
+						return fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
+					}
+					forgeClient = gh.New(token)
+				}
+			}
+
 			var resolveErr error
 			deps, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 				WorkspaceRoot: absFullsendDir,
@@ -216,6 +232,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 				MaxDepth:      rFlags.maxDepth,
 				MaxResources:  rFlags.maxResources,
+				ForgeClient:   forgeClient,
 			})
 			if resolveErr != nil {
 				printer.StepFail("Remote resource resolution failed")

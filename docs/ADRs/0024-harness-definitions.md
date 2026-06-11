@@ -230,12 +230,12 @@ agents/             # Agent definitions (.md, following Claude standard)
   arch-reviewer.md
   docs-reviewer.md
 
-skills/             # Skill definitions (SKILL.md, following AgentSkills standard)
-  triage-coordination/SKILL.md
-  detect-duplicates/SKILL.md
-  assess-completeness/SKILL.md
-  code-implementation/SKILL.md
-  testing-conventions/SKILL.md
+skills/             # Skill directories (each contains SKILL.md + companion files)
+  triage-coordination/
+  detect-duplicates/
+  assess-completeness/
+  code-implementation/
+  testing-conventions/
 
 env/                # Environment files delivered into the sandbox
   gcp-vertex.env    # May contain ${VAR} references expanded at bootstrap

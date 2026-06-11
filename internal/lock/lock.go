@@ -35,8 +35,16 @@ type DependencyEntry struct {
 	Field          string            `yaml:"field"`
 	URL            string            `yaml:"url"`
 	SHA256         string            `yaml:"sha256"`
+	Type           string            `yaml:"type,omitempty"`            // "file" or "directory"; empty treated as "file"
+	Files          []FileEntry       `yaml:"files,omitempty"`           // manifest of files (directory deps only)
 	FetchedAt      time.Time         `yaml:"fetched_at"`
 	TransitiveDeps []DependencyEntry `yaml:"transitive_deps,omitempty"`
+}
+
+// FileEntry records one file within a directory dependency.
+type FileEntry struct {
+	Path   string `yaml:"path"`
+	SHA256 string `yaml:"sha256"`
 }
 
 const currentVersion = 1

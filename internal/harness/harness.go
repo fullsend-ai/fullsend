@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 var (
@@ -626,10 +628,25 @@ func (h *Harness) ValidateResourceTypes() error {
 			if _, _, hasHash := ParseIntegrityHash(s); !hasHash {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
+			cleanURL, _, _ := ParseIntegrityHash(s)
+			if _, err := forge.ParseForgeURL(cleanURL); err != nil {
+				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
 		}
 	}
 
 	return nil
+}
+
+// HasURLSkills reports whether any skill field contains a URL. Used to determine
+// whether a forge client is needed for resolution.
+func (h *Harness) HasURLSkills() bool {
+	for _, s := range h.Skills {
+		if IsURL(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills)

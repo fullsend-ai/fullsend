@@ -160,10 +160,11 @@ To add a custom skill to the code agent's harness:
      - skills/my-custom-validation      # Your custom skill
    ```
 
-3. **Add your custom skill file**:
+3. **Add your custom skill directory**:
    ```bash
    # Create your custom skill
-   cat > .fullsend/customized/skills/my-custom-validation.md <<'EOF'
+   mkdir -p .fullsend/customized/skills/my-custom-validation
+   cat > .fullsend/customized/skills/my-custom-validation/SKILL.md <<'EOF'
    # My Custom Validation Skill
 
    [Your skill content...]
@@ -174,7 +175,7 @@ To add a custom skill to the code agent's harness:
 - Copies upstream defaults to `harness/`, `skills/`, etc.
 - Copies your `customized/` files on top, **replacing** any files with matching names
 - The harness loads `harness/code.yaml` (now your customized version)
-- Your skill at `skills/my-custom-validation.md` is available
+- Your skill at `skills/my-custom-validation/` is available
 
 **Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
 
@@ -212,7 +213,7 @@ Each agent role has its own identity, permissions, and purpose:
 
 ### Adding a Custom Skill
 
-Create `.fullsend/customized/skills/my-skill.md` in your config repo:
+Create `.fullsend/customized/skills/my-skill/SKILL.md` in your config repo:
 
 ```markdown
 # My Custom Skill
@@ -224,7 +225,7 @@ Custom domain knowledge for this organization.
 ...
 ```
 
-The skill will be automatically available to all agents that include `skills/my-skill.md` in their harness configuration.
+The skill will be automatically available to all agents that include `skills/my-skill/` in their harness configuration.
 
 ### Overriding an Agent Definition
 
@@ -280,7 +281,7 @@ runner_env:
   REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
-Then create your custom skill at `.fullsend/customized/skills/my-custom-linting.md`.
+Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
 
 ### Per-Repo Overrides
 
@@ -291,7 +292,7 @@ my-repo/
 ├── .fullsend/
 │   └── customized/
 │       ├── agents/code.md         # Repo-specific agent instructions
-│       ├── skills/repo-skill.md   # Repo-specific skill
+│       ├── skills/repo-skill/     # Repo-specific skill (contains SKILL.md)
 │       └── harness/code.yaml      # Repo-specific harness config
 ```
 

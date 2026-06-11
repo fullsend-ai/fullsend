@@ -779,6 +779,123 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 	return data, nil
 }
 
+// escapePathSegments URL-escapes each segment of a slash-separated path
+// individually, preserving the / separators.
+func escapePathSegments(p string) string {
+	segments := strings.Split(p, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return strings.Join(segments, "/")
+}
+
+// GetFileContentAtRef retrieves the content of a file at a specific ref
+// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
+// the default branch, this reads from the specified ref.
+func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)))
+	if err != nil {
+		return nil, fmt.Errorf("get file content at ref: %w", err)
+	}
+
+	var file struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSON(resp, &file); err != nil {
+		return nil, fmt.Errorf("decode file content: %w", err)
+	}
+
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(file.Content, "\n", ""), "\r", "")
+	data, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64 content: %w", err)
+	}
+	return data, nil
+}
+
+const (
+	maxDirDepth    = 10
+	maxDirAPIcalls = 100
+	maxDirFiles    = 1000
+)
+
+// ListDirectoryContents returns all files and subdirectories at the given
+// path in a repository at the specified ref. When path points to a directory,
+// the GitHub Contents API returns a JSON array of entries.
+func (c *LiveClient) ListDirectoryContents(ctx context.Context, owner, repo, path, ref string, recursive bool) ([]forge.DirectoryEntry, error) {
+	apiCalls := 0
+	fileCount := 0
+	return c.listDirContents(ctx, owner, repo, path, ref, recursive, 0, &apiCalls, &fileCount)
+}
+
+func (c *LiveClient) listDirContents(ctx context.Context, owner, repo, path, ref string, recursive bool, depth int, apiCalls *int, fileCount *int) ([]forge.DirectoryEntry, error) {
+	if depth > maxDirDepth {
+		return nil, fmt.Errorf("directory listing exceeded maximum depth of %d at %s", maxDirDepth, path)
+	}
+	if *apiCalls >= maxDirAPIcalls {
+		return nil, fmt.Errorf("directory listing exceeded maximum of %d API calls", maxDirAPIcalls)
+	}
+	*apiCalls++
+
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref))
+
+	resp, err := c.get(ctx, apiPath)
+	if err != nil {
+		return nil, fmt.Errorf("list directory: %w", err)
+	}
+
+	var entries []struct {
+		Name string `json:"name"`
+		Path string `json:"path"` // full path from repo root
+		Type string `json:"type"` // "file" or "dir"
+		Size int    `json:"size"`
+	}
+	if err := decodeJSON(resp, &entries); err != nil {
+		return nil, fmt.Errorf("decode directory listing: %w", err)
+	}
+
+	var result []forge.DirectoryEntry
+	for _, e := range entries {
+		var relPath string
+		if path == "" {
+			relPath = e.Path
+		} else {
+			relPath = strings.TrimPrefix(e.Path, path+"/")
+		}
+
+		if e.Type == "file" {
+			if *fileCount >= maxDirFiles {
+				return nil, fmt.Errorf("directory listing exceeded maximum of %d files", maxDirFiles)
+			}
+			*fileCount++
+			result = append(result, forge.DirectoryEntry{
+				Path: relPath,
+				Type: "file",
+				Size: e.Size,
+			})
+		} else if e.Type == "dir" && recursive {
+			subEntries, err := c.listDirContents(ctx, owner, repo, e.Path, ref, true, depth+1, apiCalls, fileCount)
+			if err != nil {
+				return nil, fmt.Errorf("listing subdirectory %s: %w", e.Path, err)
+			}
+			for _, sub := range subEntries {
+				sub.Path = relPath + "/" + sub.Path
+				result = append(result, sub)
+			}
+		} else if e.Type == "dir" {
+			result = append(result, forge.DirectoryEntry{
+				Path: relPath,
+				Type: "dir",
+				Size: 0,
+			})
+		}
+	}
+
+	return result, nil
+}
+
 // DeleteFile deletes a file from the repository's default branch.
 // It first fetches the file to obtain its SHA (required by the GitHub Contents
 // API), then issues the DELETE. Retries on transient 404/409 errors.
