@@ -213,6 +213,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
   if [[ "${VALIDATED_COUNT}" -gt 0 ]]; then
     LABEL_NOTICE=$'\n\n---\n'"**Labels:** ${LABEL_REASON}"
     LABEL_MODIFIED_RESULT=$(mktemp)
+    trap 'rm -f "${LABEL_MODIFIED_RESULT}"' EXIT
     jq --arg notice "${LABEL_NOTICE}" \
       '.body = (.body + $notice)' \
       "${RESULT_FILE}" > "${LABEL_MODIFIED_RESULT}"

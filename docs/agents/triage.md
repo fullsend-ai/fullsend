@@ -100,17 +100,17 @@ Here's an example that encodes domain-specific labeling rules:
 ---
 name: issue-labels
 description: >-
-  Apply contextual labels to issues and pull requests using team labeling conventions.
+  Apply contextual labels to triaged issues using team labeling conventions.
 ---
 
 # Issue Labels
 
-Apply labels to the issue or pull request being processed. Use the conventions below — do not
+Apply labels to the issue being triaged. Use the conventions below — do not
 invent labels or apply labels not listed here.
 
 ## Control labels (never recommend these)
 
-These are managed by agent pipelines. Never include them in `label_actions`:
+These are managed by the triage pipeline. Never include them in `label_actions`:
 `needs-info`, `ready-to-code`, `duplicate`, `blocked`, `triaged`, `question`.
 
 ## Area labels
