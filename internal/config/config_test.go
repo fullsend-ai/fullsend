@@ -10,7 +10,7 @@ import (
 
 func TestValidRoles(t *testing.T) {
 	roles := ValidRoles()
-	assert.Len(t, roles, 7)
+	assert.Len(t, roles, 8)
 	assert.Contains(t, roles, "fullsend")
 	assert.Contains(t, roles, "triage")
 	assert.Contains(t, roles, "coder")
@@ -18,6 +18,7 @@ func TestValidRoles(t *testing.T) {
 	assert.Contains(t, roles, "fix")
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
+	assert.Contains(t, roles, "jira-triage")
 }
 
 func TestPerRepoDefaultRoles(t *testing.T) {
