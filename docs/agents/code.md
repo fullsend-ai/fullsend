@@ -46,4 +46,4 @@ See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/code.yaml`](../../internal/scaffold/fullsend-repo/harness/code.yaml)
+[`internal/scaffold/fullsend-repo/harness/code.yaml`](https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/harness/code.yaml)

@@ -113,6 +113,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: lint-docs-links
+        name: lint docs link scope
+        entry: ./hack/lint-docs-links
+        language: script
+        files: ^docs/.*\.md$
+        pass_filenames: true
+
       - id: lint-md-links
         name: lint markdown links
         entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'

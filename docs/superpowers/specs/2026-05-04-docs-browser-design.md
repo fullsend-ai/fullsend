@@ -5,7 +5,7 @@ Status: Approved for implementation planning (brainstorm consolidated)
 
 ## Context
 
-The repository’s canonical prose lives under [`docs/`](../../) (guides, ADRs, problem statements, normative specs, `superpowers/`, etc.). The public site today serves a static root page ([`web/public/index.html`](../../../web/public/index.html)) and the **admin** installation UI as a **Vite + Svelte 5** SPA under **`/admin/`** (see [`docs/site-deployment.md`](../../site-deployment.md)). There is no dedicated browser experience for browsing `docs/` as a tree with rendered Markdown.
+The repository’s canonical prose lives under [`docs/`](../../) (guides, ADRs, problem statements, normative specs, `superpowers/`, etc.). The public site today serves a static root page ([`web/public/index.html`](https://github.com/fullsend-ai/fullsend/blob/main/web/public/index.html)) and the **admin** installation UI as a **Vite + Svelte 5** SPA under **`/admin/`** (see [`docs/site-deployment.md`](../../site-deployment.md)). There is no dedicated browser experience for browsing `docs/` as a tree with rendered Markdown.
 
 This document specifies a **second static SPA** served under **`/docs/`**, built with the **same stack as admin** (not SvelteKit), sharing **one Vite configuration, one dev server, and one `vite build`**.
 
@@ -79,14 +79,14 @@ This document specifies a **second static SPA** served under **`/docs/`**, built
 To coexist with **`base: "/"`** and lifted Vite `root`:
 
 1. **`web/admin/index.html`:** use **`./src/main.ts`** instead of **`/src/main.ts`** so the module resolves when `root` is **`web/`**.
-2. **`adminAppBasePath()`** in [`web/admin/src/lib/auth/oauth.ts`](../../../web/admin/src/lib/auth/oauth.ts): do **not** rely on **`import.meta.env.BASE`** for OAuth **`redirect_uri`** (it would become **`/`**). Use the fixed app prefix **`/admin/`** (the existing **`DEFAULT_ADMIN_BASE`** is sufficient as the canonical value).
-3. **Vitest / tooling:** update **`include`** globs and any **`src`-relative** paths in root **`vite.config.ts`** to **`admin/src/**`** (and add **`docs/src/**`** when tests exist). Adjust [`web/admin/src/vite-env.d.ts`](../../../web/admin/src/vite-env.d.ts) comments so they match the new **`base`** behavior.
+2. **`adminAppBasePath()`** in [`web/admin/src/lib/auth/oauth.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/admin/src/lib/auth/oauth.ts): do **not** rely on **`import.meta.env.BASE`** for OAuth **`redirect_uri`** (it would become **`/`**). Use the fixed app prefix **`/admin/`** (the existing **`DEFAULT_ADMIN_BASE`** is sufficient as the canonical value).
+3. **Vitest / tooling:** update **`include`** globs and any **`src`-relative** paths in root **`vite.config.ts`** to **`admin/src/**`** (and add **`docs/src/**`** when tests exist). Adjust [`web/admin/src/vite-env.d.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/admin/src/vite-env.d.ts) comments so they match the new **`base`** behavior.
 
 No behavioral change intended for OAuth beyond correct **`redirect_uri`** origin path.
 
 ## Section 5 — CI and deploy bundle
 
-Extend **Prepare deploy bundle** in [`.github/workflows/site-build.yml`](../../../.github/workflows/site-build.yml) (and any mirrored local instructions in [`docs/site-deployment.md`](../../site-deployment.md)):
+Extend **Prepare deploy bundle** in [`.github/workflows/site-build.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-build.yml) (and any mirrored local instructions in [`docs/site-deployment.md`](../../site-deployment.md)):
 
 1. Run **`npm run build`** once (builds admin + docs).
 2. Copy **`web/dist/assets/`** → **`_bundle/public/assets/`** (create if missing).
@@ -119,5 +119,5 @@ Extend **Prepare deploy bundle** in [`.github/workflows/site-build.yml`](../../.
 ## References
 
 - [`docs/site-deployment.md`](../../site-deployment.md) — Build Site / Deploy Site flow.
-- [`vite.config.ts`](../../../vite.config.ts) — current admin-only Vite root (to be generalized per Section 1).
+- [`vite.config.ts`](https://github.com/fullsend-ai/fullsend/blob/main/vite.config.ts) — current admin-only Vite root (to be generalized per Section 1).
 - [`docs/ADRs/0019-web-source-and-cloudflare-site-layout.md`](../../ADRs/0019-web-source-and-cloudflare-site-layout.md) — `web/` vs `cloudflare_site/` split.

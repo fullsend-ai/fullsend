@@ -95,8 +95,8 @@ Where this spec conflicts with earlier wording (e.g. “top bar above whole shel
 
 ## References
 
-- App shell: [`web/docs/src/App.svelte`](../../../web/docs/src/App.svelte)
-- Tree: [`web/docs/src/lib/DocTreeNav.svelte`](../../../web/docs/src/lib/DocTreeNav.svelte)
-- Hash helpers: [`web/docs/src/lib/hashRoute.ts`](../../../web/docs/src/lib/hashRoute.ts)
-- Manifest tree build: [`web/docs/build/vitePluginDocs.ts`](../../../web/docs/build/vitePluginDocs.ts)
-- Link rewrite: [`web/docs/build/markdown.ts`](../../../web/docs/build/markdown.ts)
+- App shell: [`web/docs/src/App.svelte`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/App.svelte)
+- Tree: [`web/docs/src/lib/DocTreeNav.svelte`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/lib/DocTreeNav.svelte)
+- Hash helpers: [`web/docs/src/lib/hashRoute.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/lib/hashRoute.ts)
+- Manifest tree build: [`web/docs/build/vitePluginDocs.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/build/vitePluginDocs.ts)
+- Link rewrite: [`web/docs/build/markdown.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/build/markdown.ts)

@@ -57,4 +57,4 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/prioritize.yaml`](../../internal/scaffold/fullsend-repo/harness/prioritize.yaml)
+[`internal/scaffold/fullsend-repo/harness/prioritize.yaml`](https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/harness/prioritize.yaml)

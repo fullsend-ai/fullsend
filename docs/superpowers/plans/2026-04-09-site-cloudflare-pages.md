@@ -100,7 +100,7 @@ The job must only run for successful runs of **this repository’s** **Build Sit
 5. **Resolve URL:** `deployment-url` output, else parse stdout/stderr for `workers.dev`.
 6. **`actions/github-script`:** GitHub Deployments + PR comment; `description: Cloudflare Workers (static assets)`.
 
-Copy the full YAML from the repository file [`.github/workflows/site-deploy.yml`](../../../.github/workflows/site-deploy.yml) when implementing in another clone.
+Copy the full YAML from the repository file [`.github/workflows/site-deploy.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-deploy.yml) when implementing in another clone.
 
 - **`vars.CLOUDFLARE_PROJECT_NAME`:** Worker name (same variable name as before).
 

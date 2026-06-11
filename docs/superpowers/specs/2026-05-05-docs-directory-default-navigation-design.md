@@ -83,7 +83,7 @@ Whenever directory resolution completes (including **idempotent** cases where th
 
 ## References
 
-- App shell: [`web/docs/src/App.svelte`](../../../web/docs/src/App.svelte)
-- Tree: [`web/docs/src/lib/DocTreeNav.svelte`](../../../web/docs/src/lib/DocTreeNav.svelte)
-- Hash helpers: [`web/docs/src/lib/hashRoute.ts`](../../../web/docs/src/lib/hashRoute.ts)
-- Tree session: [`web/docs/src/lib/treeSession.ts`](../../../web/docs/src/lib/treeSession.ts)
+- App shell: [`web/docs/src/App.svelte`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/App.svelte)
+- Tree: [`web/docs/src/lib/DocTreeNav.svelte`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/lib/DocTreeNav.svelte)
+- Hash helpers: [`web/docs/src/lib/hashRoute.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/lib/hashRoute.ts)
+- Tree session: [`web/docs/src/lib/treeSession.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/src/lib/treeSession.ts)

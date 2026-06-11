@@ -55,4 +55,4 @@ See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/fix.yaml`](../../internal/scaffold/fullsend-repo/harness/fix.yaml)
+[`internal/scaffold/fullsend-repo/harness/fix.yaml`](https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/harness/fix.yaml)

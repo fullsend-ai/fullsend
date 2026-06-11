@@ -28,7 +28,7 @@ Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 ## CI authorization
 
 Pull requests trigger e2e via `pull_request_target` in
-[`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) so fork PRs can
+[`.github/workflows/e2e.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/e2e.yml) so fork PRs can
 use repository secrets. Because that exposes credentials to untrusted code, a
 **gate job** runs first (see workflow comments for why it is a separate job).
 

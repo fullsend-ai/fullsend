@@ -39,7 +39,7 @@ Status: Approved (implementation plan: [2026-05-05-docs-browser-enhancements.md]
 ## Markdown pipeline
 
 - **Front matter:** Parse (e.g. `remark-frontmatter` or equivalent), **remove** from the tree before HTML serialization so it never appears in prose output; attach **parsed object** (or YAML string + parsed JSON) to the per-page payload for future use.
-- **Internal links:** Rewrite relative `.md` / extensionless intra-repo links to **`#/<resolvedRouteKey>`** or **`#/<resolvedRouteKey>::<slug>`** per rules above; align with [`web/docs/build/markdown.ts`](../../../web/docs/build/markdown.ts) resolver behavior and add tests for `../`, `./`, and README-style paths.
+- **Internal links:** Rewrite relative `.md` / extensionless intra-repo links to **`#/<resolvedRouteKey>`** or **`#/<resolvedRouteKey>::<slug>`** per rules above; align with [`web/docs/build/markdown.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/docs/build/markdown.ts) resolver behavior and add tests for `../`, `./`, and README-style paths.
 - **Mermaid:** Unchanged marker in HTML (e.g. `.mermaid-doc`); client loads Mermaid only when needed.
 
 ## Option 1 — Production bundle shape (no new server code)

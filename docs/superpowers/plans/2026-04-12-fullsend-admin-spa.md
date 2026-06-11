@@ -399,13 +399,13 @@ git commit -m "feat(admin): scaffold Vite+Svelte SPA under /admin/"
 
 **Files:**
 
-- Implemented under repo root: [`cloudflare_site/wrangler.toml`](../../../cloudflare_site/wrangler.toml) — Worker `main`, `[assets]`, **`[[ratelimits]]`** for OAuth token + GitHub user proxy; **`GITHUB_APP_CLIENT_ID`** and **`GITHUB_APP_CLIENT_SECRET`** via process env / Wrangler vars + secrets (local: `CLOUDFLARE_INCLUDE_PROCESS_ENV`); **required** **`TURNSTILE_SITE_KEY`** + **`TURNSTILE_SECRET_KEY`** (503 `missing_turnstile_keys` if absent); **`client_secret`** never in the SPA bundle
-- Implemented: [`cloudflare_site/worker/src/index.ts`](../../../cloudflare_site/worker/src/index.ts) — `GET /api/oauth/authorize` (302 to GitHub with `client_id` from env); Worker-expanded `state` embedding Turnstile **site** key; `POST /api/oauth/token` with JSON `{ code, redirect_uri, code_verifier, turnstile_token }`; `GET /api/github/user` proxy. Validates `redirect_uri` allowlist (HTTPS or loopback `/admin/` entry). **No `Referer` fallback** — **`Origin` only** for CORS and for token tab-binding; **`GET /api/oauth/authorize`** without `Origin` uses the navigation rule (admin README / PR #240 High 1). GitHub token exchange uses `application/x-www-form-urlencoded`. **Hardening:** Cloudflare Turnstile siteverify on every token exchange; Wrangler **native rate limits** (30 / 60s on token exchange, 120 / 60s on `GET /api/github/user`, per Cloudflare location) keyed by path + `CF-Connecting-IP`.
-- Modify: root [`vite.config.ts`](../../../vite.config.ts) — `server.proxy` `/api` → `http://127.0.0.1:8787` (Wrangler dev port)
-- Modify: **repo root** [`package.json`](../../../package.json) — `wrangler`, `concurrently`; `npm run dev` runs Worker + Vite; optional `dev:vite`-only escape hatch if present
-- Create: [`web/admin/src/lib/auth/pkce.ts`](../../../web/admin/src/lib/auth/pkce.ts) — `randomVerifier()`, `challengeS256(verifier)` using **Web Crypto** (`crypto.subtle.digest`) so the SPA matches GitHub’s S256 rules
-- Create: [`web/admin/src/lib/auth/pkce.test.ts`](../../../web/admin/src/lib/auth/pkce.test.ts) — Vitest: length / shape / stable challenge for fixture verifier (use known test vector or mock subtle)
-- Repo-root [`sample.env.local`](../../../sample.env.local) — documents **`GITHUB_APP_CLIENT_ID`** / **`GITHUB_APP_CLIENT_SECRET`** and **required** Turnstile keys (includes **official Cloudflare dummy** site + secret for local dev); SPA does **not** embed client id; Worker adds it at authorize. **Turnstile:** `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` are **Worker-only**; the SPA bundle must **not** bake them in — the site key reaches the browser only via **Worker-expanded OAuth `state`** after authorize (see design Appendix A / High 1 plan). **Do not commit** `.env.local` or `.dev.vars`
+- Implemented under repo root: [`cloudflare_site/wrangler.toml`](https://github.com/fullsend-ai/fullsend/blob/main/cloudflare_site/wrangler.toml) — Worker `main`, `[assets]`, **`[[ratelimits]]`** for OAuth token + GitHub user proxy; **`GITHUB_APP_CLIENT_ID`** and **`GITHUB_APP_CLIENT_SECRET`** via process env / Wrangler vars + secrets (local: `CLOUDFLARE_INCLUDE_PROCESS_ENV`); **required** **`TURNSTILE_SITE_KEY`** + **`TURNSTILE_SECRET_KEY`** (503 `missing_turnstile_keys` if absent); **`client_secret`** never in the SPA bundle
+- Implemented: [`cloudflare_site/worker/src/index.ts`](https://github.com/fullsend-ai/fullsend/blob/main/cloudflare_site/worker/src/index.ts) — `GET /api/oauth/authorize` (302 to GitHub with `client_id` from env); Worker-expanded `state` embedding Turnstile **site** key; `POST /api/oauth/token` with JSON `{ code, redirect_uri, code_verifier, turnstile_token }`; `GET /api/github/user` proxy. Validates `redirect_uri` allowlist (HTTPS or loopback `/admin/` entry). **No `Referer` fallback** — **`Origin` only** for CORS and for token tab-binding; **`GET /api/oauth/authorize`** without `Origin` uses the navigation rule (admin README / PR #240 High 1). GitHub token exchange uses `application/x-www-form-urlencoded`. **Hardening:** Cloudflare Turnstile siteverify on every token exchange; Wrangler **native rate limits** (30 / 60s on token exchange, 120 / 60s on `GET /api/github/user`, per Cloudflare location) keyed by path + `CF-Connecting-IP`.
+- Modify: root [`vite.config.ts`](https://github.com/fullsend-ai/fullsend/blob/main/vite.config.ts) — `server.proxy` `/api` → `http://127.0.0.1:8787` (Wrangler dev port)
+- Modify: **repo root** [`package.json`](https://github.com/fullsend-ai/fullsend/blob/main/package.json) — `wrangler`, `concurrently`; `npm run dev` runs Worker + Vite; optional `dev:vite`-only escape hatch if present
+- Create: [`web/admin/src/lib/auth/pkce.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/admin/src/lib/auth/pkce.ts) — `randomVerifier()`, `challengeS256(verifier)` using **Web Crypto** (`crypto.subtle.digest`) so the SPA matches GitHub’s S256 rules
+- Create: [`web/admin/src/lib/auth/pkce.test.ts`](https://github.com/fullsend-ai/fullsend/blob/main/web/admin/src/lib/auth/pkce.test.ts) — Vitest: length / shape / stable challenge for fixture verifier (use known test vector or mock subtle)
+- Repo-root [`sample.env.local`](https://github.com/fullsend-ai/fullsend/blob/main/sample.env.local) — documents **`GITHUB_APP_CLIENT_ID`** / **`GITHUB_APP_CLIENT_SECRET`** and **required** Turnstile keys (includes **official Cloudflare dummy** site + secret for local dev); SPA does **not** embed client id; Worker adds it at authorize. **Turnstile:** `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` are **Worker-only**; the SPA bundle must **not** bake them in — the site key reaches the browser only via **Worker-expanded OAuth `state`** after authorize (see design Appendix A / High 1 plan). **Do not commit** `.env.local` or `.dev.vars`
 - Modify: `web/admin/.gitignore` (or root) — ensure `.env.local`, `.dev.vars`, `.wrangler` present (may already be from Task 2 Step 11)
 
 - [x] **Step 1: Add Worker + Wrangler config** — minimal `fetch` handler + CORS for **loopback** dev origins **or** browser origin equal to the Worker’s public origin (previews/production same host). **No `Referer`-based origin inference.** No logging of secrets or tokens.
@@ -425,7 +425,7 @@ git add cloudflare_site web/admin vite.config.ts package.json sample.env.local
 git commit -m "feat(admin): OAuth exchange Worker, Vite dev proxy, PKCE helpers"
 ```
 
-**Production follow-up:** Task **4b** is implemented via [`cloudflare_site/`](../../../cloudflare_site/) (Worker + static assets, same hostname as `/admin/`). OAuth hardening from PR #240 High 1 (Origin-only tab binding, Turnstile, native rate limits) is implemented in the Worker + Wrangler config above.
+**Production follow-up:** Task **4b** is implemented via [`cloudflare_site/`](https://github.com/fullsend-ai/fullsend/tree/main/cloudflare_site/) (Worker + static assets, same hostname as `/admin/`). OAuth hardening from PR #240 High 1 (Origin-only tab binding, Turnstile, native rate limits) is implemented in the Worker + Wrangler config above.
 
 ---
 
@@ -606,7 +606,7 @@ git commit -m "feat(admin): token storage and preview return_to allowlist"
 
 ### Task 4: Wire `site-build` to bundle `web/admin/dist` into the site artifact
 
-**Status (2026-04-20):** **Complete** — [`site-build.yml`](../../../.github/workflows/site-build.yml) runs root `npm ci` / `npm run build`, copies `web/admin/dist` → **`_bundle/public/admin/`** (not the plan’s older `_site/` + nested `admin/package-lock` pattern).
+**Status (2026-04-20):** **Complete** — [`site-build.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-build.yml) runs root `npm ci` / `npm run build`, copies `web/admin/dist` → **`_bundle/public/admin/`** (not the plan’s older `_site/` + nested `admin/package-lock` pattern).
 
 **Files:**
 
@@ -666,7 +666,7 @@ Push your branch to **origin** and open a PR **into `origin/main`** (triggers th
 
 **Goal:** One Cloudflare **Worker + static assets** deployment serves the static tree (mindmap + `/admin/*`) **and** the **same-origin** OAuth token exchange route the SPA calls in preview/production—so the browser never cross-origin `fetch`s `github.com/login/oauth/access_token`, and `client_secret` stays in Wrangler secrets / CI-injected vars only.
 
-**Context:** The repo ships **one** [`cloudflare_site/wrangler.toml`](../../../cloudflare_site/wrangler.toml) Worker with **`[assets]`** and programmatic routes for admin OAuth. [`site-deploy.yml`](../../../.github/workflows/site-deploy.yml) deploys from `cloudflare_site/` using artifacts from **Build Site** (see ADR 0019). Task **2b** / **4b** descriptions below refer to this layout (`cloudflare_site/worker/`, not a separate `admin/worker/` or legacy `site/` tree).
+**Context:** The repo ships **one** [`cloudflare_site/wrangler.toml`](https://github.com/fullsend-ai/fullsend/blob/main/cloudflare_site/wrangler.toml) Worker with **`[assets]`** and programmatic routes for admin OAuth. [`site-deploy.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-deploy.yml) deploys from `cloudflare_site/` using artifacts from **Build Site** (see ADR 0019). Task **2b** / **4b** descriptions below refer to this layout (`cloudflare_site/worker/`, not a separate `admin/worker/` or legacy `site/` tree).
 
 **Architecture options** (pick one during implementation; document the choice in the PR):
 
@@ -677,11 +677,11 @@ Push your branch to **origin** and open a PR **into `origin/main`** (triggers th
 
 **Files (Option A sketch):**
 
-- [`cloudflare_site/wrangler.toml`](../../../cloudflare_site/wrangler.toml) — `main = "worker/src/index.ts"`, **`[assets]`** → `public/`; vars/secrets for `GITHUB_APP_*`; optional **`[[ratelimits]]`** for OAuth paths (Wrangler ≥ 4.36)
-- [`cloudflare_site/worker/src/index.ts`](../../../cloudflare_site/worker/src/index.ts) — router: OAuth routes + delegate to `env.ASSETS` for static SPA
-- Modify: [`.github/workflows/site-build.yml`](../../../.github/workflows/site-build.yml) — ensure `site/public` layout before deploy still includes `admin/dist` output (unchanged from Task 4 unless worker build needs admin artifacts earlier)
-- Modify: [`.github/workflows/site-deploy.yml`](../../../.github/workflows/site-deploy.yml) — pass secrets to Wrangler for production + preview (`secrets` / `vars` inputs supported by `cloudflare/wrangler-action`); **never** echo secret values in logs
-- Modify: [`sample.env.local`](../../../sample.env.local) (and **Task 16** `docs/admin-spa-local-dev.md` when written) — production + preview Worker URLs, GitHub App callback URL list (`*.workers.dev` preview aliases, production hostname), which GitHub secrets / Cloudflare vars map to which Wrangler names
+- [`cloudflare_site/wrangler.toml`](https://github.com/fullsend-ai/fullsend/blob/main/cloudflare_site/wrangler.toml) — `main = "worker/src/index.ts"`, **`[assets]`** → `public/`; vars/secrets for `GITHUB_APP_*`; optional **`[[ratelimits]]`** for OAuth paths (Wrangler ≥ 4.36)
+- [`cloudflare_site/worker/src/index.ts`](https://github.com/fullsend-ai/fullsend/blob/main/cloudflare_site/worker/src/index.ts) — router: OAuth routes + delegate to `env.ASSETS` for static SPA
+- Modify: [`.github/workflows/site-build.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-build.yml) — ensure `site/public` layout before deploy still includes `admin/dist` output (unchanged from Task 4 unless worker build needs admin artifacts earlier)
+- Modify: [`.github/workflows/site-deploy.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-deploy.yml) — pass secrets to Wrangler for production + preview (`secrets` / `vars` inputs supported by `cloudflare/wrangler-action`); **never** echo secret values in logs
+- Modify: [`sample.env.local`](https://github.com/fullsend-ai/fullsend/blob/main/sample.env.local) (and **Task 16** `docs/admin-spa-local-dev.md` when written) — production + preview Worker URLs, GitHub App callback URL list (`*.workers.dev` preview aliases, production hostname), which GitHub secrets / Cloudflare vars map to which Wrangler names
 
 **Steps:**
 

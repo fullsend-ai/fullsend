@@ -2,7 +2,7 @@
 
 Reference documentation for the default agents shipped by fullsend.
 All agents below are enabled by default. The set of default agents is defined by
-the YAML files in [`internal/scaffold/fullsend-repo/harness/`](../../internal/scaffold/fullsend-repo/harness/).
+the YAML files in [`internal/scaffold/fullsend-repo/harness/`](https://github.com/fullsend-ai/fullsend/tree/main/internal/scaffold/fullsend-repo/harness/).
 
 | Agent | Summary |
 |-------|---------|

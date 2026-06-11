@@ -2,7 +2,7 @@
 
 This document describes intentional behavior of the **Cloudflare site Worker** that backs the admin SPA (`cloudflare_site/worker/`), especially CORS for `GET /api/github/user` and why there is **no** separate “admin OAuth enabled” boolean in configuration.
 
-For local setup and env vars, see [`web/admin/README.md`](../web/admin/README.md). For CI and deploy layout, see [`docs/site-deployment.md`](site-deployment.md).
+For local setup and env vars, see [`web/admin/README.md`](https://github.com/fullsend-ai/fullsend/blob/main/web/admin/README.md). For CI and deploy layout, see [`docs/site-deployment.md`](site-deployment.md).
 
 ## `GET /api/github/user` CORS: missing `Origin`
 

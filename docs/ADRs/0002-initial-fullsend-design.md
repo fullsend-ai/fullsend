@@ -32,7 +32,7 @@ Contributors need a **clear, implementable picture** of how work flows when **mu
 - **Automatically** (e.g. when specific labels are applied), and
 - **On demand** via **`/` commands** in issue or PR comments, so humans can **restart or resume** the pipeline from any stage without a single central orchestrator process.
 
-This matches Fullsend’s stated design direction: **trust derives from repository permissions**, **CODEOWNERS and similar rules remain human-owned guardrails**, and **the repository plus branch protection and checks act as the coordination layer** rather than a privileged coordinator agent (see [README](../../README.md) and [agent architecture](../problems/agent-architecture.md)).
+This matches Fullsend’s stated design direction: **trust derives from repository permissions**, **CODEOWNERS and similar rules remain human-owned guardrails**, and **the repository plus branch protection and checks act as the coordination layer** rather than a privileged coordinator agent (see [README](https://github.com/fullsend-ai/fullsend/blob/main/README.md) and [agent architecture](../problems/agent-architecture.md)).
 
 This ADR records a **high-level workflow design** and decomposes it into **building blocks** that teams can implement and harden separately. It assumes **adversarial thinking** and **sandboxed execution** for anything that runs untrusted code or fetches third-party content (aligned with [security threat model](../problems/security-threat-model.md)).
 
@@ -440,7 +440,7 @@ This ADR’s **normative** workflow ends when the PR is ready to merge and merge
 
 - [Vision](../vision.md)
 - [Roadmap](../roadmap.md)
-- [README](../../README.md)
+- [README](https://github.com/fullsend-ai/fullsend/blob/main/README.md)
 - [Agent architecture](../problems/agent-architecture.md)
 - [Security threat model](../problems/security-threat-model.md)
 - [Autonomy spectrum](../problems/autonomy-spectrum.md)
