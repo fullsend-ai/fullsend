@@ -1,0 +1,37 @@
+---
+# fullsend-stage: jira-triage
+name: Jira Triage
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        required: true
+        type: string
+      project_key:
+        required: true
+        type: string
+
+concurrency:
+  group: fullsend-jira-triage-${{ inputs.project_key }}-${{ inputs.issue_key }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-jira-triage.yml@v0
+    with:
+      issue_key: ${{ inputs.issue_key }}
+      project_key: ${{ inputs.project_key }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      fullsend_ai_ref: v0
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}

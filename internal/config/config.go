@@ -58,6 +58,13 @@ type RepoConfig struct {
 	Enabled bool     `yaml:"enabled"`
 }
 
+// JiraProjectConfig holds configuration for a Jira project enrolled in fullsend.
+type JiraProjectConfig struct {
+	ProjectKey        string   `yaml:"project_key"`
+	Host              string   `yaml:"host"`
+	LinkedGitHubRepos []string `yaml:"linked_github_repos,omitempty"`
+}
+
 // OrgConfig is the top-level configuration for a fullsend organization.
 type OrgConfig struct {
 	Version                string                `yaml:"version"`
@@ -68,11 +75,12 @@ type OrgConfig struct {
 	Agents                 []AgentEntry          `yaml:"agents"`
 	Repos                  map[string]RepoConfig `yaml:"repos"`
 	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
+	JiraProjects           []JiraProjectConfig   `yaml:"jira_projects,omitempty"`
 }
 
 // ValidRoles returns the set of recognized agent roles.
 func ValidRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "jira-triage"}
 }
 
 // ValidProviders returns the set of recognized inference providers.
