@@ -100,6 +100,7 @@ var vendoredReusableWorkflows = []string{
 
 var vendoredDefaultsInfraPaths = []string{
 	"action.yml",
+	".github/actions/check-e2e-authorization/action.yml",
 	".github/actions/mint-token/action.yml",
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
