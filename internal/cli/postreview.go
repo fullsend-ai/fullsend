@@ -87,6 +87,14 @@ has moved, a stale-head failure is posted instead.`,
 				return fmt.Errorf("parsing review result: %w", err)
 			}
 
+			// Ensure the summary body is consistent with the
+			// verdict and findings. A stale or multi-run scenario
+			// can produce a body that says "No findings" while the
+			// action is request-changes with critical findings.
+			if patched := ensureBodyFindingsConsistency(&parsed); patched {
+				printer.StepWarn("Review body was inconsistent with findings — synthesized body from structured findings")
+			}
+
 			// CLI flag takes precedence over JSON field.
 			if headSHA != "" {
 				parsed.HeadSHA = headSHA
@@ -504,6 +512,101 @@ func minimizeStaleReviews(ctx context.Context, client forge.Client, user string,
 		}
 	}
 	printer.StepDone("Stale reviews minimized")
+}
+
+// ensureBodyFindingsConsistency detects when the review body omits
+// significant findings despite the action mapping to REQUEST_CHANGES.
+// Instead of regex-patching individual phrases (which is fragile —
+// see #2055), it checks whether the body references any critical/high
+// finding categories. If none are referenced, the body is replaced
+// entirely with one synthesized from the structured findings array.
+// Returns true if the body was replaced.
+func ensureBodyFindingsConsistency(result *ReviewResult) bool {
+	if result == nil || len(result.Findings) == 0 {
+		return false
+	}
+
+	event, ok := reviewActionToEvent(result.Action)
+	if !ok || event != "REQUEST_CHANGES" {
+		return false
+	}
+
+	// Collect critical/high findings — these must be reflected in the body.
+	var significant []ReviewFinding
+	for _, f := range result.Findings {
+		switch strings.ToLower(f.Severity) {
+		case "critical", "high":
+			significant = append(significant, f)
+		}
+	}
+	if len(significant) == 0 {
+		return false
+	}
+
+	// Check whether the body already references any significant finding.
+	// A body is considered consistent if it mentions at least one
+	// critical/high finding's category. Categories are hyphenated tokens
+	// like "logic-error", "auth-bypass", "missing-test" — specific enough
+	// to avoid false positives against natural prose.
+	bodyLower := strings.ToLower(result.Body)
+	for _, f := range significant {
+		if f.Category != "" && strings.Contains(bodyLower, strings.ToLower(f.Category)) {
+			return false
+		}
+	}
+
+	// Body does not reference any significant findings — synthesize a
+	// complete replacement from the structured findings array.
+	result.Body = synthesizeReviewBody(result.Findings)
+	return true
+}
+
+// synthesizeReviewBody builds a review comment body from the structured
+// findings array, following the format defined in the pr-review skill
+// (step 7). Findings are grouped by severity level with only populated
+// severity sections included.
+func synthesizeReviewBody(findings []ReviewFinding) string {
+	// Group findings by severity.
+	order := []string{"critical", "high", "medium", "low", "info"}
+	groups := make(map[string][]ReviewFinding)
+	for _, f := range findings {
+		sev := strings.ToLower(f.Severity)
+		groups[sev] = append(groups[sev], f)
+	}
+
+	var b strings.Builder
+	b.WriteString("## Review\n\n### Findings\n")
+
+	for _, sev := range order {
+		fs, ok := groups[sev]
+		if !ok {
+			continue
+		}
+		// Title-case the severity for the section heading.
+		heading := strings.ToUpper(sev[:1]) + sev[1:]
+		fmt.Fprintf(&b, "\n#### %s\n\n", heading)
+		for _, f := range fs {
+			b.WriteString("- **[")
+			b.WriteString(f.Category)
+			b.WriteString("]**")
+			if f.File != "" {
+				fmt.Fprintf(&b, " `%s", f.File)
+				if f.Line > 0 {
+					fmt.Fprintf(&b, ":%d", f.Line)
+				}
+				b.WriteString("`")
+			}
+			b.WriteString(" — ")
+			b.WriteString(strings.TrimSpace(f.Description))
+			if f.Remediation != "" {
+				b.WriteString("\n  Remediation: ")
+				b.WriteString(strings.TrimSpace(f.Remediation))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
 }
 
 // parseReviewResult attempts to parse the body as a JSON ReviewResult.

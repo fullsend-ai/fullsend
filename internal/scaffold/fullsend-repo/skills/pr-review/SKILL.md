@@ -694,6 +694,12 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   entirely. If the only findings are medium/low/info, only show that
   section. If there are no findings at all, state "No findings." in
   place of the findings section.
+- **Body-verdict consistency:** When the action is `request-changes` or
+  `reject`, the body MUST list the findings that drove that verdict.
+  Never produce a body that says "No findings" alongside a blocking
+  action with populated `findings[]`. The CLI has a safety net that
+  detects this contradiction and synthesizes a replacement body, but
+  getting it right at the source avoids the fallback.
 - **No footer.** Do not repeat the outcome or include boilerplate
   about pushes clearing the review.
 

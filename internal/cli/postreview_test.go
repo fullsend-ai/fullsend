@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -1000,4 +1001,190 @@ func TestPostApprovedFollowUpIssues_DisabledIsNoop(t *testing.T) {
 
 	err := postApprovedFollowUpIssues(context.Background(), "acme", "repo", 9, parsed, printer)
 	require.NoError(t, err)
+}
+
+func TestEnsureBodyFindingsConsistency_SynthesizesBody(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n### Findings\nNo findings.",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "critical",
+				Category:    "logic-error",
+				File:        "pipeline.yaml",
+				Line:        42,
+				Description: "CEL expression uses wrong operator.",
+				Remediation: "Use && instead of ||.",
+			},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.True(t, patched)
+	// Body should be entirely replaced (not regex-patched).
+	assert.NotContains(t, result.Body, "No findings")
+	assert.Contains(t, result.Body, "## Review")
+	assert.Contains(t, result.Body, "### Findings")
+	assert.Contains(t, result.Body, "#### Critical")
+	assert.Contains(t, result.Body, "logic-error")
+	assert.Contains(t, result.Body, "pipeline.yaml:42")
+	assert.Contains(t, result.Body, "CEL expression uses wrong operator.")
+	assert.Contains(t, result.Body, "Remediation: Use && instead of ||.")
+}
+
+func TestEnsureBodyFindingsConsistency_MultipleSeverities(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n### Findings\nNo findings.\n\n(Previous run had issues)",
+		Findings: []ReviewFinding{
+			{Severity: "critical", Category: "logic-error", File: "a.yaml", Line: 10, Description: "First bug."},
+			{Severity: "high", Category: "security", File: "b.go", Line: 20, Description: "Second bug."},
+			{Severity: "low", Category: "style", File: "c.go", Line: 5, Description: "Nitpick."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.True(t, patched)
+	// Synthesized body includes ALL findings (not just critical/high).
+	assert.Contains(t, result.Body, "#### Critical")
+	assert.Contains(t, result.Body, "a.yaml:10")
+	assert.Contains(t, result.Body, "#### High")
+	assert.Contains(t, result.Body, "b.go:20")
+	assert.Contains(t, result.Body, "#### Low")
+	assert.Contains(t, result.Body, "Nitpick.")
+	// Old body content is fully replaced, not preserved.
+	assert.NotContains(t, result.Body, "Previous run had issues")
+}
+
+func TestEnsureBodyFindingsConsistency_NoopWhenBodyReferencesCategory(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n### Findings\n#### Critical\n- **[logic-error]** `pipeline.yaml:42` — Bad CEL expression.",
+		Findings: []ReviewFinding{
+			{Severity: "critical", Category: "logic-error", Description: "Bad CEL expression."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.False(t, patched, "body already references the finding category, should not be patched")
+}
+
+func TestEnsureBodyFindingsConsistency_NoopWhenApprove(t *testing.T) {
+	result := ReviewResult{
+		Action: "approve",
+		Body:   "## Review\n### Findings\nNo findings.",
+		Findings: []ReviewFinding{
+			{Severity: "low", Category: "style", Description: "Nitpick."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.False(t, patched, "approve action should not trigger patching")
+}
+
+func TestEnsureBodyFindingsConsistency_NoopWhenComment(t *testing.T) {
+	result := ReviewResult{
+		Action: "comment",
+		Body:   "## Review\n### Findings\nNo findings.",
+		Findings: []ReviewFinding{
+			{Severity: "high", Category: "security", Description: "Auth bypass."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.False(t, patched, "comment action should not trigger patching")
+}
+
+func TestEnsureBodyFindingsConsistency_NoopWhenOnlyLowFindings(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n### Findings\nNo findings.",
+		Findings: []ReviewFinding{
+			{Severity: "low", Category: "style", Description: "Nitpick."},
+			{Severity: "medium", Category: "docs", Description: "Missing docs."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.False(t, patched, "only low/medium findings should not trigger patching")
+}
+
+func TestEnsureBodyFindingsConsistency_NoopWhenNoFindings(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n### Findings\nNo findings.",
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.False(t, patched, "empty findings array should not trigger patching")
+}
+
+func TestEnsureBodyFindingsConsistency_NilResult(t *testing.T) {
+	patched := ensureBodyFindingsConsistency(nil)
+	assert.False(t, patched)
+}
+
+func TestEnsureBodyFindingsConsistency_RejectAction(t *testing.T) {
+	result := ReviewResult{
+		Action: "reject",
+		Body:   "## Review\n### Findings\nNo findings.",
+		Findings: []ReviewFinding{
+			{Severity: "high", Category: "auth-bypass", File: "auth.go", Line: 99, Description: "Auth bypass."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.True(t, patched, "reject maps to REQUEST_CHANGES, should trigger patching")
+	assert.Contains(t, result.Body, "auth-bypass")
+	assert.Contains(t, result.Body, "Auth bypass.")
+}
+
+func TestEnsureBodyFindingsConsistency_FindingWithoutFile(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n### Findings\nNo findings.",
+		Findings: []ReviewFinding{
+			{Severity: "critical", Category: "architecture", Description: "Major design flaw."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.True(t, patched)
+	assert.Contains(t, result.Body, "architecture")
+	assert.Contains(t, result.Body, "Major design flaw.")
+	// No file location backtick in the output.
+	assert.NotContains(t, result.Body, "` —")
+}
+
+func TestEnsureBodyFindingsConsistency_CaseInsensitiveCategory(t *testing.T) {
+	result := ReviewResult{
+		Action: "request-changes",
+		Body:   "## Review\n#### Critical\n- **[Logic-Error]** Bad expression.",
+		Findings: []ReviewFinding{
+			{Severity: "critical", Category: "logic-error", Description: "Bad expression."},
+		},
+	}
+
+	patched := ensureBodyFindingsConsistency(&result)
+	assert.False(t, patched, "case-insensitive category match should detect the reference")
+}
+
+func TestSynthesizeReviewBody(t *testing.T) {
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "missing-test", File: "svc.go", Line: 10, Description: "No test.", Remediation: "Add one."},
+		{Severity: "critical", Category: "logic-error", File: "main.go", Line: 5, Description: "Off by one."},
+		{Severity: "low", Category: "style", Description: "Naming."},
+	}
+
+	body := synthesizeReviewBody(findings)
+	// Critical should come before high, high before low.
+	critIdx := strings.Index(body, "#### Critical")
+	highIdx := strings.Index(body, "#### High")
+	lowIdx := strings.Index(body, "#### Low")
+	assert.Greater(t, highIdx, critIdx, "Critical should appear before High")
+	assert.Greater(t, lowIdx, highIdx, "High should appear before Low")
+	assert.Contains(t, body, "Remediation: Add one.")
+	assert.Contains(t, body, "`main.go:5`")
+	assert.NotContains(t, body, "#### Medium")
+	assert.NotContains(t, body, "#### Info")
 }
