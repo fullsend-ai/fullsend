@@ -52,7 +52,6 @@ pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
 author_association="$(jq -r '.author_association' <<<"${pr_json}")"
 has_ok_label="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '[.labels[].name] | index($label) != null' <<<"${pr_json}")"
 
-has_fresh_label=false
 label_removed=false
 authorized=false
 reason="unauthorized"
@@ -75,7 +74,6 @@ elif [[ "${has_ok_label}" == "true" ]]; then
   fi
 
   if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
-    has_fresh_label=true
     authorized=true
     reason="ok_to_test"
   else
