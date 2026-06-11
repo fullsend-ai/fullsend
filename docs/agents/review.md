@@ -48,7 +48,24 @@ applied — the `pull_request_review` event triggers the [fix agent](fix.md) dir
 Stale outcome labels from prior review runs are removed before the new one is
 applied.
 
+The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
+`priority/high`) but these are informational -- they do not control agent
+behavior.
+
 ## Configuration and extension
+
+### Skill: `issue-labels`
+
+The review agent includes the `issue-labels` skill to discover your repo's
+labels and apply them to PRs during review. This is the same skill used by the
+[triage agent](triage.md) -- overloading it affects both agents.
+
+To overload the built-in skill, create your own `issue-labels` skill in
+`.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
+`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
+You can also overload it at the org level in your `.fullsend` config repo at
+`customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
+the upstream default -- no other configuration needed.
 
 See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Customizing with Skills](../guides/user/customizing-with-skills.md).
