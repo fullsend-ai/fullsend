@@ -1,0 +1,71 @@
+name: Mint Token
+description: >-
+  Exchange a GitHub OIDC token for a role-scoped installation token via the
+  fullsend token mint. Requires id-token: write permission on the calling job.
+
+inputs:
+  role:
+    description: Agent role name (e.g. triage, coder, review, fullsend)
+    required: true
+  repos:
+    description: Comma-separated repo names to scope the token to
+    required: true
+  mint_url:
+    description: URL of the token mint (typically from vars.FULLSEND_MINT_URL)
+    required: true
+
+outputs:
+  token:
+    description: Scoped GitHub installation token
+    value: ${{ steps.mint.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mint token via OIDC
+      id: mint
+      shell: bash
+      env:
+        MINT_URL: ${{ inputs.mint_url }}
+        ROLE: ${{ inputs.role }}
+        REPOS: ${{ inputs.repos }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$MINT_URL" ]]; then
+          echo "::error::FULLSEND_MINT_URL is not set"
+          exit 1
+        fi
+        echo "::add-mask::$MINT_URL"
+        if [[ -z "$REPOS" ]]; then
+          echo "::error::repos input is required"
+          exit 1
+        fi
+        OIDC_TOKEN=$(curl -sSf --retry 3 --retry-delay 2 --retry-all-errors \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint" | jq -r '.value')
+        if [[ -z "$OIDC_TOKEN" || "$OIDC_TOKEN" == "null" ]]; then
+          echo "::error::Failed to obtain OIDC token"
+          exit 1
+        fi
+        echo "::add-mask::$OIDC_TOKEN"
+        REPOS_JSON=$(echo "$REPOS" | jq -Rc 'split(",") | map(select(length > 0))')
+        BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" \
+          '{role: $role, repos: $repos}')
+        echo "Requesting token: role=$ROLE repos=$REPOS"
+        MINT_RESPONSE=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
+          -H "Authorization: Bearer $OIDC_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "$BODY" \
+          "${MINT_URL}/v1/token")
+        echo "::add-mask::$MINT_RESPONSE"
+        TOKEN=$(echo "$MINT_RESPONSE" | jq -r '.token')
+        if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+          echo "::error::Token mint returned no token for role=$ROLE"
+          exit 1
+        fi
+        echo "::add-mask::$TOKEN"
+        GRANTED_REPOS=$(echo "$MINT_RESPONSE" | jq -r '.granted_repos | if . then map(strings) | join(",") else empty end')
+        GRANTED_PERMS=$(echo "$MINT_RESPONSE" | jq -r '.granted_permissions | if . then to_entries | map("\(.key)=\(.value)") | join(",") else empty end')
+        REPO_SELECTION=$(echo "$MINT_RESPONSE" | jq -r '.repository_selection // empty')
+        echo "Granted scope: repos=${GRANTED_REPOS:-} permissions=${GRANTED_PERMS:-} repo_selection=${REPO_SELECTION:-}"
+        echo "token=$TOKEN" >> "$GITHUB_OUTPUT"

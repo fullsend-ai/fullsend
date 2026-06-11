@@ -1,6 +1,6 @@
 ---
 title: "13. Admin install: repository enrollment v1"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-infrastructure
   - repo-readiness
@@ -16,7 +16,7 @@ Date: 2026-04-05
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -24,7 +24,7 @@ Admin install must attach each enabled repository to the shared agent pipeline w
 
 ## Decision
 
-**Enrollment v1** is defined exactly by the normative specification at [`docs/normative/admin-install/v1/adr-0013-enrollment/SPEC.md`](../normative/admin-install/v1/adr-0013-enrollment/SPEC.md). Tooling that performs enrollment MUST conform to that document for branch names, shim path, pull request title and body, base branch selection, dispatch wiring (`agent.yaml`, `FULLSEND_DISPATCH_TOKEN`, `github.repository_owner` / `.fullsend` target), shim YAML shape (including `pull_request_target` for PR events), and forge operation ordering.
+**Enrollment v1** is defined by the implementation in `internal/layers/enrollment.go` and its test suite. Tooling that performs enrollment MUST conform to the documented behavior for branch names, shim path, pull request title and body, base branch selection, dispatch wiring, shim YAML shape (including `pull_request_target` for PR events), and forge operation ordering.
 
 ## Consequences
 

@@ -39,10 +39,10 @@ func newInferenceLayer(t *testing.T, client *forge.FakeClient, provider inferenc
 func vertexProvider() *fakeProvider {
 	return &fakeProvider{
 		name:        "vertex",
-		secretNames: []string{"FULLSEND_GCP_SA_KEY_JSON", "FULLSEND_GCP_PROJECT_ID"},
+		secretNames: []string{"FULLSEND_GCP_WIF_PROVIDER", "FULLSEND_GCP_PROJECT_ID"},
 		secrets: map[string]string{
-			"FULLSEND_GCP_SA_KEY_JSON": `{"type":"service_account"}`,
-			"FULLSEND_GCP_PROJECT_ID":  "my-project",
+			"FULLSEND_GCP_WIF_PROVIDER": "projects/123/locations/global/workloadIdentityPools/pool/providers/gh",
+			"FULLSEND_GCP_PROJECT_ID":   "my-project",
 		},
 		variables: map[string]string{
 			"FULLSEND_GCP_REGION": "global",
@@ -72,7 +72,7 @@ func TestInferenceLayer_Install_StoresSecrets(t *testing.T) {
 		secretMap[s.Name] = s.Value
 	}
 
-	assert.Equal(t, `{"type":"service_account"}`, secretMap["FULLSEND_GCP_SA_KEY_JSON"])
+	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/gh", secretMap["FULLSEND_GCP_WIF_PROVIDER"])
 	assert.Equal(t, "my-project", secretMap["FULLSEND_GCP_PROJECT_ID"])
 
 	// Variables should also have been set.
@@ -114,22 +114,42 @@ func TestInferenceLayer_Install_SecretWriteError(t *testing.T) {
 	assert.Contains(t, err.Error(), "permission denied")
 }
 
-func TestInferenceLayer_Install_SkipsWhenSecretsExist(t *testing.T) {
+func TestInferenceLayer_Install_ProvisionErrorWithExistingSecrets(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.Secrets["test-org/.fullsend/FULLSEND_GCP_SA_KEY_JSON"] = true
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_WIF_PROVIDER"] = true
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
 	provider := vertexProvider()
-	layer, buf := newInferenceLayer(t, client, provider)
+	provider.err = errors.New("gcp auth failed")
+	provider.secrets = nil
+	layer, _ := newInferenceLayer(t, client, provider)
+
+	err := layer.Install(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gcp auth failed")
+	assert.Empty(t, client.CreatedSecrets)
+}
+
+func TestInferenceLayer_Install_OverwritesExistingSecrets(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_WIF_PROVIDER"] = true
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
+	provider := vertexProvider()
+	layer, _ := newInferenceLayer(t, client, provider)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	// Should not have created any new secrets.
-	assert.Empty(t, client.CreatedSecrets)
-	// Should indicate skipping in output.
-	assert.Contains(t, buf.String(), "already provisioned")
+	// Secrets should be written unconditionally (upsert).
+	require.Len(t, client.CreatedSecrets, 2)
 
-	// Variables should still have been written (always runs).
+	secretMap := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretMap[s.Name] = s.Value
+	}
+	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/gh", secretMap["FULLSEND_GCP_WIF_PROVIDER"])
+	assert.Equal(t, "my-project", secretMap["FULLSEND_GCP_PROJECT_ID"])
+
+	// Variables should also have been written.
 	require.Len(t, client.Variables, 1)
 	assert.Equal(t, "FULLSEND_GCP_REGION", client.Variables[0].Name)
 }
@@ -146,7 +166,7 @@ func TestInferenceLayer_Uninstall_Noop(t *testing.T) {
 
 func TestInferenceLayer_Analyze_AllPresent(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.Secrets["test-org/.fullsend/FULLSEND_GCP_SA_KEY_JSON"] = true
+	client.Secrets["test-org/.fullsend/FULLSEND_GCP_WIF_PROVIDER"] = true
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
 	client.VariablesExist["test-org/.fullsend/FULLSEND_GCP_REGION"] = true
 	provider := vertexProvider()
@@ -176,7 +196,7 @@ func TestInferenceLayer_Analyze_NonePresent(t *testing.T) {
 func TestInferenceLayer_Analyze_Partial(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Secrets["test-org/.fullsend/FULLSEND_GCP_PROJECT_ID"] = true
-	// FULLSEND_GCP_SA_KEY_JSON missing
+	// FULLSEND_GCP_WIF_PROVIDER missing
 	provider := vertexProvider()
 	layer, _ := newInferenceLayer(t, client, provider)
 

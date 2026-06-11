@@ -11,7 +11,8 @@ type Provider interface {
 
 	// Provision acquires credentials and returns secrets to store.
 	// Returns a map of secret-name → secret-value pairs to store
-	// as repo secrets on .fullsend.
+	// as repo secrets on .fullsend. Implementations must be
+	// idempotent — Install calls Provision on every run.
 	Provision(ctx context.Context) (map[string]string, error)
 
 	// SecretNames returns the names of secrets this provider manages,

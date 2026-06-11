@@ -137,7 +137,7 @@ See [architecture.md](architecture.md) and [#101](https://github.com/fullsend-ai
 
 ### Skill
 
-A markdown file (optionally with a `scripts/` directory) that gives an agent context and tool authorizations for a specific task. Skills are not general "agent capabilities" — they are concrete, scoped instruction sets. A skill can declare which tools it is authorized to use; when a user or system approves the skill, they implicitly authorize those tools. Skills are assembled by the [harness](#harness) and are the primary mechanism for encoding agent behavior.
+A directory containing a `SKILL.md` file and optional companion files (scripts, sub-agents, assets) that gives an agent context and tool authorizations for a specific task. Skills are not general "agent capabilities" — they are concrete, scoped instruction sets. A skill can declare which tools it is authorized to use; when a user or system approves the skill, they implicitly authorize those tools. Skills are assembled by the [harness](#harness) and are the primary mechanism for encoding agent behavior.
 See [architecture.md](architecture.md) and [codebase-context.md](problems/codebase-context.md).
 
 ### Stage
@@ -152,7 +152,7 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
 
 ### Slash Command
 
-A GitHub comment in the form `/triage`, `/code`, `/review`, etc., that manually triggers an agent workflow. Slash commands are parsed by the entry point and gated by an ACL — not every user can invoke every command. They provide an explicit human-initiated trigger alongside the automatic label-based triggers.
+A GitHub comment in the form `/fs-triage`, `/fs-code`, `/fs-review`, etc., that manually triggers an agent workflow. The `/fs-` prefix namespaces fullsend commands to avoid collisions with other AI tools. Slash commands are parsed by the entry point and gated by an ACL — not every user can invoke every command. They provide an explicit human-initiated trigger alongside the automatic label-based triggers.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 2.
 
 ## T

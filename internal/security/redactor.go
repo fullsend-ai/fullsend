@@ -79,15 +79,20 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 		locs := p.regex.FindAllStringSubmatchIndex(current, -1)
 		for i := len(locs) - 1; i >= 0; i-- {
 			loc := locs[i]
-			// Use last capture group as the secret value.
+			// Use last non-negative capture group as the secret value.
 			// FindAllStringSubmatchIndex returns pairs: [full_start, full_end, group1_start, group1_end, ...]
 			nGroups := len(loc)/2 - 1
 			if nGroups < 1 {
 				continue
 			}
-			lastGroupIdx := nGroups
-			start := loc[lastGroupIdx*2]
-			end := loc[lastGroupIdx*2+1]
+			start, end := -1, -1
+			for g := nGroups; g >= 1; g-- {
+				if loc[g*2] >= 0 && loc[g*2+1] >= 0 {
+					start = loc[g*2]
+					end = loc[g*2+1]
+					break
+				}
+			}
 			if start < 0 || end < 0 {
 				continue
 			}
@@ -162,11 +167,11 @@ func defaultStructuralPatterns() []secretPattern {
 		name    string
 		pattern string
 	}{
-		{"env_assignment", `(?:^|\s)(?:export\s+)?([A-Z_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)[A-Z_]*)\s*=\s*['"]?([^\s'"]{8,})['"]?`},
-		{"json_field", `"(?:api[_-]?key|token|secret|password|credential|auth[_-]?token|access[_-]?key|private[_-]?key)"\s*:\s*"([^"]{8,})"`},
+		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*['"]?([^\s'"]{8,})['"]?`},
+		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"([^"]{8,})"|'([^']{8,})')`},
 		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*(?:Bearer\s+)?(\S{8,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},
-		{"db_connection_password", `(?:postgres|mysql|mongodb|redis)://[^:]+:([^@]{4,})@`},
+		{"db_connection_password", `(?:postgres(?:ql)?|mysql|mongodb|redis)://[^:]+:(.{4,})@[^@\s/]+`},
 	}
 
 	result := make([]secretPattern, len(patterns))

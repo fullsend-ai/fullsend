@@ -2,6 +2,18 @@
 
 Thank you for your interest in contributing! This document covers the social norms and processes we follow. For where to place your contribution (problem docs, ADRs, etc.), see the [README](README.md#how-to-contribute).
 
+## Commit messages
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/). See [COMMITS.md](COMMITS.md) for the full specification, type selection rules, and examples.
+
+## DCO (Developer Certificate of Origin)
+
+This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on commits. Add `Signed-off-by` to your commits with `git commit -s`.
+
+**Human-driven agent sessions** (e.g., using Claude Code locally) should sign off — the human directing the session is the one certifying the DCO, just as they would for any other commit.
+
+**Autonomous agent commits are exempt.** The fullsend code and fix agents run without a human in the loop at commit time. The DCO is a human attestation — it certifies personhood and legal authority to contribute. No one is present to make that certification in an autonomous session. These agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+
 ## Pull request workflow
 
 ### Opening a PR
@@ -21,7 +33,7 @@ Thank you for your interest in contributing! This document covers the social nor
 - PRs require approval from a [CODEOWNERS](CODEOWNERS) member before merging.
 ## Working with ADRs
 
-ADRs (Architecture Decision Records) are **point-in-time records**. Once accepted, their content is frozen — do not edit the Context, Decision, or Consequences sections. If a decision needs to change, write a new ADR that supersedes the old one. See the [ADR template](docs/ADRs/0000-adr-template.md) and [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md) for full details.
+ADRs (Architecture Decision Records) are **point-in-time records**. Once accepted, do not substantially rewrite their Context, Decision, or Consequences sections — if a decision needs to change, write a new ADR that supersedes the old one. Minor annotations are welcome: cross-references to related ADRs, short notes linking to newer decisions, and typo fixes. See the [ADR template](docs/ADRs/0000-adr-template.md) and [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md) for full details.
 
 ### ADR numbering
 
@@ -30,6 +42,8 @@ ADR filenames use a four-digit number (`NNNN-short-description.md`). When multip
 ## Issues
 
 When in doubt about whether something warrants a PR, start with an issue. Issues are low-friction and can graduate into PRs, problem docs, or ADRs later.
+
+To find open issues for human contribution, use the [contributor issue search](https://github.com/fullsend-ai/fullsend/issues?q=is%3Aissue%20is%3Aopen%20-author%3Aapp%2Ffullsend-ai-fullsend%20-author%3Aapp%2Ffullsend-ai-triage%20-author%3Aapp%2Ffullsend-ai-review%20-author%3Aapp%2Ffullsend-ai-prioritize%20-author%3Aapp%2Ffullsend-ai-coder%20-author%3Aapp%2Ffullsend-ai-retro%20-label%3Aready-to-code). This search excludes issues reserved for agents.
 
 ## License
 

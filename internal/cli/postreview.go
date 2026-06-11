@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,8 +19,15 @@ import (
 
 const reviewMarker = "<!-- fullsend:review-agent -->"
 
+// StaleHeadExitCode is the process exit code used when a review is
+// discarded because the PR HEAD moved after the agent reviewed it.
+// post-review.sh uses this to detect stale-head outcomes and
+// re-dispatch a fresh review for the current HEAD.
+const StaleHeadExitCode = 10
+
 var hexSHARe = regexp.MustCompile(`^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$`)
 var reasonRe = regexp.MustCompile(`^[a-zA-Z0-9_-]*$`)
+var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
 func newPostReviewCmd() *cobra.Command {
 	var (
@@ -63,7 +71,6 @@ has moved, a stale-head failure is posted instead.`,
 			if pr <= 0 {
 				return fmt.Errorf("--pr must be a positive integer, got %d", pr)
 			}
-
 			parts := strings.SplitN(repo, "/", 2)
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 				return fmt.Errorf("--repo must be in owner/repo format, got %q", repo)
@@ -119,7 +126,11 @@ has moved, a stale-head failure is posted instead.`,
 				return err
 			}
 
-			return submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, dryRun, printer)
+			if err := submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
+				return err
+			}
+
+			return postApprovedFollowUpIssues(cmd.Context(), owner, repoName, pr, parsed, printer)
 		},
 	}
 
@@ -137,10 +148,22 @@ has moved, a stale-head failure is posted instead.`,
 
 // ReviewResult represents a parsed review result file.
 type ReviewResult struct {
-	Body    string `json:"body"`
-	Action  string `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
-	HeadSHA string `json:"head_sha"` // commit SHA the agent reviewed
-	Reason  string `json:"reason"`   // failure reason (when action is "failure")
+	Body     string          `json:"body"`
+	Action   string          `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
+	HeadSHA  string          `json:"head_sha"` // commit SHA the agent reviewed
+	Reason   string          `json:"reason"`   // failure reason (when action is "failure")
+	Findings []ReviewFinding `json:"findings"`
+}
+
+// ReviewFinding is the structured form emitted by the review agent.
+type ReviewFinding struct {
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	File        string `json:"file"`
+	Line        int    `json:"line,omitempty"`
+	Description string `json:"description"`
+	Remediation string `json:"remediation,omitempty"`
+	Actionable  bool   `json:"actionable,omitempty"`
 }
 
 // reviewActionToEvent maps a ReviewResult action to a GitHub PR review event.
@@ -148,7 +171,7 @@ func reviewActionToEvent(action string) (string, bool) {
 	switch strings.ToLower(action) {
 	case "approve":
 		return "APPROVE", true
-	case "request-changes", "request_changes":
+	case "request-changes":
 		return "REQUEST_CHANGES", true
 	case "comment":
 		return "COMMENT", true
@@ -185,12 +208,27 @@ func checkStaleHead(ctx context.Context, client forge.Client, owner, repo string
 	return false, currentSHA, nil
 }
 
-// postStaleHeadNotice posts a failure comment when the PR HEAD has moved
-// since the review was generated.
-func postStaleHeadNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, reviewedSHA, currentSHA string, cfg sticky.Config, printer *ui.Printer) error {
-	body := fmt.Sprintf(`## Review: automated review
+// staleHeadError is returned when a review is discarded because the PR
+// HEAD moved after the agent reviewed it. It carries StaleHeadExitCode
+// so the CLI can exit with a distinct code that post-review.sh detects.
+type staleHeadError struct {
+	reviewedSHA string
+	currentSHA  string
+}
 
-**Outcome:** failure
+func (e *staleHeadError) Error() string {
+	return fmt.Sprintf("review stale: reviewed %s but HEAD is now %s", e.reviewedSHA, e.currentSHA)
+}
+
+// ExitCode returns StaleHeadExitCode.
+func (e *staleHeadError) ExitCode() int { return StaleHeadExitCode }
+
+// postStaleHeadNotice posts a failure comment when the PR HEAD has moved
+// since the review was generated. Returns a *staleHeadError so the CLI
+// exits with StaleHeadExitCode, enabling post-review.sh to re-dispatch.
+func postStaleHeadNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, reviewedSHA, currentSHA string, cfg sticky.Config, printer *ui.Printer) error {
+	body := fmt.Sprintf(`## Review
+
 **Reason:** stale-head
 
 The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. This review was discarded to avoid approving unreviewed code.`, reviewedSHA, currentSHA)
@@ -198,7 +236,7 @@ The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. T
 	if _, err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
 		return fmt.Errorf("posting stale-head notice: %w", err)
 	}
-	return fmt.Errorf("review stale: reviewed %s but HEAD is now %s", reviewedSHA, currentSHA)
+	return &staleHeadError{reviewedSHA: reviewedSHA, currentSHA: currentSHA}
 }
 
 // postFailureNotice posts a failure comment as a sticky comment.
@@ -216,9 +254,8 @@ func postFailureNotice(ctx context.Context, client forge.Client, owner, repo str
 	if parsed.Body != "" {
 		body = parsed.Body
 	} else {
-		body = fmt.Sprintf(`## Review: automated review
+		body = fmt.Sprintf(`## Review
 
-**Outcome:** failure
 **Reason:** %s
 
 This PR was NOT reviewed. Do not count this as an approval.`, reason)
@@ -236,14 +273,22 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // review is pinned to that commit via the commit_id field, closing
 // the TOCTOU gap between the stale-head check and review submission.
 //
+// When findings are present and have file/line locations, they are
+// posted as inline diff comments on the review. This places feedback
+// directly on the relevant code lines instead of aggregating
+// everything in a single top-level comment.
+//
 // The review body varies by event type to balance notification noise
 // against GitHub API requirements:
 //   - APPROVE: empty body (avoids duplicate notification)
 //   - REQUEST_CHANGES: includes a link to the sticky comment (API
-//     requires a non-empty body for this event)
-//   - COMMENT: skipped entirely (sticky comment already covers it,
-//     and the API requires a non-empty body)
-func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, dryRun bool, printer *ui.Printer) error {
+//     requires a non-empty body for this event); when inline comments
+//     are attached, the body references them instead
+//   - COMMENT: skipped when no inline-eligible findings exist (sticky
+//     comment already covers it); when inline comments are present, a
+//     COMMENT review is submitted with a body linking to the sticky
+//     comment so findings appear on the relevant code lines
+func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer) error {
 	event, ok := reviewActionToEvent(action)
 	if !ok {
 		printer.StepInfo(fmt.Sprintf("Unknown review action %q, skipping formal review", action))
@@ -265,13 +310,42 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		minimizeStaleReviews(ctx, client, user, reviews, printer)
 	}
 
-	if event == "COMMENT" {
+	var diffHunks map[string][][2]int
+	if fileDiffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr); err != nil {
+		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", err))
+	} else if len(fileDiffs) == 0 {
+		printer.StepInfo("PR file list is empty, inline comments disabled")
+	} else {
+		diffHunks = make(map[string][][2]int, len(fileDiffs))
+		for _, f := range fileDiffs {
+			diffHunks[f.Path] = parseDiffLineRanges(f.Patch)
+		}
+	}
+
+	// We filter inline comments here because the GitHub API cannot
+	// accept review comments on lines outside the PR diff. The
+	// findings themselves remain in the sticky comment body and
+	// continue to influence the review verdict.
+	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+
+	if fileFiltered > 0 {
+		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
+	}
+	if lineFiltered > 0 {
+		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict", lineFiltered))
+	}
+
+	// COMMENT verdicts skip the formal review unless there are inline-
+	// eligible findings worth attaching. When inline comments exist,
+	// a COMMENT review is submitted so the findings appear on the
+	// relevant code lines.
+	if event == "COMMENT" && len(inlineComments) == 0 {
 		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
 		return nil
 	}
 
 	var reviewBody string
-	if event == "REQUEST_CHANGES" {
+	if event == "REQUEST_CHANGES" || (event == "COMMENT" && len(inlineComments) > 0) {
 		reviewBody = "See the review comment above for full details."
 		if commentURL != "" {
 			reviewBody = fmt.Sprintf("See the [review comment](%s) for full details.", commentURL)
@@ -279,22 +353,123 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	}
 
 	printer.StepStart(fmt.Sprintf("Submitting %s review", event))
-	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA); err != nil {
+	if len(inlineComments) > 0 {
+		printer.StepInfo(fmt.Sprintf("Attaching %d inline comment(s)", len(inlineComments)))
+	}
+	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA, inlineComments); err != nil {
 		return fmt.Errorf("submitting review: %w", err)
 	}
 	printer.StepDone("Review submitted")
 	return nil
 }
 
-// dismissStaleRequestChanges dismisses the most recent CHANGES_REQUESTED
-// review by the authenticated user when the new verdict is softer.
+// findingsToReviewComments converts review findings with file and line
+// locations into inline review comments. Findings without a file path
+// or line number are omitted — they remain in the sticky comment body.
+// When diffHunks is non-nil, findings referencing files outside the PR
+// diff or lines outside any diff hunk are omitted to avoid GitHub 422
+// errors. Files with empty hunk lists (binary files, truncated patches)
+// skip line-level filtering — the file is known to be in the diff but
+// hunk coverage is unavailable. Returns the comments and counts of
+// findings dropped for each reason (file not in diff, line not in hunk).
+func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
+	var comments []forge.ReviewComment
+	var fileFiltered, lineFiltered int
+	for _, f := range findings {
+		if f.File == "" || f.Line <= 0 {
+			continue
+		}
+		if diffHunks != nil {
+			hunks, fileInDiff := diffHunks[f.File]
+			if !fileInDiff {
+				fileFiltered++
+				continue
+			}
+			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
+				lineFiltered++
+				continue
+			}
+		}
+		comments = append(comments, forge.ReviewComment{
+			Path: f.File,
+			Line: f.Line,
+			Body: formatFindingComment(f),
+		})
+	}
+	return comments, fileFiltered, lineFiltered
+}
+
+// formatFindingComment renders a single review finding as a Markdown
+// inline comment body.
+func formatFindingComment(f ReviewFinding) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
+	b.WriteString("\n\n")
+	b.WriteString(strings.TrimSpace(f.Description))
+	if f.Remediation != "" {
+		b.WriteString("\n\n**Suggested fix:** ")
+		b.WriteString(strings.TrimSpace(f.Remediation))
+	}
+	return b.String()
+}
+
+// parseDiffLineRanges extracts new-file line ranges from unified diff
+// hunk headers. Each returned [2]int is an inclusive [start, end] range
+// of lines on the right (new) side of the diff that can receive inline
+// comments.
+func parseDiffLineRanges(patch string) [][2]int {
+	var ranges [][2]int
+	for _, line := range strings.Split(patch, "\n") {
+		if !strings.HasPrefix(line, "@@") {
+			continue
+		}
+		m := hunkHeaderRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		start, _ := strconv.Atoi(m[1])
+		size := 1
+		if m[2] != "" {
+			size, _ = strconv.Atoi(m[2])
+		}
+		if size == 0 {
+			continue
+		}
+		ranges = append(ranges, [2]int{start, start + size - 1})
+	}
+	return ranges
+}
+
+// lineInHunks returns true if line falls within any of the given ranges.
+func lineInHunks(line int, hunks [][2]int) bool {
+	for _, h := range hunks {
+		if line >= h[0] && line <= h[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// postApprovedFollowUpIssues is disabled pending #1137. Follow-up issues
+// should only be created after the PR merges, not while it is still open.
+func postApprovedFollowUpIssues(_ context.Context, _, _ string, _ int, parsed ReviewResult, printer *ui.Printer) error {
+	if strings.ToLower(parsed.Action) != "approve" {
+		return nil
+	}
+	printer.StepInfo("Review follow-up issue creation is temporarily disabled (#1137)")
+	return nil
+}
+
+// dismissStaleRequestChanges dismisses all CHANGES_REQUESTED reviews
+// by the authenticated user when the new verdict is softer (comment or
+// approve). This ensures that stale blocking reviews do not persist
+// after the bot has cleared its objections.
 func dismissStaleRequestChanges(ctx context.Context, client forge.Client, owner, repo string, pr int, newEvent, user string, reviews []forge.PullRequestReview, printer *ui.Printer) {
 	if newEvent == "REQUEST_CHANGES" {
 		return
 	}
 
-	for i := len(reviews) - 1; i >= 0; i-- {
-		r := reviews[i]
+	for _, r := range reviews {
 		if r.User != user || r.State != "CHANGES_REQUESTED" {
 			continue
 		}
@@ -304,7 +479,6 @@ func dismissStaleRequestChanges(ctx context.Context, client forge.Client, owner,
 		} else {
 			printer.StepDone("Stale review dismissed")
 		}
-		break
 	}
 }
 

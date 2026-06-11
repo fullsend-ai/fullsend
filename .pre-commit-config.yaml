@@ -1,3 +1,5 @@
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -7,13 +9,19 @@ repos:
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: detect-private-key
-        exclude: "internal/layers/secrets_test\\.go$|internal/security/scanner_test\\.go$|tests/.*test_.*\\.py$"
+        exclude: "internal/layers/secrets_test\\.go$|internal/security/scanner_test\\.go$|internal/dispatch/gcf/provisioner_test\\.go$|internal/cli/mint_test\\.go$|tests/.*test_.*\\.py$"
       - id: check-added-large-files
         args: ["--maxkb=1000"]
       - id: check-merge-conflict
       - id: check-json
       - id: check-toml
       - id: mixed-line-ending
+
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: v0.19.1
+    hooks:
+      - id: gitlint
+        stages: [commit-msg]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.7
@@ -43,10 +51,29 @@ repos:
     hooks:
       - id: gitleaks
 
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ["-x", "-e", "SC1091,SC2001,SC2016"]
+
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.11
     hooks:
       - id: actionlint
+        files: |
+          (?x)^(
+            \.github/workflows/
+            |internal/scaffold/fullsend-repo/\.github/workflows/
+            |internal/scaffold/fullsend-repo/templates/
+          )
+        args:
+          - -ignore
+          - unexpected key "queue" for "concurrency"
+          - -ignore
+          - property "workflow_repository" is not defined
+          - -ignore
+          - SC2016
 
   - repo: local
     hooks:
@@ -98,4 +125,11 @@ repos:
         entry: ./hack/lint-workflow-size
         language: script
         files: ^internal/scaffold/fullsend-repo/(\.github/workflows/|templates/)
+        pass_filenames: false
+
+      - id: lint-agent-docs
+        name: lint agent doc references
+        entry: ./hack/lint-agent-docs
+        language: script
+        files: ^(internal/scaffold/fullsend-repo/harness/|docs/agents/)
         pass_filenames: false

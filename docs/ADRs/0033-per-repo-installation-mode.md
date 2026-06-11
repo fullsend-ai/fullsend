@@ -171,7 +171,7 @@ This is the key new artifact, published in `fullsend-ai/fullsend/.github/workflo
 
 The routing logic (identical to per-org `dispatch.yml`) maps:
 - `issues` + `labeled` → stage based on label name (`ready-to-code` → code, `ready-for-review` → review)
-- `issue_comment` + slash commands → `/triage`, `/code`, `/review`, `/fix`, `/retro`
+- `issue_comment` + slash commands → `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
 - `issue_comment` + `needs-info` label (non-command) → auto-triage
 - `pull_request_target` + `opened`/`synchronize`/`ready_for_review` → review
 - `pull_request_target` + `closed` → retro
@@ -217,7 +217,7 @@ Per-repo maps to these profiles:
 | **Self-managed** | Per-repo user deploys own mint + own Apps | `fullsend admin install owner/repo --mint-project=my-proj` creates everything |
 
 **SaaS profile (default)**: The simplest path. Shared public Apps
-(`fullsend-triage`, `fullsend-coder`, `fullsend-review`) are pre-created
+(`fullsend-ai-triage`, `fullsend-ai-coder`, `fullsend-ai-review`) are pre-created
 by the platform operator and installed on the per-repo user's repo (requires
 org admin approval). The `mint-token` composite action exchanges a GitHub
 OIDC token for a scoped installation token — no PEMs, client IDs, or App
@@ -229,9 +229,10 @@ Apps ([ADR 0007](0007-per-role-github-apps.md)), but user-owned. The user
 deploys their own mint and creates their own Apps via `fullsend admin
 install owner/repo --mint-project=my-proj`.
 
-The mint's `job_workflow_ref` validation accepts both patterns:
-- `{org}/.fullsend/.github/workflows/*.yml@*` (per-org)
-- `fullsend-ai/fullsend/.github/workflows/reusable-*.yml@*` (per-repo)
+The mint's `job_workflow_ref` validation accepts three patterns:
+- `{org}/.fullsend/.github/workflows/*.yml@*` (per-org shim workflows)
+- `fullsend-ai/fullsend/.github/workflows/reusable-*.yml@*` (upstream reusable workflows called via `workflow_call`)
+- `{owner}/{repo}/.github/workflows/*.yml@*` where `{owner}/{repo}` is registered in `PER_REPO_WIF_REPOS` (per-repo workflows running directly via `workflow_dispatch`)
 
 The `repository_owner` claim scopes tokens to the calling org/user.
 `ALLOWED_ORGS` on the mint controls which orgs may request tokens.
@@ -245,34 +246,59 @@ fullsend admin install <org>            # per-org installation
 fullsend admin install <owner/repo>     # per-repo installation
 ```
 
-Per-repo flags (only valid with `owner/repo` argument):
-- `--mint-url` — token mint URL for OIDC token exchange (required)
-- `--gcp-auth-mode` — GCP authentication mode: `wif` or `sa_key` (default: `sa_key`)
-- `--scaffold-customized` — create `.fullsend/customized/` directory structure
+Per-repo flags:
+- `--inference-project` — GCP project for Vertex AI inference (required)
+- `--inference-region` — GCP region for Vertex AI inference (default: `global`)
+- `--inference-wif-provider` — full WIF provider resource name (`projects/{number}/locations/global/.../providers/{id}`); auto-provisioned if omitted
 
-Per-org-only flags (`--mint-project`, `--mint-region`, `--public`, etc.) are rejected when an `owner/repo` argument is given.
+Shared flags (valid for both per-org and per-repo):
+- `--mint-url` — token mint URL for OIDC token exchange (optional; auto-discovered from `--mint-project`/`--mint-region` if omitted)
+- `--mint-project` — GCP project containing the mint function (defaults to `--inference-project` in per-repo)
+- `--mint-region` — cloud region for the mint function (default: `us-central1`)
+- `--agents` — comma-separated agent roles (default: `fullsend,triage,coder,review,retro,prioritize`)
+- `--dry-run` — preview changes without making them
+- `--skip-app-setup` — skip GitHub App creation (reuse existing apps)
+- `--skip-mint-deploy` — skip Cloud Function deployment, reuse existing mint URL
+- `--skip-mint-check` — skip mint validation, GCP provisioning, and app setup; requires `--mint-url`
+- `--public` — create public unlisted GitHub Apps (for multi-org)
+- `--mint-provider` — token mint provider backend (default: `gcf`)
+- `--mint-source-dir` — path to mint function source directory
+- `--app-set` — app set name prefix for GitHub Apps (default: `fullsend-ai`)
+
+Per-org-only flags are rejected when an `owner/repo` argument is given:
+- `--enroll-all`, `--enroll-none` — control org-wide repository enrollment
+
+All other flags are shared between per-org and per-repo modes — per-repo can create GitHub Apps, deploy a mint, and manage public apps when existing infrastructure is not found.
 
 **Per-repo install steps**:
 
-1. Generates `.github/workflows/fullsend.yml` from the per-repo shim template.
-2. Generates `.fullsend/config.yaml` with agent roles and kill switch.
-3. Optionally creates `.fullsend/customized/` directory structure (`--scaffold-customized`).
-4. Commits all scaffold files to the target repo via the GitHub API.
-5. Sets repository variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, `FULLSEND_GCP_AUTH_MODE`).
-6. Sets repository secrets (`FULLSEND_GCP_PROJECT_ID`, and either WIF credentials or SA key JSON depending on `--gcp-auth-mode`).
-7. In WIF mode, auto-provisions WIF pool/provider/service account if `--gcp-wif-provider` is omitted.
+1. Discovers existing infrastructure: auto-discovers mint URL and app IDs from `--mint-project`/`--mint-region` in a single API call.
+2. If apps are missing and `--skip-app-setup` is not set: creates GitHub Apps via the browser-based manifest flow (same as per-org). PEMs are stored in Secret Manager.
+3. If no mint exists: deploys the token mint Cloud Function (same provisioner path as per-org).
+4. If a mint already exists: validates PEMs, registers the org, and sets up per-repo WIF.
+5. Auto-provisions inference WIF pool/provider if `--inference-wif-provider` is omitted.
+6. Generates scaffold files (`.github/workflows/fullsend.yaml`, `.fullsend/config.yaml`, `.fullsend/customized/` directories).
+7. Commits all scaffold files to the target repo via the GitHub API.
+8. Sets repository variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`).
+9. Sets repository secrets (`FULLSEND_GCP_PROJECT_ID`, WIF credentials).
 
-Per-repo install requires only `repo` and `workflow` OAuth scopes (no `admin:org`).
+Per-repo install requires only `repo` and `workflow` OAuth scopes when reusing existing infrastructure. When creating apps, scope escalation to `admin:org` is required (same as per-org).
 
 ### 8. Coexistence
 
-Per-repo and per-org coexist within the same org. Some repos use the org `.fullsend` config repo (per-org), others run independently (per-repo). There is no conflict — they use different dispatch paths and credential stores.
+Per-repo and per-org coexist within the same org. Some repos use the org `.fullsend` config repo (per-org), others run independently (per-repo). They use different dispatch paths, credential stores, and shim templates.
+
+To prevent per-org enrollment from overriding a per-repo installation, per-repo install sets a repository Actions variable `FULLSEND_PER_REPO_INSTALL=true`. The per-org enrollment flow checks this guard at three points:
+
+1. **CLI (`--enroll-all`)**: Skips repos with `FULLSEND_PER_REPO_INSTALL=true`. Prompts interactively if the guard exists but is not `true` (e.g., admin cleared it). Fails closed on API errors (skips the repo rather than risking overwrite).
+2. **`reconcile-repos.sh`**: Checks the guard via the GitHub API before both enrollment and unenrollment. Skips repos with `true`. Fails closed on non-404 API errors.
+3. **Enrollment `Analyze`**: Reports per-repo repos as "per-repo install, skipped" and excludes them from drift calculation.
 
 A mixed-visibility org is a natural fit: public repos use per-org with a public `.fullsend`, while private repos use per-repo to avoid routing event payloads through a public config repo. Per-repo should be the default recommendation for any private repo.
 
-Migration between models is straightforward:
-- **Per-repo → per-org**: Remove workflow file from target repo, add to `.fullsend/config.yaml` enrollment.
-- **Per-org → per-repo**: Remove from enrollment, add workflow file and set `FULLSEND_MINT_URL` as a repo variable.
+Migration between models:
+- **Per-repo → per-org**: Remove `FULLSEND_PER_REPO_INSTALL` variable from the repo, remove workflow file, add to `.fullsend/config.yaml` enrollment.
+- **Per-org → per-repo**: Remove from enrollment, run `fullsend admin install owner/repo` (sets the guard variable and writes the per-repo shim).
 
 ## Consequences
 

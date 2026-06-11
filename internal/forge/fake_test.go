@@ -457,6 +457,24 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
 		}},
+		{"SetOrgVariableRepos", func(fc *FakeClient) error {
+			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
+		}},
+		{"GetOrgVariableRepos", func(fc *FakeClient) error {
+			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
+			return err
+		}},
+		{"DeleteIssueComment", func(fc *FakeClient) error {
+			return fc.DeleteIssueComment(ctx, "o", "r", 1)
+		}},
+		{"ListDirectoryContents", func(fc *FakeClient) error {
+			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			return err
+		}},
+		{"GetFileContentAtRef", func(fc *FakeClient) error {
+			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			return err
+		}},
 	}
 
 	for _, m := range methods {
@@ -522,6 +540,11 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgVariableExists(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
+			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
+			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
+			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
+			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 		}(i)
 	}
 

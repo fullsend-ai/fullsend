@@ -1,0 +1,87 @@
+---
+# fullsend shim workflow (per-repo installation mode)
+# Routes events to agent workflows via reusable-dispatch.yml.
+# All agent execution happens in this repo's context — no external
+# config repo is needed.
+#
+# Security: pull_request_target runs the BASE branch version of this workflow,
+# preventing PRs from modifying it to exfiltrate credentials.
+# This shim never checks out PR code, so it is not vulnerable to "pwn request"
+# attacks.
+#
+# Routing: this shim forwards the raw event context to reusable-dispatch.yml,
+# which determines the stage and conditionally calls the appropriate
+# reusable-{stage}.yml workflow. Adding a new stage requires only a case
+# branch in reusable-dispatch.yml — zero changes to this repo.
+name: fullsend
+
+permissions:
+  actions: write
+  id-token: write
+  contents: write
+  issues: write
+  packages: read
+  pull-requests: write
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, closed]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  dispatch:
+    concurrency:
+      group: fullsend-dispatch-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    if: >-
+      github.event_name != 'issue_comment'
+      || github.event.comment.user.type != 'Bot'
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0
+    with:
+      event_action: ${{ github.event.action }}
+      install_mode: per-repo
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      fullsend_ai_ref: v0 # Should match the above `uses` version
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+  stop-fix:
+    if: >-
+      github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.comment.user.type != 'Bot'
+        && github.event.comment.body == '/fs-fix-stop'
+        && (
+          github.event.comment.author_association == 'OWNER'
+          || github.event.comment.author_association == 'MEMBER'
+          || github.event.comment.author_association == 'COLLABORATOR'
+          || github.event.comment.author_association == 'CONTRIBUTOR'
+          || github.event.comment.user.login == github.event.issue.user.login
+        )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Add fullsend-no-fix label and notify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh label create "fullsend-no-fix" --repo "$REPO" \
+            --description "Skip bot-triggered fix agent runs" --color "FBCA04" \
+            --force 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --repo "$REPO" \
+            --add-label "fullsend-no-fix"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" \
+            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fs-fix\` to re-engage."

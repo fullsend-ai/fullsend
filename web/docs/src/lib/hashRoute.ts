@@ -17,7 +17,7 @@ function normalizeDirPath(raw: string): string {
 
 /**
  * Empty hash or `#/` means “use default document” (caller resolves).
- * Directory URLs use a trailing slash: `#/guides/admin/`.
+ * Directory URLs use a trailing slash: `#/guides/getting-started/`.
  */
 export function parseDocHash(hash: string): ParsedDocHash | null {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;

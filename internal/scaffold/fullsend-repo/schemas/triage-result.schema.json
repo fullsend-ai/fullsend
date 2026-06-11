@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "blocked", "feature-request"]
+      "enum": ["insufficient", "duplicate", "sufficient", "blocked", "question"]
     },
     "reasoning": {
       "type": "string",
@@ -34,6 +34,9 @@
       "type": "string",
       "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$",
       "description": "HTML URL of the blocking issue or PR (e.g., https://github.com/org/repo/issues/99 or https://github.com/org/repo/pull/55)"
+    },
+    "label_actions": {
+      "$ref": "#/$defs/label_actions"
     }
   },
   "allOf": [
@@ -52,18 +55,6 @@
     {
       "if": { "properties": { "action": { "const": "blocked" } }, "required": ["action"] },
       "then": { "required": ["blocked_by"] }
-    },
-    {
-      "if": { "properties": { "action": { "const": "feature-request" } }, "required": ["action"] },
-      "then": {
-        "not": {
-          "anyOf": [
-            { "required": ["clarity_scores"] },
-            { "required": ["triage_summary"] },
-            { "required": ["duplicate_of"] }
-          ]
-        }
-      }
     }
   ],
   "$defs": {
@@ -86,7 +77,7 @@
       "properties": {
         "title": { "type": "string", "minLength": 1 },
         "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
-        "category": { "type": "string", "enum": ["bug", "performance", "security", "documentation", "enhancement", "other"] },
+        "category": { "type": "string", "enum": ["bug", "performance", "security", "documentation", "feature", "other"] },
         "problem": { "type": "string", "minLength": 1 },
         "root_cause_hypothesis": { "type": "string", "minLength": 1 },
         "reproduction_steps": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -94,6 +85,32 @@
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
         "proposed_test_case": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "label_actions": {
+      "type": "object",
+      "required": ["reason", "actions"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Single sentence explaining why these labels are being applied or removed"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["action", "label"],
+            "properties": {
+              "action": { "type": "string", "enum": ["add", "remove"] },
+              "label": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._/: +-]+$" }
+            },
+            "additionalProperties": false
+          }
+        }
       },
       "additionalProperties": false
     }

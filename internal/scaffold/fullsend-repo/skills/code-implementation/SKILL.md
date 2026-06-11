@@ -307,6 +307,18 @@ Before writing code, form a concrete plan:
    changed behavior needs updated tests.
 7. **Assess risk** — will this change affect other callers? Does it change a
    public interface? Could it break downstream consumers?
+8. **Search for old literal values when changing constants or defaults** — when
+   the task changes a constant, default, or configuration value from X to Y:
+   1. Search for all references to the constant/variable **name** (symbol search).
+   2. Search for the **old value X** as a string literal in test files, docs, and
+      config (e.g., `*_test.go`, `*.md`, `*.yaml`). Tests often hardcode expected
+      values rather than referencing constants, so a symbol-only search misses them.
+   3. Evaluate each match — some may be intentional (e.g., testing the non-default
+      case) while others are stale assumptions that need updating.
+9. **Verify API contracts per code path** — if the fix removes, empties,
+   or changes a parameter sent to an external API, check the API documentation or
+   test each code path that uses the function. Different operations
+   (e.g., approve vs request-changes) often have different required fields.
 
 When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
@@ -627,12 +639,12 @@ Hard-wrap guidelines when a limit is configured:
 - URLs that exceed the limit may remain on one line (gitlint usually
   allows this via `ignore-body-lines`)
 - `Closes #N` and similar trailers: keep on one line
-- **`Signed-off-by:`** — `git commit -s` auto-generates this from
-  `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL`. If the resulting line
-  exceeds the body-max-line-length, gitlint CI will reject the commit.
-  Before committing, check: if the `Signed-off-by` trailer would exceed
-  the limit, omit the `-s` flag and write a shorter trailer manually, or
-  omit it entirely if the repo does not require DCO sign-off
+- **`Signed-off-by:`** — do NOT use `git commit -s`. The DCO is a
+  human attestation of personhood and legal authority to contribute.
+  No human is present to make that certification in an autonomous
+  agent session. Your commits use the GitHub App bot identity, which
+  the DCO app auto-exempts. The human who merges the PR accepts
+  responsibility for the contribution
 
 The commit body should:
 - Explain **what** changed and **why** (not just "fix bug")
@@ -641,7 +653,7 @@ The commit body should:
 - Note any trade-offs, assumptions, or edge cases
 
 ```bash
-git commit -s -m "<type>(#<number>): <short-description>
+git commit -m "<type>(#<number>): <short-description>
 
 <What changed and why. Hard-wrap at the limit from
 .gitlint if one is configured. Write substantive
@@ -661,16 +673,13 @@ is blocked by `disallowedTools`):
 
 ```bash
 git reset --soft HEAD~1
-git commit -s -m "<fixed title>
+git commit -m "<fixed title>
 
 <fixed body — respect ALL line-length rules>"
 gitlint --commit HEAD
 ```
 
 Common gitlint failures:
-- **B1 body-max-line-length** on `Signed-off-by:` — the auto-generated
-  trailer is too long. Recommit without `-s` and either add a shorter
-  sign-off manually or omit it if the repo doesn't require DCO.
 - **T1 title-max-length** — shorten the title.
 - **B1 body-max-line-length** on prose — re-wrap the offending line.
 

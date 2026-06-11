@@ -1,0 +1,10 @@
+[
+  {
+    "field": { "id": "score", "name": "RICE Score" },
+    "number": 42.5
+  },
+  {
+    "field": { "id": "reach", "name": "RICE Reach" },
+    "number": 10
+  }
+]

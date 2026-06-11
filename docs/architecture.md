@@ -4,8 +4,8 @@ What are the components of the agent execution stack?
 
 > **This is a living document.** It must always reflect the current state of
 > architectural decisions. When an ADR is accepted (or superseded), this
-> document is updated to match. ADRs are point-in-time records and are not
-> modified after acceptance; this document is where the *current* truth lives.
+> document is updated to match. ADRs are point-in-time records that may receive minor annotations
+> but are not substantially rewritten; this document is where the *current* truth lives.
 > A reader should be able to understand the system's architecture from this
 > document alone, without tracing a chain of ADRs.
 
@@ -43,6 +43,8 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Repo maintenance: a workflow in `.fullsend` (`.github/workflows/repo-maintenance.yml`) reconciles enrollment shims in target repos when `config.yaml` changes or on manual dispatch. The CLI's `EnrollmentLayer.Install()` dispatches this workflow via `workflow_dispatch` and monitors it for completion, then reports any enrollment PRs created in target repos.
 - Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
+- Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)).
+- Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 
 **Open questions:**
 
@@ -83,6 +85,12 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   triggers a retry (capped); exhaustion is a hard failure — no unvalidated
   output is emitted
   ([ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md)).
+- Forge-portable harness schema: `role` and `slug` move into the harness
+  YAML (eliminating the config.yaml `agents:` block dependency), and a
+  `forge:` section separates platform-specific config (scripts, skills,
+  runner_env) from platform-neutral fields. Forge blocks inherit from
+  top-level defaults and override only deltas
+  ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
 
 **Open questions:**
 
@@ -95,6 +103,10 @@ The harness draws its configuration from the adopting organization's **`.fullsen
 The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. Responsible for performing the assigned task within the boundaries set by the sandbox and the configuration provided by the harness.
 
 This is the thing that actually reasons and acts. Everything else in this document exists to support, constrain, or coordinate it.
+
+**Decided (implementation):**
+
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; the MVP registers Claude Code only. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
 
 **Open questions:**
 
@@ -112,7 +124,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 **Decided:**
 
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for request-body credential injection or response transformation, (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
-- Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{org}--{role}-app-pem` — org-scoped naming so each org's PEMs are isolated within the shared GCP project ([ADR 0007](ADRs/0007-per-role-github-apps.md)).
+- Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. Org isolation is enforced via `ALLOWED_ORGS`, `ROLE_APP_IDS`, and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -128,6 +140,10 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 The mechanism that assigns work to agents and prevents conflicts. Responsible for translating triggers (GitHub events, schedules, manual requests) into agent tasks and ensuring two agents don't work the same problem simultaneously.
 
 The existing design principle is that [the repo is the coordinator](problems/agent-architecture.md#interaction-model-the-repo-as-coordinator) — branch protection, CODEOWNERS, status checks, and GitHub events provide coordination without a central orchestrator. The agent dispatch and coordination layer may be nothing more than the glue that connects GitHub webhooks to agent infrastructure. Or it may need to be more.
+
+**Decided:**
+
+- Event-driven stage dispatch runs synchronously via `workflow_call` to preserve run correlation in the GitHub Actions UI (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 
 **Open questions:**
 
@@ -174,6 +190,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 **Decided:**
 
 - JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
+- Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 
 **Open questions:**
 
@@ -187,7 +204,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 The catalog of available agent roles and their configurations. Responsible for defining what agent types exist, what capabilities each has, and how they are instantiated.
 
-The registry is the bridge between the abstract roles defined in [agent-architecture.md](problems/agent-architecture.md) (correctness agent, intent alignment agent, etc.) and the concrete runtime configurations that the harness uses to set up each agent.
+The registry is the bridge between the abstract roles defined in [agent-architecture.md](problems/agent-architecture.md) (correctness sub-agent, intent & coherence sub-agent, security sub-agent, etc.) and the concrete runtime configurations that the harness uses to set up each agent.
 
 Fullsend provides a base set of agent definitions. The adopting organization's **`.fullsend`** repository extends this with org-specific agents in its `agents/` directory, following the inheritance model: fullsend defaults, then org config, then per-repo overrides. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
 
@@ -208,7 +225,7 @@ ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dis
 
 ### 2. Slash-command parser + ACL
 
-Parses `/triage`, `/code`, `/review`, and related commands and enforces who is allowed to invoke each.
+Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each.
 ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
 
 ### 3. Label state machine guard
@@ -273,7 +290,7 @@ ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observabil
 
 ### 14. retro agent runtime
 
-Retrospective analyst — examines completed or in-progress agent workflows, identifies improvement opportunities, and files proposals as GitHub issues. Runs automatically on PR close (merged or rejected) and on-demand via `/retro` command. Analyzes the full workflow graph (triage, code, review, fix agent interactions and human interventions) and posts a summary comment on the originating PR/issue linking to all filed proposals.
+Retrospective analyst — examines completed or in-progress agent workflows, identifies improvement opportunities, and files proposals as GitHub issues. Runs automatically on PR close (merged or rejected) and on-demand via `/fs-retro` command. Analyzes the full workflow graph (triage, code, review, fix agent interactions and human interventions) and posts a summary comment on the originating PR/issue linking to all filed proposals.
 
 ## Configuration layering
 
@@ -323,6 +340,15 @@ Skills flow downward through this stack. A repo-level skill might encode domain 
 AGENTS.md files follow the same layering. A repo's `.fullsend/AGENTS.md` gives agents repo-specific instructions (build commands, test patterns, architectural constraints). The org's `.fullsend/agents/` directory provides role-specific agent definitions that apply across all enrolled repos.
 
 See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo convention and [ADR 0024](ADRs/0024-harness-definitions.md) for harness definitions.
+
+**Decided:**
+
+- Layered content resolution: upstream defaults (agents, skills, schemas,
+  harness, policies, scripts) are provided at runtime via a full checkout of
+  `fullsend-ai/fullsend` at the ref passed via `fullsend_ai_ref`. The scaffold
+  installs only org-specific files and a `customized/` directory for org
+  overrides. Org files in `customized/` overwrite upstream defaults at runtime
+  ([ADR 0035](ADRs/0035-layered-content-resolution.md)).
 
 ## Multi-org deployment model
 
@@ -536,10 +562,10 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ │                                                       │ │ ║
                  ║ │ │ Created with --from image, --policy code.yaml.        │ │ ║
                  ║ │ │ Bootstrapped via openshell upload/exec:               │ │ ║
-                 ║ │ │   agent def    → /tmp/claude-config/agents/           │ │ ║
-                 ║ │ │   skills       → /tmp/claude-config/skills/           │ │ ║
+                 ║ │ │   agent def    → /sandbox/claude-config/agents/       │ │ ║
+                 ║ │ │   skills       → /sandbox/claude-config/skills/       │ │ ║
                  ║ │ │   .env, host files (GCP creds), security hooks        │ │ ║
-                 ║ │ │   target repo  → /tmp/workspace/target-repo/          │ │ ║
+                 ║ │ │   target repo  → /sandbox/workspace/target-repo/      │ │ ║
                  ║ │ │                                                       │ │ ║
                  ║ │ │ Network policy enforced (L7, per-binary):             │ │ ║
                  ║ │ │   Vertex AI     → claude, node only                   │ │ ║
@@ -565,7 +591,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ └───────────────────────────────────────────────────────┘ │ ║
                  ║ │                                                           │ ║
                  ║ │ Extracts from destroyed sandbox:                          │ ║
-                 ║ │   /tmp/workspace/output/, JSONL transcripts,              │ ║
+                 ║ │   /sandbox/workspace/output/, JSONL transcripts,          │ ║
                  ║ │   rsync repo back (--no-links, exclude .git/hooks/)       │ ║
                  ║ │                                                           │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
@@ -591,8 +617,8 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 
 | Abstract layer | MVP technology | ADR |
 |---|---|---|
-| Dispatcher | Shim workflow (`fullsend.yml`) in enrolled repo → `workflow_call` to `.fullsend/dispatch.yml` → OIDC mint → per-role agent workflows | [ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md) |
-| Agent runner | GitHub Actions job → `fullsend run` CLI (via `.github/actions/fullsend` composite action) | |
+| Dispatcher | Shim workflow (`fullsend.yml`) in enrolled repo → `workflow_call` to `.fullsend/dispatch.yml` → OIDC mint → per-role agent workflows (thin callers → upstream reusable workflows) | [ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md), [ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md) |
+| Agent runner | GitHub Actions job → `fullsend run` CLI (via `fullsend-ai/fullsend@<version>` composite action) | |
 | Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
 | Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
 | Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`) | |
@@ -604,4 +630,4 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 
 ## Repository layout (design workspace vs. web delivery)
 
-The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source and future bundled UI live under **`web/`** (the interactive document graph is `web/public/index.html` at `/`). Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source and future bundled UI live under **`web/`** (the landing page is `web/public/index.html` at `/` and the interactive document graph is `web/public/graph.html` at `/graph.html`). Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).

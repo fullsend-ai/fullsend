@@ -1,0 +1,147 @@
+# Reusable prioritize agent workflow. Called by thin callers in .fullsend repos
+# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+name: Prioritize Agent
+
+on:
+  workflow_call:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+      mint_url:
+        required: true
+        type: string
+      gcp_region:
+        required: true
+        type: string
+      project_number:
+        description: GitHub Projects V2 project number for RICE scoring
+        required: true
+        type: string
+      fullsend_version:
+        required: false
+        type: string
+        default: "latest"
+      install_mode:
+        required: false
+        type: string
+        default: "per-org"
+      fullsend_ai_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+        default: v0
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER:
+        required: true
+      FULLSEND_GCP_PROJECT_ID:
+        required: true
+
+jobs:
+  prioritize:
+    name: Prioritize
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream defaults
+        uses: actions/checkout@v6
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace (upstream defaults + org/repo overrides)
+        env:
+          INSTALL_MODE: ${{ inputs.install_mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+            echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+            exit 1
+          fi
+          SRC=".defaults/internal/scaffold/fullsend-repo"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${SRC}/${dir}" ]]; then
+              mkdir -p "${dir}"
+              cp -r "${SRC}/${dir}/." "${dir}/"
+            fi
+          done
+          CUSTOM_BASE="customized"
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            CUSTOM_BASE=".fullsend/customized"
+          fi
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
+              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
+                | while IFS= read -r -d '' f; do
+                    rel="${f#"${CUSTOM_BASE}"/}"
+                    mkdir -p "$(dirname "${rel}")"
+                    cp "${f}" "${rel}"
+                  done
+            fi
+          done
+          mkdir -p .github/scripts
+          cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
+      - name: Validate enrollment and extract repo metadata
+        id: repo-parts
+        uses: ./.defaults/.github/actions/validate-enrollment
+        with:
+          source_repo: ${{ inputs.source_repo }}
+          install_mode: ${{ inputs.install_mode }}
+
+      - name: Mint prioritize token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: prioritize
+          repos: ${{ steps.repo-parts.outputs.name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: PRIORITIZE_
+          PRIORITIZE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PRIORITIZE_ORG: ${{ github.repository_owner }}
+          PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}
+          PRIORITIZE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          PRIORITIZE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Create empty target-repo directory
+        run: mkdir -p target-repo
+
+      - name: Run prioritize agent
+        uses: ./.defaults/
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+        with:
+          agent: prioritize
+          version: ${{ inputs.fullsend_version }}

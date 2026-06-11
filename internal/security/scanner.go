@@ -92,9 +92,11 @@ func InputPipeline() *Pipeline {
 
 // OutputPipeline returns the standard output scanning pipeline for
 // agent-generated text before posting to the forge.
-//  1. SecretRedactor — redact API keys, tokens, credentials
+//  1. UnicodeNormalizer — strip invisible chars, normalize fullwidth
+//  2. SecretRedactor — redact API keys, tokens, credentials
 func OutputPipeline() *Pipeline {
 	return NewPipeline(
+		NewUnicodeNormalizer(),
 		NewSecretRedactor(),
 	)
 }

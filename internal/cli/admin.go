@@ -3,14 +3,17 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -24,8 +27,15 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+// DefaultMintURL is the hosted public mint URL used when --mint-url is not
+// explicitly provided. Users who self-host a mint can override this via
+// the --mint-url flag.
+const DefaultMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
 
 func newAdminCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -76,8 +86,14 @@ func validateOrgName(org string) error {
 	if org == "" {
 		return fmt.Errorf("organization name cannot be empty")
 	}
+	if len(org) > 39 {
+		return fmt.Errorf("organization name too long (max 39 characters)")
+	}
 	if strings.HasPrefix(org, "-") || strings.HasSuffix(org, "-") {
 		return fmt.Errorf("organization name cannot start or end with a hyphen")
+	}
+	if strings.Contains(org, "--") {
+		return fmt.Errorf("organization name cannot contain consecutive hyphens")
 	}
 	for _, c := range org {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
@@ -87,34 +103,217 @@ func validateOrgName(org string) error {
 	return nil
 }
 
+// githubOwnerPattern matches valid GitHub usernames and org names
+// (alphanumeric and single hyphens only, no dots or underscores).
+var githubOwnerPattern = regexp.MustCompile(`^[a-zA-Z0-9](-?[a-zA-Z0-9])*$`)
+
+// githubRepoPattern matches valid GitHub repository names
+// (alphanumeric, hyphens, dots, and underscores).
+var githubRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
+
+// perOrgOnlyFlags are flags that only apply to per-org mode.
+var perOrgOnlyFlags = []string{
+	"enroll-all", "enroll-none",
+}
+
+// skipMintDispatcher implements dispatch.Dispatcher for --skip-mint-check mode.
+// It returns the user-provided mint URL without making any GCP API calls.
+type skipMintDispatcher struct {
+	mintURL string
+}
+
+func (d *skipMintDispatcher) Name() string               { return "skip-mint-check" }
+func (d *skipMintDispatcher) OrgSecretNames() []string   { return nil }
+func (d *skipMintDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
+func (d *skipMintDispatcher) StoreAgentPEM(context.Context, string, []byte) error {
+	return nil
+}
+func (d *skipMintDispatcher) Provision(context.Context) (map[string]string, error) {
+	return map[string]string{"FULLSEND_MINT_URL": d.mintURL}, nil
+}
+
+type perRepoInstallConfig struct {
+	RepoFullName         string
+	Agents               string
+	MintURL              string
+	InferenceRegion      string
+	InferenceProject     string
+	InferenceWIFProvider string
+	MintProject          string
+	MintRegion           string
+	DryRun               bool
+	SkipAppSetup         bool
+	PublicApps           bool
+	MintProvider         string
+	MintSourceDir        string
+	MintSkipDeploy       bool
+	SkipMintCheck        bool
+	AppSet               string
+	VendorBinary         bool
+	FullsendBinary       string
+}
+
+// wifProviderPattern validates the full WIF provider resource name format
+// required by google-github-actions/auth@v3.
+// GCP pool/provider IDs: 4-32 chars, [a-z0-9-], start with letter, no trailing hyphen.
+var wifProviderPattern = regexp.MustCompile(
+	`^projects/\d+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`,
+)
+
+func validateWIFProvider(raw string) error {
+	if !wifProviderPattern.MatchString(raw) {
+		return fmt.Errorf(
+			"--inference-wif-provider must be a full WIF provider resource name "+
+				"(projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}), got %q",
+			raw,
+		)
+	}
+	return nil
+}
+
+func validateMintURL(raw string) error {
+	if err := validateMintURLHTTPS(raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if !strings.HasSuffix(parsed.Host, ".run.app") &&
+		!strings.HasSuffix(parsed.Host, ".cloudfunctions.net") {
+		return fmt.Errorf("--mint-url must be a Cloud Run URL (.run.app or .cloudfunctions.net), got host %q", parsed.Host)
+	}
+	return nil
+}
+
+func validateSkipMintCheck(mintURL string) error {
+	if mintURL == "" {
+		return fmt.Errorf("--mint-url is required when using --skip-mint-check")
+	}
+	return validateMintURLHTTPS(mintURL)
+}
+
+func validateMintURLHTTPS(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		scheme := ""
+		if parsed != nil {
+			scheme = parsed.Scheme
+		}
+		return fmt.Errorf("--mint-url must be a valid HTTPS URL (got scheme=%q)", scheme)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("--mint-url must not contain embedded credentials (userinfo)")
+	}
+	return nil
+}
+
+// parseAgentRoles splits a comma-separated agents string into a validated role list.
+func parseAgentRoles(agents string) ([]string, error) {
+	var roles []string
+	for _, entry := range strings.Split(agents, ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			if !mintcore.RolePattern.MatchString(trimmed) {
+				return nil, fmt.Errorf("invalid role name %q: must match %s", trimmed, mintcore.RolePattern.String())
+			}
+			roles = append(roles, trimmed)
+		}
+	}
+	return roles, nil
+}
+
 func newInstallCmd() *cobra.Command {
 	var agents string
 	var dryRun bool
 	var skipAppSetup bool
 	var vendorBinary bool
+	var fullsendBinary string
 	var enrollAllFlag bool
 	var enrollNoneFlag bool
-	var gcpProject string
-	var gcpRegion string
-	var gcpServiceAccount string
-	var gcpCredentialsFile string
-	var gcpWIFProvider string
-	var gcpWIFSAEmail string
+	var inferenceProject string
+	var inferenceRegion string
+	var inferenceWIFProvider string
 	var mintProvider string
 	var mintProject string
 	var mintRegion string
 	var mintSourceDir string
 	var mintSkipDeploy bool
-	var mintForceDeploy bool
+	var skipMintCheck bool
 	var publicApps bool
+	var appSet string
+	// Per-repo flags.
+	var mintURL string
 
 	cmd := &cobra.Command{
-		Use:   "install <org>",
-		Short: "Install fullsend in a GitHub organization",
-		Long:  "Sets up the fullsend agentic development pipeline for a GitHub organization, including app creation, config repo, workflows, secrets, and repo enrollment.",
-		Args:  cobra.ExactArgs(1),
+		Use:   "install <org-or-owner/repo>",
+		Short: "Install fullsend in an organization or repository",
+		Long: `Sets up the fullsend agentic development pipeline.
+
+Per-org mode (argument is an org name, e.g. "acme"):
+  Creates the .fullsend config repo, per-role GitHub Apps, token mint,
+  shim workflows, secrets, and repo enrollment.
+
+Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
+  Bootstraps a single repository with the shim workflow and .fullsend/
+  configuration directory. No config repo or cross-repo dispatch needed.
+
+Inference authentication:
+  If --inference-project is provided without --inference-wif-provider,
+  fullsend auto-provisions WIF infrastructure in the GCP project
+  (requires project access with AI Platform permissions).
+
+  If --inference-wif-provider is also provided with the full resource
+  name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}),
+  auto-provisioning is skipped and the value is used as-is. This is
+  useful when a GCP admin has already provisioned WIF and shared the
+  provider resource name.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			org := args[0]
+			if err := appsetup.ValidateAppSet(appSet); err != nil {
+				return fmt.Errorf("invalid --app-set: %w", err)
+			}
+			if err := validateVendorBinaryFlags(vendorBinary, fullsendBinary); err != nil {
+				return err
+			}
+
+			arg := args[0]
+			if strings.Contains(arg, "/") {
+				for _, name := range perOrgOnlyFlags {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--%s is only valid for per-org installation (fullsend admin install <org>)", name)
+					}
+				}
+				perRepoAgents := agents
+				if !cmd.Flags().Changed("agents") {
+					perRepoAgents = strings.Join(config.PerRepoDefaultRoles(), ",")
+				}
+				perRepoMintProject := mintProject
+				if perRepoMintProject == "" {
+					perRepoMintProject = inferenceProject
+				}
+				return runPerRepoInstall(cmd.Context(), perRepoInstallConfig{
+					RepoFullName:         arg,
+					Agents:               perRepoAgents,
+					MintURL:              mintURL,
+					InferenceRegion:      inferenceRegion,
+					InferenceProject:     inferenceProject,
+					InferenceWIFProvider: inferenceWIFProvider,
+					MintProject:          perRepoMintProject,
+					MintRegion:           mintRegion,
+					DryRun:               dryRun,
+					SkipAppSetup:         skipAppSetup,
+					PublicApps:           publicApps,
+					MintProvider:         mintProvider,
+					MintSourceDir:        mintSourceDir,
+					MintSkipDeploy:       mintSkipDeploy,
+					SkipMintCheck:        skipMintCheck,
+					AppSet:               appSet,
+					VendorBinary:         vendorBinary,
+					FullsendBinary:       fullsendBinary,
+				})
+			}
+
+			org := arg
 			if err := validateOrgName(org); err != nil {
 				return err
 			}
@@ -128,88 +327,87 @@ func newInstallCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			printer.Banner()
+			printer.Banner(Version())
 			printer.Blank()
 			printer.Header("Installing fullsend for " + org)
 			printer.Blank()
 
-			// Parse roles from --agents flag.
-			var roles []string
-			for _, entry := range strings.Split(agents, ",") {
-				if trimmed := strings.TrimSpace(entry); trimmed != "" {
-					roles = append(roles, trimmed)
+			roles, err := parseAgentRoles(agents)
+			if err != nil {
+				return err
+			}
+
+			if skipMintCheck {
+				if err := validateSkipMintCheck(mintURL); err != nil {
+					return err
 				}
-			}
-
-			// Validate mint provider (only required for real installs, not dry-run).
-			if !dryRun {
-				if mintProvider != "gcf" {
-					return fmt.Errorf("--mint-provider must be 'gcf'")
-				}
-				if mintProject == "" {
-					return fmt.Errorf("--mint-project is required")
-				}
-			}
-
-			if mintSkipDeploy && mintForceDeploy {
-				return fmt.Errorf("--skip-mint-deploy and --force-mint-deploy are mutually exclusive")
-			}
-
-			// Validate GCP flag dependencies.
-			if gcpProject == "" && (gcpServiceAccount != "" || gcpCredentialsFile != "" || gcpRegion != "" || gcpWIFProvider != "" || gcpWIFSAEmail != "") {
-				return fmt.Errorf("--gcp-service-account, --gcp-credentials-file, --gcp-wif-provider, --gcp-wif-sa-email, and --gcp-region require --gcp-project to be set")
-			}
-			if gcpProject != "" && gcpRegion == "" {
-				return fmt.Errorf("--gcp-region is required when --gcp-project is set")
-			}
-			if gcpWIFProvider != "" && gcpCredentialsFile != "" {
-				return fmt.Errorf("--gcp-wif-provider and --gcp-credentials-file are mutually exclusive: use WIF or SA key, not both")
-			}
-			if gcpWIFProvider != "" && gcpServiceAccount != "" {
-				return fmt.Errorf("--gcp-wif-provider and --gcp-service-account are mutually exclusive")
-			}
-			if (gcpWIFProvider != "") != (gcpWIFSAEmail != "") {
-				return fmt.Errorf("--gcp-wif-provider and --gcp-wif-sa-email must be provided together")
-			}
-
-			// Build inference provider from GCP flags.
-			var inferenceProvider inference.Provider
-			var inferenceProviderName string
-			if gcpProject != "" {
-				vcfg := vertex.Config{ProjectID: gcpProject, Region: gcpRegion}
-				if gcpWIFProvider != "" {
-					vcfg.Mode = vertex.AuthModeWIF
-					vcfg.WIFProvider = gcpWIFProvider
-					vcfg.WIFServiceAccount = gcpWIFSAEmail
-				} else {
-					vcfg.ServiceAccountName = gcpServiceAccount
-					if gcpCredentialsFile != "" {
-						info, statErr := os.Lstat(gcpCredentialsFile)
-						if statErr != nil {
-							return fmt.Errorf("checking credentials file: %w", statErr)
-						}
-						if !info.Mode().IsRegular() {
-							return fmt.Errorf("credentials file %s must be a regular file", gcpCredentialsFile)
-						}
-						credData, readErr := os.ReadFile(gcpCredentialsFile)
-						if readErr != nil {
-							return fmt.Errorf("reading credentials file: %w", readErr)
-						}
-						defer func() {
-							for i := range credData {
-								credData[i] = 0
-							}
-						}()
-						if err := validateCredentialJSON(credData); err != nil {
-							return err
-						}
-						vcfg.CredentialJSON = credData
+			} else {
+				// Validate mint provider (only required for real installs, not dry-run).
+				if !dryRun {
+					if mintProvider != "gcf" {
+						return fmt.Errorf("--mint-provider must be 'gcf'")
+					}
+					if mintProject == "" {
+						return fmt.Errorf("--mint-project is required")
 					}
 				}
-				inferenceProvider = vertex.New(vcfg, vertex.NewLiveGCPClient())
+
+				// Validate --mint-url early (before app setup which is irreversible).
+				if mintURL != "" {
+					if err := validateMintURL(mintURL); err != nil {
+						return err
+					}
+				}
+			}
+
+			// Validate inference flag dependencies.
+			if inferenceProject == "" && (cmd.Flags().Changed("inference-region") || inferenceWIFProvider != "") {
+				return fmt.Errorf("--inference-wif-provider and --inference-region require --inference-project to be set")
+			}
+
+			// Validate WIF provider format when explicitly given.
+			if inferenceWIFProvider != "" {
+				if err := validateWIFProvider(inferenceWIFProvider); err != nil {
+					return err
+				}
+				printer.StepWarn("Using provided WIF provider value — skipping inference provider auto-provisioning")
+			}
+
+			// Auto-provision WIF when not explicitly given (idempotent: safe to re-run).
+			if inferenceProject != "" && inferenceWIFProvider == "" {
+				if dryRun {
+					printer.StepInfo("Would auto-provision WIF provider in project " + inferenceProject)
+				} else {
+					printer.StepStart("Provisioning WIF infrastructure for inference")
+					gcpClient := gcf.NewLiveGCFClient(inferenceProject)
+					provisioner := gcf.NewProvisioner(gcf.Config{
+						ProjectID:   inferenceProject,
+						GitHubOrgs:  []string{org},
+						WIFPoolName: gcf.DefaultInferencePool,
+					}, gcpClient)
+					inferenceWIFProvider, err = provisioner.ProvisionWIF(ctx)
+					if err != nil {
+						printer.StepFail("WIF provisioning failed")
+						return fmt.Errorf("provisioning WIF for inference: %w", err)
+					}
+					printer.StepDone("WIF infrastructure ready")
+					printer.StepInfo("IAM policy changes may take up to 7 minutes to propagate")
+				}
+			}
+
+			// Build inference provider from flags.
+			var inferenceProvider inference.Provider
+			var inferenceProviderName string
+			if inferenceProject != "" {
+				vcfg := vertex.Config{
+					ProjectID:   inferenceProject,
+					Region:      inferenceRegion,
+					WIFProvider: inferenceWIFProvider,
+				}
+				inferenceProvider = vertex.New(vcfg)
 				inferenceProviderName = "vertex"
 			} else {
-				// Preserve existing inference config if no GCP flags provided.
+				// Preserve existing inference config if no inference flags provided.
 				inferenceProviderName = loadExistingInferenceProvider(ctx, client, org)
 			}
 
@@ -240,13 +438,55 @@ func newInstallCmd() *cobra.Command {
 
 			var repos []string
 			if enrollAll {
-				// Filter out .fullsend from enrollment.
+				// Filter out .fullsend and per-repo installed repos from enrollment.
+				var reader *bufio.Reader
+				var skippedPerRepo int
+				var skippedErrors int
+				var eligibleCount int
 				for _, r := range allRepos {
-					if r.Name != forge.ConfigRepoName {
-						repos = append(repos, r.Name)
+					if r.Name == forge.ConfigRepoName {
+						continue
 					}
+					eligibleCount++
+					guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, org, r.Name, forge.PerRepoGuardVar)
+					if guardErr != nil {
+						printer.StepWarn(fmt.Sprintf("Could not check per-repo guard for %s: %v — skipping to be safe", r.Name, guardErr))
+						skippedPerRepo++
+						skippedErrors++
+						continue
+					}
+					if guardExists && guardVal == "true" {
+						printer.StepWarn(fmt.Sprintf("Skipping %s — per-repo installation active", r.Name))
+						skippedPerRepo++
+						continue
+					}
+					if guardExists {
+						if reader == nil {
+							reader = bufio.NewReader(os.Stdin)
+						}
+						printer.StepInfo(fmt.Sprintf("%s has per-repo install (guard=%s). Enroll with per-org? [y/n]: ", r.Name, guardVal))
+						choice, _ := reader.ReadString('\n')
+						if strings.TrimSpace(strings.ToLower(choice)) != "y" {
+							printer.StepInfo(fmt.Sprintf("Skipping %s", r.Name))
+							skippedPerRepo++
+							continue
+						}
+					}
+					repos = append(repos, r.Name)
 				}
-				printer.StepInfo(fmt.Sprintf("Enrolling all %d repositories (excluding %s)", len(repos), forge.ConfigRepoName))
+				// If every eligible repo was skipped due to guard-check errors,
+				// the token likely lacks the required scope — fail loudly.
+				if eligibleCount > 0 && skippedErrors == eligibleCount {
+					return fmt.Errorf("all %d repos were skipped due to guard-check errors — verify your token has variables:read scope", eligibleCount)
+				}
+				msg := fmt.Sprintf("Enrolling %d repositories (excluding %s)", len(repos), forge.ConfigRepoName)
+				if skippedPerRepo-skippedErrors > 0 {
+					msg += fmt.Sprintf(", %d per-repo installed", skippedPerRepo-skippedErrors)
+				}
+				if skippedErrors > 0 {
+					msg += fmt.Sprintf(", %d guard-check errors", skippedErrors)
+				}
+				printer.StepInfo(msg)
 			} else {
 				printer.StepInfo("No repositories will be enrolled during install")
 				printer.StepInfo("To enroll repositories later, use:")
@@ -256,7 +496,7 @@ func newInstallCmd() *cobra.Command {
 			printer.Blank()
 
 			if dryRun {
-				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName, allRepos)
+				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos, vendorBinary, fullsendBinary)
 			}
 
 			if err := checkInstallScopes(ctx, client, printer); err != nil {
@@ -264,89 +504,545 @@ func newInstallCmd() *cobra.Command {
 			}
 			printer.Blank()
 
+			// Ensure the mint service account exists before storing PEM
+			// secrets — StoreAgentPEM grants the SA access to each secret,
+			// which fails if the SA hasn't been created yet.
+			if mintProject != "" && !skipAppSetup && !skipMintCheck {
+				prov := gcf.NewProvisioner(gcf.Config{ProjectID: mintProject}, gcf.NewLiveGCFClient(mintProject))
+				if err := prov.EnsureMintServiceAccount(ctx); err != nil {
+					return fmt.Errorf("ensuring mint service account: %w", err)
+				}
+			}
+
+			// Pre-copy PEM secrets for shared public apps before app setup.
+			var sharedSlugs map[string]string
+			var perOrgStoredIDs map[string]string
+			if mintProject != "" && !skipAppSetup && !skipMintCheck {
+				slugs, storedIDs, err := detectSharedApps(ctx, client, printer, org, roles, mintProject, mintRegion)
+				if err != nil {
+					return err
+				}
+				sharedSlugs = slugs
+				perOrgStoredIDs = storedIDs
+			}
+
 			// Collect agent credentials via app setup.
 			var agentCreds []layers.AgentCredentials
-			if !skipAppSetup {
+			if !skipAppSetup && !skipMintCheck {
 				if err := ensureConfigRepoExists(ctx, client, printer, org); err != nil {
 					return err
 				}
-				creds, err := runAppSetup(ctx, client, printer, org, roles, mintProject, publicApps)
+				creds, err := runAppSetup(ctx, client, printer, org, roles, mintProject, publicApps, sharedSlugs, appSet, perOrgStoredIDs)
 				if err != nil {
 					return err
 				}
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintForceDeploy, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, fullsendBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
 		},
 	}
 
 	cmd.Flags().StringVar(&agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
-	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload the fullsend binary into .fullsend/bin/ for development iteration")
+	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
+	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
 	cmd.Flags().BoolVar(&enrollAllFlag, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&enrollNoneFlag, "enroll-none", false, "skip repository enrollment without prompting")
-	cmd.Flags().StringVar(&gcpProject, "gcp-project", "", "GCP project ID for Vertex AI inference")
-	cmd.Flags().StringVar(&gcpRegion, "gcp-region", "", "GCP region for Vertex AI (e.g. global, required with --gcp-project)")
-	cmd.Flags().StringVar(&gcpServiceAccount, "gcp-service-account", "", "existing GCP service account name (optional, used with --gcp-project)")
-	cmd.Flags().StringVar(&gcpCredentialsFile, "gcp-credentials-file", "", "path to pre-made GCP service account key JSON (optional, used with --gcp-project)")
-	cmd.Flags().StringVar(&gcpWIFProvider, "gcp-wif-provider", "", "full Workload Identity Federation provider resource name (e.g. projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER)")
-	cmd.Flags().StringVar(&gcpWIFSAEmail, "gcp-wif-sa-email", "", "GCP service account email for WIF impersonation (required with --gcp-wif-provider)")
+	cmd.Flags().StringVar(&inferenceProject, "inference-project", "", "GCP project ID for inference (Agent Platform)")
+	cmd.Flags().StringVar(&inferenceRegion, "inference-region", "global", "GCP region for inference (default: global)")
+	cmd.Flags().StringVar(&inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); skips auto-provisioning when set")
 	cmd.Flags().StringVar(&mintProvider, "mint-provider", "gcf", "token mint provider (gcf)")
 	cmd.Flags().StringVar(&mintProject, "mint-project", "", "cloud project for token mint (e.g. GCP project ID)")
 	cmd.Flags().StringVar(&mintRegion, "mint-region", "us-central1", "cloud region for token mint")
 	cmd.Flags().StringVar(&mintSourceDir, "mint-source-dir", "", "path to mint function source (default: internal/mint/)")
 	cmd.Flags().BoolVar(&mintSkipDeploy, "skip-mint-deploy", false, "skip Cloud Function deployment, reuse existing mint URL")
-	cmd.Flags().BoolVar(&mintForceDeploy, "force-mint-deploy", false, "force Cloud Function redeployment even if unchanged")
+	cmd.Flags().BoolVar(&skipMintCheck, "skip-mint-check", false, "skip mint validation, GCP provisioning, and app setup; requires --mint-url")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
+	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
+	// Shared flags.
+	cmd.Flags().StringVar(&mintURL, "mint-url", DefaultMintURL, "token mint URL for OIDC token exchange (default: hosted public mint)")
 
 	return cmd
 }
 
-// vendorFullsendBinary cross-compiles the fullsend binary for linux/amd64
-// and uploads it to .fullsend/bin/fullsend via layers.VendorBinary.
-func vendorFullsendBinary(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
-	printer.StepStart("Cross-compiling fullsend for linux/amd64")
+func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
+	repoFullName := c.RepoFullName
+	agents := c.Agents
+	mintURL := c.MintURL
+	inferenceRegion := c.InferenceRegion
+	inferenceProject := c.InferenceProject
+	inferenceWIFProvider := c.InferenceWIFProvider
+	mintProject := c.MintProject
+	mintRegion := c.MintRegion
+	dryRun := c.DryRun
+	skipAppSetup := c.SkipAppSetup
+	publicApps := c.PublicApps
+	mintProvider := c.MintProvider
+	mintSourceDir := c.MintSourceDir
+	mintSkipDeploy := c.MintSkipDeploy
+	skipMintCheck := c.SkipMintCheck
+	vendorBinary := c.VendorBinary
+	fullsendBinary := c.FullsendBinary
 
-	tmpBinary, err := os.CreateTemp("", "fullsend-linux-amd64-*")
+	if strings.Contains(repoFullName, "://") || strings.HasPrefix(repoFullName, "www.") {
+		return fmt.Errorf("expected owner/repo format, got a URL — use just the owner/repo portion (e.g. acme/widget)")
+	}
+	parts := strings.SplitN(repoFullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("repo must be in owner/repo format, got %q", repoFullName)
+	}
+	owner, repo := parts[0], parts[1]
+	if !githubOwnerPattern.MatchString(owner) {
+		return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
+	}
+	if !githubRepoPattern.MatchString(repo) {
+		return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
+	}
+
+	if skipMintCheck {
+		if err := validateSkipMintCheck(mintURL); err != nil {
+			return err
+		}
+	} else if mintURL != "" {
+		if err := validateMintURL(mintURL); err != nil {
+			return err
+		}
+	}
+	if mintProject == "" && mintURL == "" && !skipMintCheck {
+		return fmt.Errorf("--mint-project (or --inference-project) is required for per-repo installation")
+	}
+	if inferenceProject == "" {
+		return fmt.Errorf("--inference-project is required for per-repo installation")
+	}
+	// Validate WIF provider format when explicitly given.
+	if inferenceWIFProvider != "" {
+		if err := validateWIFProvider(inferenceWIFProvider); err != nil {
+			return err
+		}
+	}
+	roles, err := parseAgentRoles(agents)
 	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpBinary.Close()
-	defer os.Remove(tmpBinary.Name())
-
-	buildCmd := exec.Command("go", "build",
-		"-ldflags", fmt.Sprintf("-X github.com/fullsend-ai/fullsend/internal/cli.version=%s-vendored", version),
-		"-o", tmpBinary.Name(),
-		"./cmd/fullsend/",
-	)
-	buildCmd.Env = append(os.Environ(), "GOTOOLCHAIN=auto", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
-		printer.StepFail("Cross-compilation failed")
-		return fmt.Errorf("cross-compiling: %w", err)
-	}
-	printer.StepDone("Cross-compiled fullsend for linux/amd64")
-
-	printer.StepStart("Uploading vendored binary to .fullsend/bin/fullsend")
-	if err := layers.VendorBinary(ctx, client, org, tmpBinary.Name()); err != nil {
-		printer.StepFail("Failed to upload vendored binary")
 		return err
 	}
 
-	info, _ := os.Stat(tmpBinary.Name())
-	if info != nil {
-		printer.StepDone(fmt.Sprintf("Uploaded vendored binary (%d MB)", info.Size()/(1024*1024)))
-	} else {
-		printer.StepDone("Uploaded vendored binary")
+	token, err := resolveToken()
+	if err != nil {
+		return err
 	}
 
+	client := gh.New(token)
+	printer := ui.New(os.Stdout)
+
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Installing per-repo fullsend for " + repoFullName)
+	printer.Blank()
+
+	if inferenceWIFProvider != "" {
+		printer.StepWarn("Using provided WIF provider value — skipping inference provider auto-provisioning")
+	}
+
+	cfg := config.NewPerRepoConfig(roles)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	shimContent, err := scaffold.PerRepoShimTemplate()
+	if err != nil {
+		return fmt.Errorf("loading per-repo shim template: %w", err)
+	}
+
+	cfgYAML, err := cfg.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshaling per-repo config: %w", err)
+	}
+
+	var files []forge.TreeFile
+	files = append(files, forge.TreeFile{
+		Path:    ".github/workflows/fullsend.yaml",
+		Content: shimContent,
+		Mode:    "100644",
+	})
+	files = append(files, forge.TreeFile{
+		Path:    ".fullsend/config.yaml",
+		Content: cfgYAML,
+		Mode:    "100644",
+	})
+
+	for _, dir := range scaffold.PerRepoCustomizedDirs() {
+		files = append(files, forge.TreeFile{
+			Path:    dir + "/.gitkeep",
+			Content: []byte(""),
+			Mode:    "100644",
+		})
+	}
+
+	needsWIFProvision := inferenceWIFProvider == ""
+
+	guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, owner, repo, forge.PerRepoGuardVar)
+	if guardErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check existing guard variable: %v", guardErr))
+	}
+	switch {
+	case guardExists && guardVal == "true":
+		printer.StepInfo(fmt.Sprintf("%s/%s is per-repo mode, updating installation", owner, repo))
+	case guardExists && guardVal == "false":
+		printer.StepWarn(fmt.Sprintf("%s/%s has per-repo guard set to %q — this install will re-enable it", owner, repo, guardVal))
+	case guardExists:
+		printer.StepWarn(fmt.Sprintf("%s/%s has per-repo guard set to unexpected value %q — overwriting with \"true\"", owner, repo, guardVal))
+	default:
+		printer.StepInfo(fmt.Sprintf("Setting up new per-repo installation for %s/%s", owner, repo))
+	}
+
+	// Phase 1: Discover existing infrastructure (read-only, safe for dry-run).
+	var mintFound bool
+	var appsFound bool
+	var agentAppIDs map[string]string
+	var agentPEMs map[string][]byte
+
+	var existingIDs map[string]string
+
+	if skipMintCheck {
+		mintFound = true
+		printer.StepDone(fmt.Sprintf("Using self-provisioned mint at %s (--skip-mint-check)", mintURL))
+	} else {
+		discoverer := gcf.NewProvisioner(gcf.Config{
+			ProjectID:  mintProject,
+			Region:     mintRegion,
+			GitHubOrgs: []string{owner},
+		}, gcf.NewLiveGCFClient(mintProject))
+
+		if mintURL != "" {
+			mintFound = true
+			// Mint URL provided — still discover role IDs from the function
+			// to resolve existing apps. Skipped in dry-run to avoid requiring
+			// GCP credentials for preview-only invocations.
+			if mintProject != "" && !dryRun {
+				printer.StepStart("Resolving app IDs from mint")
+				discovery, discoverErr := discoverer.DiscoverMint(ctx)
+				if discoverErr != nil {
+					if !errors.Is(discoverErr, gcf.ErrFunctionNotFound) {
+						printer.StepFail("Failed to read mint state")
+						return fmt.Errorf("reading mint state: %w", discoverErr)
+					}
+					printer.StepDone("Mint function not found in project — will discover apps from setup")
+				} else {
+					existingIDs = discovery.RoleAppIDs
+					printer.StepDone("Resolved app IDs from mint")
+				}
+			}
+		} else if mintProject != "" {
+			printer.StepStart("Discovering mint infrastructure")
+			discovery, discoverErr := discoverer.DiscoverMint(ctx)
+			if discoverErr != nil {
+				if !errors.Is(discoverErr, gcf.ErrFunctionNotFound) {
+					printer.StepFail("Mint discovery failed")
+					return fmt.Errorf("failed to discover mint in project %s region %s: %w",
+						mintProject, mintRegion, discoverErr)
+				}
+				printer.StepDone("No existing mint found — will deploy")
+			} else {
+				mintURL = discovery.URL
+				mintFound = true
+				existingIDs = discovery.RoleAppIDs
+				printer.StepDone(fmt.Sprintf("Found mint at %s", mintURL))
+			}
+		}
+	}
+
+	if mintFound && existingIDs != nil {
+		roleAppIDs, resolveErr := resolveSharedRoleAppIDs(ctx, client, existingIDs, owner, roles)
+		if resolveErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not resolve shared app IDs: %v (will attempt app creation)", resolveErr))
+		} else {
+			agentAppIDs = make(map[string]string, len(roles))
+			appsFound = true
+			for _, role := range roles {
+				appID, ok := roleAppIDs[owner+"/"+role]
+				if !ok {
+					appsFound = false
+					break
+				}
+				agentAppIDs[role] = appID
+			}
+		}
+		if appsFound {
+			printer.StepDone("Resolved all app IDs")
+		} else {
+			printer.StepDone("Some app IDs missing — will create apps")
+		}
+	}
+
+	if dryRun {
+		mintDisplay := mintURL
+		if mintDisplay == "" {
+			mintDisplay = fmt.Sprintf("(will deploy to project %s, region %s)", mintProject, mintRegion)
+		}
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.Blank()
+		if skipMintCheck {
+			printer.StepInfo("Mint checks skipped (--skip-mint-check):")
+			printer.StepInfo(fmt.Sprintf("  Mint URL (trusted): %s", mintURL))
+			printer.StepInfo("  App setup: skipped")
+			printer.StepInfo("  GCP mint validation: skipped")
+			printer.StepInfo("  PEM storage: skipped")
+		} else {
+			if !appsFound && !skipAppSetup {
+				printer.StepInfo(fmt.Sprintf("Would create GitHub Apps for roles: %s", strings.Join(roles, ", ")))
+				if publicApps {
+					printer.StepInfo("  Apps would be public (unlisted)")
+				}
+				printer.Blank()
+			}
+			if !mintFound {
+				printer.StepInfo(fmt.Sprintf("Would deploy token mint to project %s, region %s", mintProject, mintRegion))
+				printer.Blank()
+			}
+			printer.StepInfo("Mint infrastructure:")
+			printer.StepInfo(fmt.Sprintf("  Mint URL: %s", mintDisplay))
+			printer.StepInfo(fmt.Sprintf("  Mint project: %s, region: %s", mintProject, mintRegion))
+			if mintFound {
+				printer.StepInfo(fmt.Sprintf("  Would register %s in ALLOWED_ORGS", owner))
+				printer.StepInfo(fmt.Sprintf("  Would set ROLE_APP_IDS entries for %s/{%s}", owner, strings.Join(roles, ",")))
+			}
+		}
+		printer.Blank()
+		if needsWIFProvision {
+			printer.StepInfo("Would provision WIF infrastructure in GCP project " + inferenceProject)
+			printer.StepInfo(fmt.Sprintf("  Service account: fullsend-mint@%s.iam.gserviceaccount.com", inferenceProject))
+			printer.StepInfo("  WIF pool: " + gcf.DefaultInferencePool)
+			printer.StepInfo(fmt.Sprintf("  WIF provider: %s", mintcore.BuildRepoProviderID(owner, repo)))
+			printer.StepInfo(fmt.Sprintf("  Repo restriction: %s/%s", owner, repo))
+			printer.Blank()
+		}
+		for _, f := range files {
+			printer.StepDone(fmt.Sprintf("Would write: %s (%d bytes)", f.Path, len(f.Content)))
+		}
+		printer.Blank()
+		printer.StepInfo("Would set repository variables:")
+		dryRunVars := map[string]string{
+			"FULLSEND_MINT_URL":   mintDisplay,
+			"FULLSEND_GCP_REGION": inferenceRegion,
+			forge.PerRepoGuardVar: "true",
+		}
+		for _, name := range sortedStringMapKeys(dryRunVars) {
+			printer.StepInfo(fmt.Sprintf("  %s = %s", name, dryRunVars[name]))
+		}
+		secretNames := []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}
+		printer.StepInfo(fmt.Sprintf("Would set %d repository secrets:", len(secretNames)))
+		for _, name := range secretNames {
+			printer.StepInfo(fmt.Sprintf("  %s", name))
+		}
+		if vendorBinary {
+			printer.Blank()
+			printer.StepInfo(vendorDryRunMessage(fullsendBinary, layers.VendoredBinaryPathPerRepo))
+		} else {
+			printer.Blank()
+			printer.StepInfo(fmt.Sprintf("Would remove stale vendored binary at %s (if present)", layers.VendoredBinaryPathPerRepo))
+		}
+		return nil
+	}
+
+	// Early scope check — at minimum we need repo+workflow. If app creation
+	// turns out to be needed, checkInstallScopes escalates below.
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
+	}
+
+	needAppSetup := !appsFound && !skipAppSetup && !skipMintCheck
+	needMintDeploy := !mintFound && !skipMintCheck
+
+	if !skipMintCheck && skipAppSetup && !appsFound {
+		if !mintFound {
+			return fmt.Errorf("no mint function found in project %s region %s and --skip-app-setup prevents creating one", mintProject, mintRegion)
+		}
+		return fmt.Errorf("could not resolve app IDs for %s from the mint and --skip-app-setup prevents creating them", owner)
+	}
+
+	// Scope escalation: app creation requires admin:org beyond the
+	// repo+workflow scopes already verified above.
+	if needAppSetup {
+		if err := checkInstallScopes(ctx, client, printer); err != nil {
+			return err
+		}
+	}
+
+	// Phase 2: App creation + mint provisioning based on discovered state.
+	if needAppSetup {
+		// Ensure the mint service account exists before storing PEM
+		// secrets — StoreAgentPEM grants the SA access to each secret,
+		// which fails if the SA hasn't been created yet.
+		if mintProject != "" {
+			prov := gcf.NewProvisioner(gcf.Config{ProjectID: mintProject}, gcf.NewLiveGCFClient(mintProject))
+			if err := prov.EnsureMintServiceAccount(ctx); err != nil {
+				return fmt.Errorf("ensuring mint service account: %w", err)
+			}
+		}
+
+		var sharedSlugs map[string]string
+		if mintProject != "" {
+			slugs, storedIDs, slugErr := detectSharedApps(ctx, client, printer, owner, roles, mintProject, mintRegion)
+			if slugErr != nil {
+				return slugErr
+			}
+			sharedSlugs = slugs
+			if existingIDs == nil {
+				existingIDs = storedIDs
+			}
+		}
+
+		creds, credErr := runAppSetup(ctx, client, printer, owner, roles, mintProject, publicApps, sharedSlugs, c.AppSet, existingIDs)
+		if credErr != nil {
+			return credErr
+		}
+
+		agentAppIDs = make(map[string]string, len(roles))
+		agentPEMs = make(map[string][]byte)
+		for _, ac := range creds {
+			if ac.AppID != 0 {
+				agentAppIDs[ac.Role] = strconv.Itoa(ac.AppID)
+				if ac.PEM != "" {
+					agentPEMs[ac.Role] = []byte(ac.PEM)
+				}
+			}
+		}
+	}
+
+	if skipMintCheck {
+		printer.StepDone(fmt.Sprintf("Skipping mint provisioning (--skip-mint-check), using %s", mintURL))
+	} else if needMintDeploy {
+		if mintProvider != "gcf" {
+			return fmt.Errorf("--mint-provider must be 'gcf' for mint deployment")
+		}
+		if mintSourceDir == "" {
+			mintSourceDir = gcf.DefaultFunctionSourceDir()
+		}
+		deployMode := gcf.DeployAuto
+		if mintSkipDeploy {
+			deployMode = gcf.DeploySkip
+		}
+
+		printer.StepStart("Deploying token mint")
+		mintProvisioner := gcf.NewProvisioner(gcf.Config{
+			ProjectID:         mintProject,
+			Region:            mintRegion,
+			GitHubOrgs:        []string{owner},
+			AgentPEMs:         agentPEMs,
+			AgentAppIDs:       agentAppIDs,
+			FunctionSourceDir: mintSourceDir,
+			DeployMode:        deployMode,
+			Repo:              owner + "/" + repo,
+		}, gcf.NewLiveGCFClient(mintProject))
+
+		provResult, provErr := mintProvisioner.Provision(ctx)
+		if provErr != nil {
+			printer.StepFail("Mint deployment failed")
+			return fmt.Errorf("provisioning mint: %w", provErr)
+		}
+		if url, ok := provResult["FULLSEND_MINT_URL"]; ok {
+			mintURL = url
+		}
+		printer.StepDone(fmt.Sprintf("Mint deployed at %s", mintURL))
+	} else {
+		printer.StepStart("Validating mint infrastructure")
+		mintProvisioner := gcf.NewProvisioner(gcf.Config{
+			ProjectID:   mintProject,
+			Region:      mintRegion,
+			GitHubOrgs:  []string{owner},
+			AgentAppIDs: agentAppIDs,
+			AgentPEMs:   agentPEMs,
+			MintURL:     mintURL,
+			Repo:        owner + "/" + repo,
+		}, gcf.NewLiveGCFClient(mintProject))
+
+		if _, err := mintProvisioner.Provision(ctx); err != nil {
+			printer.StepFail("Mint provisioning failed")
+			return fmt.Errorf("provisioning mint: %w", err)
+		}
+		printer.StepDone("Mint validated and org registered")
+	}
+
+	if needsWIFProvision {
+		printer.StepStart("Provisioning WIF infrastructure")
+		provisioner := gcf.NewProvisioner(gcf.Config{
+			ProjectID:   inferenceProject,
+			GitHubOrgs:  []string{owner},
+			Repo:        owner + "/" + repo,
+			WIFPoolName: gcf.DefaultInferencePool,
+		}, gcf.NewLiveGCFClient(inferenceProject))
+		var provErr error
+		inferenceWIFProvider, provErr = provisioner.ProvisionWIF(ctx)
+		if provErr != nil {
+			printer.StepFail("WIF provisioning failed")
+			return fmt.Errorf("provisioning WIF: %w", provErr)
+		}
+		printer.StepDone("WIF infrastructure ready")
+		printer.StepInfo("IAM policy changes may take up to 7 minutes to propagate")
+		printer.StepInfo("Agent workflows that authenticate via WIF may fail until propagation completes")
+	}
+
+	repoVars := map[string]string{
+		"FULLSEND_MINT_URL":   mintURL,
+		"FULLSEND_GCP_REGION": inferenceRegion,
+		forge.PerRepoGuardVar: "true",
+	}
+
+	repoSecrets := map[string]string{
+		"FULLSEND_GCP_PROJECT_ID":   inferenceProject,
+		"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
+	}
+
+	printer.StepStart("Writing per-repo scaffold files")
+	committed, err := client.CommitFiles(ctx, owner, repo,
+		fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version), files)
+	if err != nil {
+		printer.StepFail("Failed to write scaffold files")
+		return fmt.Errorf("committing scaffold files: %w", err)
+	}
+	if committed {
+		printer.StepDone(fmt.Sprintf("Wrote %d files", len(files)))
+	} else {
+		printer.StepDone("Scaffold up to date")
+	}
+
+	printer.StepStart("Configuring repository variables")
+	for _, name := range sortedStringMapKeys(repoVars) {
+		if err := client.CreateOrUpdateRepoVariable(ctx, owner, repo, name, repoVars[name]); err != nil {
+			printer.StepFail(fmt.Sprintf("Failed to set variable %s", name))
+			return fmt.Errorf("setting repo variable %s: %w", name, err)
+		}
+	}
+	printer.StepDone(fmt.Sprintf("Set %d repository variables", len(repoVars)))
+
+	printer.StepStart("Configuring repository secrets")
+	for _, name := range sortedStringMapKeys(repoSecrets) {
+		if err := client.CreateRepoSecret(ctx, owner, repo, name, repoSecrets[name]); err != nil {
+			printer.StepFail(fmt.Sprintf("Failed to set secret %s", name))
+			return fmt.Errorf("setting repo secret %s: %w", name, err)
+		}
+	}
+	printer.StepDone(fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
+
+	if vendorBinary {
+		if err := acquireAndVendorFullsendBinary(ctx, client, printer, owner, repo, fullsendBinary); err != nil {
+			return fmt.Errorf("vendoring binary: %w", err)
+		}
+	} else {
+		if err := removeStaleVendoredBinary(ctx, client, printer, owner, repo, layers.VendoredBinaryPathPerRepo); err != nil {
+			return err
+		}
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Per-repo installation complete for %s/%s", owner, repo))
 	return nil
 }
 
 func newUninstallCmd() *cobra.Command {
 	var yolo bool
+	var appSet string
 
 	cmd := &cobra.Command{
 		Use:   "uninstall <org>",
@@ -358,6 +1054,9 @@ func newUninstallCmd() *cobra.Command {
 			if err := validateOrgName(org); err != nil {
 				return err
 			}
+			if err := appsetup.ValidateAppSet(appSet); err != nil {
+				return fmt.Errorf("invalid --app-set: %w", err)
+			}
 
 			token, err := resolveToken()
 			if err != nil {
@@ -368,7 +1067,7 @@ func newUninstallCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			printer.Banner()
+			printer.Banner(Version())
 			printer.Blank()
 			printer.Header("Uninstalling fullsend from " + org)
 			printer.Blank()
@@ -385,11 +1084,16 @@ func newUninstallCmd() *cobra.Command {
 				}
 			}
 
-			return runUninstall(ctx, client, printer, org)
+			var browser appsetup.BrowserOpener = appsetup.DefaultBrowser{}
+			if os.Getenv("CI") != "" {
+				browser = appsetup.NopBrowser{}
+			}
+			return runUninstall(ctx, client, printer, org, appSet, browser, os.Stdin)
 		},
 	}
 
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
+	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (used for fallback slug generation when config is unavailable)")
 
 	return cmd
 }
@@ -415,7 +1119,7 @@ func newAnalyzeCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			printer.Banner()
+			printer.Banner(Version())
 			printer.Blank()
 			printer.Header("Analyzing fullsend installation for " + org)
 			printer.Blank()
@@ -429,7 +1133,7 @@ func newAnalyzeCmd() *cobra.Command {
 
 // runDryRun builds a layer stack with empty credentials and analyzes.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, inferenceProvider inference.Provider, inferenceProviderName string, discoveredRepos []forge.Repository) error {
+func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository, vendorBinary bool, fullsendBinary string) error {
 	printer.Header("Dry run - analyzing what install would do")
 	printer.Blank()
 
@@ -484,8 +1188,13 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, false, nil, dispatcher)
+	var dispatcher dispatch.Dispatcher
+	if skipMintCheck {
+		dispatcher = &skipMintDispatcher{mintURL: mintURL}
+	} else {
+		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
+	}
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), dispatcher)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -495,19 +1204,133 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	return printAnalysis(ctx, stack, printer)
 }
 
+// resolveSharedRoleAppIDs discovers app IDs for the given org by matching
+// installed apps against existing ROLE_APP_IDS entries from other orgs.
+func resolveSharedRoleAppIDs(ctx context.Context, client forge.Client, existingIDs map[string]string, owner string, roles []string) (map[string]string, error) {
+	if len(existingIDs) == 0 {
+		return nil, fmt.Errorf("mint has no existing ROLE_APP_IDS — cannot determine app IDs for %s", owner)
+	}
+
+	installations, err := client.ListOrgInstallations(ctx, owner)
+	if err != nil {
+		return nil, fmt.Errorf("listing installations for %s: %w", owner, err)
+	}
+
+	installedAppIDs := make(map[string]bool, len(installations))
+	for _, inst := range installations {
+		installedAppIDs[strconv.Itoa(inst.AppID)] = true
+	}
+
+	result := make(map[string]string, len(roles))
+	for _, role := range roles {
+		// If the owner already has an entry, use it directly.
+		if appID, ok := existingIDs[owner+"/"+role]; ok && installedAppIDs[appID] {
+			result[owner+"/"+role] = appID
+			continue
+		}
+		// Otherwise, find a shared app from another org.
+		// Sort keys for deterministic selection when multiple orgs share the role.
+		sortedExisting := make([]string, 0, len(existingIDs))
+		for k := range existingIDs {
+			sortedExisting = append(sortedExisting, k)
+		}
+		sort.Strings(sortedExisting)
+		for _, key := range sortedExisting {
+			appID := existingIDs[key]
+			parts := strings.SplitN(key, "/", 2)
+			if len(parts) != 2 || parts[1] != role || parts[0] == owner {
+				continue
+			}
+			if installedAppIDs[appID] {
+				result[owner+"/"+role] = appID
+				break
+			}
+		}
+		if _, ok := result[owner+"/"+role]; !ok {
+			return nil, fmt.Errorf("no shared app for role %q is installed in %s — install the app first", role, owner)
+		}
+	}
+
+	return result, nil
+}
+
+// detectSharedApps finds public GitHub Apps shared across orgs so app setup
+// can reuse existing app registrations without generating new keys.
+// Returns a role → app-slug mapping for detected shared apps and the full
+// ROLE_APP_IDS map (org/role → app_id) so callers can pass it to app setup
+// without a redundant GCP API call.
+func detectSharedApps(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject, mintRegion string) (map[string]string, map[string]string, error) {
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  mintProject,
+		Region:     mintRegion,
+		GitHubOrgs: []string{org},
+	}, gcf.NewLiveGCFClient(mintProject))
+
+	existingIDs, err := prov.GetExistingRoleAppIDs(ctx)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not read ROLE_APP_IDS: %v", err))
+		return nil, nil, nil
+	}
+	if len(existingIDs) == 0 {
+		return nil, nil, nil
+	}
+
+	installations, err := client.ListOrgInstallations(ctx, org)
+	if err != nil {
+		return nil, existingIDs, nil
+	}
+
+	roleSet := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		roleSet[r] = true
+	}
+
+	sharedSlugs := make(map[string]string)
+	for _, inst := range installations {
+		appIDStr := strconv.Itoa(inst.AppID)
+		for key, existingAppID := range existingIDs {
+			if existingAppID != appIDStr {
+				continue
+			}
+			parts := strings.SplitN(key, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			srcOrg, role := parts[0], parts[1]
+			if srcOrg == org || !roleSet[role] {
+				continue
+			}
+
+			sharedSlugs[role] = inst.AppSlug
+			break
+		}
+	}
+	return sharedSlugs, existingIDs, nil
+}
+
 // runAppSetup creates or reuses GitHub Apps for each role. When mintProject is
 // non-empty, PEMs are also stored in GCP Secret Manager during app creation so
 // they survive partial provisioning failures.
-func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject string, publicApps bool) ([]layers.AgentCredentials, error) {
+func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject string, publicApps bool, sharedSlugs map[string]string, appSet string, storedAppIDs map[string]string) ([]layers.AgentCredentials, error) {
 	printer.Header("Setting up GitHub Apps")
 	printer.Blank()
 
 	setup := appsetup.NewSetup(client, appsetup.StdinPrompter{}, appsetup.DefaultBrowser{}, printer).
-		WithPublicApps(publicApps)
+		WithPublicApps(publicApps).
+		WithAppSet(appSet).
+		WithStoredAppIDs(storedAppIDs)
 
-	// Try to load known slugs from existing config.
-	knownSlugs := loadKnownSlugs(ctx, client, org)
-	if knownSlugs != nil {
+	// Merge known slugs: config-based first, then shared app overrides.
+	// Filter both config slugs and shared slugs to the requested app-set
+	// so that an existing install of app-set A doesn't shadow a new install
+	// of app-set B. Without this, nonflux-triage (app-set "nonflux") would
+	// prevent fullsend-ai-triage (app-set "fullsend-ai") from being detected
+	// and installed.
+	knownSlugs := filterSlugsByAppSet(loadKnownSlugs(ctx, client, org), appSet)
+	for role, slug := range filterSlugsByAppSet(sharedSlugs, appSet) {
+		knownSlugs[role] = slug
+	}
+	if len(knownSlugs) > 0 {
 		setup = setup.WithKnownSlugs(knownSlugs)
 	}
 
@@ -517,14 +1340,14 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		pemProvisioner = gcf.NewProvisioner(gcf.Config{
 			ProjectID:  mintProject,
 			GitHubOrgs: []string{org},
-		}, gcf.NewLiveGCFClient())
+		}, gcf.NewLiveGCFClient(mintProject))
 	}
 
 	// In OIDC mint mode, PEMs live in Secret Manager — check there.
 	// Otherwise, check GitHub repo secrets.
 	if pemProvisioner != nil {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
-			return pemProvisioner.SecretExists(ctx, org, role)
+			return pemProvisioner.SecretExists(ctx, role)
 		})
 	} else {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
@@ -537,7 +1360,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 	// Otherwise, store in GitHub repo secrets.
 	if pemProvisioner != nil {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
-			return pemProvisioner.StoreAgentPEM(sctx, org, role, []byte(pem))
+			return pemProvisioner.StoreAgentPEM(sctx, role, []byte(pem))
 		})
 	} else {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
@@ -632,7 +1455,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy, mintForceDeploy bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, fullsendBinary, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -684,43 +1507,47 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	// Build the mint infrastructure provisioner.
-	agentPEMs := make(map[string][]byte)
-	agentAppIDs := make(map[string]string)
-	for _, ac := range agentCreds {
-		if ac.AppID != 0 {
-			agentAppIDs[ac.Role] = strconv.Itoa(ac.AppID)
-			if ac.PEM != "" {
-				agentPEMs[ac.Role] = []byte(ac.PEM)
+	var disp dispatch.Dispatcher
+	if skipMintCheck {
+		disp = &skipMintDispatcher{mintURL: mintURL}
+	} else {
+		// Build the mint infrastructure provisioner.
+		agentPEMs := make(map[string][]byte)
+		agentAppIDs := make(map[string]string)
+		for _, ac := range agentCreds {
+			if ac.AppID != 0 {
+				agentAppIDs[ac.Role] = strconv.Itoa(ac.AppID)
+				if ac.PEM != "" {
+					agentPEMs[ac.Role] = []byte(ac.PEM)
+				}
 			}
 		}
-	}
-	if len(agentAppIDs) == 0 {
-		return fmt.Errorf("OIDC mint requires at least one agent with credentials")
+		if len(agentAppIDs) == 0 {
+			return fmt.Errorf("OIDC mint requires at least one agent with credentials")
+		}
+
+		if mintSourceDir == "" {
+			mintSourceDir = gcf.DefaultFunctionSourceDir()
+		}
+
+		deployMode := gcf.DeployAuto
+		if mintSkipDeploy {
+			deployMode = gcf.DeploySkip
+		}
+
+		disp = gcf.NewProvisioner(gcf.Config{
+			ProjectID:         mintProject,
+			Region:            mintRegion,
+			GitHubOrgs:        []string{org},
+			AgentPEMs:         agentPEMs,
+			AgentAppIDs:       agentAppIDs,
+			FunctionSourceDir: mintSourceDir,
+			DeployMode:        deployMode,
+			MintURL:           mintURL,
+		}, gcf.NewLiveGCFClient(mintProject))
 	}
 
-	if mintSourceDir == "" {
-		mintSourceDir = gcf.DefaultFunctionSourceDir()
-	}
-
-	deployMode := gcf.DeployAuto
-	if mintSkipDeploy {
-		deployMode = gcf.DeploySkip
-	} else if mintForceDeploy {
-		deployMode = gcf.DeployForce
-	}
-
-	dispatcher := gcf.NewProvisioner(gcf.Config{
-		ProjectID:         mintProject,
-		Region:            mintRegion,
-		GitHubOrgs:        []string{org},
-		AgentPEMs:         agentPEMs,
-		AgentAppIDs:       agentAppIDs,
-		FunctionSourceDir: mintSourceDir,
-		DeployMode:        deployMode,
-	}, gcf.NewLiveGCFClient())
-
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, vendorFullsendBinary, dispatcher)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), disp)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -745,35 +1572,57 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 }
 
 // runUninstall tears down the fullsend installation.
-func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string, browser appsetup.BrowserOpener, stdin io.Reader) error {
 	// Try to load agent slugs from existing config. If the .fullsend repo
 	// is already gone (e.g., previous partial uninstall), fall back to the
 	// default naming convention so we can still guide the user to delete
 	// the apps. Without this fallback, a partial uninstall leaves orphaned
 	// apps that block reinstallation (PEM keys are one-shot).
 	var agentSlugs []string
+	var configMode string
 	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
-		if cfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			for _, agent := range cfg.Agents {
+		if parsedCfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
+			for _, agent := range parsedCfg.Agents {
 				agentSlugs = append(agentSlugs, agent.Slug)
 			}
+			configMode = parsedCfg.Dispatch.Mode
+		} else {
+			printer.StepWarn(fmt.Sprintf("Could not parse existing config: %v; using defaults", parseErr))
 		}
 	}
 	if len(agentSlugs) == 0 {
-		// Config unavailable — assume default app naming convention.
+		// Config unavailable — assume default app naming convention and
+		// also include any legacy app-set prefixes so that apps created
+		// under an older version are not silently skipped.
 		for _, role := range config.DefaultAgentRoles() {
-			agentSlugs = append(agentSlugs, appsetup.AppSlug(role))
+			agentSlugs = append(agentSlugs, appsetup.AppSlug(appSet, role))
 		}
-		printer.StepInfo("Config repo unavailable; using default app names")
+		for _, legacy := range appsetup.LegacyAppSets {
+			if legacy == appSet {
+				continue // already included above
+			}
+			for _, role := range config.DefaultAgentRoles() {
+				agentSlugs = append(agentSlugs, appsetup.AppSlug(legacy, role))
+			}
+		}
+		if err != nil {
+			printer.StepInfo("Config repo unavailable; using default app names")
+		}
 	}
 
-	// Detect dispatch mode from existing config.
-	var configMode string
-	if cfgData != nil {
-		if existingCfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			configMode = existingCfg.Dispatch.Mode
+	// Deduplicate slugs — legacy fallback can produce the same slug as the
+	// current app-set when the naming convention hasn't changed.
+	{
+		seen := make(map[string]bool, len(agentSlugs))
+		unique := agentSlugs[:0]
+		for _, slug := range agentSlugs {
+			if !seen[slug] {
+				seen[slug] = true
+				unique = append(unique, slug)
+			}
 		}
+		agentSlugs = unique
 	}
 
 	// Build the dispatch layer based on detected mode.
@@ -791,7 +1640,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "")
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
-		layers.NewWorkflowsLayer(org, client, printer, "", ""),
+		layers.NewWorkflowsLayer(org, client, printer, "", version),
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewInferenceLayer(org, client, nil, printer),
 		dispatchLayer,
@@ -813,52 +1662,80 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	printer.Blank()
 
 	// Check which apps actually exist before opening browser pages.
-	// GitHub App uninstallation via API (DELETE /app/installations/{id}) requires
-	// JWT auth from the app's own private key, not a PAT. Since we authenticate
-	// with a PAT, we open the browser to the app's advanced settings page instead.
-	// The correct URL for org-scoped apps is /organizations/{org}/settings/apps/{slug}/advanced
-	// (the /advanced suffix is required to see the delete button; /settings/apps/{slug}
-	// alone is for user-scoped apps and will 404 for org-scoped ones).
+	// We open the org's installation settings page (/organizations/{org}/settings/installations/{id})
+	// rather than the app's own /advanced page, because the /advanced delete button is only
+	// accessible to the app owner. Users who installed a third-party app are org admins, not
+	// app owners, so they must uninstall via the installation settings page instead.
 	if len(agentSlugs) > 0 {
 		// Find which slugs correspond to real installed apps.
 		var existingSlugs []string
-		installations, listErr := client.ListOrgInstallations(ctx, org)
+		appIDs := make(map[string]int)
+		appInstallations, listErr := client.ListOrgInstallations(ctx, org)
 		if listErr == nil {
-			installedSet := make(map[string]bool, len(installations))
-			for _, inst := range installations {
-				installedSet[inst.AppSlug] = true
+			for _, inst := range appInstallations {
+				appIDs[inst.AppSlug] = inst.ID
 			}
 			for _, slug := range agentSlugs {
-				if installedSet[slug] {
+				if _, ok := appIDs[slug]; ok {
 					existingSlugs = append(existingSlugs, slug)
-				} else {
-					printer.StepInfo(fmt.Sprintf("App %s not found, skipping", slug))
 				}
 			}
 		} else {
-			// Can't check — fall back to opening all of them.
-			printer.StepWarn("Could not verify which apps exist; opening all")
+			printer.StepWarn(fmt.Sprintf("Could not verify which apps are installed for %s. Assuming all apps are installed.", org))
 			existingSlugs = agentSlugs
 		}
 
 		if len(existingSlugs) > 0 {
-			printer.Header("App cleanup")
-			printer.StepInfo("Opening browser for each app that needs to be deleted.")
-			printer.StepInfo("Click 'Delete GitHub App' on each page, then return here.")
+			printer.Header("App uninstall")
+			printer.StepInfo("Opening browser for each app installation that needs to be removed.")
+			printer.StepInfo("Click 'Uninstall' on each page. Press Enter here after each one to continue.")
 			printer.Blank()
 
-			browser := appsetup.DefaultBrowser{}
+			stdinReader := bufio.NewReader(stdin)
 			for _, slug := range existingSlugs {
-				deleteURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", org, slug)
-				printer.StepStart(fmt.Sprintf("Opening %s settings...", slug))
-				if err := browser.Open(ctx, deleteURL); err != nil {
-					printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
-					printer.StepInfo(fmt.Sprintf("  Delete manually at: %s", deleteURL))
+				var uninstallURL string
+				if id := appIDs[slug]; id != 0 {
+					uninstallURL = fmt.Sprintf("https://github.com/organizations/%s/settings/installations/%d", org, id)
 				} else {
-					printer.StepDone(fmt.Sprintf("Opened %s", slug))
+					uninstallURL = fmt.Sprintf("https://github.com/organizations/%s/settings/installations", org)
+				}
+				printer.StepStart(fmt.Sprintf("Opening %s installation settings...", slug))
+				if err := browser.Open(ctx, uninstallURL); err != nil {
+					printer.StepWarn(fmt.Sprintf("Could not open browser: %v", err))
+					printer.StepInfo(fmt.Sprintf("  Uninstall manually at: %s", uninstallURL))
+				} else {
+					printer.StepDone(fmt.Sprintf("Opened %s — %s", slug, uninstallURL))
+				}
+				printer.StepInfo(fmt.Sprintf("Press Enter once %s is uninstalled...", slug))
+				if _, err := stdinReader.ReadString('\n'); err != nil && !errors.Is(err, io.EOF) {
+					return fmt.Errorf("reading confirmation: %w", err)
 				}
 			}
 			printer.Blank()
+
+			printer.StepStart("Verifying if apps were removed")
+			freshInstalls, verifyErr := client.ListOrgInstallations(ctx, org)
+			if verifyErr != nil {
+				printer.StepWarn(fmt.Sprintf("Could not get installations for org %s: %v", org, verifyErr))
+			} else {
+				stillInstalledSlugs := []string{}
+				for _, slug := range existingSlugs {
+					for _, inst := range freshInstalls {
+						if inst.AppSlug == slug {
+							stillInstalledSlugs = append(stillInstalledSlugs, inst.AppSlug)
+						}
+					}
+				}
+
+				if len(stillInstalledSlugs) != 0 {
+					printer.StepWarn(fmt.Sprintf("Some fullsend apps are still installed — uninstall manually at: %s", fmt.Sprintf("https://github.com/organizations/%s/settings/installations", org)))
+				} else {
+					printer.StepDone("Apps were uninstalled")
+				}
+			}
+		} else if listErr == nil {
+			printer.StepWarn("No fullsend apps found installed in this organization.")
+			printer.StepWarn("If apps were created under a custom --app-set prefix, re-run with that prefix.")
 		}
 	}
 
@@ -908,17 +1785,10 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	// Detect inference provider and auth mode from existing config.
+	// Detect inference provider from existing config.
 	var inferenceProvider inference.Provider
 	if providerName := loadExistingInferenceProvider(ctx, client, org); providerName != "" {
-		mode := vertex.AuthModeSAKey
-		wifExists, err := client.RepoSecretExists(ctx, org, forge.ConfigRepoName, vertex.SecretWIFProvider)
-		if err != nil {
-			printer.StepWarn(fmt.Sprintf("Could not check WIF secret: %v (defaulting to SA key mode)", err))
-		} else if wifExists {
-			mode = vertex.AuthModeWIF
-		}
-		inferenceProvider = vertex.NewAnalyzeOnly(mode)
+		inferenceProvider = vertex.NewAnalyzeOnly()
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
@@ -963,7 +1833,7 @@ func buildLayerStack(
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
 		layers.NewWorkflowsLayer(org, client, printer, user, version),
-		layers.NewVendorBinaryLayer(org, client, printer, vendorBinary, vendorFn),
+		layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendorBinary, vendorFn),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		dispatchLayer,
@@ -976,50 +1846,14 @@ func buildLayerStack(
 // all layers; TestCheckInstallScopes_SyncWithLayers asserts parity.
 var installRequiredScopes = []string{"repo", "workflow", "admin:org"}
 
+// perRepoRequiredScopes is the set of OAuth scopes needed for per-repo install.
+var perRepoRequiredScopes = []string{"repo", "workflow"}
+
 // checkInstallScopes verifies that the token has the scopes needed for
 // install before starting interactive app setup. This avoids wasting
 // time on browser-based app creation only to fail on missing scopes.
 func checkInstallScopes(ctx context.Context, client forge.Client, printer *ui.Printer) error {
-	printer.StepStart("Checking token permissions")
-
-	granted, err := client.GetTokenScopes(ctx)
-	if err != nil {
-		printer.StepFail("Could not verify token permissions")
-		return fmt.Errorf("checking token scopes: %w", err)
-	}
-
-	if granted == nil {
-		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
-		return nil
-	}
-
-	required := installRequiredScopes
-	grantedSet := make(map[string]bool, len(granted))
-	for _, s := range granted {
-		grantedSet[s] = true
-	}
-
-	var missing []string
-	for _, scope := range required {
-		if !grantedSet[scope] {
-			missing = append(missing, scope)
-		}
-	}
-
-	if len(missing) > 0 {
-		printer.StepFail("Token is missing required scopes")
-		printer.Blank()
-		result := &layers.PreflightResult{
-			Required: required,
-			Granted:  granted,
-			Missing:  missing,
-		}
-		printer.ErrorBox("Missing token scopes", result.Error())
-		return fmt.Errorf("token is missing required scopes: %s", strings.Join(missing, ", "))
-	}
-
-	printer.StepDone("Token permissions verified")
-	return nil
+	return checkTokenScopes(ctx, client, printer, installRequiredScopes)
 }
 
 // runPreflight checks that the token has all required scopes for the
@@ -1101,7 +1935,7 @@ func printAnalysis(ctx context.Context, stack *layers.Stack, printer *ui.Printer
 
 // loadExistingInferenceProvider reads the inference provider name from
 // an existing config.yaml in .fullsend, if available. This prevents
-// re-installs without --gcp-project from silently erasing the inference section.
+// re-installs without --inference-project from silently erasing the inference section.
 func loadExistingInferenceProvider(ctx context.Context, client forge.Client, org string) string {
 	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err != nil {
@@ -1129,19 +1963,19 @@ func loadExistingEnabledRepos(ctx context.Context, client forge.Client, org stri
 	return cfg.EnabledRepos()
 }
 
-// validateCredentialJSON checks that raw bytes look like a GCP service account key.
-func validateCredentialJSON(data []byte) error {
-	var keyFile struct {
-		Type      string `json:"type"`
-		ProjectID string `json:"project_id"`
+// filterSlugsByAppSet returns a new map containing only entries whose slug
+// matches the convention for the given app set (i.e., slug == appSet + "-" + role).
+// Slugs from a previous install with a different app set must not be carried
+// over, as they would cause findExistingInstallation to pick up the wrong app.
+// Always returns a non-nil map.
+func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]string {
+	out := make(map[string]string, len(slugs))
+	for role, slug := range slugs {
+		if slug == appsetup.AppSlug(appSet, role) {
+			out[role] = slug
+		}
 	}
-	if err := json.Unmarshal(data, &keyFile); err != nil {
-		return fmt.Errorf("credentials file is not valid JSON: %w", err)
-	}
-	if keyFile.Type != "service_account" {
-		return fmt.Errorf("credentials file type is %q, expected \"service_account\"", keyFile.Type)
-	}
-	return nil
+	return out
 }
 
 // loadKnownSlugs tries to read agent slugs from an existing config.
@@ -1305,7 +2139,7 @@ func newDisableReposCmd() *cobra.Command {
 // The yolo parameter is accepted for signature compatibility with reposRunFunc but is unused
 // since enable has no destructive operations that require confirmation.
 func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error {
-	printer.Banner()
+	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Enabling repositories for " + org)
 	printer.Blank()
@@ -1317,7 +2151,10 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 	}
 
 	// Determine which repos to enable.
+	// We always need the full org repo list (for validation or discovery),
+	// so fetch it once and reuse for org variable visibility sync later.
 	var reposToEnable []string
+	var allOrgRepos []forge.Repository
 	if all {
 		// Get all org repos by calling ListOrgRepos.
 		// Note: disable --all iterates cfg.Repos instead of calling ListOrgRepos.
@@ -1325,13 +2162,13 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		// while disable --all operates on previously configured repos (which may have
 		// been deleted from the org but still need unenrollment PRs for cleanup).
 		printer.StepStart("Discovering all organization repositories")
-		allRepos, err := client.ListOrgRepos(ctx, org)
+		allOrgRepos, err = client.ListOrgRepos(ctx, org)
 		if err != nil {
 			printer.StepFail("Failed to list organization repositories")
 			printer.StepInfo("Hint: verify your token has 'repo' scope with: gh auth refresh -s repo")
 			return fmt.Errorf("listing org repos: %w", err)
 		}
-		for _, r := range allRepos {
+		for _, r := range allOrgRepos {
 			if r.Name != forge.ConfigRepoName {
 				reposToEnable = append(reposToEnable, r.Name)
 			}
@@ -1344,7 +2181,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		// one API call per repo (O(n) → O(1) API calls).
 		printer.StepStart("Validating repository names")
 
-		allOrgRepos, err := client.ListOrgRepos(ctx, org)
+		allOrgRepos, err = client.ListOrgRepos(ctx, org)
 		if err != nil {
 			printer.StepFail("Failed to list organization repositories")
 			printer.StepInfo("Hint: verify your token has 'repo' scope with: gh auth refresh -s repo")
@@ -1394,31 +2231,95 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		}
 	}
 
+	var dispatchTime time.Time
+
 	if changed == 0 {
 		printer.StepInfo("All specified repositories are already enabled")
-		return nil
-	}
-	printer.StepDone(fmt.Sprintf("Updated %d repositories in config.yaml", changed))
+	} else {
+		printer.StepDone(fmt.Sprintf("Updated %d repositories in config.yaml", changed))
 
-	// Save updated config.
-	commitMsg := fmt.Sprintf("chore: enable %d repositories for fullsend enrollment", changed)
-	if err := saveRepoConfig(ctx, client, printer, org, cfg, commitMsg); err != nil {
-		return err
+		// Save updated config.
+		commitMsg := fmt.Sprintf("chore: enable %d repositories for fullsend enrollment", changed)
+		var err error
+		dispatchTime, err = saveRepoConfig(ctx, client, printer, org, cfg, commitMsg)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Sync org variable visibility so enrolled repos can read dispatch
+	// variables like FULLSEND_MINT_URL. Runs even when changed == 0 to
+	// reconcile a previously failed best-effort sync on re-run.
+	if cfg.Dispatch.Mode == "oidc-mint" {
+		syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
+	}
+
+	if changed == 0 {
+		return nil
 	}
 
 	printer.Blank()
 	printer.Summary("Repositories enabled", []string{
 		fmt.Sprintf("Organization: %s", org),
 		fmt.Sprintf("Enabled: %d repositories", changed),
-		"The repo-maintenance workflow will create enrollment PRs",
 	})
+
+	if !dispatchTime.IsZero() {
+		awaitRepoMaintenance(ctx, client, printer, org, dispatchTime)
+	}
 
 	return nil
 }
 
+// dispatchOrgVariableNames returns the org-level variable names managed by the
+// dispatch layer, derived from the gcf provisioner to stay in sync automatically.
+var dispatchOrgVariableNames = gcf.NewProvisioner(gcf.Config{}, nil).OrgVariableNames()
+
+// syncOrgVariableVisibility updates the "selected" repository list for each
+// dispatch org variable so that all currently enrolled repos (plus the config
+// repo) can read them. This is best-effort: failures are logged as warnings
+// but do not fail the enable command, because the repo-maintenance workflow
+// can reconcile this later.
+func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, allOrgRepos []forge.Repository) {
+	// Collect IDs for all enabled repos.
+	enrolledRepoIDs := collectEnrolledRepoIDs(allOrgRepos, cfg.EnabledRepos())
+
+	// Ensure the config repo (.fullsend) is included — it needs access
+	// to dispatch variables for its own workflows.
+	seen := make(map[int64]bool, len(enrolledRepoIDs))
+	for _, id := range enrolledRepoIDs {
+		seen[id] = true
+	}
+	for _, r := range allOrgRepos {
+		if r.Name == forge.ConfigRepoName && !seen[r.ID] {
+			enrolledRepoIDs = append(enrolledRepoIDs, r.ID)
+			break
+		}
+	}
+
+	for _, varName := range dispatchOrgVariableNames {
+		exists, checkErr := client.OrgVariableExists(ctx, org, varName)
+		if checkErr != nil {
+			printer.StepWarn(fmt.Sprintf("could not check org variable %s: %v", varName, checkErr))
+			continue
+		}
+		if !exists {
+			// Variable not yet created (e.g. mint not provisioned yet).
+			continue
+		}
+
+		printer.StepStart(fmt.Sprintf("Updating %s visibility for enrolled repos", varName))
+		if setErr := client.SetOrgVariableRepos(ctx, org, varName, enrolledRepoIDs); setErr != nil {
+			printer.StepWarn(fmt.Sprintf("failed to update %s visibility: %v", varName, setErr))
+		} else {
+			printer.StepDone(fmt.Sprintf("Updated %s visibility (%d repos)", varName, len(enrolledRepoIDs)))
+		}
+	}
+}
+
 // runDisableRepos disables the specified repositories from fullsend enrollment.
 func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error {
-	printer.Banner()
+	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Disabling repositories for " + org)
 	printer.Blank()
@@ -1505,16 +2406,30 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 
 	// Save updated config.
 	commitMsg := fmt.Sprintf("chore: disable %d repositories from fullsend enrollment", changed)
-	if err := saveRepoConfig(ctx, client, printer, org, cfg, commitMsg); err != nil {
+	dispatchTime, err := saveRepoConfig(ctx, client, printer, org, cfg, commitMsg)
+	if err != nil {
 		return err
+	}
+
+	// Sync org variable visibility to revoke access for disabled repos.
+	if cfg.Dispatch.Mode == "oidc-mint" {
+		allOrgRepos, listErr := client.ListOrgRepos(ctx, org)
+		if listErr != nil {
+			printer.StepWarn(fmt.Sprintf("could not list org repos for variable sync: %v", listErr))
+		} else {
+			syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
+		}
 	}
 
 	printer.Blank()
 	printer.Summary("Repositories disabled", []string{
 		fmt.Sprintf("Organization: %s", org),
 		fmt.Sprintf("Disabled: %d repositories", changed),
-		"The repo-maintenance workflow will create unenrollment PRs",
 	})
+
+	if !dispatchTime.IsZero() {
+		awaitRepoMaintenance(ctx, client, printer, org, dispatchTime)
+	}
 
 	return nil
 }
@@ -1562,12 +2477,15 @@ func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 }
 
 // saveRepoConfig marshals and commits the updated config, then triggers the repo-maintenance workflow.
-func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, commitMsg string) error {
+// saveRepoConfig marshals the config, commits it, and dispatches the
+// repo-maintenance workflow. It returns the dispatch time so callers can
+// watch the resulting workflow run. A zero time means the dispatch failed.
+func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, commitMsg string) (time.Time, error) {
 	// Marshal updated config.
 	updatedConfigData, err := cfg.Marshal()
 	if err != nil {
 		printer.StepFail("Failed to marshal config.yaml")
-		return fmt.Errorf("marshaling config.yaml: %w", err)
+		return time.Time{}, fmt.Errorf("marshaling config.yaml: %w", err)
 	}
 
 	// Commit and push changes.
@@ -1575,24 +2493,155 @@ func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 	if err := client.CreateOrUpdateFile(ctx, org, forge.ConfigRepoName, "config.yaml", commitMsg, updatedConfigData); err != nil {
 		printer.StepFail("Failed to commit changes")
 		printer.StepInfo("Hint: verify your token has 'repo' scope with: gh auth refresh -s repo")
-		return fmt.Errorf("committing config.yaml: %w", err)
+		return time.Time{}, fmt.Errorf("committing config.yaml: %w", err)
 	}
 	printer.StepDone("Changes committed to .fullsend")
 
 	// Trigger repo-maintenance workflow.
+	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
 	printer.StepStart("Triggering repo-maintenance workflow")
 	if err := client.DispatchWorkflow(ctx, org, forge.ConfigRepoName, "repo-maintenance.yml", "main", nil); err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to trigger repo-maintenance: %v", err))
 		printer.StepInfo("Hint: verify your token has 'workflow' scope with: gh auth refresh -s workflow")
 		printer.StepInfo("Changes committed successfully, but you may need to manually trigger the workflow")
-	} else {
-		printer.StepDone("Triggered repo-maintenance workflow")
+		return time.Time{}, nil
+	}
+	printer.StepDone("Triggered repo-maintenance workflow")
+
+	return dispatchTime, nil
+}
+
+// awaitRepoMaintenance watches the repo-maintenance workflow run triggered by a
+// config.yaml push, waits for it to complete, and prints any PR URLs from its
+// annotations.
+func awaitRepoMaintenance(ctx context.Context, client forge.Client, printer *ui.Printer, org string, dispatchTime time.Time) {
+	awaitRepoMaintenanceWithInterval(ctx, client, printer, org, dispatchTime, 5*time.Second, 36)
+}
+
+func awaitRepoMaintenanceWithInterval(ctx context.Context, client forge.Client, printer *ui.Printer, org string, dispatchTime time.Time, pollInterval time.Duration, maxAttempts int) {
+	printer.Blank()
+	printer.StepStart("Watching repo-maintenance workflow")
+
+	// Poll for a workflow run created after dispatchTime.
+	var run *forge.WorkflowRun
+	for attempt := range maxAttempts {
+		select {
+		case <-ctx.Done():
+			printer.StepWarn("context cancelled while waiting for workflow")
+			return
+		case <-time.After(pollInterval):
+		}
+
+		runs, err := client.ListWorkflowRuns(ctx, org, forge.ConfigRepoName, "repo-maintenance.yml")
+		if err != nil {
+			printer.StepInfo(fmt.Sprintf("waiting for workflow run (attempt %d)...", attempt+1))
+			continue
+		}
+
+		for i := range runs {
+			r := &runs[i]
+			runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if runTime.Before(dispatchTime) {
+				continue
+			}
+			if r.Status == "completed" {
+				run = r
+				break
+			}
+			printer.StepInfo(fmt.Sprintf("workflow run: %s (%s)", r.HTMLURL, r.Status))
+			break // found our run, keep waiting
+		}
+		if run != nil {
+			break
+		}
 	}
 
+	if run == nil {
+		printer.StepWarn("timed out waiting for repo-maintenance workflow")
+		printer.StepInfo("check the repo-maintenance workflow in .fullsend for results")
+		return
+	}
+
+	if run.Conclusion == "success" {
+		printer.StepDone("repo-maintenance completed successfully")
+	} else {
+		printer.StepWarn(fmt.Sprintf("repo-maintenance completed with conclusion: %s", run.Conclusion))
+	}
+	printer.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
+
+	// Harvest PR URLs from workflow annotations (::notice:: commands).
+	annotations, err := client.GetWorkflowRunAnnotations(ctx, org, forge.ConfigRepoName, run.ID)
+	if err != nil {
+		return
+	}
+	for _, a := range annotations {
+		if a.Level == "notice" {
+			printer.StepInfo(a.Message)
+		}
+	}
+}
+
+// checkPerRepoScopes verifies the token has sufficient permissions for per-repo install.
+func checkPerRepoScopes(ctx context.Context, client forge.Client, printer *ui.Printer) error {
+	return checkTokenScopes(ctx, client, printer, perRepoRequiredScopes)
+}
+
+// checkTokenScopes verifies the token has all required OAuth scopes.
+func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Printer, required []string) error {
+	printer.StepStart("Checking token permissions")
+
+	granted, err := client.GetTokenScopes(ctx)
+	if err != nil {
+		printer.StepFail("Could not verify token permissions")
+		return fmt.Errorf("checking token scopes: %w", err)
+	}
+
+	if granted == nil {
+		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+		return nil
+	}
+
+	grantedSet := make(map[string]bool, len(granted))
+	for _, s := range granted {
+		grantedSet[s] = true
+	}
+
+	var missing []string
+	for _, scope := range required {
+		if !grantedSet[scope] {
+			missing = append(missing, scope)
+		}
+	}
+
+	if len(missing) > 0 {
+		printer.StepFail("Token is missing required scopes")
+		printer.Blank()
+		result := &layers.PreflightResult{
+			Required: required,
+			Granted:  granted,
+			Missing:  missing,
+		}
+		printer.ErrorBox("Missing token scopes", result.Error())
+		return fmt.Errorf("token is missing required scopes: %s", strings.Join(missing, ", "))
+	}
+
+	printer.StepDone("Token permissions verified")
 	return nil
 }
 
 // Helper functions.
+
+func sortedStringMapKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 func repoNameList(repos []forge.Repository) []string {
 	names := make([]string, len(repos))

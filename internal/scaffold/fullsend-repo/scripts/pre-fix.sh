@@ -78,10 +78,10 @@ if [[ "${ITERATION}" -gt "${CAP}" ]]; then
   if is_bot_user "${TRIGGER_SOURCE}"; then
     echo "::error::Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
     echo "::error::The review→fix loop has run ${ITERATION} times without converging."
-    echo "::error::A human can still direct the agent with /fix (up to ${HUMAN_CAP} total iterations)."
+    echo "::error::A human can still direct the agent with /fs-fix (up to ${HUMAN_CAP} total iterations)."
   else
     echo "::error::Fix iteration ${ITERATION} exceeds human cap of ${CAP}."
-    echo "::error::The /fix loop has run ${ITERATION} times. Further attempts are blocked."
+    echo "::error::The /fs-fix loop has run ${ITERATION} times. Further attempts are blocked."
   fi
   exit 1
 fi

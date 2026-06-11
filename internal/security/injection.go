@@ -69,6 +69,8 @@ var ScannableFiles = map[string]bool{
 	".gemini.md":              true,
 	"copilot-instructions.md": true,
 	"skill.md":                true,
+	"plugin.json":             true,
+	".lsp.json":               true,
 }
 
 // ShouldScan reports whether a filename should be scanned for injection.

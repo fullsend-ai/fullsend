@@ -1,0 +1,37 @@
+name: Setup GCP
+description: Authenticate to Google Cloud via Workload Identity Federation, mask credentials, and prepare sandbox credentials
+
+inputs:
+  gcp_wif_provider:
+    description: 'Workload Identity Federation provider resource name'
+    required: true
+  gcp_project_id:
+    description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Pre-mask GCP credential file path
+      shell: bash
+      run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"
+
+    - name: Authenticate to Google Cloud (WIF)
+      uses: google-github-actions/auth@v3
+      with:
+        workload_identity_provider: ${{ inputs.gcp_wif_provider }}
+        project_id: ${{ inputs.gcp_project_id }}
+
+    - name: Mask GCP credential file paths
+      shell: bash
+      run: |
+        for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
+          val="${!var:-}"
+          if [[ -n "${val}" ]]; then
+            echo "::add-mask::${val}"
+          fi
+        done
+
+    - name: Prepare sandbox credentials
+      shell: bash
+      run: bash scripts/prepare-sandbox-credentials.sh

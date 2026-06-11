@@ -4,17 +4,22 @@ description: >-
   Runs one headless pass that turns an underspecified prompt into a topic
   directory under docs/plans/ with spec.md and qna.md only, using the same
   design discipline as an interactive brainstorm but without blocking questions.
-  Use for one-shot spec generation, GitHub-bound planning agents, or when the
-  user invokes spec-start without back-and-forth clarification.
+  qna.md uses a flat ## Q-NN log (Kind bullets + optional ### answers; one
+  example ### under Q-01). Use for one-shot spec generation, GitHub-bound
+  planning agents, or when the user invokes spec-start without back-and-forth
+  clarification. For issue URL as canonical prompt plus branch/PR flow, pair
+  with spec-start-github.
 # Cursor Agent Skills: prefer explicit @-style invocation; other tooling may ignore.
 disable-model-invocation: true
 ---
 
 # spec-start (headless spec kickoff)
 
+For **GitHub issue as canonical prompt** (fetch issue, `agent/<n>-spec-*` branch, local or harness PR), use **`spec-start-github`** together with this skill.
+
 Help turn ideas into fully formed designs and specs **without** natural collaborative dialogue: run **once**, infer missing intent from the prompt and repo, and **write** the results to disk.
 
-Start by understanding the current project context (files, docs, recent commits). **Do not** ask questions one at a time or wait for approval between sections—when something is unclear, **capture it** in `qna.md` as assumptions and open questions.
+Start by understanding the current project context (files, docs, recent commits). **Do not** ask questions one at a time or wait for approval between sections—when something is unclear, **capture it** in `qna.md` as `## Q-NN` entries (see **`qna.md` format** below).
 
 ## Hard-gate (spec-start)
 
@@ -31,13 +36,13 @@ Every topic deserves the same discipline. A todo list, a single-function utility
 You **must** complete these in order. Treat them as a single uninterrupted pass—**no** blocking `AskQuestion`, no "approve this section," no mid-run wait for the user.
 
 1. **Explore project context** — check files, docs, recent commits relevant to the prompt; follow existing repo structure and naming.
-2. **Assess scope** — if the request describes multiple independent subsystems (for example chat, file storage, billing, and analytics in one prompt), **flag it immediately** in `qna.md` and describe decomposition (independent pieces, how they relate, suggested build order). Do not silently narrow scope without recording that in `qna.md`.
-3. **Resolve "clarifying questions" without the user** — for anything you would normally ask one at a time (purpose, constraints, success criteria), **infer** the best answer from context and record it as an **assumption** in `qna.md` with confidence and blast radius. Prefer multiple-choice style reasoning internally; do not paste quiz questions to the user.
+2. **Assess scope** — if the request describes multiple independent subsystems (for example chat, file storage, billing, and analytics in one prompt), **flag it immediately** in `qna.md` as one or more `## Q-NN` entries with **Kind:** `decomposition` or `scope` (independent pieces, how they relate, suggested build order). Do not silently narrow scope without recording that in `qna.md`.
+3. **Resolve "clarifying questions" without the user** — for anything you would normally ask one at a time (purpose, constraints, success criteria), **infer** the best answer from context and record it in `qna.md` as `## Q-NN` entries (use **Kind:** `assumption` with confidence and blast radius, or **Kind:** `open` when inference is too weak). Prefer multiple-choice style reasoning internally; do not paste quiz questions to the user.
 4. **Propose 2–3 approaches** — with trade-offs and your recommendation; lead with the recommended option and explain why.
 5. **Write the design** — in sections scaled to complexity (see **Presenting the design** below), **directly into** `spec.md` (no separate "chat" design pass).
-6. **Write Q&A** — `qna.md` with assumptions, open questions, and scope/decomposition notes.
+6. **Write Q&A** — `qna.md` as a flat list of `## Q-NN` entries (see **`qna.md` format**). Include **example `###` answer headings only under `Q-01`**; other questions stay bullet-only until real discussion adds answers.
 7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see **Spec self-review** below). Fix issues inline before finishing.
-8. **Stop** — do not auto-invoke planning or implementation skills. Optionally note that a follow-up session may produce an implementation plan once reviewers have read `qna.md` (and any review artifacts other skills add later, such as `comments.md`).
+8. **Stop** — do not auto-invoke planning or implementation skills. Optionally note that a follow-up session may produce an implementation plan once reviewers have read `qna.md` (and any review artifacts other skills add later, such as `comments.md`). When reviewers add `comments.md`, use **`spec-refine`** to fold that feedback into `spec.md` and `qna.md`.
 
 ## Process flow (headless)
 
@@ -45,8 +50,8 @@ You **must** complete these in order. Treat them as a single uninterrupted pass�
 digraph spec_start {
     "Explore project context" [shape=box];
     "Scope too large?" [shape=diamond];
-    "Record decomposition in qna.md" [shape=box];
-    "Infer assumptions + open questions" [shape=box];
+    "Record decomposition as Q entries in qna.md" [shape=box];
+    "Infer Q entries for qna.md" [shape=box];
     "Propose 2-3 approaches" [shape=box];
     "Write spec.md sections" [shape=box];
     "Write qna.md" [shape=box];
@@ -54,10 +59,10 @@ digraph spec_start {
     "Done" [shape=doublecircle];
 
     "Explore project context" -> "Scope too large?";
-    "Scope too large?" -> "Record decomposition in qna.md" [label="yes"];
-    "Scope too large?" -> "Infer assumptions + open questions" [label="no"];
-    "Record decomposition in qna.md" -> "Infer assumptions + open questions";
-    "Infer assumptions + open questions" -> "Propose 2-3 approaches";
+    "Scope too large?" -> "Record decomposition as Q entries in qna.md" [label="yes"];
+    "Scope too large?" -> "Infer Q entries for qna.md" [label="no"];
+    "Record decomposition as Q entries in qna.md" -> "Infer Q entries for qna.md";
+    "Infer Q entries for qna.md" -> "Propose 2-3 approaches";
     "Propose 2-3 approaches" -> "Write spec.md sections";
     "Write spec.md sections" -> "Write qna.md";
     "Write qna.md" -> "Spec self-review (fix inline)";
@@ -70,8 +75,8 @@ digraph spec_start {
 ### Understanding the idea
 
 - Check out the current project state first (files, docs, recent commits).
-- Before simulating "detailed questions," assess scope: if the request bundles several independent subsystems, say so up front in `qna.md` and outline how to split work. If the project is too large for one coherent spec, still produce one `spec.md` for the slice you can cover, and make the boundary explicit in `qna.md`.
-- For appropriately-scoped topics, **internally** focus on purpose, constraints, and success criteria; express conclusions in `spec.md` and uncertainties in `qna.md`.
+- Before simulating "detailed questions," assess scope: if the request bundles several independent subsystems, say so up front in `qna.md` using `## Q-NN` entries (**Kind:** `decomposition` or `scope`) and outline how to split work. If the project is too large for one coherent spec, still produce one `spec.md` for the slice you can cover, and make the boundary explicit in `qna.md`.
+- For appropriately-scoped topics, **internally** focus on purpose, constraints, and success criteria; express conclusions in `spec.md` and uncertainties as `## Q-NN` rows in `qna.md`.
 
 ### Exploring approaches
 
@@ -114,11 +119,11 @@ Within it, for this skill’s initial pass, you **must** create these files (eac
 | File | Role |
 |------|------|
 | `spec.md` | Canonical design / spec for the topic. |
-| `qna.md` | Assumptions, open questions, decomposition, and anything that would have been resolved through interactive clarification. |
+| `qna.md` | Flat **`## Q-NN`** Q&A log: assumptions, open points, scope, and decomposition—each as its own question row; answers are optional **`###`** children (see **`qna.md` format**). |
 
 You **may** add **optional** files in the same directory when visualization helps (for example `architecture.svg`, `state-machine.png`, or other assets). Reference them from `spec.md` or `qna.md` with paths that work in a GitHub-style file view (repo-relative paths from the repo root, or paths relative to the topic directory—pick one convention per topic and use it consistently).
 
-**Do not** create, edit, or seed `comments.md`. That avoids accidental commits of review scratch space before another workflow defines it. A **separate skill** may later add and process `comments.md` (and define its format) in the same topic directory.
+**Do not** create, edit, or seed `comments.md`. That avoids accidental commits of review scratch space before another workflow defines it. **`spec-refine`** processes an optional `comments.md` reviewers add in the same topic directory (see that skill for format and workflow).
 
 Other future artifacts for the same topic (appendices, `plan.md`, exports, `comments.md` once owned elsewhere) should live **in the same directory** so one topic stays in one place.
 
@@ -132,21 +137,76 @@ Use clear prose; adapt depth to scope.
 - **Architectural approach** — 2–3 options with trade-offs, one recommended path, and what is explicitly deferred.
 - **Further sections** as needed: components, data flow, error handling, security or threat notes if relevant, testing strategy, rollout.
 - **References** — paths, prior docs, external links.
-- **Open questions (summary)** — short bullets pointing to the matching detail in `qna.md` (avoid long duplication).
+- **Q&A index** — short bullets, each pointing to a **`Q-NN`** heading in `qna.md` (same anchor as `## Q-NN` in that file). Prefer entries whose **Kind** is `open` or that otherwise need reviewer attention; avoid long duplication of `qna.md` body text.
 
-### `qna.md` — required sections
+### `qna.md` format
 
-- **Assumptions** — numbered list; each item: what was assumed, **confidence** (high / medium / low), and **blast radius** if wrong.
-- **Open questions** — numbered list; each: question, why it matters, and suggested ways to resolve it (owner, spike, experiment, policy choice).
-- **Scope / decomposition** — if the prompt bundles multiple subsystems, how to split work and recommended order; if you stayed narrow, say what was left out.
+`qna.md` is a **single flat stream** of entries. Do **not** use top-level sections such as “Assumptions” / “Open questions” / “Scope”—those concerns are expressed only as separate **`## Q-NN — Short title`** blocks (prefer real **question** titles). Stable IDs run **`Q-01`**, **`Q-02`**, … in document order.
+
+**Heading outline**
+
+- Optional `#` title line at the top (for example `# Q&A — <topic>`). If you skip it, the file starts at `##`.
+- Each tracked item is **`## Q-NN — Short title`** only—no extra `##` band headings for grouping.
+- Each **answer** from discussion (GitHub review threads, follow-ups, etc.) is a **`### …`** heading **under** that question, with **unique slug text** in the heading so anchors stay distinct. Use **sibling `###` blocks** for multiple answers; do **not** use a bold pseudo-section title or horizontal rules as the primary way to separate answers.
+- Rich answer bodies may use lists, fences, Mermaid, and—when needed—`####` **inside** a given answer for internal structure.
+
+**Bullets under each `## Q-NN` (not headings—keeps the outline shallow)**
+
+- **Kind:** one of `assumption` | `open` | `scope` | `decomposition` (extend this list only when this skill is updated).
+- **Detail:** the substantive statement (one tight paragraph or a few bullets).
+- Optional **Context** (or fold into **Detail**): why it matters, blast radius, suggested resolution—whatever applies.
+
+**Kind-specific bullets** (include when relevant)
+
+- **`assumption`:** **Confidence:** high | medium | low — **Blast radius if wrong:** …
+- **`open`:** **Suggested resolution:** … (spike, owner, policy choice).
+- **`scope` / `decomposition`:** **Proposed handling:** … (split order, deferral, boundary).
+
+**Answers (`###` children)**
+
+- **Do not** add answer `###` headings under every `## Q-NN` on the initial pass—that makes the file noisy before any discussion.
+- **Example only on `Q-01`:** under **`## Q-01`**, add **exactly one** illustrative **`###`** answer block. Label the example body so reviewers know it is a **template** (for example a short note that the block demonstrates shape, optional attribution, and optional permalink-on-next-line—not project truth).
+- **Additional** real answers: on any `## Q-NN`, append new **`### Answer — …`** headings with unique slugs (for example **`### Answer — @handle — YYYY-MM-DD`** or **`### Answer — PR #123 review`**). If the permalink is long, put it on the **line immediately under** the heading.
+- **Chronology:** when mirroring GitHub threads, prefer **oldest `###` first, newest last** under the same `## Q-NN`.
+
+**Ordering**
+
+- Prefer a **logical** order (for example scope/decomposition first, then assumptions, then open)—not mandatory.
+- Do **not** insert extra `##` section headers to group kinds.
+
+**Minimal example (structure only; replace with real topic content)**
+
+```markdown
+# Q&A — example-topic
+
+## Q-01 — Are we assuming feature X ships behind a feature flag?
+
+- **Kind:** assumption
+- **Detail:** …
+- **Confidence:** medium
+- **Blast radius if wrong:** …
+
+### Answer — example only (template)
+
+_(This `###` block demonstrates the answer shape. Delete or replace when recording real discussion.)_
+
+Optional permalink line: `https://github.com/org/repo/pull/1#discussion_r…`
+
+## Q-02 — What is explicitly out of scope for this spec?
+
+- **Kind:** scope
+- **Detail:** …
+```
+
+`## Q-02` has **no** `###` children until real answers exist.
 
 ## Diagrams, Markdown visuals, and optional asset files
 
-Assume reviewers will read the topic in a **GitHub-like** environment: Markdown is rendered with **syntax highlighting**, **tables**, **task lists**, and common extensions such as **Mermaid** (standard fenced code blocks with the `mermaid` info string), which is enough for many architecture, sequence, state, and dependency pictures. Prefer embedding those diagrams **directly in** `spec.md` or `qna.md` when they clarify options, trade-offs, decomposition, or open questions—especially where a diagram replaces a long ambiguous paragraph.
+Assume reviewers will read the topic in a **GitHub-like** environment: Markdown is rendered with **syntax highlighting**, **tables**, **task lists**, and common extensions such as **Mermaid** (standard fenced code blocks with the `mermaid` info string), which is enough for many architecture, sequence, state, and dependency pictures. Prefer embedding those diagrams **directly in** `spec.md` or `qna.md` when they clarify options, trade-offs, decomposition, or Q&A items—especially where a diagram replaces a long ambiguous paragraph. For `qna.md`, prefer large Mermaid or code blocks **inside a specific answer’s `###` body** when the graphic belongs to review discussion; keep `spec.md` as the canonical design surface when both apply.
 
 When inline Markdown is not enough, add **extra files in the topic directory** (for example SVG, PNG, or other diagram or image formats your hosts display well) and **link to them** from `spec.md` or `qna.md`. Keep filenames stable and descriptive; mention in prose what each asset is for so the spec stays understandable in plain diff views.
 
-**Browser or live UI tools** remain optional: when mockups, running apps, or side-by-side comparisons would materially improve accuracy—and such tools are available—you may gather evidence **without** blocking on the user. Summarize what you observed in `spec.md` or `qna.md`, or call out what still needs visual verification under open questions in `qna.md` if you cannot capture it.
+**Browser or live UI tools** remain optional: when mockups, running apps, or side-by-side comparisons would materially improve accuracy—and such tools are available—you may gather evidence **without** blocking on the user. Summarize what you observed in `spec.md` or `qna.md`, or add a **`## Q-NN`** row (**Kind:** `open`) describing what still needs visual verification if you cannot capture it.
 
 Do not add diagrams for their own sake: use them where they reduce ambiguity. For purely textual tradeoffs or scope lists, prose is enough.
 
@@ -154,10 +214,11 @@ Do not add diagrams for their own sake: use them where they reduce ambiguity. Fo
 
 After writing `spec.md` and `qna.md`, look at them with fresh eyes:
 
-1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them or move them to `qna.md` with explicit uncertainty.
+1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them or capture them as `## Q-NN` entries in `qna.md` with explicit uncertainty.
 2. **Internal consistency:** Do sections contradict each other? Does the architecture match the feature descriptions? Do `spec.md` and `qna.md` agree? If you added Mermaid or links to sibling files, do blocks parse and paths resolve from the repo root as intended?
-3. **Scope check:** Is this focused enough for a single implementation plan, or does it need decomposition (called out in `qna.md`)?
-4. **Ambiguity check:** Could any requirement be read two ways? If so, pick one for `spec.md` and list the discarded interpretation in `qna.md`, or leave the requirement out of `spec.md` until resolved and track it in `qna.md`.
+3. **Scope check:** Is this focused enough for a single implementation plan, or does it need decomposition (tracked as **`## Q-NN`** rows with **Kind:** `decomposition` or `scope`)?
+4. **Ambiguity check:** Could any requirement be read two ways? If so, pick one for `spec.md` and record the discarded interpretation in `qna.md` as a **`## Q-NN`** row, or leave the requirement out of `spec.md` until resolved and track it in `qna.md`.
+5. **`qna.md` shape:** Are **`Q-01`**, **`Q-02`**, … IDs unique and in order? Does **`Q-01`** include exactly **one** example **`###`** answer block per this skill? Do real answer headings use unique slug text? When permalinks appear, do they look well-formed?
 
 Fix any issues inline. No need to loop self-review more than once unless edits reintroduce problems.
 
@@ -173,4 +234,4 @@ Commit only if the user or automation **explicitly** asked to commit. Otherwise 
 
 ## Aftercare (message to user)
 
-In the final reply, list the **topic directory path**, summarize the **recommended approach** in one paragraph, and surface the **top three** open questions from `qna.md` for quick scanning. If you added optional diagram or image files, list them too so reviewers know what to open.
+In the final reply, list the **topic directory path**, summarize the **recommended approach** in one paragraph, and surface the **top three** `## Q-NN` items from `qna.md` that most need reviewer attention (for example **Kind:** `open`, or high blast-radius assumptions). If you added optional diagram or image files, list them too so reviewers know what to open. After `comments.md` exists, **`spec-refine`** is the skill that merges review feedback back into `spec.md` / `qna.md`.

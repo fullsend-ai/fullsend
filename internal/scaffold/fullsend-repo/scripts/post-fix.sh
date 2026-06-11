@@ -6,11 +6,23 @@
 # security-sensitive component in the fix pipeline.
 #
 # Security layers (defense-in-depth):
-#   1. Protected-path check — reject if agent touched forbidden paths
-#   2. Authoritative secret scan — final gate before any push
-#   3. Authoritative pre-commit — run repo hooks on changed files
-#   4. Branch validation — refuse to push main/master
-#   5. Token isolation — PUSH_TOKEN never enters the sandbox
+#   - Protected-path check — reject if agent touched forbidden paths
+#   - Authoritative secret scan — final gate before any push
+#   - Authoritative pre-commit — run repo hooks on changed files
+#   - Branch validation — refuse to push main/master
+#   - Token isolation — PUSH_TOKEN never enters the sandbox
+#
+# Steps:
+#   0. Check for agent commits
+#   1. Protected-path check
+#   2. Authoritative secret scan
+#   3. Install lychee
+#   4. Install uv and uvx
+#   5. Authoritative pre-commit check
+#   6. Push branch
+#   7. Process structured output
+#   8. Iteration-cap warning label
+#   9. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -48,8 +60,8 @@ PROTECTED_PATHS=(
   ".claude/"
   "agents/"
   "harness/"
+  "plugins/"
   "policies/"
-  "scripts/"
   "api-servers/"
   "CODEOWNERS"
   ".pre-commit-config.yaml"
@@ -59,7 +71,10 @@ PROTECTED_PATHS=(
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 LYCHEE_VERSION="0.24.2"
-LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+LYCHEE_SHA256_AMD64="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+LYCHEE_SHA256_ARM64="91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
+UV_VERSION="0.11.14"
+UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -109,13 +124,38 @@ if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
   NO_PUSH=true
 fi
 
+# Compute the branch's net changes relative to the target branch using
+# merge-base. After a rebase, PRE_AGENT_HEAD..HEAD includes upstream
+# changes (the rebase rewrites history so the old SHA is no longer an
+# ancestor). The merge-base diff isolates only what the branch itself
+# contributes — the same diff that will appear in the PR.
+# Fallback chain mirrors post-code.sh: warn, try origin/TARGET..HEAD,
+# then HEAD~1..HEAD. This keeps the two post-scripts aligned.
+MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
+if [ -n "${MERGE_BASE}" ]; then
+  BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+else
+  echo "::warning::Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
+  BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Protected-path check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
-  echo "Changed files:"
+  echo "Changed files (agent commits):"
   echo "${CHANGED_FILES}" | sed 's/^/  /'
 
+  if [ "${BRANCH_CHANGED_FILES}" != "${CHANGED_FILES}" ]; then
+    echo "Branch-only changed files (merge-base-aware, used for protected-path check):"
+    echo "${BRANCH_CHANGED_FILES}" | sed 's/^/  /'
+  fi
+
+  # Use BRANCH_CHANGED_FILES for the protected-path check. This ensures
+  # that files changed only in upstream (e.g., .github/ workflows modified
+  # on main since the branch was created) are not falsely attributed to
+  # the agent after a rebase.
   while IFS= read -r file; do
     [ -z "${file}" ] && continue
     for pattern in "${PROTECTED_PATHS[@]}"; do
@@ -125,7 +165,7 @@ if [ "${NO_PUSH}" = "false" ]; then
         exit 1
       fi
     done
-  done <<< "${CHANGED_FILES}"
+  done <<< "${BRANCH_CHANGED_FILES}"
 
   echo "Protected-path check passed"
 fi
@@ -160,17 +200,40 @@ fi
 if ! command -v lychee >/dev/null 2>&1; then
   echo "Installing lychee v${LYCHEE_VERSION}..."
   mkdir -p "${HOME}/.local/bin"
+  case "$(uname -m)" in
+    x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
+    aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
+    *) echo "::error::Unsupported architecture for lychee: $(uname -m)"; exit 1 ;;
+  esac
   curl -fsSL \
-    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
     -o /tmp/lychee.tar.gz \
-    && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
-    && rm /tmp/lychee.tar.gz
+    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C /tmp \
+    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" "${HOME}/.local/bin/" \
+    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Authoritative pre-commit check (only if pushing)
+# 4. Install uv and uvx (for pre-commit Python tooling)
+# ---------------------------------------------------------------------------
+if ! command -v uvx >/dev/null 2>&1; then
+  echo "Installing uv v${UV_VERSION} (includes uvx)..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/uv.tar.gz \
+    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/uv.tar.gz -C /tmp \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
+    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -183,7 +246,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
-    mapfile -t changed_array <<< "${CHANGED_FILES}"
+    mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
     if pre-commit run --files "${changed_array[@]}"; then
       echo "Pre-commit passed — all hooks clean"
     else
@@ -196,7 +259,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Push branch (only if we have commits)
+# 6. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
@@ -211,7 +274,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Process structured output (fix-result.json)
+# 7. Process structured output (fix-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -263,14 +326,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Iteration-cap warning label
+# 8. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
-# autonomous review→fix loop needs human direction. Human-triggered /fix
+# autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
   echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
@@ -282,7 +345,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Summary
+# 9. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"

@@ -3,13 +3,222 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+func TestCreateIssueWithLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "Follow-up", body["title"])
+		assert.Equal(t, "Body", body["body"])
+		assert.Equal(t, []any{"type/chore"}, body["labels"])
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":   77,
+			"title":    "Follow-up",
+			"body":     "Body",
+			"html_url": "https://github.com/owner/repo/issues/77",
+			"labels":   []map[string]any{{"name": "type/chore"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	issue, err := client.CreateIssue(context.Background(), "owner", "repo", "Follow-up", "Body", "type/chore")
+	require.NoError(t, err)
+	assert.Equal(t, 77, issue.Number)
+	assert.Equal(t, "Follow-up", issue.Title)
+	assert.Equal(t, "Body", issue.Body)
+	assert.Equal(t, []string{"type/chore"}, issue.Labels)
+}
+
+func TestCreateIssueRetriesWithoutLabelsOnValidationError(t *testing.T) {
+	call := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call++
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if call == 1 {
+			assert.Equal(t, []any{"missing-label"}, body["labels"])
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Validation Failed",
+				"errors":  []map[string]any{{"field": "labels", "code": "invalid"}},
+			})
+			return
+		}
+
+		_, hasLabels := body["labels"]
+		assert.False(t, hasLabels)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":   78,
+			"title":    "Follow-up",
+			"body":     "Body",
+			"html_url": "https://github.com/owner/repo/issues/78",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	issue, err := client.CreateIssue(context.Background(), "owner", "repo", "Follow-up", "Body", "missing-label")
+	require.NoError(t, err)
+	assert.Equal(t, 78, issue.Number)
+	assert.Equal(t, 2, call)
+}
+
+func TestCreateIssueDoesNotRetryNonLabelValidationErrors(t *testing.T) {
+	call := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call++
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Validation Failed",
+			"errors":  []map[string]any{{"field": "title", "code": "missing"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CreateIssue(context.Background(), "owner", "repo", "Follow-up", "Body", "type/chore")
+	require.Error(t, err)
+	assert.Equal(t, 1, call)
+	var apiErr *APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	require.Len(t, apiErr.Errors, 1)
+	assert.Equal(t, "title", apiErr.Errors[0].Field)
+}
+
+func TestCreateIssueReturnsNonLabelErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Resource not accessible by integration"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CreateIssue(context.Background(), "owner", "repo", "Follow-up", "Body", "type/chore")
+	require.Error(t, err)
+	var apiErr *APIError
+	require.True(t, errors.As(err, &apiErr))
+	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+}
+
+func TestListOpenIssuesSkipsPullRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues", r.URL.Path)
+		assert.Equal(t, "open", r.URL.Query().Get("state"))
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		assert.Equal(t, "1", r.URL.Query().Get("page"))
+
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"number":   1,
+				"title":    "Issue",
+				"body":     "Issue body",
+				"html_url": "https://github.com/owner/repo/issues/1",
+				"labels":   []map[string]any{{"name": "type/chore"}},
+			},
+			{
+				"number":       2,
+				"title":        "PR",
+				"body":         "PR body",
+				"html_url":     "https://github.com/owner/repo/pull/2",
+				"pull_request": map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/2"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	issues, err := client.ListOpenIssues(context.Background(), "owner", "repo")
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, 1, issues[0].Number)
+	assert.Equal(t, "Issue body", issues[0].Body)
+	assert.Equal(t, []string{"type/chore"}, issues[0].Labels)
+}
+
+func TestListOpenIssuesFiltersByLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues", r.URL.Path)
+		assert.Equal(t, "open", r.URL.Query().Get("state"))
+		assert.Equal(t, "type/chore", r.URL.Query().Get("labels"))
+
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"number":   1,
+				"title":    "Issue",
+				"body":     "Issue body",
+				"html_url": "https://github.com/owner/repo/issues/1",
+				"labels":   []map[string]any{{"name": "type/chore"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	issues, err := client.ListOpenIssues(context.Background(), "owner", "repo", "type/chore")
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, []string{"type/chore"}, issues[0].Labels)
+}
+
+func TestListOpenIssuesPaginatesUntilShortPage(t *testing.T) {
+	call := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call++
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues", r.URL.Path)
+		assert.Equal(t, "open", r.URL.Query().Get("state"))
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		assert.Equal(t, strconv.Itoa(call), r.URL.Query().Get("page"))
+
+		items := make([]map[string]any, 0, 100)
+		limit := 100
+		if call == 2 {
+			limit = 1
+		}
+		for i := 0; i < limit; i++ {
+			number := ((call - 1) * 100) + i + 1
+			items = append(items, map[string]any{
+				"number":   number,
+				"title":    "Issue",
+				"body":     "Issue body",
+				"html_url": "https://github.com/owner/repo/issues/1",
+			})
+		}
+		json.NewEncoder(w).Encode(items)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	issues, err := client.ListOpenIssues(context.Background(), "owner", "repo")
+	require.NoError(t, err)
+	require.Len(t, issues, 101)
+	assert.Equal(t, 2, call)
+	assert.Equal(t, 101, issues[100].Number)
+}
 
 func TestCreateIssueComment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +423,7 @@ func TestCreatePullRequestReview(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "abc123")
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "abc123", nil)
 	require.NoError(t, err)
 }
 
@@ -232,8 +441,68 @@ func TestCreatePullRequestReview_NoCommitSHA(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "")
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "APPROVE", "Looks good!", "", nil)
 	require.NoError(t, err)
+}
+
+func TestCreatePullRequestReview_WithInlineComments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/7/reviews", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "REQUEST_CHANGES", body["event"])
+		assert.Equal(t, "abc123", body["commit_id"])
+
+		comments, ok := body["comments"].([]any)
+		require.True(t, ok, "comments should be an array")
+		require.Len(t, comments, 1)
+
+		c := comments[0].(map[string]any)
+		assert.Equal(t, "internal/service.go", c["path"])
+		assert.Equal(t, float64(42), c["line"])
+		assert.Contains(t, c["body"], "missing-test")
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"id": 999})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comments := []forge.ReviewComment{
+		{Path: "internal/service.go", Line: 42, Body: "**[high]** missing-test\n\nAdd test coverage."},
+	}
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "REQUEST_CHANGES", "Review", "abc123", comments)
+	require.NoError(t, err)
+}
+
+func TestListPullRequestFileDiffs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/5/files", r.URL.Path)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"filename": "main.go",
+				"patch":    "@@ -10,5 +10,7 @@ func main() {\n context\n+added line",
+			},
+			{
+				"filename": "binary.png",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	files, err := client.ListPullRequestFileDiffs(context.Background(), "owner", "repo", 5)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	assert.Equal(t, "main.go", files[0].Path)
+	assert.Contains(t, files[0].Patch, "@@ -10,5 +10,7 @@")
+	assert.Equal(t, "binary.png", files[1].Path)
+	assert.Empty(t, files[1].Patch)
 }
 
 func TestListPullRequestReviews(t *testing.T) {

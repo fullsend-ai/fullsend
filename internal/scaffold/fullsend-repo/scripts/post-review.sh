@@ -33,6 +33,17 @@ export GH_TOKEN="${REVIEW_TOKEN}"
 PR_STATE=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state --jq '.state')
 if [ "${PR_STATE}" != "OPEN" ]; then
   echo "PR is ${PR_STATE}, skipping review"
+
+  STATE_LOWER="$(echo "${PR_STATE}" | tr '[:upper:]' '[:lower:]')"
+  COMMENT_BODY="Review skipped — this PR is already **${STATE_LOWER}**.
+
+The \`/fs-review\` command only reviews open pull requests.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> post-review check</sub>"
+
+  printf '%s' "${COMMENT_BODY}" | gh issue comment "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+
   exit 0
 fi
 
@@ -53,6 +64,7 @@ fi
 echo "Using result: ${RESULT_FILE}"
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
+# ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
 
 # ---------------------------------------------------------------------------
 # Protected-path check: the review agent must not approve PRs that touch
@@ -65,14 +77,15 @@ REVIEW_PROTECTED_PATHS=(
   ".claude/"
   "agents/"
   "harness/"
+  "plugins/"
   "policies/"
-  "scripts/"
   "api-servers/"
   "CODEOWNERS"
   ".pre-commit-config.yaml"
   ".gitattributes"
 )
 
+DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
   if [ -z "${PR_FILES}" ]; then
@@ -113,23 +126,95 @@ if [ "${ACTION}" = "approve" ]; then
       '.action = "comment" | .body = (.body + $notice)' \
       "${RESULT_FILE}" > "${MODIFIED_RESULT}"
     RESULT_FILE="${MODIFIED_RESULT}"
+    DOWNGRADED=true
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
+# agent reviewed it. When this happens, post a /fs-review comment to
+# re-dispatch a fresh review for the current HEAD.
+# ---------------------------------------------------------------------------
+POST_REVIEW_EXIT=0
 fullsend post-review \
   --repo "${REPO_FULL_NAME}" \
   --pr "${PR_NUMBER}" \
   --token "${REVIEW_TOKEN}" \
-  --result "${RESULT_FILE}"
+  --result "${RESULT_FILE}" || POST_REVIEW_EXIT=$?
 
-if [ "${ACTION}" = "reject" ]; then
+if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
+  echo "Stale-head detected — checking whether to re-dispatch review"
+
+  # Loop guard: if a stale-head re-dispatch comment was posted recently
+  # (within the last 5 minutes), skip to avoid cascading dispatches from
+  # rapid force-pushes. The next synchronize event will pick it up.
+  REDISPATCH_MARKER="<!-- fullsend:stale-head-redispatch -->"
+  RECENT_REDISPATCH=$(gh api \
+    "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
+    --paginate --jq \
+    "[.[] | select(.body | contains(\"${REDISPATCH_MARKER}\"))
+          | select(.created_at > (now - 300 | strftime(\"%Y-%m-%dT%H:%M:%SZ\")))]
+     | length" 2>/dev/null || echo "0")
+
+  if [ "${RECENT_REDISPATCH}" -gt 0 ]; then
+    echo "Recent stale-head re-dispatch already exists — skipping"
+  else
+    echo "Re-dispatching review for current HEAD"
+    gh pr comment "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --body "/fs-review
+${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
+  fi
+
+  # Stale-head is handled gracefully — exit 0 so the workflow does not
+  # appear as a failure.
+  exit 0
+elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
+  exit "${POST_REVIEW_EXIT}"
+fi
+
+# ---------------------------------------------------------------------------
+# Outcome labels: apply labels based on the review action.
+# Labels are created if missing, matching the needs-human pattern in
+# post-fix.sh.
+# Label logic is mirrored in post-review-test.sh — update both.
+# ---------------------------------------------------------------------------
+
+# Remove stale outcome labels from prior runs before applying the new one.
+# 2>/dev/null is intentional: unlike --add-label (where we want to see failures),
+# removal of a non-existent label is the common case and not worth logging.
+for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --remove-label "${stale_label}" 2>/dev/null || true
+done
+
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ]; then
+  echo "Approve disposition — applying ready-for-merge label"
+  gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
+    --description "All reviewers approved — ready to merge" --color "0E8A16" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "ready-for-merge" || true
+elif { [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ]; } || \
+     [ "${ACTION}" = "comment" ]; then
+  echo "Review requires human judgment — applying requires-manual-review label"
+  gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
+    --description "Review requires human judgment" --color "FBCA04" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "requires-manual-review" || true
+elif [ "${ACTION}" = "reject" ]; then
   echo "Reject disposition — closing PR and applying label"
+  gh label create "rejected" --repo "${REPO_FULL_NAME}" \
+    --description "Approach rejected by review agent" --color "B60205" \
+    2>/dev/null || true
   gh pr close "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --comment "Closed by review agent: approach rejected." || true
   gh pr edit "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --add-label "rejected" || true
+elif [ "${ACTION}" = "request_changes" ]; then
+  echo "Request-changes disposition — no outcome label (fix agent triggers on event)"
 fi
 
 echo "Review posted on ${REPO_FULL_NAME}#${PR_NUMBER}"

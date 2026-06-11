@@ -17,7 +17,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +57,11 @@ type SecretExistsFunc func(role string) (bool, error)
 
 // StoreSecretFunc stores a PEM secret for a given role immediately after app creation.
 type StoreSecretFunc func(ctx context.Context, role, pem string) error
+
+// NopBrowser is a no-op browser used in CI/automated environments.
+type NopBrowser struct{}
+
+func (NopBrowser) Open(_ context.Context, _ string) error { return nil }
 
 // DefaultBrowser opens URLs using platform-specific commands.
 type DefaultBrowser struct{}
@@ -127,6 +134,8 @@ type Setup struct {
 	storeSecret  StoreSecretFunc
 	permErrors   []string
 	publicApps   bool
+	appSet       string
+	storedAppIDs map[string]string // org/role → app_id from ROLE_APP_IDS
 }
 
 // NewSetup creates a new Setup instance.
@@ -136,6 +145,7 @@ func NewSetup(client forge.Client, prompter Prompter, browser BrowserOpener, pri
 		prompter: prompter,
 		browser:  browser,
 		ui:       printer,
+		appSet:   DefaultAppSet,
 	}
 }
 
@@ -167,6 +177,42 @@ func (s *Setup) WithPublicApps(public bool) *Setup {
 	return s
 }
 
+// WithStoredAppIDs sets the stored ROLE_APP_IDS mapping (org/role → app_id)
+// used to detect stale credentials when an app is deleted and recreated.
+func (s *Setup) WithStoredAppIDs(ids map[string]string) *Setup {
+	s.storedAppIDs = ids
+	return s
+}
+
+// appSetPattern validates app set slugs: lowercase alphanumeric with hyphens,
+// must start with a letter or digit, no leading/trailing/consecutive hyphens.
+var appSetPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// ValidateAppSet checks that an app set slug is well-formed.
+// The max length is 23 characters because the final GitHub App name is
+// "{appSet}-{role}" and GitHub limits app names to 34 characters.
+// The longest built-in role is "prioritize" (10 chars), so: 23 + 1 + 10 = 34.
+func ValidateAppSet(appSet string) error {
+	if appSet == "" {
+		return fmt.Errorf("app set must not be empty")
+	}
+	if len(appSet) > 23 {
+		return fmt.Errorf("app set %q exceeds max length of 23 characters (GitHub App names are limited to 34 characters, and the role suffix is appended)", appSet)
+	}
+	if !appSetPattern.MatchString(appSet) {
+		return fmt.Errorf("app set %q must be lowercase alphanumeric with hyphens (e.g., fullsend-ai)", appSet)
+	}
+	return nil
+}
+
+// WithAppSet sets the app set prefix for GitHub App naming.
+// Apps are named "{appSet}-{role}" (e.g., "fullsend-ai-coder").
+// Callers must validate appSet via ValidateAppSet before calling this method.
+func (s *Setup) WithAppSet(appSet string) *Setup {
+	s.appSet = appSet
+	return s
+}
+
 // Run creates or reuses a GitHub App for the given org and role.
 //
 // The flow:
@@ -178,7 +224,7 @@ func (s *Setup) WithPublicApps(public bool) *Setup {
 //  5. If not found, run the manifest flow to create a new app.
 //  6. After creation, store the PEM immediately, then install on the org.
 func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, error) {
-	slug := AppSlug(role)
+	slug := AppSlug(s.appSet, role)
 	s.ui.StepStart(fmt.Sprintf("Checking for existing app: %s", slug))
 
 	inst, found, err := s.findExistingInstallation(ctx, org, role, slug)
@@ -198,7 +244,53 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 		if err := s.ensureInstalled(ctx, org, recovered.Slug); err != nil {
 			return nil, fmt.Errorf("ensuring installation: %w", err)
 		}
+		// Resolve AppID from the installation so ROLE_APP_IDS gets updated.
+		if recovered.AppID == 0 {
+			inst, found, err := s.findExistingInstallation(ctx, org, role, recovered.Slug)
+			if err != nil {
+				return nil, fmt.Errorf("looking up recovered app installation: %w", err)
+			}
+			if !found {
+				return nil, fmt.Errorf("recovered app %s was installed but not found in installations list", recovered.Slug)
+			}
+			recovered.AppID = inst.AppID
+		}
 		return recovered, nil
+	}
+
+	// Check if the app already exists globally before creating a new one.
+	// Public apps (e.g. fullsend-ai-triage) are owned by another org and
+	// just need to be installed — not re-created via the manifest flow.
+	// When --public was passed, install without prompting. Otherwise, ask
+	// the user to confirm so they don't accidentally create a duplicate.
+	clientID, lookupErr := s.client.GetAppClientID(ctx, slug)
+	if lookupErr != nil && !forge.IsNotFound(lookupErr) {
+		return nil, fmt.Errorf("checking existing app %s: %w", slug, lookupErr)
+	}
+	if lookupErr == nil {
+		if !s.publicApps {
+			s.ui.StepInfo(fmt.Sprintf("Found existing app: %s", slug))
+			install, confirmErr := s.prompter.Confirm(fmt.Sprintf("App %s already exists — install it into %s?", slug, org))
+			if confirmErr != nil {
+				return nil, fmt.Errorf("confirming app install: %w", confirmErr)
+			}
+			if !install {
+				return nil, fmt.Errorf("app %s already exists; use --public to install it, or choose a different --app-set", slug)
+			}
+		}
+		if err := s.ensureInstalled(ctx, org, slug); err != nil {
+			return nil, fmt.Errorf("ensuring installation of public app %s: %w", slug, err)
+		}
+		inst, found, err := s.findExistingInstallation(ctx, org, role, slug)
+		if err != nil {
+			return nil, fmt.Errorf("looking up installed public app: %w", err)
+		}
+		if !found {
+			return nil, fmt.Errorf("public app %s was installed but not found in installations list", slug)
+		}
+		s.checkPermissions(inst, org, role)
+		s.ui.StepDone(fmt.Sprintf("Reusing public app %s (ID: %d)", slug, inst.AppID))
+		return &AppCredentials{AppID: inst.AppID, Slug: slug, Name: slug, ClientID: clientID}, nil
 	}
 
 	// No existing app found — run the manifest flow.
@@ -399,6 +491,31 @@ func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string) (string,
 	return pemStr, nil
 }
 
+// isOrgOwned checks whether the app is owned by the given org. Third-party
+// apps (owned by another org or user) cannot have their private keys managed
+// from this org's developer settings — the settings URL returns 404.
+// If AppOwnerLogin is empty (e.g., the API didn't return it), we assume
+// org-owned to preserve backwards compatibility.
+func (s *Setup) isOrgOwned(inst *forge.Installation, org string) bool {
+	if inst.AppOwnerLogin == "" {
+		return true
+	}
+	return strings.EqualFold(inst.AppOwnerLogin, org)
+}
+
+// isAppIDStale checks whether the live installation's app ID differs from the
+// stored ROLE_APP_IDS value, indicating the app was deleted and recreated.
+func (s *Setup) isAppIDStale(org, role string, liveID int) bool {
+	if s.storedAppIDs == nil {
+		return false
+	}
+	storedID, ok := s.storedAppIDs[org+"/"+role]
+	if !ok {
+		return false
+	}
+	return storedID != strconv.Itoa(liveID)
+}
+
 // handleExistingApp reuses an existing app if its credentials are still
 // available, or reports that the private key is lost.
 //
@@ -406,6 +523,7 @@ func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string) (string,
 // manifest code exchange (POST /app-manifests/{code}/conversions) is the
 // one and only time the PEM is returned. If the secret wasn't stored or
 // was deleted, the key is lost and the app must be deleted and recreated.
+//
 // The secretExists callback checks the appropriate backend (Secret Manager
 // in OIDC mint mode, GitHub repo secrets otherwise).
 //
@@ -425,7 +543,9 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 			return nil, fmt.Errorf("checking secret for role %s: %w", role, err)
 		}
 
-		if exists {
+		stale := s.isAppIDStale(org, role, inst.AppID)
+
+		if exists && !stale {
 			s.checkPermissions(inst, org, role)
 			s.ui.StepDone(fmt.Sprintf("Reusing existing app %s (credentials present)", inst.AppSlug))
 			return &AppCredentials{
@@ -437,12 +557,40 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 			}, nil
 		}
 
-		// Secret doesn't exist — try to recover by generating a new key.
+		if exists && stale {
+			s.ui.StepWarn(fmt.Sprintf(
+				"App %s was recreated (ID changed) — stored key is invalid",
+				inst.AppSlug))
+		}
+
+		// If the app is a third-party app (owned by another org), PEM
+		// recovery is impossible — the org doesn't have access to the
+		// app's developer settings page.
+		if !s.isOrgOwned(inst, org) {
+			return nil, fmt.Errorf(
+				"app %s is a third-party app (owned by %q, not %q) and cannot be "+
+					"managed from this org's developer settings; "+
+					"either install org-owned apps via the manifest flow "+
+					"('fullsend admin install') or contact the app owner "+
+					"to obtain the private key",
+				inst.AppSlug, inst.AppOwnerLogin, org,
+			)
+		}
+
+		// Secret doesn't exist or is stale — try to recover by generating a new key.
 		pemStr, recoverErr := s.recoverPEM(ctx, org, inst.AppSlug, role)
 		if recoverErr != nil {
 			return nil, fmt.Errorf("recovering PEM for %s: %w", inst.AppSlug, recoverErr)
 		}
 		if pemStr == "" {
+			if stale {
+				return nil, fmt.Errorf(
+					"app %s was recreated (ID changed) and needs a new private key; "+
+						"generate one at https://github.com/apps/%s "+
+						"or run 'fullsend admin uninstall' and re-run install",
+					inst.AppSlug, inst.AppSlug,
+				)
+			}
 			return nil, fmt.Errorf(
 				"app %s exists but its private key secret is missing; "+
 					"run 'fullsend admin uninstall' first, then delete the app at "+
@@ -489,7 +637,7 @@ func (s *Setup) checkPermissions(inst *forge.Installation, org, role string) {
 		s.ui.StepWarn(fmt.Sprintf("app %s: permissions not available, skipping check", inst.AppSlug))
 		return
 	}
-	expected := ghTypes.AgentAppConfig(org, role).Permissions
+	expected := ghTypes.AgentAppConfig(org, role, s.appSet).Permissions
 	data, _ := json.Marshal(expected)
 	var want map[string]string
 	_ = json.Unmarshal(data, &want)
@@ -544,7 +692,7 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 
 	// Build the manifest with redirect_url included — GitHub requires it
 	// inside the JSON manifest, not as a separate form field.
-	appCfg := ghTypes.AgentAppConfig(org, role)
+	appCfg := ghTypes.AgentAppConfig(org, role, s.appSet)
 	appCfg.RedirectURL = callbackURL
 	appCfg.Public = s.publicApps
 	manifest, err := json.Marshal(appCfg)
@@ -750,7 +898,19 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	}
 }
 
-// AppSlug returns the conventional app slug for a given role.
-func AppSlug(role string) string {
-	return "fullsend-" + role
+// DefaultAppSet is the default app set prefix for GitHub Apps.
+// The official GitHub Apps maintained by the fullsend-ai organization use
+// the "fullsend-ai" prefix (fullsend-ai-fullsend, fullsend-ai-coder, etc.).
+// Orgs that created apps under a different prefix (e.g., "fullsend")
+// must pass --app-set explicitly.
+const DefaultAppSet = "fullsend-ai"
+
+// LegacyAppSets lists app-set prefixes used by previous fullsend versions.
+// During uninstall, these are checked in addition to the current default so
+// that apps created under an older naming convention are not silently skipped.
+var LegacyAppSets = []string{"fullsend"}
+
+// AppSlug returns the conventional app slug for a given app set and role.
+func AppSlug(appSet, role string) string {
+	return appSet + "-" + role
 }

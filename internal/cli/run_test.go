@@ -1,17 +1,14 @@
 package cli
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -22,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -79,31 +77,94 @@ func TestRunCommand_HasTargetRepoFlag(t *testing.T) {
 	require.Contains(t, annotations, "cobra_annotation_bash_completion_one_required_flag")
 }
 
-func TestBuildClaudeCommand_Basic(t *testing.T) {
-	cmd := buildClaudeCommand("hello-world", "", "/tmp/workspace/repo")
-	assert.Contains(t, cmd, "cd /tmp/workspace/repo")
-	assert.Contains(t, cmd, "--agent 'hello-world'")
-	assert.NotContains(t, cmd, "--model")
+func TestRunCommand_HasOfflineFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("offline")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
 }
 
-func TestBuildClaudeCommand_WithModel(t *testing.T) {
-	cmd := buildClaudeCommand("hello-world", "sonnet", "/tmp/workspace/repo")
-	assert.Contains(t, cmd, "--model 'sonnet'")
-	assert.Contains(t, cmd, "--agent 'hello-world'")
+func TestRunCommand_HasMaxDepthFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("max-depth")
+	require.NotNil(t, flag)
+	assert.Equal(t, "10", flag.DefValue)
 }
 
-func TestBuildClaudeCommand_EscapesQuotes(t *testing.T) {
-	cmd := buildClaudeCommand("test'name", "", "/tmp/workspace/repo")
-	assert.NotContains(t, cmd, "'test'name'")
-	assert.Contains(t, cmd, "'test'\\''name'")
+func TestRunCommand_HasMaxResourcesFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("max-resources")
+	require.NotNil(t, flag)
+	assert.Equal(t, "50", flag.DefValue)
+}
+
+func TestRunCommand_AcceptsZeroMaxDepth(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "0"})
+	err := cmd.Execute()
+	// --max-depth 0 is valid (disables transitive resolution); the error
+	// should come from the run flow, not flag validation.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--max-depth must be >= 0")
+	}
+}
+
+func TestRunCommand_RejectsNegativeMaxDepth(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "-1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--max-depth must be >= 0")
+}
+
+func TestRunCommand_RejectsZeroMaxResources(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "0"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
+}
+
+func TestRunCommand_RejectsNegativeMaxResources(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "-1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 	traceID := "aabbccdd-1122-4334-8556-aabbccddeeff"
-	cmd := buildScanContextCommand("/tmp/workspace/repo", traceID)
-	assert.Contains(t, cmd, ". /tmp/workspace/.env &&")
+	cmd := buildScanContextCommand("/sandbox/workspace/repo", traceID)
+	assert.Contains(t, cmd, ". /sandbox/workspace/.env &&")
 	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
 	assert.Contains(t, cmd, "-exec fullsend scan context")
+}
+
+func TestCopyFile(t *testing.T) {
+	t.Run("copies content and preserves permissions", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "source")
+		dst := filepath.Join(t.TempDir(), "dest")
+
+		content := []byte("hello world")
+		require.NoError(t, os.WriteFile(src, content, 0o755))
+
+		require.NoError(t, copyFile(src, dst))
+
+		got, err := os.ReadFile(dst)
+		require.NoError(t, err)
+		assert.Equal(t, content, got)
+
+		info, err := os.Stat(dst)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+	})
+
+	t.Run("fails on missing source", func(t *testing.T) {
+		dst := filepath.Join(t.TempDir(), "dest")
+		err := copyFile("/no/such/file", dst)
+		assert.Error(t, err)
+	})
 }
 
 func TestCollectOpenshellLogs_EmptyRunDir(t *testing.T) {
@@ -203,6 +264,215 @@ func TestEnvToList_Sorted(t *testing.T) {
 	assert.Equal(t, "Z_VAR=z", list[2])
 }
 
+func TestShellSafeExpandEnv(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		env      map[string]string
+		want     string
+	}{
+		{
+			name:     "simple value",
+			template: `export FOO="${FOO}"`,
+			env:      map[string]string{"FOO": "bar"},
+			want:     `export FOO="bar"`,
+		},
+		{
+			name:     "value with double quotes",
+			template: `export MSG="${MSG}"`,
+			env:      map[string]string{"MSG": `say "hello"`},
+			want:     `export MSG="say \"hello\""`,
+		},
+		{
+			name:     "value with parentheses",
+			template: `export MSG="${MSG}"`,
+			env:      map[string]string{"MSG": "fix (example) thing"},
+			want:     `export MSG="fix (example) thing"`,
+		},
+		{
+			name:     "value with single quotes",
+			template: `export MSG="${MSG}"`,
+			env:      map[string]string{"MSG": "it's broken"},
+			want:     `export MSG="it's broken"`,
+		},
+		{
+			name:     "value with dollar sign",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": "$HOME"},
+			want:     `export V="\$HOME"`,
+		},
+		{
+			name:     "value with backticks",
+			template: `export CMD="${CMD}"`,
+			env:      map[string]string{"CMD": "use `grep` here"},
+			want:     "export CMD=\"use \\`grep\\` here\"",
+		},
+		{
+			name:     "value with backslashes",
+			template: `export P="${P}"`,
+			env:      map[string]string{"P": `C:\Users\test`},
+			want:     `export P="C:\\Users\\test"`,
+		},
+		{
+			name:     "value with all four special chars",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": "a]\" $x `y` \\z"},
+			want:     `export V="a]\" \$x ` + "\\`y\\`" + ` \\z"`,
+		},
+		{
+			name:     "value with shell metacharacters safe inside double quotes",
+			template: `export CMD="${CMD}"`,
+			env:      map[string]string{"CMD": "foo || true && bar; baz > /dev/null"},
+			want:     `export CMD="foo || true && bar; baz > /dev/null"`,
+		},
+		{
+			name:     "empty value",
+			template: `export FOO="${FOO}"`,
+			env:      map[string]string{"FOO": ""},
+			want:     `export FOO=""`,
+		},
+		{
+			name:     "undefined variable",
+			template: `export FOO="${UNDEFINED}"`,
+			env:      map[string]string{},
+			want:     `export FOO=""`,
+		},
+		{
+			name:     "static lines unchanged",
+			template: "export STATIC='hello world'",
+			env:      map[string]string{},
+			want:     "export STATIC='hello world'",
+		},
+		{
+			name:     "multiple variables",
+			template: "export A=\"${A}\"\nexport B=\"${B}\"",
+			env:      map[string]string{"A": "1", "B": "two (2)"},
+			want:     "export A=\"1\"\nexport B=\"two (2)\"",
+		},
+		{
+			name:     "unquoted template with simple value",
+			template: "export FOO=${FOO}",
+			env:      map[string]string{"FOO": "bar"},
+			want:     "export FOO=bar",
+		},
+		{
+			name:     "braceless $VAR expansion",
+			template: `export FOO="$FOO"`,
+			env:      map[string]string{"FOO": `say "hello"`},
+			want:     `export FOO="say \"hello\""`,
+		},
+		{
+			name:     "real-world HUMAN_INSTRUCTION from issue 615",
+			template: `export HUMAN_INSTRUCTION="${HUMAN_INSTRUCTION}"`,
+			env:      map[string]string{"HUMAN_INSTRUCTION": `replacing --search "$ISSUE_NUMBER in:body,title" with timeline API || true`},
+			want:     `export HUMAN_INSTRUCTION="replacing --search \"\$ISSUE_NUMBER in:body,title\" with timeline API || true"`,
+		},
+		{
+			name:     "real-world instruction with parentheses from failing run",
+			template: `export HUMAN_INSTRUCTION="${HUMAN_INSTRUCTION}"`,
+			env:      map[string]string{"HUMAN_INSTRUCTION": `An administrator with elevated access to the GCP project (for example, with the ability to set IAM policy) can grant all required roles`},
+			want:     `export HUMAN_INSTRUCTION="An administrator with elevated access to the GCP project (for example, with the ability to set IAM policy) can grant all required roles"`,
+		},
+		{
+			name:     "injection attempt: break out of double quotes",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": `"; rm -rf /; echo "`},
+			want:     `export V="\"; rm -rf /; echo \""`,
+		},
+		{
+			name:     "injection attempt: command substitution",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": `$(cat /etc/passwd)`},
+			want:     `export V="\$(cat /etc/passwd)"`,
+		},
+		{
+			name:     "injection attempt: backtick substitution",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": "`cat /etc/passwd`"},
+			want:     "export V=\"\\`cat /etc/passwd\\`\"",
+		},
+		{
+			name:     "newlines in value",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": "line1\nline2\nline3"},
+			want:     "export V=\"line1\nline2\nline3\"",
+		},
+		{
+			name:     "tabs and special whitespace",
+			template: `export V="${V}"`,
+			env:      map[string]string{"V": "col1\tcol2"},
+			want:     "export V=\"col1\tcol2\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			got := shellSafeExpandEnv(tt.template)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestShellSafeExpandEnv_ShellRoundtrip verifies that expanded env files
+// produce the original value when sourced by a real shell. This is the
+// definitive safety test: if the value survives a roundtrip through
+// sh -c '. file && printf "%s" "$VAR"', the escaping is correct.
+func TestShellSafeExpandEnv_ShellRoundtrip(t *testing.T) {
+	values := []struct {
+		name  string
+		value string
+	}{
+		{"simple", "hello world"},
+		{"double quotes", `say "hello" to "world"`},
+		{"single quotes", "it's a test"},
+		{"parentheses", "fix (example) thing"},
+		{"pipes and logic", "foo || true && bar"},
+		{"dollar sign", "cost is $100 or $HOME"},
+		{"command substitution", "$(rm -rf /)"},
+		{"backtick substitution", "`rm -rf /`"},
+		{"backslashes", `path\to\file`},
+		{"semicolons", "cmd1; cmd2; cmd3"},
+		{"redirects", "echo foo > /tmp/evil"},
+		{"glob chars", "match *.go and file?.txt"},
+		{"mixed injection", `"; $(evil) ` + "`more`" + ` && rm -rf / #`},
+		{"all four special chars", `quote" dollar$ tick` + "`" + ` slash\`},
+		{"newlines", "line1\nline2\nline3"},
+		{"tabs", "col1\tcol2"},
+		{"empty", ""},
+		{"unicode", "こんにちは 🎉"},
+		{"real issue 615", `replacing --search "$ISSUE_NUMBER in:body,title" with timeline API || true`},
+		{"real failing run", `An administrator with elevated access to the GCP project (for example, with the ability to set IAM policy) can grant all required roles with a single script:`},
+		{"already escaped backslash", `already \" escaped`},
+		{"nested quotes", `He said "she said 'hello'" today`},
+		{"hash comment char", "value # not a comment"},
+		{"exclamation mark", "hello! world!"},
+		{"curly braces", "use ${VAR} syntax"},
+		{"square brackets", "array[0] = value"},
+		{"tilde", "~user/path"},
+		{"ampersand", "Tom & Jerry"},
+	}
+
+	for _, tt := range values {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TEST_VAL", tt.value)
+			expanded := shellSafeExpandEnv(`export TEST_VAL="${TEST_VAL}"`)
+
+			// Write expanded content to a temp file and source it in sh.
+			envFile := filepath.Join(t.TempDir(), "test.env")
+			require.NoError(t, os.WriteFile(envFile, []byte(expanded+"\n"), 0o644))
+
+			// Use printf "%s" (not echo) to avoid interpretation of \n etc.
+			cmd := exec.Command("sh", "-c", fmt.Sprintf(`. %s && printf '%%s' "$TEST_VAL"`, envFile))
+			out, err := cmd.Output()
+			require.NoError(t, err, "shell failed to source expanded env file; expanded content:\n%s", expanded)
+			assert.Equal(t, tt.value, string(out), "value did not survive shell roundtrip")
+		})
+	}
+}
+
 func TestNeedsCrossCompilation(t *testing.T) {
 	result := needsCrossCompilation()
 	if runtime.GOOS == "linux" {
@@ -228,16 +498,15 @@ func TestSandboxArch_InvalidFallsBack(t *testing.T) {
 }
 
 func TestValidateLinuxBinary_RejectsNonELF(t *testing.T) {
-	// A plain text file should be rejected.
 	tmp := filepath.Join(t.TempDir(), "not-elf")
 	require.NoError(t, os.WriteFile(tmp, []byte("#!/bin/sh\necho hello"), 0o755))
-	err := validateLinuxBinary(tmp)
+	err := binary.ValidateLinuxBinary(tmp, "amd64")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid ELF binary")
 }
 
 func TestValidateLinuxBinary_RejectsMissing(t *testing.T) {
-	err := validateLinuxBinary("/tmp/nonexistent-fullsend-binary-12345")
+	err := binary.ValidateLinuxBinary("/tmp/nonexistent-fullsend-binary-12345", "amd64")
 	require.Error(t, err)
 }
 
@@ -247,115 +516,27 @@ func TestValidateLinuxBinary_AcceptsHostBinary(t *testing.T) {
 	}
 	exe, err := os.Executable()
 	require.NoError(t, err)
-	assert.NoError(t, validateLinuxBinary(exe))
+	assert.NoError(t, binary.ValidateLinuxBinary(exe, runtime.GOARCH))
 }
 
-func TestIsReleasedVersion(t *testing.T) {
-	tests := []struct {
-		version  string
-		expected bool
-	}{
-		{"0.4.0", true},
-		{"v0.4.0", true},
-		{"1.0.0", true},
-		{"dev", false},
-		{"", false},
-		{"0.4.0-3-gabcdef", false},
-		{"0.4.0-vendored", false},
-		{"0.4.0-crosscompiled", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.version, func(t *testing.T) {
-			assert.Equal(t, tt.expected, isReleasedVersion(tt.version), "version=%q", tt.version)
-		})
+func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
+	// Verify the exclusion list contains the known agent working directories.
+	expected := []string{".agentready/", ".fullsend-workspace/"}
+	for _, pattern := range expected {
+		found := false
+		for _, exclude := range agentWorkingDirExcludes {
+			if exclude == pattern {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "agentWorkingDirExcludes should contain %q", pattern)
 	}
 }
 
-func TestExtractFullsendFromTarGz_PathTraversal(t *testing.T) {
-	// Create a tar.gz with a path-traversal entry named "../../../tmp/fullsend".
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-
-	content := []byte("malicious binary content")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "../../../tmp/fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = extractFullsendFromTarGz(&buf, destPath)
-	assert.Error(t, err, "should reject traversal entry and report binary not found")
-	assert.Contains(t, err.Error(), "not found in archive")
-}
-
-func TestExtractFullsendFromTarGz_ValidEntry(t *testing.T) {
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-
-	content := []byte("valid binary content")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend_0.4.0_linux_amd64/fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = extractFullsendFromTarGz(&buf, destPath)
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(destPath)
-	require.NoError(t, err)
-	assert.Equal(t, "valid binary content", string(data))
-}
-
-func TestCrossCompileFullsend_ProducesBinary(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		t.Skip("cross-compilation test only meaningful on non-Linux hosts")
-	}
-	if testing.Short() {
-		t.Skip("skipping cross-compilation in short mode")
-	}
-
-	tmpDir := t.TempDir()
-	binPath := filepath.Join(tmpDir, "fullsend")
-	err := crossCompileFullsend(runtime.GOARCH, binPath)
-	require.NoError(t, err)
-
-	info, err := os.Stat(binPath)
-	require.NoError(t, err)
-	assert.True(t, info.Size() > 0, "binary should be non-empty")
-}
-
-func TestResolveLinuxBinary_Download(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping download test in short mode")
-	}
-
-	tmpDir := t.TempDir()
-	binPath := filepath.Join(tmpDir, "fullsend")
-	err := downloadReleaseBinary("0.4.0", "amd64", binPath)
-	require.NoError(t, err)
-
-	info, err := os.Stat(binPath)
-	require.NoError(t, err)
-	assert.True(t, info.Size() > 0, "downloaded binary should be non-empty")
-
-	// Verify the downloaded artifact is a valid Linux ELF for the requested arch.
-	t.Setenv("FULLSEND_SANDBOX_ARCH", "amd64")
-	assert.NoError(t, validateLinuxBinary(binPath), "downloaded binary should be a valid Linux/amd64 ELF")
+func TestAgentWorkingDirExcludes_NotEmpty(t *testing.T) {
+	assert.NotEmpty(t, agentWorkingDirExcludes,
+		"agentWorkingDirExcludes must not be empty — agents create working dirs that need exclusion")
 }
 
 func TestReadOIDCAuthFile_Success(t *testing.T) {
@@ -547,144 +728,236 @@ func TestRunHeartbeat_NoNoticeWhenNotCI(t *testing.T) {
 	assert.Empty(t, buf.String(), "should not emit any ::notice:: when not in CI")
 }
 
-func TestDownloadChecksumForAsset_ParsesLine(t *testing.T) {
-	body := "1b4f0e9851971998e732078544c96b36c3d01cedf7caa332359d6f1d83567014  fullsend_1.0.0_linux_arm64.tar.gz\n" +
-		"60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752  fullsend_1.0.0_linux_amd64.tar.gz\n"
+func TestValidationFailMessage_UsesOutputWhenPresent(t *testing.T) {
+	msg := validationFailMessage([]byte("check failed: lint errors"), fmt.Errorf("exit status 1"))
+	assert.Equal(t, "check failed: lint errors", msg)
+}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+func TestValidationFailMessage_FallsBackToError(t *testing.T) {
+	msg := validationFailMessage([]byte(""), fmt.Errorf("exec: \"missing-script\": executable file not found in $PATH"))
+	assert.Equal(t, "exec: \"missing-script\": executable file not found in $PATH", msg)
+}
 
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
+func TestValidationFailMessage_FallsBackWhenWhitespaceOnly(t *testing.T) {
+	msg := validationFailMessage([]byte("  \n\t  "), fmt.Errorf("exit status 127"))
+	assert.Equal(t, "exit status 127", msg)
+}
 
-	hash, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_amd64.tar.gz")
+func TestValidationFailMessage_TrimsOutput(t *testing.T) {
+	msg := validationFailMessage([]byte("  some output\n"), fmt.Errorf("exit status 1"))
+	assert.Equal(t, "some output", msg)
+}
+
+func TestOpenTeeReader_EmptyPath(t *testing.T) {
+	src := strings.NewReader("hello")
+	printer := ui.New(io.Discard)
+
+	r, close := openTeeReader(src, "", printer)
+	defer close()
+
+	// r should be the original reader — no file created
+	got, err := io.ReadAll(r)
 	require.NoError(t, err)
-	assert.Equal(t, "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752", hash)
+	assert.Equal(t, "hello", string(got))
 }
 
-func TestDownloadChecksumForAsset_AssetNotFound(t *testing.T) {
-	body := "1b4f0e9851971998e732078544c96b36c3d01cedf7caa332359d6f1d83567014  fullsend_1.0.0_linux_amd64.tar.gz\n"
+func TestOpenTeeReader_WritesToFile(t *testing.T) {
+	content := "line1\nline2\n"
+	src := strings.NewReader(content)
+	printer := ui.New(io.Discard)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	outPath := filepath.Join(t.TempDir(), "out.jsonl")
+	r, close := openTeeReader(src, outPath, printer)
+	defer close()
 
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	_, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_arm64.tar.gz")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in checksums.txt")
-}
-
-func TestDownloadChecksumForAsset_InvalidHex(t *testing.T) {
-	body := "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ  fullsend_1.0.0_linux_amd64.tar.gz\n"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
-
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	_, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_amd64.tar.gz")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid hex hash")
-}
-
-func TestDownloadReleaseBinary_ChecksumMismatch(t *testing.T) {
-	// Build a valid tar.gz containing a "fullsend" binary.
-	var tarBuf bytes.Buffer
-	gw := gzip.NewWriter(&tarBuf)
-	tw := tar.NewWriter(gw)
-	content := []byte("fake binary")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
+	got, err := io.ReadAll(r)
 	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
+	assert.Equal(t, content, string(got))
 
-	tarBytes := tarBuf.Bytes()
+	close() // flush before reading file
+	fileData, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(fileData))
+}
 
-	// Serve a checksums.txt with a WRONG hash for the asset.
-	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
-	checksumBody := fmt.Sprintf("%s  fullsend_1.0.0_linux_amd64.tar.gz\n", wrongHash)
+func TestOpenTeeReader_CreateFailFallsBackToSource(t *testing.T) {
+	content := "data"
+	src := strings.NewReader(content)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1.0.0/checksums.txt" {
-			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
-			http.NotFound(w, r)
+	var warnBuf bytes.Buffer
+	printer := ui.New(&warnBuf)
+
+	// Unwritable path — directory that doesn't exist
+	r, close := openTeeReader(src, "/nonexistent-dir/out.jsonl", printer)
+	defer close()
+
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got), "source stream still readable after create failure")
+	assert.Contains(t, warnBuf.String(), "Failed to create claude-output.jsonl")
+}
+
+func TestOpenTeeReader_FileCompleteOnParserError(t *testing.T) {
+	// Simulate: progressParser reads part of stream, then errors; caller drains
+	// remainder via io.Copy(io.Discard, r). File should contain all bytes.
+	content := "part1\npart2\n"
+	src := strings.NewReader(content)
+	printer := ui.New(io.Discard)
+
+	outPath := filepath.Join(t.TempDir(), "out.jsonl")
+	r, closeFile := openTeeReader(src, outPath, printer)
+
+	// Simulate parser reading only first 6 bytes then returning an error
+	firstPart := make([]byte, 6)
+	_, err := io.ReadFull(r, firstPart)
+	require.NoError(t, err)
+
+	// Simulate drain of remaining bytes (as runAgentWithProgress does on parse error)
+	_, err = io.Copy(io.Discard, r)
+	require.NoError(t, err)
+
+	closeFile()
+
+	fileData, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(fileData), "file should contain all bytes including post-error drain")
+}
+
+func TestPRHeadSHAFromEventPath_WithSHA(t *testing.T) {
+	// Simulate a workflow_dispatch event file where the nested event_payload
+	// contains pull_request.head.sha.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"pull_request\":{\"number\":42,\"head\":{\"ref\":\"feature\",\"sha\":\"abc123def\",\"repo\":{\"full_name\":\"org/repo\"}}}}"
 		}
-	}))
-	defer srv.Close()
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
 
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = downloadReleaseBinary("1.0.0", "amd64", destPath)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checksum mismatch")
+	got := prHeadSHAFromEventPath(f)
+	assert.Equal(t, "abc123def", got)
 }
 
-func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
-	var tarBuf bytes.Buffer
-	gw := gzip.NewWriter(&tarBuf)
-	tw := tar.NewWriter(gw)
-	content := []byte("good binary")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	tarBytes := tarBuf.Bytes()
-	h := sha256.Sum256(tarBytes)
-	correctHash := hex.EncodeToString(h[:])
-
-	checksumBody := fmt.Sprintf("%s  fullsend_2.0.0_linux_amd64.tar.gz\n", correctHash)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2.0.0/checksums.txt" {
-			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v2.0.0/fullsend_2.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
-			http.NotFound(w, r)
+func TestPRHeadSHAFromEventPath_WithoutSHA(t *testing.T) {
+	// Event payload has pull_request but no head.sha — should return empty.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"pull_request\":{\"number\":42,\"head\":{\"ref\":\"feature\",\"repo\":{\"full_name\":\"org/repo\"}}}}"
 		}
-	}))
-	defer srv.Close()
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
 
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
 
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = downloadReleaseBinary("2.0.0", "amd64", destPath)
+func TestPRHeadSHAFromEventPath_NoPullRequest(t *testing.T) {
+	// Issue-only event — no pull_request in the payload.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"issue\":{\"number\":99}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_EmptyPath(t *testing.T) {
+	got := prHeadSHAFromEventPath("")
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_MissingFile(t *testing.T) {
+	got := prHeadSHAFromEventPath("/nonexistent/path/event.json")
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
+	// Direct event (not workflow_dispatch) — no inputs field.
+	eventJSON := `{"action": "opened", "pull_request": {"number": 1}}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+// --- detectForgePlatform tests ---
+
+func TestDetectForgePlatform_ExplicitFlag(t *testing.T) {
+	p, err := detectForgePlatform("github")
 	require.NoError(t, err)
+	assert.Equal(t, "github", p)
 
-	data, err := os.ReadFile(destPath)
+	p, err = detectForgePlatform("gitlab")
 	require.NoError(t, err)
-	assert.Equal(t, "good binary", string(data))
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_InvalidFlag(t *testing.T) {
+	_, err := detectForgePlatform("bitbucket")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestDetectForgePlatform_GitHubActions(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_GitLabCI(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "true")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_NoEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "", p)
+}
+
+func TestDetectForgePlatform_FlagOverridesEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	p, err := detectForgePlatform("gitlab")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_GitHubPrecedesGitLab(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "true")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestRunCommand_HasForgeFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestLockCommand_HasForgeFlag(t *testing.T) {
+	cmd := newLockCmd()
+	flag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
 }

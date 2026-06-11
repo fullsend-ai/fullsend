@@ -1,16 +1,19 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
@@ -23,14 +26,15 @@ func TestAdminCommand_HasSubcommands(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		names[sub.Use] = true
 	}
-	assert.True(t, names["install <org>"], "expected install subcommand")
+	assert.True(t, names["install <org-or-owner/repo>"], "expected install subcommand")
 	assert.True(t, names["uninstall <org>"], "expected uninstall subcommand")
 	assert.True(t, names["analyze <org>"], "expected analyze subcommand")
 	assert.True(t, names["enable"], "expected enable subcommand")
 	assert.True(t, names["disable"], "expected disable subcommand")
+	assert.False(t, names["init <owner/repo>"], "init subcommand should not exist — merged into install")
 }
 
-func TestInstallCmd_RequiresOrg(t *testing.T) {
+func TestInstallCmd_RequiresArg(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install"})
 	err := cmd.Execute()
@@ -55,11 +59,24 @@ func TestInstallCmd_Flags(t *testing.T) {
 	require.NotNil(t, vendorBinaryFlag, "expected --vendor-fullsend-binary flag")
 	assert.Equal(t, "false", vendorBinaryFlag.DefValue)
 
-	wifProviderFlag := cmd.Flags().Lookup("gcp-wif-provider")
-	require.NotNil(t, wifProviderFlag, "expected --gcp-wif-provider flag")
+	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
+	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
 
+	inferenceRegionFlag := cmd.Flags().Lookup("inference-region")
+	require.NotNil(t, inferenceRegionFlag, "expected --inference-region flag")
+	assert.Equal(t, "global", inferenceRegionFlag.DefValue)
+
+	inferenceWIFProviderFlag := cmd.Flags().Lookup("inference-wif-provider")
+	require.NotNil(t, inferenceWIFProviderFlag, "expected --inference-wif-provider flag")
+
+	// Old GCP flags should have been removed.
+	assert.Nil(t, cmd.Flags().Lookup("gcp-project"), "--gcp-project flag should have been renamed to --inference-project")
+	assert.Nil(t, cmd.Flags().Lookup("gcp-region"), "--gcp-region flag should have been renamed to --inference-region")
+	assert.Nil(t, cmd.Flags().Lookup("gcp-wif-provider"), "--gcp-wif-provider flag should have been renamed to --inference-wif-provider")
+
+	// --gcp-wif-sa-email removed (direct WIF, no intermediate SA)
 	wifSAEmailFlag := cmd.Flags().Lookup("gcp-wif-sa-email")
-	require.NotNil(t, wifSAEmailFlag, "expected --gcp-wif-sa-email flag")
+	assert.Nil(t, wifSAEmailFlag, "--gcp-wif-sa-email flag should have been removed")
 
 	// --repo flag should not exist (issue #495)
 	repoFlag := cmd.Flags().Lookup("repo")
@@ -78,6 +95,210 @@ func TestInstallCmd_Flags(t *testing.T) {
 
 	mintSourceDirFlag := cmd.Flags().Lookup("mint-source-dir")
 	require.NotNil(t, mintSourceDirFlag, "expected --mint-source-dir flag")
+
+	mintURLFlag := cmd.Flags().Lookup("mint-url")
+	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
+	assert.Equal(t, DefaultMintURL, mintURLFlag.DefValue)
+
+	// --gcp-auth-mode removed (WIF is the only mode)
+	gcpAuthModeFlag := cmd.Flags().Lookup("gcp-auth-mode")
+	assert.Nil(t, gcpAuthModeFlag, "--gcp-auth-mode flag should have been removed")
+
+	// --scaffold-customized removed (customized dirs always included)
+	scaffoldCustomizedFlag := cmd.Flags().Lookup("scaffold-customized")
+	assert.Nil(t, scaffoldCustomizedFlag, "--scaffold-customized flag should have been removed")
+
+	skipMintCheckFlag := cmd.Flags().Lookup("skip-mint-check")
+	require.NotNil(t, skipMintCheckFlag, "expected --skip-mint-check flag")
+	assert.Equal(t, "false", skipMintCheckFlag.DefValue)
+
+	skipMintDeployFlag := cmd.Flags().Lookup("skip-mint-deploy")
+	require.NotNil(t, skipMintDeployFlag, "expected --skip-mint-deploy flag")
+
+	appSetFlag := cmd.Flags().Lookup("app-set")
+	require.NotNil(t, appSetFlag, "expected --app-set flag")
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
+}
+
+func TestInstallCmd_InvalidAppSet(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "myorg",
+		"--inference-project", "proj", "--mint-project", "proj",
+		"--app-set", "INVALID"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --app-set")
+}
+
+func TestInstallCmd_PerRepoRequiresMintProjectWithoutDefaultURL(t *testing.T) {
+	cmd := newRootCmd()
+	// When --mint-url is explicitly cleared, --mint-project is required.
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", ""})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-project")
+}
+
+func TestInstallCmd_PerRepoDefaultMintURLSkipsMintProject(t *testing.T) {
+	cmd := newRootCmd()
+	// With the default mint URL, --mint-project is not required.
+	// The error should be about --inference-project, not --mint-project.
+	cmd.SetArgs([]string{"admin", "install", "acme/widget"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-project is required for per-repo installation")
+}
+
+func TestInstallCmd_PerRepoRequiresInferenceProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://mint-test-abc123.run.app"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-project is required for per-repo installation")
+}
+
+func TestInstallCmd_PerRepoRejectsInvalidFormat(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/", "--mint-url", "https://mint-test-abc123.run.app", "--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "repo must be in owner/repo format")
+}
+
+func TestInstallCmd_PerRepoRejectsMultiSlash(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/team/repo", "--mint-url", "https://mint-test-abc123.run.app", "--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+}
+
+func TestInstallCmd_PerRepoRejectsNonHTTPSMintURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "http://mint.example.com", "--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url must be a valid HTTPS URL")
+}
+
+func TestInstallCmd_PerRepoRejectsNonCloudRunMintURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://evil.example.com", "--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url must be a Cloud Run URL")
+}
+
+func TestInstallCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
+	perOrgOnly := []struct {
+		flag  string
+		value string
+	}{
+		{"enroll-all", ""},
+		{"enroll-none", ""},
+	}
+	for _, tc := range perOrgOnly {
+		t.Run(tc.flag, func(t *testing.T) {
+			cmd := newRootCmd()
+			args := []string{"admin", "install", "acme/widget",
+				"--mint-url", "https://mint-test-abc123.run.app",
+				"--inference-project", "my-project"}
+			if tc.value != "" {
+				args = append(args, "--"+tc.flag, tc.value)
+			} else {
+				args = append(args, "--"+tc.flag)
+			}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("--%s is only valid for per-org installation", tc.flag))
+		})
+	}
+}
+
+func TestInstallCmd_PerRepoAcceptsSharedFlags(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	sharedFlags := []struct {
+		flag  string
+		value string
+	}{
+		{"public", ""},
+		{"skip-app-setup", ""},
+		{"mint-provider", "gcf"},
+		{"mint-source-dir", "/tmp/src"},
+		{"skip-mint-deploy", ""},
+		{"app-set", "custom-prefix"},
+		{"vendor-fullsend-binary", ""},
+	}
+	for _, tc := range sharedFlags {
+		t.Run(tc.flag, func(t *testing.T) {
+			cmd := newRootCmd()
+			args := []string{"admin", "install", "acme/widget",
+				"--mint-url", "https://mint-test-abc123.run.app",
+				"--inference-project", "my-project",
+				"--dry-run"}
+			if tc.value != "" {
+				args = append(args, "--"+tc.flag, tc.value)
+			} else {
+				args = append(args, "--"+tc.flag)
+			}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			require.NoError(t, err, "--%s should be accepted in per-repo mode", tc.flag)
+		})
+	}
+}
+
+func TestInstallCmd_ForceMintDeployFlagRemoved(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--force-mint-deploy",
+		"--inference-project", "my-project",
+		"--mint-project", "my-project",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "force-mint-deploy")
+}
+
+func TestInstallCmd_PerRepoAcceptsMintRegion(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-region", "us-central1",
+		"--inference-project", "my-project",
+		"--mint-region", "europe-west1",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestParseAgentRoles(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    []string
+		wantErr bool
+	}{
+		{"triage,review,coder", []string{"triage", "review", "coder"}, false},
+		{" triage , review ", []string{"triage", "review"}, false},
+		{"", nil, false},
+		{"single", []string{"single"}, false},
+		{"Invalid", nil, true},
+		{"ok,BAD-role", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseAgentRoles(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid role name")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
 }
 
 func TestUninstallCmd_RequiresOrg(t *testing.T) {
@@ -93,6 +314,10 @@ func TestUninstallCmd_Flags(t *testing.T) {
 
 	yoloFlag := cmd.Flags().Lookup("yolo")
 	require.NotNil(t, yoloFlag, "expected --yolo flag")
+
+	appSetFlag := cmd.Flags().Lookup("app-set")
+	require.NotNil(t, appSetFlag, "expected --app-set flag")
+	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 }
 
 func TestAnalyzeCmd_RequiresOrg(t *testing.T) {
@@ -373,6 +598,9 @@ func setupTestClient(org string, cfg *config.OrgConfig, orgRepos []string) *forg
 		cfgData, _ := cfg.Marshal()
 		client.FileContents[org+"/.fullsend/config.yaml"] = cfgData
 	}
+	// Fail the workflow dispatch so unit tests skip awaitRepoMaintenance
+	// (which would poll for 3 minutes against an empty fake).
+	client.Errors["DispatchWorkflow"] = fmt.Errorf("fake: dispatch not configured")
 	return client
 }
 
@@ -510,6 +738,111 @@ func TestRunEnableRepos_CommitMessageFormat(t *testing.T) {
 
 	require.Len(t, client.CreatedFiles, 1)
 	assert.Contains(t, client.CreatedFiles[0].Message, "chore: enable 2 repositories")
+}
+
+func TestRunEnableRepos_UpdatesOrgVariableVisibility(t *testing.T) {
+	// Setup: initial config with repo A enabled, repo B disabled.
+	// Dispatch mode is oidc-mint. Org variable FULLSEND_MINT_URL exists.
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": true,
+		"api":     false,
+	})
+	cfg.Dispatch.Mode = "oidc-mint"
+
+	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
+	// Assign repo IDs so we can verify they appear in the variable visibility.
+	for i := range client.Repos {
+		switch client.Repos[i].Name {
+		case ".fullsend":
+			client.Repos[i].ID = 100
+		case "web-app":
+			client.Repos[i].ID = 200
+		case "api":
+			client.Repos[i].ID = 300
+		}
+	}
+	// Pre-populate the org variable so it "exists".
+	client.OrgVariables = map[string]bool{"testorg/FULLSEND_MINT_URL": true}
+	client.OrgVariableValues = map[string]string{"testorg/FULLSEND_MINT_URL": "https://mint.example.com"}
+
+	printer := ui.New(&discardWriter{})
+
+	// Action: enable repo "api".
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"api"}, false, true)
+	require.NoError(t, err)
+
+	// Assert: SetOrgVariableRepos was called with both enrolled repo IDs
+	// plus the config repo (.fullsend).
+	require.Contains(t, client.OrgVariableRepoIDs, "testorg/FULLSEND_MINT_URL")
+	repoIDs := client.OrgVariableRepoIDs["testorg/FULLSEND_MINT_URL"]
+	assert.Contains(t, repoIDs, int64(100), "config repo ID should be included")
+	assert.Contains(t, repoIDs, int64(200), "web-app repo ID should be included")
+	assert.Contains(t, repoIDs, int64(300), "api repo ID should be included")
+}
+
+func TestRunEnableRepos_SkipsVariableSyncWhenNotOIDCMint(t *testing.T) {
+	// When dispatch mode is not oidc-mint, variable sync should be skipped.
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": false,
+	})
+	// No dispatch mode set (empty string).
+
+	client := setupTestClient("testorg", cfg, []string{"web-app"})
+	client.OrgVariables = map[string]bool{"testorg/FULLSEND_MINT_URL": true}
+
+	printer := ui.New(&discardWriter{})
+
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	require.NoError(t, err)
+
+	// SetOrgVariableRepos should not have been called.
+	assert.Nil(t, client.OrgVariableRepoIDs)
+}
+
+func TestRunEnableRepos_VariableSyncErrorDoesNotBlockEnable(t *testing.T) {
+	// When SetOrgVariableRepos fails, the enable command should still
+	// succeed (best-effort contract).
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": false,
+	})
+	cfg.Dispatch.Mode = "oidc-mint"
+
+	client := setupTestClient("testorg", cfg, []string{"web-app"})
+	for i := range client.Repos {
+		switch client.Repos[i].Name {
+		case ".fullsend":
+			client.Repos[i].ID = 100
+		case "web-app":
+			client.Repos[i].ID = 200
+		}
+	}
+	client.OrgVariables = map[string]bool{"testorg/FULLSEND_MINT_URL": true}
+	client.Errors["SetOrgVariableRepos"] = fmt.Errorf("API rate limit exceeded")
+
+	printer := ui.New(&discardWriter{})
+
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	require.NoError(t, err, "enable should succeed even when variable sync fails")
+}
+
+func TestRunEnableRepos_SkipsVariableSyncWhenVariableNotExists(t *testing.T) {
+	// When the org variable doesn't exist yet (mint not provisioned),
+	// sync should skip gracefully.
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": false,
+	})
+	cfg.Dispatch.Mode = "oidc-mint"
+
+	client := setupTestClient("testorg", cfg, []string{"web-app"})
+	// No OrgVariables set — FULLSEND_MINT_URL doesn't exist.
+
+	printer := ui.New(&discardWriter{})
+
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	require.NoError(t, err)
+
+	// SetOrgVariableRepos should not have been called.
+	assert.Nil(t, client.OrgVariableRepoIDs)
 }
 
 // Business logic tests for runDisableRepos
@@ -877,15 +1210,703 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 	emptyCfg := &config.OrgConfig{}
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
-		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", ""),
+		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version"),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
 		layers.NewEnrollmentLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
-		layers.NewVendorBinaryLayer("test-org", nil, ui.New(&discardWriter{}), false, nil),
+		layers.NewVendorBinaryLayer("test-org", ".fullsend", nil, ui.New(&discardWriter{}), false, nil),
 	)
 	layerScopes := stack.CollectRequiredScopes(layers.OpInstall)
 
 	assert.ElementsMatch(t, installRequiredScopes, layerScopes,
 		"installRequiredScopes must match the union of RequiredScopes(OpInstall) from all layers; update the variable if a layer's scopes change")
+}
+
+func TestCheckPerRepoScopes_AllPresent(t *testing.T) {
+	client := &forge.FakeClient{
+		TokenScopes: []string{"repo", "workflow", "read:org"},
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
+func TestCheckPerRepoScopes_Missing(t *testing.T) {
+	client := &forge.FakeClient{
+		TokenScopes: []string{"repo"},
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow")
+	assert.NotContains(t, err.Error(), "admin:org")
+}
+
+func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
+	client := &forge.FakeClient{
+		TokenScopes: nil,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
+func TestCheckPerRepoScopes_GetTokenScopesError(t *testing.T) {
+	client := &forge.FakeClient{
+		Errors: map[string]error{"GetTokenScopes": errors.New("network error")},
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking token scopes")
+	assert.Contains(t, err.Error(), "network error")
+}
+
+func TestCheckPerRepoScopes_DoesNotRequireAdminOrg(t *testing.T) {
+	client := &forge.FakeClient{
+		TokenScopes: []string{"repo", "workflow"},
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.NoError(t, err, "per-repo should not require admin:org scope")
+}
+
+func TestPerRepoRequiredScopes_SubsetOfInstallScopes(t *testing.T) {
+	installSet := make(map[string]bool)
+	for _, s := range installRequiredScopes {
+		installSet[s] = true
+	}
+	for _, s := range perRepoRequiredScopes {
+		assert.True(t, installSet[s],
+			"perRepoRequiredScopes contains %q which is not in installRequiredScopes", s)
+	}
+}
+
+func TestInstallCmd_PerRepoRejectsInvalidRole(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--agents", "triage,INVALID",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestInstallCmd_PerRepoRejectsOwnerWithDots(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "my.org/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid owner name")
+}
+
+func TestInstallCmd_PerRepoRejectsURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"https URL", "https://github.com/acme/widget"},
+		{"http URL", "http://github.com/acme/widget"},
+		{"www prefix", "www.github.com/acme/widget"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"admin", "install", tc.input,
+				"--mint-url", "https://mint-test-abc123.run.app",
+				"--inference-project", "my-project"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "expected owner/repo format, got a URL")
+		})
+	}
+}
+
+// --- resolveSharedRoleAppIDs tests ---
+
+func TestResolveSharedRoleAppIDs_MatchesInstalledApps(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+		{AppID: 200, AppSlug: "acme-reviewer"},
+	}
+
+	existingIDs := map[string]string{
+		"other-org/coder":    "100",
+		"other-org/reviewer": "200",
+	}
+
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder", "reviewer"})
+	require.NoError(t, err)
+	assert.Equal(t, "100", result["new-org/coder"])
+	assert.Equal(t, "200", result["new-org/reviewer"])
+}
+
+func TestResolveSharedRoleAppIDs_ErrorWhenAppNotInstalled(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+	}
+
+	existingIDs := map[string]string{
+		"other-org/coder":    "100",
+		"other-org/reviewer": "999",
+	}
+
+	_, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder", "reviewer"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no shared app for role \"reviewer\"")
+}
+
+func TestResolveSharedRoleAppIDs_ErrorWhenNoExistingIDs(t *testing.T) {
+	fake := forge.NewFakeClient()
+
+	_, err := resolveSharedRoleAppIDs(context.Background(), fake, nil, "new-org", []string{"coder"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no existing ROLE_APP_IDS")
+}
+
+func TestResolveSharedRoleAppIDs_SkipsSameOrg(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+	}
+
+	existingIDs := map[string]string{
+		"new-org/coder":   "100",
+		"other-org/coder": "100",
+	}
+
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "new-org", []string{"coder"})
+	require.NoError(t, err)
+	assert.Equal(t, "100", result["new-org/coder"])
+}
+
+func TestResolveSharedRoleAppIDs_SameOrgUsesOwnEntry(t *testing.T) {
+	fake := forge.NewFakeClient()
+	fake.Installations = []forge.Installation{
+		{AppID: 100, AppSlug: "acme-coder"},
+	}
+
+	existingIDs := map[string]string{
+		"acme-corp/coder": "100",
+	}
+
+	result, err := resolveSharedRoleAppIDs(context.Background(), fake, existingIDs, "acme-corp", []string{"coder"})
+	require.NoError(t, err)
+	assert.Equal(t, "100", result["acme-corp/coder"])
+}
+
+func TestInstallCmd_SkipMintCheckUsesDefaultMintURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--inference-project", "my-project",
+		"--dry-run"})
+	err := cmd.Execute()
+	// With the default mint URL, --skip-mint-check no longer errors
+	// when --mint-url is not explicitly provided.
+	require.NoError(t, err)
+}
+
+func TestInstallCmd_SkipMintCheckRejectsEmptyMintURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url is required when using --skip-mint-check")
+}
+
+func TestInstallCmd_SkipMintCheckAcceptsNonCloudRunURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "https://mint.example.com/v1/token",
+		"--inference-project", "my-project",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestInstallCmd_SkipMintCheckSkipsMintProject(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	// Without --skip-mint-check and without --mint-project/--mint-url, an error is returned.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget"})
+	err := cmd.Execute()
+	require.Error(t, err)
+
+	// With --skip-mint-check, --mint-project is not required.
+	cmd2 := newRootCmd()
+	cmd2.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "https://mint.example.com/v1/token",
+		"--inference-project", "my-project",
+		"--dry-run"})
+	err2 := cmd2.Execute()
+	require.NoError(t, err2)
+}
+
+func TestInstallCmd_SkipMintCheckPerOrgUsesDefaultMintURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	// With default mint URL, --skip-mint-check succeeds without explicit --mint-url.
+	// The command may fail downstream (e.g. listing repos), but should not
+	// error on missing --mint-url.
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--skip-mint-check",
+		"--enroll-none"})
+	err := cmd.Execute()
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--mint-url is required when using --skip-mint-check")
+	}
+}
+
+func TestInstallCmd_SkipMintCheckPerOrgRejectsEmptyMintURL(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--skip-mint-check",
+		"--mint-url", ""})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url is required when using --skip-mint-check")
+}
+
+func TestInstallCmd_SkipMintCheckRejectsUserinfo(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "https://user:pass@mint.example.com/v1/token",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain embedded credentials")
+}
+
+func TestInstallCmd_SkipMintCheckRejectsHTTP(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--skip-mint-check",
+		"--mint-url", "http://mint.example.com",
+		"--inference-project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url must be a valid HTTPS URL")
+}
+
+func TestSkipMintDispatcher(t *testing.T) {
+	d := &skipMintDispatcher{mintURL: "https://mint.example.com/v1/token"}
+	assert.Equal(t, "skip-mint-check", d.Name())
+	assert.Nil(t, d.OrgSecretNames())
+	assert.Equal(t, []string{"FULLSEND_MINT_URL"}, d.OrgVariableNames())
+	assert.NoError(t, d.StoreAgentPEM(context.Background(), "role", []byte("pem")))
+	vars, err := d.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"FULLSEND_MINT_URL": "https://mint.example.com/v1/token"}, vars)
+}
+
+func TestValidateMintURLHTTPS(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{"valid URL", "https://mint.example.com/v1/token", ""},
+		{"valid with port", "https://mint.example.com:8443/v1", ""},
+		{"http rejected", "http://mint.example.com", "HTTPS URL"},
+		{"empty string", "", "HTTPS URL"},
+		{"no host", "https://", "HTTPS URL"},
+		{"userinfo", "https://user:pass@host.com", "embedded credentials"},
+		{"username only", "https://user@host.com", "embedded credentials"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMintURLHTTPS(tc.input)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateSkipMintCheck(t *testing.T) {
+	require.Error(t, validateSkipMintCheck(""))
+	require.Error(t, validateSkipMintCheck("http://example.com"))
+	require.NoError(t, validateSkipMintCheck("https://mint.example.com/v1/token"))
+}
+
+func TestValidateWIFProvider_Valid(t *testing.T) {
+	valid := []string{
+		"projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/gh-acme-widget",
+		"projects/999999999999/locations/global/workloadIdentityPools/my-pool-123/providers/my-provider-456",
+		"projects/1/locations/global/workloadIdentityPools/abcd/providers/efgh",
+		"projects/1/locations/global/workloadIdentityPools/a-very-long-pool-name-32-chars1/providers/a-very-long-prov-name-32-chars1",
+	}
+	for _, v := range valid {
+		t.Run(v, func(t *testing.T) {
+			require.NoError(t, validateWIFProvider(v))
+		})
+	}
+}
+
+func TestValidateWIFProvider_Invalid(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"bare name", "standalone-fullsend"},
+		{"missing projects prefix", "123/locations/global/workloadIdentityPools/pool/providers/prov"},
+		{"partial path", "projects/123/locations/global/workloadIdentityPools/pool"},
+		{"wrong location", "projects/123/locations/us-east1/workloadIdentityPools/pool/providers/prov"},
+		{"non-numeric project", "projects/my-project/locations/global/workloadIdentityPools/pool/providers/prov"},
+		{"empty string", ""},
+		{"trailing slash", "projects/123/locations/global/workloadIdentityPools/pool/providers/prov/"},
+		{"uppercase pool", "projects/123/locations/global/workloadIdentityPools/Pool/providers/prov"},
+		{"pool too short (1 char)", "projects/123/locations/global/workloadIdentityPools/a/providers/abcd"},
+		{"pool too short (3 chars)", "projects/123/locations/global/workloadIdentityPools/abc/providers/abcd"},
+		{"provider too short (1 char)", "projects/123/locations/global/workloadIdentityPools/abcd/providers/a"},
+		{"pool trailing hyphen", "projects/123/locations/global/workloadIdentityPools/abcd-/providers/abcd"},
+		{"provider trailing hyphen", "projects/123/locations/global/workloadIdentityPools/abcd/providers/abcd-"},
+		{"pool too long (33 chars)", "projects/123/locations/global/workloadIdentityPools/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/providers/abcd"},
+		{"provider too long (33 chars)", "projects/123/locations/global/workloadIdentityPools/abcd/providers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateWIFProvider(tc.input)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
+		})
+	}
+}
+
+func TestInstallCmd_PerOrgRejectsInvalidWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--dry-run",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "standalone-fullsend"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
+}
+
+func TestInstallCmd_PerRepoRejectsInvalidWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "just-a-name"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
+}
+
+func TestInstallCmd_PerOrgAcceptsValidWIFProvider(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--dry-run",
+		"--enroll-none",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc"})
+	err := cmd.Execute()
+	// Per-org dry-run hits live GitHub API for repo listing; expect a downstream
+	// error but NOT a WIF validation error — proving validation passed.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--inference-wif-provider must be")
+	}
+}
+
+func TestInstallCmd_PerRepoAcceptsValidWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestFilterSlugsByAppSet(t *testing.T) {
+	tests := []struct {
+		name   string
+		appSet string
+		slugs  map[string]string
+		want   map[string]string
+	}{
+		{
+			name:   "matching app-set preserved",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+			want:   map[string]string{"coder": "fullsend-ai-coder", "review": "fullsend-ai-review"},
+		},
+		{
+			name:   "different app-set filtered out",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "konflux-ci-coder", "review": "konflux-ci-review"},
+			want:   map[string]string{},
+		},
+		{
+			name:   "mixed app-sets keeps only matching",
+			appSet: "fullsend-ai",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder", "review": "konflux-ci-review"},
+			want:   map[string]string{"coder": "fullsend-ai-coder"},
+		},
+		{
+			name:   "nil input returns empty map",
+			appSet: "fullsend-ai",
+			slugs:  nil,
+			want:   map[string]string{},
+		},
+		{
+			name:   "shorter prefix does not match longer slug",
+			appSet: "fullsend",
+			slugs:  map[string]string{"coder": "fullsend-ai-coder"},
+			want:   map[string]string{},
+		},
+		{
+			name:   "default app-set matches own slugs",
+			appSet: "fullsend",
+			slugs:  map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+			want:   map[string]string{"coder": "fullsend-coder", "review": "fullsend-review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterSlugsByAppSet(tt.slugs, tt.appSet)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestRunUninstall_LegacySlugsIncludedWhenConfigUnavailable(t *testing.T) {
+	// When the config repo is unavailable, runUninstall should check
+	// both current (fullsend-ai-*) and legacy (fullsend-*) app naming
+	// so that apps created under an older version are not silently skipped.
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	// Simulate a legacy app installed under the old naming convention.
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "fullsend-coder"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
+	require.NoError(t, err)
+
+	output := buf.String()
+	// The legacy slug "fullsend-coder" should NOT be reported as "not found".
+	assert.NotContains(t, output, "App fullsend-coder not found")
+	// It should appear in the app cleanup section.
+	assert.Contains(t, output, "fullsend-coder")
+}
+
+func TestRunUninstall_WarnsWhenNoAppsFound(t *testing.T) {
+	// When no apps are found under any naming convention, the uninstaller
+	// should warn the user instead of silently reporting success.
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	// No installations at all.
+	client.Installations = []forge.Installation{}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "No fullsend apps found installed in this organization")
+}
+
+func TestRunUninstall_LegacySlugsSkippedWhenAppSetMatchesLegacy(t *testing.T) {
+	// When --app-set is explicitly "fullsend" (matching legacy), the legacy
+	// slugs should not be duplicated.
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "fullsend-coder"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend", appsetup.NopBrowser{}, strings.NewReader(""))
+	require.NoError(t, err)
+
+	output := buf.String()
+	// Should find the legacy app and attempt cleanup.
+	assert.NotContains(t, output, "No fullsend apps found")
+	assert.Contains(t, output, "fullsend-coder")
+}
+
+func TestRunUninstall_DedupsSlugsAcrossAppSets(t *testing.T) {
+	// When legacy and current app-sets produce the same slug, the slug
+	// should appear only once in the cleanup output (no duplicate browser opens).
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "fullsend-coder"},
+		{ID: 2, AppSlug: "fullsend-triage"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	// Use "fullsend" which matches a legacy prefix — without dedup,
+	// each slug would appear twice.
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend", appsetup.NopBrowser{}, strings.NewReader(""))
+	require.NoError(t, err)
+
+	output := buf.String()
+	// Each slug should appear in the "Opening ... installation settings" line exactly once.
+	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-coder installation settings"))
+	assert.Equal(t, 1, strings.Count(output, "Opening fullsend-triage installation settings"))
+}
+
+func TestRunUninstall_NopBrowserSkipsBrowserOpen(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	client.Errors["GetFileContent"] = errors.New("not found")
+
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "fullsend-ai-coder"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
+	require.NoError(t, err)
+
+	output := buf.String()
+	// NopBrowser.Open returns nil, so the success path runs.
+	assert.Contains(t, output, "Opened fullsend-ai-coder")
+	assert.Contains(t, output, "settings/installations/1")
+	assert.NotContains(t, output, "Could not open browser")
+}
+
+func TestAwaitRepoMaintenance_Success(t *testing.T) {
+	client := forge.NewFakeClient()
+	dispatchTime := time.Now().UTC().Add(-10 * time.Second)
+	client.WorkflowRuns["testorg/.fullsend/repo-maintenance.yml"] = &forge.WorkflowRun{
+		ID:         42,
+		Status:     "completed",
+		Conclusion: "success",
+		HTMLURL:    "https://github.com/testorg/.fullsend/actions/runs/42",
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+	client.Annotations = []forge.Annotation{
+		{Level: "notice", Message: "Enrollment PR: https://github.com/testorg/web-app/pull/1"},
+		{Level: "warning", Message: "some warning"},
+		{Level: "notice", Message: "Enrollment PR: https://github.com/testorg/api/pull/2"},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	awaitRepoMaintenanceWithInterval(context.Background(), client, printer, "testorg", dispatchTime, 1*time.Millisecond, 2)
+
+	output := buf.String()
+	assert.Contains(t, output, "repo-maintenance completed successfully")
+	assert.Contains(t, output, "https://github.com/testorg/.fullsend/actions/runs/42")
+	assert.Contains(t, output, "Enrollment PR: https://github.com/testorg/web-app/pull/1")
+	assert.Contains(t, output, "Enrollment PR: https://github.com/testorg/api/pull/2")
+	// Warnings from annotations should not be printed (only notices).
+	assert.NotContains(t, output, "some warning")
+}
+
+func TestAwaitRepoMaintenance_Timeout(t *testing.T) {
+	client := forge.NewFakeClient()
+	dispatchTime := time.Now().UTC().Add(-10 * time.Second)
+	// No workflow runs configured — will timeout.
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	awaitRepoMaintenanceWithInterval(context.Background(), client, printer, "testorg", dispatchTime, 1*time.Millisecond, 2)
+
+	output := buf.String()
+	assert.Contains(t, output, "timed out waiting for repo-maintenance workflow")
+}
+
+func TestAwaitRepoMaintenance_Failure(t *testing.T) {
+	client := forge.NewFakeClient()
+	dispatchTime := time.Now().UTC().Add(-10 * time.Second)
+	client.WorkflowRuns["testorg/.fullsend/repo-maintenance.yml"] = &forge.WorkflowRun{
+		ID:         43,
+		Status:     "completed",
+		Conclusion: "failure",
+		HTMLURL:    "https://github.com/testorg/.fullsend/actions/runs/43",
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	awaitRepoMaintenanceWithInterval(context.Background(), client, printer, "testorg", dispatchTime, 1*time.Millisecond, 2)
+
+	output := buf.String()
+	assert.Contains(t, output, "repo-maintenance completed with conclusion: failure")
+}
+
+func TestAwaitRepoMaintenance_ContextCancelled(t *testing.T) {
+	client := forge.NewFakeClient()
+	dispatchTime := time.Now().UTC().Add(-10 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	awaitRepoMaintenanceWithInterval(ctx, client, printer, "testorg", dispatchTime, 1*time.Millisecond, 36)
+
+	output := buf.String()
+	assert.Contains(t, output, "context cancelled while waiting for workflow")
+}
+
+func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme",
+		"--dry-run",
+		"--skip-mint-check",
+		"--mint-url", "https://mint.example.com/v1/token",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "standalone-fullsend"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider resource name")
 }

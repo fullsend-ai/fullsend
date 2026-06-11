@@ -7,7 +7,7 @@ This guide walks through running fullsend agents locally on macOS and Linux. PR 
 | Requirement | macOS | Linux |
 |-------------|-------|-------|
 | Container runtime | Podman Desktop with a running machine | Podman |
-| OpenShell | 0.0.37-dev+ (Podman support) | 0.0.37-dev+ |
+| OpenShell | 0.0.54 (Podman support) | 0.0.54 |
 | GCP credentials | Service account key (`Vertex AI User` role) | Same |
 | GitHub PAT | `repo` scope for the target org | Same |
 | Go toolchain | Optional — only needed when building the CLI from source | Same |

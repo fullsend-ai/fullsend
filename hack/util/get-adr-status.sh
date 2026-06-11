@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-VALID_STATUSES=("Proposed" "Undecided" "Accepted" "Deprecated" "Superseded")
+VALID_STATUSES=("Accepted" "Deprecated" "Superseded")
 
 error() {
     echo "ERROR: $1" >&2

@@ -1,6 +1,6 @@
 # Testing the Agents
 
-We have CI for code, but no CI for prompts. If someone tweaks the Intent Alignment Agent's instructions, how do we prove it didn't forget how to detect Tier Escalation?
+We have CI for code, but no CI for prompts. If someone tweaks the Intent & Coherence sub-agent's instructions, how do we prove it didn't forget how to detect Tier Escalation?
 
 ## Why this is a distinct problem
 
@@ -20,11 +20,11 @@ An agent's behavior is the product of its instructions, the model it runs on, th
 
 ### Absence detection
 
-The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent Alignment Agent's instructions and removes the paragraph about tier escalation detection, the agent won't error — it will simply stop checking for tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when a tier-gaming attack succeeds.
+The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about tier escalation detection, the agent won't error — it will simply stop checking for tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when a tier-gaming attack succeeds.
 
 ### Interaction effects
 
-Agents don't operate alone. The review sub-agents described in [code-review.md](code-review.md) compose their decisions. A change to one agent's instructions might not cause that agent to fail in isolation, but might break the overall review process — for example, if the Intent Alignment Agent starts flagging things that the Correctness Agent used to handle, creating a gap where neither catches certain issues.
+Agents don't operate alone. The review sub-agents described in [code-review.md](code-review.md) compose their decisions. A change to one agent's instructions might not cause that agent to fail in isolation, but might break the overall review process — for example, if the Intent & Coherence sub-agent starts flagging things that the Correctness sub-agent used to handle, creating a gap where neither catches certain issues.
 
 ### Model updates
 
@@ -43,7 +43,7 @@ When someone modifies an agent's system prompt, CLAUDE.md, or configuration:
 
 ### Capability coverage
 
-For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent Alignment Agent should detect tier escalation. The Injection Defense Agent should catch known injection patterns. The Platform Security Agent should flag RBAC changes. These capabilities need explicit test coverage.
+For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect tier escalation. The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
 
 ### Cross-agent composition
 
@@ -61,13 +61,13 @@ Maintain a curated set of test cases — inputs with known-correct outputs — f
 
 ```
 agent-tests/
-  intent-alignment/
+  intent-coherence/
     golden-set/
       tier-escalation-detection.yaml
       scope-mismatch.yaml
       cross-repo-intent.yaml
     ...
-  injection-defense/
+  security/
     golden-set/
       comment-injection.yaml
       description-injection.yaml
@@ -99,7 +99,7 @@ How do you know the golden set is sufficient? For application code, coverage too
 
 Define contracts for each agent — formal statements about what the agent must and must not do — and test against those contracts. This is more abstract than golden-set testing but potentially more robust.
 
-### Example contracts for the Intent Alignment Agent
+### Example contracts for the Intent & Coherence sub-agent
 
 - MUST flag any PR where the linked issue describes a bug fix but the diff adds new API surface
 - MUST flag any PR that modifies files in more than 3 directories when the linked issue is labeled "bug"
@@ -263,7 +263,7 @@ promptfoo's `redteam generate` command is the strongest tool for adversarial inp
 
 The harder problems identified in this document remain open:
 
-- **Cross-agent composition testing** — no framework models the interaction between multiple agents reviewing the same PR. Inspect AI can run one agent at a time; testing whether the Intent Alignment Agent and Correctness Agent together produce correct outcomes would require a custom harness.
+- **Cross-agent composition testing** — no framework models the interaction between multiple agents reviewing the same PR. Inspect AI can run one agent at a time; testing whether the Intent & Coherence sub-agent and Correctness sub-agent together produce correct outcomes would require a custom harness.
 - **Mutation testing for natural language** — no framework generates instruction mutations and checks whether the eval suite catches them (though an LLM could generate mutations and the eval frameworks could run the evals)
 - **Absence detection** — the tools can verify that an agent does something correctly, but detecting that it silently stopped doing something requires the test author to have anticipated that capability in the first place
 - **LLM-as-judge trust** — all frameworks rely on LLM-graded assertions at some level, which circles back to the open question of whether that just moves the trust problem rather than solving it

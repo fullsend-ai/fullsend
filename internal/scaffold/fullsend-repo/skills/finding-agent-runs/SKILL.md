@@ -25,7 +25,7 @@ dispatches to `${DISPATCH_REPO}` which runs the agent workflows
 
 ### Triage dispatch
 
-Triage dispatches from `issue_comment` events (the `/triage` command):
+Triage dispatches from `issue_comment` events (the `/fs-triage` command):
 
 ```bash
 gh run list --workflow=fullsend.yaml \
@@ -33,7 +33,7 @@ gh run list --workflow=fullsend.yaml \
   -q '.[] | select(.event == "issue_comment")'
 ```
 
-Match by timestamp against the `/triage` comment (`gh issue view <N> --json comments`), then confirm `dispatch-triage` succeeded:
+Match by timestamp against the `/fs-triage` comment (`gh issue view <N> --json comments`), then confirm `dispatch-triage` succeeded:
 
 ```bash
 gh run view <RUN_ID> --json jobs \
@@ -91,7 +91,7 @@ gh run list --repo "${DISPATCH_REPO}" --workflow=review.yml --limit 5 \
 ### Retro dispatch
 
 Retro dispatches from `pull_request_target` (on PR close) and from
-`issue_comment` events (the `/retro` command):
+`issue_comment` events (the `/fs-retro` command):
 
 ```bash
 gh run list --workflow=fullsend.yaml \

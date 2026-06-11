@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +23,10 @@ func newRootCmd() *cobra.Command {
 		Version:       version,
 	}
 	cmd.AddCommand(newAdminCmd())
+	cmd.AddCommand(newGitHubCmd())
+	cmd.AddCommand(newInferenceCmd())
+	cmd.AddCommand(newLockCmd())
+	cmd.AddCommand(newMintCmd())
 	cmd.AddCommand(newRunCmd())
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newPostReviewCmd())
@@ -28,7 +34,7 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
-// Execute runs the root command.
-func Execute() error {
-	return newRootCmd().Execute()
+// Execute runs the root command with the given context.
+func Execute(ctx context.Context) error {
+	return newRootCmd().ExecuteContext(ctx)
 }

@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/github-api-csma.sh
+source "${SCRIPT_DIR}/lib/github-api-csma.sh"
+
 : "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 : "${ORG:?ORG must be set}"
@@ -67,16 +71,16 @@ REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/<[^>]*>//
 # --- Write scores to the project board ---
 
 # Resolve project and item IDs.
-PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
+PROJECT_ID=$(github_csma_run graphql project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
 
 # Parse repo and issue number from URL.
 REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
 ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
-ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
+ISSUE_NODE_ID=$(github_csma_run core api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 
 # Find the project item ID for this issue via the issue's projectItems connection.
 # This is a single API call regardless of project size, avoiding pagination and timeouts.
-ITEM_RESPONSE=$(gh api graphql -f query='
+ITEM_RESPONSE=$(github_csma_run graphql api graphql -f query='
   query($issueId: ID!) {
     node(id: $issueId) {
       ... on Issue {
@@ -100,7 +104,7 @@ if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
 fi
 
 # Get field IDs for all RICE fields.
-FIELDS_JSON=$(gh project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
+FIELDS_JSON=$(github_csma_run graphql project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
 
 get_field_id() {
   echo "${FIELDS_JSON}" | jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id'
@@ -134,10 +138,10 @@ update_field() {
     '{
       query: "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { number: $value } }) { projectV2Item { id } } }",
       variables: {projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}
-    }' | gh api graphql --input -
+    }' | github_csma_run_pipe graphql api graphql --input -
 }
 
-echo "Writing scores to project board..."
+echo "Writing scores to project board (CSMA-aware)..."
 update_field "${REACH_FIELD_ID}" "${REACH}"
 update_field "${IMPACT_FIELD_ID}" "${IMPACT}"
 update_field "${CONFIDENCE_FIELD_ID}" "${CONFIDENCE}"
@@ -182,5 +186,10 @@ COMMENT=$(jq -n \
 </details>"')
 
 echo "Posting RICE comment..."
-printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:prioritize-agent -->" --token "${GH_TOKEN}" --result -
+printf '%s' "${COMMENT}" | github_csma_run_cmd core fullsend post-comment \
+  --repo "${REPO}" \
+  --number "${ISSUE_NUMBER}" \
+  --marker "<!-- fullsend:prioritize-agent -->" \
+  --token "${GH_TOKEN}" \
+  --result - >/dev/null
 echo "Post-prioritize complete."

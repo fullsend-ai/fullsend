@@ -1,0 +1,1 @@
+{"go":{"command":"gopls","args":["serve"],"extensionToLanguage":{".go":"go"}}}

@@ -18,6 +18,8 @@ Date: 2026-04-03
 
 Accepted
 
+Extended by [ADR 0039](0039-totp-automation-for-e2e-2fa.md).
+
 ## Context
 
 The admin CLI e2e tests use Playwright to automate browser interactions with
@@ -86,8 +88,8 @@ The e2e tests need both because:
   baked into the stored session).
 
 The `handleSudoIfPresent()` function detects the "Confirm access" page by
-title and enters the password automatically. It is called before PAT creation
-(both classic and fine-grained).
+title and enters either the password or a TOTP code (see [ADR 0039](0039-totp-automation-for-e2e-2fa.md)).
+It is called before PAT creation (both classic and fine-grained).
 
 **Local development:** When `E2E_GITHUB_SESSION_FILE` is not set but
 `E2E_GITHUB_USERNAME` and `E2E_GITHUB_PASSWORD` are, `make e2e-test`
@@ -131,12 +133,13 @@ it does expire, a developer runs `make e2e-upload-session` to refresh it.
 
 - Two repo secrets are required in CI: `E2E_GITHUB_SESSION` (base64-encoded
   storageState JSON for login bypass) and `E2E_GITHUB_PASSWORD` (for sudo
-  confirmation on sensitive pages).
+  confirmation on sensitive pages). A third secret, `E2E_GITHUB_TOTP_SECRET`,
+  is required when the test account has 2FA enabled (see [ADR 0039](0039-totp-automation-for-e2e-2fa.md)).
 - If the test account's password changes, the stored session must be
   re-exported (password change invalidates all sessions) and the
   `E2E_GITHUB_PASSWORD` secret must be updated.
-- If the test account enables 2FA, the session export must happen after the 2FA
-  step.
+- If the test account has 2FA enabled, set `E2E_GITHUB_TOTP_SECRET` so
+  `make e2e-export-session` and sudo confirmation can handle TOTP automatically.
 - The login function becomes a session-loading function -- simpler and more
   reliable.
 - Session refresh is `make e2e-upload-session`, expected to be needed at most

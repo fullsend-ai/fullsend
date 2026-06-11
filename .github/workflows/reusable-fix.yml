@@ -1,0 +1,383 @@
+# Reusable fix agent workflow. Called by thin callers in .fullsend repos
+# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+name: Fix Agent
+
+on:
+  workflow_call:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+      trigger_source:
+        required: true
+        type: string
+        description: "GitHub username that triggered the fix; bot accounts end with [bot]"
+      pr_number:
+        required: false
+        type: string
+        description: "PR number (workflow_dispatch manual fallback)"
+      instruction:
+        required: false
+        type: string
+        description: "Human instruction (workflow_dispatch manual fallback)"
+      mint_url:
+        required: true
+        type: string
+      gcp_region:
+        required: true
+        type: string
+      fullsend_version:
+        required: false
+        type: string
+        default: "latest"
+      install_mode:
+        required: false
+        type: string
+        default: "per-org"
+      fullsend_ai_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+        default: v0
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER:
+        required: true
+      FULLSEND_GCP_PROJECT_ID:
+        required: true
+
+jobs:
+  fix:
+    name: Fix
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream defaults
+        uses: actions/checkout@v6
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace (upstream defaults + org/repo overrides)
+        env:
+          INSTALL_MODE: ${{ inputs.install_mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+            echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+            exit 1
+          fi
+          SRC=".defaults/internal/scaffold/fullsend-repo"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${SRC}/${dir}" ]]; then
+              mkdir -p "${dir}"
+              cp -r "${SRC}/${dir}/." "${dir}/"
+            fi
+          done
+          CUSTOM_BASE="customized"
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            CUSTOM_BASE=".fullsend/customized"
+          fi
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
+              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
+                | while IFS= read -r -d '' f; do
+                    rel="${f#"${CUSTOM_BASE}"/}"
+                    mkdir -p "$(dirname "${rel}")"
+                    cp "${f}" "${rel}"
+                  done
+            fi
+          done
+          mkdir -p .github/scripts
+          cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
+      - name: Validate enrollment and extract repo metadata
+        id: repo-parts
+        uses: ./.defaults/.github/actions/validate-enrollment
+        with:
+          source_repo: ${{ inputs.source_repo }}
+          install_mode: ${{ inputs.install_mode }}
+
+      - name: Mint coder token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: coder
+          repos: ${{ steps.repo-parts.outputs.name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Resolve bot identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          read -r BOT_LOGIN BOT_USER_ID < <(
+            gh api graphql -f query='{ viewer { login databaseId } }' \
+              | jq -r '.data.viewer | "\(.login) \(.databaseId)"'
+          )
+          GIT_BOT_EMAIL="${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
+          echo "Resolved bot identity: ${BOT_LOGIN} (${BOT_USER_ID})"
+          echo "GIT_BOT_EMAIL=${GIT_BOT_EMAIL}" >> "${GITHUB_ENV}"
+
+      - name: Block fork PRs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          PR_NUM_INPUT: ${{ inputs.pr_number }}
+        run: |
+          # Fork PRs must not trigger the fix agent (security: prevents
+          # forked repos from running code with org-level tokens).
+          HEAD_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.repo.full_name // empty')"
+          BASE_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.repo.full_name // empty')"
+          if [[ -n "${HEAD_REPO}" && -n "${BASE_REPO}" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+            echo "::error::Fork PRs are not allowed to trigger the fix agent"
+            exit 1
+          fi
+          # Fallback for issue_comment events (payload has .issue, not .pull_request).
+          if [[ -z "${HEAD_REPO}" && -z "${BASE_REPO}" ]]; then
+            PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.issue.number // empty')"
+            PR_NUM="${PR_NUM:-${PR_NUM_INPUT:-}}"
+            if [[ -n "${PR_NUM}" ]]; then
+              IS_FORK="$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
+                --json isCrossRepository --jq '.isCrossRepository' 2>/dev/null)" || true
+              if [[ -z "${IS_FORK}" ]]; then
+                echo "::error::Could not determine if PR is from a fork — failing closed"
+                exit 1
+              fi
+              if [[ "${IS_FORK}" == "true" ]]; then
+                echo "::error::Fork PRs are not allowed to trigger the fix agent"
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Extract PR number and context
+        id: context
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_INSTRUCTION: ${{ inputs.instruction }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+        run: |
+          # Extract PR number from event payload or workflow_dispatch input.
+          PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.number // empty')"
+          if [[ -z "${PR_NUM}" ]]; then
+            PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.issue.number // empty')"
+          fi
+          if [[ -z "${PR_NUM}" && -n "${INPUT_PR_NUMBER}" ]]; then
+            PR_NUM="${INPUT_PR_NUMBER}"
+          fi
+          if [[ -z "${PR_NUM}" || ! "${PR_NUM}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Could not extract valid PR number from event"
+            exit 1
+          fi
+          echo "pr_number=${PR_NUM}" >> "${GITHUB_OUTPUT}"
+
+          # Resolve the PR head branch. For pull_request_review events the
+          # payload has .pull_request.head.ref. For /fix comment events
+          # (issue_comment) it does not — query the GitHub API instead.
+          HEAD_REF="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.ref // empty')"
+          BASE_REF="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.ref // empty')"
+          if [[ -z "${HEAD_REF}" ]]; then
+            HEAD_REF="$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+          fi
+          if [[ -z "${BASE_REF}" ]]; then
+            BASE_REF="$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" --json baseRefName --jq '.baseRefName' 2>/dev/null || echo 'main')"
+          fi
+          if [[ -z "${HEAD_REF}" ]]; then
+            echo "::error::Could not resolve PR head branch"
+            exit 1
+          fi
+          echo "head_ref=${HEAD_REF}" >> "${GITHUB_OUTPUT}"
+          echo "base_ref=${BASE_REF}" >> "${GITHUB_OUTPUT}"
+          echo "PR #${PR_NUM}: ${HEAD_REF} → ${BASE_REF}"
+
+          # Extract human instruction (from /fs-fix comment or workflow_dispatch).
+          # Default to "none" so the env var is always non-empty (the fullsend
+          # binary rejects empty runner_env values). The agent checks
+          # TRIGGER_SOURCE before reading this value.
+          INSTRUCTION="none"
+          if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
+            COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
+            if [[ -n "${COMMENT_BODY}" ]]; then
+              # Strip the /fs-fix prefix to get the instruction.
+              INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
+            fi
+            if [[ -z "${INSTRUCTION}" && -n "${INPUT_INSTRUCTION}" ]]; then
+              INSTRUCTION="${INPUT_INSTRUCTION}"
+            fi
+            if [[ -z "${INSTRUCTION}" ]]; then
+              INSTRUCTION="none"
+            fi
+          fi
+          # Use a random heredoc delimiter so a /fs-fix comment containing
+          # the literal delimiter string cannot inject GITHUB_OUTPUT values.
+          DELIM="INSTRUCTION_$(openssl rand -hex 8)"
+          {
+            echo "instruction<<${DELIM}"
+            echo "${INSTRUCTION}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
+
+          # Count previous fix-agent commits on this PR to determine iteration.
+          # Uses the API (no checkout needed) to count commits authored by the
+          # fix agent identity. Falls back to ITERATION_CAP if the query fails.
+          # Note: TOCTOU — another run could push between this count and the
+          # agent execution, allowing at most +1 overshoot. The concurrency
+          # group's cancel-in-progress mostly prevents this.
+          FIX_COMMITS="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/commits" \
+            --paginate --jq '[.[] | select(.commit.author.name == "fullsend-fix")] | length' 2>/dev/null)" \
+            || { echo "::warning::Could not count prior fix commits — defaulting to cap"; FIX_COMMITS="${ITERATION_CAP:-5}"; }
+          ITERATION=$(( FIX_COMMITS + 1 ))
+          echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
+          echo "iteration=${ITERATION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check fix eligibility
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          PR_NUM: ${{ steps.context.outputs.pr_number }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+        run: |
+          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
+            PR_INFO=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
+              --json labels,author --jq '{labels: [.labels[].name], author: .author.login}') \
+              || { echo "::error::Failed to fetch PR info for #${PR_NUM}"; exit 1; }
+
+            HAS_NO_FIX=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-no-fix")')
+            if [[ "${HAS_NO_FIX}" == "true" ]]; then
+              echo "::warning::PR #${PR_NUM} has 'fullsend-no-fix' label — skipping bot-triggered fix"
+              exit 1
+            fi
+
+            PR_AUTHOR=$(echo "${PR_INFO}" | jq -r '.author')
+            if [[ ! "${PR_AUTHOR}" =~ \[bot\]$ ]]; then
+              HAS_FIX_LABEL=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-fix")')
+              if [[ "${HAS_FIX_LABEL}" != "true" ]]; then
+                echo "::warning::Human-authored PR #${PR_NUM} without 'fullsend-fix' label — skipping bot-triggered fix"
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Checkout target repository at PR HEAD
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.context.outputs.head_ref }}
+
+      - name: Record pre-agent HEAD
+        id: pre-agent
+        working-directory: target-repo
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          echo "Pre-agent HEAD: ${SHA}"
+          echo "head=${SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pre-fetch review body
+        id: review-body
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          PR_NUM: ${{ steps.context.outputs.pr_number }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
+            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and .user.login == \"${REVIEW_BOT}\")] | last | .body // \"\"" \
+            > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
+          BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
+          echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
+          MAX_REVIEW_BYTES=1048576  # 1 MB
+          if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
+            echo "::error::Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
+            exit 1
+          fi
+          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ && "${BYTE_COUNT}" -le 1 ]]; then
+            echo "::error::Bot-triggered run but review body is empty — nothing to fix"
+            exit 1
+          fi
+          echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate inputs
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REPO_FULL_NAME: ${{ inputs.source_repo }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
+          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+        run: bash scripts/pre-fix.sh
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: FIX_
+          FIX_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FIX_TARGET_REPO_DIR: target-repo
+          FIX_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          FIX_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          FIX_PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          FIX_TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+          FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
+          FIX_REPO_FULL_NAME: ${{ inputs.source_repo }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run fix agent
+        uses: ./.defaults/
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REPO_FULL_NAME: ${{ inputs.source_repo }}
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PUSH_TOKEN_SOURCE: github-app
+          TARGET_BRANCH: ${{ steps.context.outputs.base_ref }}
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
+          REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
+          PRE_AGENT_HEAD: ${{ steps.pre-agent.outputs.head }}
+        with:
+          agent: fix
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          status-number: ${{ steps.context.outputs.pr_number }}
+          status-token: ${{ steps.app-token.outputs.token }}

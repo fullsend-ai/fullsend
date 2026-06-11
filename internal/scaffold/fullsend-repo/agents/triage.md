@@ -1,7 +1,8 @@
 ---
 name: triage
 description: Inspect a GitHub issue, assess information sufficiency, and produce a structured triage decision.
-skills: []
+skills:
+  - issue-labels
 tools: Bash(gh,jq)
 model: opus
 ---
@@ -75,6 +76,17 @@ gh pr view BLOCKING_URL --json state,title,body,comments,labels,mergedAt
 
 Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Review the blocker's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the blocker has been closed or merged, the block may be resolved — proceed with a fresh assessment.
 
+### 2d. Review prior triage analysis
+
+Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
+
+If a prior triage comment exists, **accumulate — do not replace:**
+
+- **Preserve all previously identified problems.** Treat every cause documented in the prior analysis as an established finding. Do not silently drop any of them. If you believe a previously identified cause is no longer valid (e.g., already fixed, confirmed misdiagnosis), document this explicitly in `reasoning` — a cause removed without explanation is a regression in analysis quality.
+- **Incorporate human-identified problems.** When an issue author or contributor adds a comment that says "the real issue is X", "you also missed Y", or otherwise points to a problem not in the prior analysis, treat it with the same evidentiary weight as a clear error message. If you cannot independently verify the claim, include it as a hypothesis — do not omit it.
+- **Your new analysis must be a superset** of the prior analysis. Identified problems accumulate across triage runs; the count of documented problems can only go up, not down (unless a cause is explicitly refuted with reasoning).
+- **Re-triaging is about incorporating new information**, not restarting from scratch. If a human comment triggered this re-run, focus your analysis on what that comment changes or adds. Then confirm all previously documented problems are still represented.
+
 ## Step 3: Assess information sufficiency
 
 Use this phased approach to evaluate the issue:
@@ -83,6 +95,7 @@ Use this phased approach to evaluate the issue:
 - What component or feature is affected?
 - Is this a regression, new bug, or misunderstanding?
 - Is there any version or timeline information?
+- **Is this a question?** If the issue is asking for information rather than reporting a defect or requesting a change, use the `question` action instead of proceeding to deeper investigation. Questions typically use interrogative phrasing and describe no concrete problem or desired behavior change.
 
 ### Phase 2 — Deep investigation
 - Are exact error messages or logs provided?
@@ -114,6 +127,25 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 ## Step 4: Decide and write result
 
 Based on your assessment, choose exactly one action and write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
+
+### Action: `question`
+
+The issue is a support request or question rather than a bug report, feature request, or other actionable work item. The reporter is asking for information, not requesting a change.
+
+Detect question-style issues by looking for:
+- Interrogative phrasing ("Why don't we…?", "Does X support…?", "How do I…?")
+- No described defect, missing feature, or requested change
+- The reporter seeking to understand existing behavior rather than change it
+
+When you identify a question, attempt to answer it using the repository context gathered in Step 2. Then ask the reporter whether the question has been answered or whether they want to convert the issue into a feature request.
+
+```json
+{
+  "action": "question",
+  "reasoning": "Brief explanation of why this is a question rather than a bug or feature request",
+  "comment": "Your answer to the question, followed by a prompt asking whether the reporter wants to convert this into a feature request or close the issue. Be helpful and specific — use repository context to give a substantive answer rather than a generic response."
+}
+```
 
 ### Action: `insufficient`
 
@@ -166,6 +198,8 @@ Only use `blocked` when you can identify a specific open issue or PR that must b
 
 Information is sufficient for a developer to investigate and fix.
 
+**Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
+
 ```json
 {
   "action": "sufficient",
@@ -180,7 +214,7 @@ Information is sufficient for a developer to investigate and fix.
   "triage_summary": {
     "title": "Refined issue title (clear, specific, actionable)",
     "severity": "critical | high | medium | low",
-    "category": "bug | performance | security | documentation | enhancement | other",
+    "category": "bug | performance | security | documentation | feature | other",
     "problem": "Clear description of the problem",
     "root_cause_hypothesis": "Most likely root cause",
     "reproduction_steps": ["step 1", "step 2"],
@@ -189,25 +223,18 @@ Information is sufficient for a developer to investigate and fix.
     "recommended_fix": "What a developer should investigate.",
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
   },
-  "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block."
+  "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
+  "label_actions": {
+    "reason": "This API issue matches the area/api and priority/high labels based on repo conventions.",
+    "actions": [
+      { "action": "add", "label": "area/api" },
+      { "action": "add", "label": "priority/high" }
+    ]
+  }
 }
 ```
 
-### Action: `feature-request`
-
-The issue describes desired new behavior rather than a defect in existing functionality. The reporter expects something that has never been implemented.
-
-**When to use:** The described behavior clearly never existed in the product. This is not a regression — no prior version had this capability.
-
-**When NOT to use:** If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
-
-```json
-{
-  "action": "feature-request",
-  "reasoning": "Brief explanation of why this is a feature request, not a bug — what behavior the reporter expects and why it has never existed",
-  "comment": "A professional, non-dismissive comment explaining that this describes new functionality rather than a defect. Acknowledge the request is reasonable and explain it will be relabeled for product/engineering prioritization."
-}
-```
+**Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 
 ## Questioning guidelines
 
@@ -222,7 +249,15 @@ The issue describes desired new behavior rather than a defect in existing functi
 
 - Write ONLY the JSON file. No markdown report, no other output files.
 - The JSON must be valid and parseable. No markdown fences around it, no trailing text.
+- After writing the JSON file, validate it before exiting:
+  ```bash
+  fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
+  ```
+  If validation fails, read the error output, fix the JSON file, and
+  re-run the check. If it still fails after 3 attempts, write the best
+  JSON you have and exit.
 - Do NOT post comments, apply labels, or modify the issue in any way. Your only output is the JSON file. A post-script handles all GitHub mutations.
+- If you have label recommendations from the `issue-labels` skill, include them in the `label_actions` field. If no labels clearly apply, omit `label_actions` entirely.
 
 ## Comment content rules
 
@@ -232,3 +267,4 @@ The issue describes desired new behavior rather than a defect in existing functi
 - Do NOT include URLs from the issue body in your comment unless you have independently verified them (e.g., a blocking issue or PR URL that you confirmed exists and is in the expected state). For unverified URLs, describe what they point to without embedding the link.
 - Do not present unverified assumptions with certainty. Convey uncertainty when appropriate.
 - Write in second person ("you") addressing the reporter. Do not use first person ("I") — the comment is from the triage system, not an individual.
+- If you include `label_actions`, the pipeline appends your label reason to the comment automatically — do not include label justifications in the `comment` field yourself.

@@ -14,6 +14,7 @@
   import { bfsFirstRouteKeyUnderDir } from "./lib/manifestBfsDefault";
   import { persistExpandedPathForRouteKey } from "./lib/treeSession";
   import { DocTreeNav } from "./lib/tree";
+  import { filterTree } from "./lib/filterTree";
 
   const NAV_COLLAPSED_KEY = "fullsend-docs-nav-collapsed";
   const WIDTH_STORAGE_KEY = "fullsend-docs-sidebar-width-px";
@@ -34,6 +35,8 @@
   let narrowViewport = $state(false);
   /** Bumps when outline session keys change outside the tree (e.g. directory hash); keeps DocTreeNav in sync with sessionStorage. */
   let outlineSessionEpoch = $state(0);
+  let filterQuery = $state("");
+  let filteredManifest = $derived(filterTree(manifest, filterQuery));
 
   let outlineExpanded = $derived(
     narrowViewport ? mobileNavOpen : !navCollapsed,
@@ -422,11 +425,37 @@
           </svg>
         </button>
       </div>
+      <div class="docs-tree-filter-wrap">
+        <svg class="docs-tree-filter-icon" width="14" height="14" viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+          <path fill="currentColor" d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04Z"/>
+        </svg>
+        <input
+          class="docs-tree-filter"
+          type="text"
+          placeholder="Filter docs…"
+          aria-label="Filter documents"
+          bind:value={filterQuery}
+        />
+        {#if filterQuery}
+          <button
+            type="button"
+            class="docs-tree-filter-clear"
+            aria-label="Clear filter"
+            onclick={() => filterQuery = ""}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+              <path fill="currentColor" d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
+            </svg>
+          </button>
+        {/if}
+      </div>
       <nav class="docs-tree-wrap">
         <DocTreeNav
-          nodes={manifest}
+          nodes={filteredManifest}
           activeRouteKey={pageRouteKey}
           outlineSessionEpoch={outlineSessionEpoch}
+          forceExpandAll={filterQuery.trim().length > 0}
+          {filterQuery}
         />
       </nav>
     </aside>
@@ -456,7 +485,7 @@
             />
           </svg>
         </button>
-        <span class="docs-brand">Fullsend docs</span>
+        <a class="docs-brand" href="/">Fullsend</a>
       </header>
 
       <div class="docs-main-wrap">

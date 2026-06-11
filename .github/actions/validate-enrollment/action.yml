@@ -1,0 +1,69 @@
+name: Validate Enrollment
+description: Validate that source repository is enrolled and extract repository metadata
+
+inputs:
+  source_repo:
+    description: 'Source repository in owner/repo format'
+    required: true
+  install_mode:
+    description: 'Installation mode: per-org (config repo) or per-repo (in-repo config)'
+    required: false
+    default: 'per-org'
+
+outputs:
+  name:
+    description: 'Repository name (without owner)'
+    value: ${{ steps.extract.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate source repo is enrolled
+      shell: bash
+      env:
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        INSTALL_MODE: ${{ inputs.install_mode }}
+      run: |
+        set -euo pipefail
+        : "${SOURCE_REPO:?SOURCE_REPO is required}"
+        : "${GITHUB_REPOSITORY_OWNER:?GITHUB_REPOSITORY_OWNER is required}"
+        if [[ ! "$SOURCE_REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+          echo "::error::Invalid source_repo format: must be owner/repo"
+          exit 1
+        fi
+        REPO_OWNER="${SOURCE_REPO%%/*}"
+        if [[ "$REPO_OWNER" != "$GITHUB_REPOSITORY_OWNER" ]]; then
+          echo "::error::source_repo owner does not match org"
+          exit 1
+        fi
+        if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+          echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+          exit 1
+        fi
+        REPO_NAME="${SOURCE_REPO#*/}"
+        if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+          echo "Per-repo mode — skipping config.yaml enrollment check (self-enrolled)"
+        else
+          if [[ ! -f config.yaml ]]; then
+            echo "::error::config.yaml not found"
+            exit 1
+          fi
+          if ! command -v yq &> /dev/null; then
+            echo "::error::yq command not found"
+            exit 1
+          fi
+          ENABLED=$(REPO_NAME="${REPO_NAME}" yq 'env(REPO_NAME) as $name | .repos[$name].enabled' config.yaml)
+          if [[ "$ENABLED" != "true" ]]; then
+            echo "::error::repo is not enabled in config.yaml"
+            exit 1
+          fi
+        fi
+        echo "Validation passed for ${SOURCE_REPO}"
+
+    - name: Extract repo parts
+      id: extract
+      shell: bash
+      env:
+        SOURCE_REPO: ${{ inputs.source_repo }}
+      run: |
+        echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"

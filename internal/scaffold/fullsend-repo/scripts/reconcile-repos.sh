@@ -26,6 +26,7 @@ if ! command -v yq &>/dev/null; then
 fi
 SHIM_TEMPLATE="$CONFIG_DIR/templates/shim-workflow-call.yaml"
 SHIM_PATH=".github/workflows/fullsend.yaml"
+SENTINEL="# --- fullsend managed below - do not edit ---"
 REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
 
 ENROLL_BRANCH="fullsend/onboard"
@@ -45,6 +46,21 @@ UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current 
 
 The shim content has drifted from the template — this brings it back in sync."
 
+UPDATE_COMMIT_MSG="chore: update fullsend shim workflow
+
+Update the shim workflow to match the current template
+in the .fullsend config repo."
+
+ENROLL_COMMIT_MSG="chore: add fullsend shim workflow
+
+Add the shim workflow that routes repository events to
+the fullsend agent dispatch pipeline."
+
+UNENROLL_COMMIT_MSG="chore: remove fullsend shim workflow
+
+Remove the shim workflow. The repo has been set to
+enabled: false in the fullsend config."
+
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
   exit 1
@@ -61,7 +77,124 @@ fi
 shim_content_b64() {
   sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE" | base64 -w0
 }
+
+# extract_managed_content reads stdin and prints everything from the sentinel
+# line onward (the fullsend-managed portion). If no sentinel is found, prints
+# nothing (caller handles this case).
+extract_managed_content() {
+  awk -v sentinel="$SENTINEL" '
+    found { print; next }
+    $0 == sentinel { found=1; print }
+  '
+}
+
+# extract_user_header reads stdin and prints everything before the sentinel
+# line (the user-owned portion, e.g. license headers). Prints nothing if
+# there is no content before the sentinel. If no sentinel is found, prints
+# the entire input — callers must check for sentinel presence first.
+extract_user_header() {
+  awk -v sentinel="$SENTINEL" '
+    $0 == sentinel { exit }
+    { print }
+  '
+}
+
+# shim_with_header_b64 builds the final shim content by prepending any
+# user-owned header from the existing remote file onto the template.
+# Args: $1 = base64-encoded remote file content (may be empty for new files)
+#       $2 = repo name (for diagnostic messages)
+# Prints: base64-encoded final content
+shim_with_header_b64() {
+  local remote_b64="$1"
+  local repo="${2:-unknown}"
+  local template
+  template=$(sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE")
+
+  if [ -z "$remote_b64" ]; then
+    printf '%s\n' "$template" | base64 -w0
+    return
+  fi
+
+  # Only extract a header if the remote file contains the sentinel.
+  # Pre-sentinel shims have no user header to preserve.
+  local remote_raw
+  remote_raw=$(printf '%s' "$remote_b64" | base64 -d | tr -d '\r')
+  if ! printf '%s\n' "$remote_raw" | grep -qF "$SENTINEL"; then
+    printf '%s\n' "$template" | base64 -w0
+    return
+  fi
+
+  local header
+  header=$(printf '%s\n' "$remote_raw" | extract_user_header)
+
+  # Reject non-comment YAML that could inject keys (injection guard first,
+  # then blank-only check — order matters so the warning fires on injected content).
+  if [ -n "$header" ] && printf '%s\n' "$header" | grep -qvE '^[[:space:]]*(#|$)'; then
+    echo "::warning::$repo: non-comment content above sentinel was rejected — only YAML comments are preserved" >&2
+    header=""
+  elif [ -n "$header" ] && ! printf '%s\n' "$header" | grep -qE '^[[:space:]]*#'; then
+    header=""
+  fi
+
+  if [ -n "$header" ]; then
+    printf '%s\n%s\n' "$header" "$template" | base64 -w0
+  else
+    printf '%s\n' "$template" | base64 -w0
+  fi
+}
+
+# managed_content_b64 extracts the fullsend-managed portion from raw content.
+# If no sentinel is found, returns the full content (pre-sentinel shim).
+# Args: $1 = base64-encoded file content
+# Prints: base64-encoded managed portion
+managed_content_b64() {
+  local raw
+  raw=$(printf '%s' "$1" | base64 -d | tr -d '\r')
+  local managed
+  managed=$(printf '%s\n' "$raw" | extract_managed_content)
+
+  if [ -z "$managed" ]; then
+    # No sentinel found — treat entire content as managed (pre-sentinel shim).
+    printf '%s' "$1"
+  else
+    printf '%s\n' "$managed" | base64 -w0
+  fi
+}
+
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
+PER_REPO_GUARD_VAR="FULLSEND_PER_REPO_INSTALL"
+
+# check_per_repo_guard checks whether a repo has an active per-repo installation.
+# Returns 0 (should skip) if per-repo guard is active or API error (fail closed).
+# Returns 1 (proceed) if guard is not set or not "true".
+check_per_repo_guard() {
+  local repo="$1"
+  local action="$2"
+  local resp rc var
+  resp=$(gh api "repos/$ORG/$repo/actions/variables/$PER_REPO_GUARD_VAR" 2>/dev/null) && rc=0 || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    var=$(printf '%s' "$resp" | jq -r '.value // empty')
+    if [[ "$var" == "true" ]]; then
+      echo "::warning::Skipping $action of $repo — per-repo installation active ($PER_REPO_GUARD_VAR=true)"
+      return 0
+    fi
+    if [[ -n "$var" ]]; then
+      local safe_var
+      safe_var=$(printf '%s' "$var" | tr -d '\n\r')
+      echo "::notice::$repo has $PER_REPO_GUARD_VAR=$safe_var (not \"true\") — proceeding with $action"
+    fi
+    return 1
+  fi
+  # Check if the error is a 404 (variable not found) via numeric status field.
+  if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+    return 1
+  fi
+  # Non-404 error (permissions, network) — skip to be safe.
+  local api_msg
+  api_msg=$(printf '%s' "$resp" | jq -r '.message // empty' 2>/dev/null | tr -d '\n\r')
+  echo "::warning::Skipping $action of $repo — could not check per-repo guard variable (exit code $rc${api_msg:+: $api_msg})"
+  return 0
+}
 
 ENROLLED=0
 UPDATED=0
@@ -253,27 +386,38 @@ if [ -n "$ENABLED_REPOS" ]; then
       continue
     fi
 
-    # Clean up any stale removal PR from a previous disable cycle.
+    # Clean up any stale removal PR from a previous disable cycle (even for per-repo repos).
     close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"
+
+    # Skip repos with per-repo installation — they manage their own WIF and shim.
+    if check_per_repo_guard "$REPO" "enrollment"; then
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
 
     # Check if already enrolled (shim exists on default branch).
     # Fetch content and SHA in one call to avoid race between reads.
     REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
     if [ -n "$REMOTE_CONTENT" ]; then
-      # File exists — compare content against current template.
+      # File exists — compare only the managed portion (from sentinel onward)
+      # so user-added headers (e.g. license) do not trigger false drift.
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      if [ "$REMOTE_B64" = "$EXPECTED_B64" ]; then
+      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
+      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
 
       # Shim is stale — update via PR to respect branch protection.
+      # Preserve any user-owned content above the sentinel line.
       echo "⟳ $REPO enrolled but shim is stale — creating update PR"
 
-      if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$EXPECTED_B64" "chore: update fullsend shim workflow"; then
+      FINAL_B64=$(shim_with_header_b64 "$REMOTE_B64" "$REPO")
+      if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$FINAL_B64" "$UPDATE_COMMIT_MSG"; then
         FAILED=$((FAILED + 1))
         continue
       fi
@@ -305,7 +449,7 @@ if [ -n "$ENABLED_REPOS" ]; then
     if [ -n "$EXISTING_PR" ]; then
       echo "✓ $REPO has existing enrollment PR: $EXISTING_PR"
       # Update the shim on the existing branch to reflect the latest content.
-      if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$(shim_content_b64)" "chore: update fullsend shim workflow"; then
+      if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$(shim_content_b64)" "$UPDATE_COMMIT_MSG"; then
         FAILED=$((FAILED + 1))
       else
         ENROLLED=$((ENROLLED + 1))
@@ -323,7 +467,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       continue
     fi
 
-    if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$SHIM_CONTENT" "chore: add fullsend shim workflow"; then
+    if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$SHIM_CONTENT" "$ENROLL_COMMIT_MSG"; then
       FAILED=$((FAILED + 1))
       continue
     fi
@@ -368,6 +512,12 @@ if [ -n "$DISABLED_REPOS" ]; then
     # Close any stale enrollment PR.
     close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Repo disabled in config.yaml"
 
+    # Skip repos with per-repo installation — unenrollment would break their shim.
+    if check_per_repo_guard "$REPO" "unenrollment"; then
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+
     # Check if a removal PR already exists.
     EXISTING_PR=$(gh pr list --repo "$ORG/$REPO" --head "$UNENROLL_BRANCH" --json url --jq '.[0].url // empty' 2>/dev/null || true)
     if [ -n "$EXISTING_PR" ]; then
@@ -401,7 +551,7 @@ if [ -n "$DISABLED_REPOS" ]; then
     # Delete the shim workflow on the removal branch.
     if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" \
       --method DELETE \
-      --field "message=chore: remove fullsend shim workflow" \
+      --field "message=$UNENROLL_COMMIT_MSG" \
       --field "branch=$UNENROLL_BRANCH" \
       --field "sha=$FILE_SHA" \
       --silent; then

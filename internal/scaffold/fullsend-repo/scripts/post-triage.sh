@@ -67,8 +67,33 @@ add_label() {
 
 # remove_label silently removes a label (no error if absent).
 remove_label() {
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/$1" -X DELETE --silent 2>/dev/null || true
+  local encoded
+  encoded=$(printf '%s' "$1" | jq -sRr @uri)
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
+
+# Control labels managed by the triage pipeline. The post script refuses to
+# add or remove these via label_actions. This list covers labels that the
+# pipeline itself applies (pre-triage.sh resets the first five; the action
+# handlers apply blocked/triaged/feature).
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question")
+
+is_control_label() {
+  local label="$1"
+  for cl in "${CONTROL_LABELS[@]}"; do
+    if [[ "${cl}" == "${label}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# --- Action-specific validation and control labels ---
+
+# Deferred label: when set, applied after label_actions so it fires last.
+# This prevents the ready-to-code webhook event from being superseded by
+# subsequent label events in the dispatch concurrency group (see #1752).
+DEFERRED_LABEL=""
 
 case "${ACTION}" in
   insufficient)
@@ -76,10 +101,6 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided"
       exit 1
     fi
-    echo "Posting clarifying question..."
-    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
-
-    echo "Applying label..."
     remove_label "blocked"
     add_label "needs-info"
     ;;
@@ -94,13 +115,8 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})"
       exit 1
     fi
-    echo "Posting duplicate notice..."
-    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
-
-    echo "Applying label and closing..."
     remove_label "blocked"
     add_label "duplicate"
-    gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
     ;;
 
   blocked)
@@ -119,10 +135,6 @@ case "${ACTION}" in
       exit 1
     fi
     echo "Blocked by: ${BLOCKED_BY}"
-    echo "Posting blocked notice..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
-
-    echo "Applying label..."
     remove_label "ready-to-code"
     remove_label "needs-info"
     add_label "blocked"
@@ -142,43 +154,40 @@ case "${ACTION}" in
       exit 1
     fi
 
-    echo "Posting triage summary..."
-    printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
-
-    echo "Removing stale labels..."
     remove_label "blocked"
     remove_label "needs-info"
 
-    # Only bugs get the ready-to-code label (which triggers the code agent).
-    # Non-bug sufficient results (enhancement, performance, documentation, etc.)
-    # receive the triaged label instead and wait for human prioritization.
+    # Low-risk categories (bug, documentation, performance) auto-promote to
+    # ready-to-code, which triggers the code agent. Feature work and anything
+    # else receives the triaged label and waits for human prioritization
+    # (per #561, only feature issues should require human review before coding).
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
-    if [[ "${CATEGORY}" == "bug" ]]; then
-      echo "Applying ready-to-code label (bug)..."
-      add_label "ready-to-code"
-    else
-      echo "Applying triaged label (non-bug: ${CATEGORY})..."
-      add_label "triaged"
-    fi
+    case "${CATEGORY}" in
+      bug|documentation|performance)
+        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+        DEFERRED_LABEL="ready-to-code"
+        ;;
+      feature)
+        echo "Applying feature + triaged labels..."
+        add_label "feature"
+        add_label "triaged"
+        ;;
+      *)
+        echo "Applying triaged label (${CATEGORY})..."
+        add_label "triaged"
+        ;;
+    esac
     ;;
 
-  feature-request)
+  question)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'feature-request' but no comment provided"
+      echo "ERROR: action is 'question' but no comment provided"
       exit 1
     fi
-    echo "Posting feature-request comment..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
-
-    echo "Removing bug-related labels..."
     remove_label "blocked"
-    for label in bug bug-report type/bug; do
-      gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${label}" -X DELETE --silent 2>/dev/null || true
-    done
-
-    echo "Applying type/feature label..."
-    add_label "type/feature"
+    remove_label "needs-info"
+    add_label "question"
     ;;
 
   *)
@@ -186,5 +195,97 @@ case "${ACTION}" in
     exit 1
     ;;
 esac
+
+# --- Process label_actions (applies to all actions) ---
+
+HAS_LABEL_ACTIONS=$(jq 'has("label_actions")' "${RESULT_FILE}")
+if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
+  LABEL_REASON=$(jq -r '.label_actions.reason' "${RESULT_FILE}")
+  LABEL_COUNT=$(jq '.label_actions.actions | length' "${RESULT_FILE}")
+
+  echo "Processing ${LABEL_COUNT} label action(s)..."
+
+  # Fetch existing repo labels once so we can reject labels that don't exist.
+  # This prevents the agent from accidentally creating labels the org removed.
+  EXISTING_LABELS=$(gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true)
+
+  label_exists() {
+    local label="$1"
+    # Use grep with fixed-string and line-match to avoid regex issues with
+    # label names that contain special characters (e.g., "c++").
+    echo "${EXISTING_LABELS}" | grep -qFx "${label}"
+  }
+
+  LABELS_APPLIED=0
+  for i in $(seq 0 $((LABEL_COUNT - 1))); do
+    LA_ACTION=$(jq -r ".label_actions.actions[${i}].action" "${RESULT_FILE}")
+    LA_LABEL=$(jq -r ".label_actions.actions[${i}].label" "${RESULT_FILE}")
+
+    # Validate label name to prevent path injection from untrusted agent output.
+    if [[ ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL}' -- contains invalid characters"
+      continue
+    fi
+
+    if is_control_label "${LA_LABEL}"; then
+      echo "::warning::Refused to ${LA_ACTION} control label '${LA_LABEL}' -- control labels are managed by the triage pipeline"
+      continue
+    fi
+
+    case "${LA_ACTION}" in
+      add)
+        if ! label_exists "${LA_LABEL}"; then
+          echo "::warning::Skipping label '${LA_LABEL}' -- does not exist in repo (will not auto-create)"
+          continue
+        fi
+        echo "Adding label '${LA_LABEL}'..."
+        add_label "${LA_LABEL}"
+        LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        ;;
+      remove)
+        echo "Removing label '${LA_LABEL}'..."
+        remove_label "${LA_LABEL}"
+        LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        ;;
+      *)
+        echo "::warning::Unknown label action '${LA_ACTION}' for label '${LA_LABEL}'"
+        ;;
+    esac
+  done
+
+  # Append the label reason to the comment only if at least one label was applied.
+  if [[ "${LABELS_APPLIED}" -gt 0 ]]; then
+    COMMENT="${COMMENT}
+
+---
+**Labels:** ${LABEL_REASON}"
+  fi
+fi
+
+# --- Apply deferred label (must be last label mutation) ---
+
+if [[ -n "${DEFERRED_LABEL}" ]]; then
+  echo "Applying deferred label '${DEFERRED_LABEL}'..."
+  add_label "${DEFERRED_LABEL}"
+fi
+
+# --- Post comment ---
+
+echo "Posting comment..."
+if [[ "${ACTION}" == "sufficient" ]]; then
+  # Summaries use sticky comments — there's one logical summary per issue and
+  # updating it in-place avoids flooding. See #602.
+  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
+else
+  # Interactive comments (needs-info questions, blocked notices, duplicates)
+  # post as new comments so the conversation reads chronologically.
+  printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+fi
+
+# --- Post-action: close duplicate issues ---
+
+if [[ "${ACTION}" == "duplicate" ]]; then
+  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
+fi
 
 echo "Post-triage complete."

@@ -10,6 +10,15 @@ on:
   schedule:
     - cron: "0 3 * * 0" # Weekly on Sundays at 3am UTC
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Preview deletions without actually deleting"
+        type: boolean
+        default: true
+
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -25,4 +34,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           STALE_DAYS: "30"
-        run: ./hack/clean-stale-branches
+        run: >-  # schedule trigger has no inputs — dry-run is false (live) by design
+          ./hack/clean-stale-branches
+          ${{ github.event.inputs.dry-run == 'true' && '--dry-run' || '' }}

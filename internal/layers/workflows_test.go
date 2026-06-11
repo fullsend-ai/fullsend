@@ -19,7 +19,7 @@ func newWorkflowsLayer(t *testing.T, client *forge.FakeClient) (*WorkflowsLayer,
 	t.Helper()
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "v0.2.0")
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version")
 	return layer, &buf
 }
 
@@ -73,9 +73,10 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 	}
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 
-	expected, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
+	raw, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
-	assert.Equal(t, string(expected), triageContent)
+	expected := string(scaffold.PrependManagedHeader(".github/workflows/triage.yml", raw))
+	assert.Equal(t, expected, triageContent)
 }
 
 func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
@@ -94,138 +95,31 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 	}
 	require.NotEmpty(t, maintenanceContent, "repo-maintenance.yml should have been written")
 
-	expected, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
+	raw, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
-	assert.Equal(t, string(expected), maintenanceContent)
+	expected := string(scaffold.PrependManagedHeader(".github/workflows/repo-maintenance.yml", raw))
+	assert.Equal(t, expected, maintenanceContent)
 }
 
-
-func TestWorkflowsLayer_Install_PinsCliVersion(t *testing.T) {
+func TestWorkflowsLayer_Install_ManagedHeaders(t *testing.T) {
 	client := forge.NewFakeClient()
 	layer, _ := newWorkflowsLayer(t, client)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 
-	var actionContent string
 	for _, f := range client.CommittedFiles[0].Files {
-		if f.Path == actionYMLPath {
-			actionContent = string(f.Content)
-			break
+		header := scaffold.ManagedHeader(f.Path)
+		if header != "" {
+			assert.True(t, strings.HasPrefix(string(f.Content), header),
+				"installed file %s should start with managed header", f.Path)
+		} else {
+			assert.False(t, strings.Contains(string(f.Content), "managed by fullsend"),
+				"installed file %s should NOT have a managed header", f.Path)
 		}
 	}
-	require.NotEmpty(t, actionContent, "action.yml should have been written")
-	assert.Contains(t, actionContent, "default: v0.2.0",
-		"action.yml should pin CLI version")
-	assert.NotContains(t, actionContent, "default: latest",
-		"action.yml should not contain latest")
 }
 
-func TestWorkflowsLayer_Install_DevVersionFallsBackToLatest(t *testing.T) {
-	client := forge.NewFakeClient()
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "dev")
-
-	err := layer.Install(context.Background())
-	require.NoError(t, err)
-
-	var actionContent string
-	for _, f := range client.CommittedFiles[0].Files {
-		if f.Path == actionYMLPath {
-			actionContent = string(f.Content)
-			break
-		}
-	}
-	require.NotEmpty(t, actionContent, "action.yml should have been written")
-	assert.Contains(t, actionContent, "default: latest",
-		"dev version should fall back to latest")
-	assert.Contains(t, buf.String(), "unpinned",
-		"should warn about unpinned version")
-}
-
-func TestWorkflowsLayer_Install_EmptyVersionKeepsLatest(t *testing.T) {
-	client := forge.NewFakeClient()
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "")
-
-	err := layer.Install(context.Background())
-	require.NoError(t, err)
-
-	var actionContent string
-	for _, f := range client.CommittedFiles[0].Files {
-		if f.Path == actionYMLPath {
-			actionContent = string(f.Content)
-			break
-		}
-	}
-	require.NotEmpty(t, actionContent, "action.yml should have been written")
-	assert.Contains(t, actionContent, "default: latest",
-		"empty version should keep latest")
-}
-
-func TestWorkflowsLayer_Install_ReinstallUpdatesVersion(t *testing.T) {
-	client := forge.NewFakeClient()
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "v0.1.0")
-
-	err := layer.Install(context.Background())
-	require.NoError(t, err)
-
-	client2 := forge.NewFakeClient()
-	layer2 := NewWorkflowsLayer("test-org", client2, printer, "admin-user", "v0.2.0")
-
-	err = layer2.Install(context.Background())
-	require.NoError(t, err)
-
-	var actionContent string
-	for _, f := range client2.CommittedFiles[0].Files {
-		if f.Path == actionYMLPath {
-			actionContent = string(f.Content)
-			break
-		}
-	}
-	require.NotEmpty(t, actionContent, "action.yml should have been written")
-	assert.Contains(t, actionContent, "default: v0.2.0",
-		"re-install should update pinned version")
-}
-
-func TestWorkflowsLayer_Install_GitDescribeVersionFallsBackToLatest(t *testing.T) {
-	devVersions := []string{
-		"v0.7.0-58-g4273effb",
-		"v0.7.0-dirty",
-		"v0.7.0-3-g1234567-dirty",
-		"4273effb",
-		"dev",
-		"v1.0.0-rc.1",
-	}
-	for _, ver := range devVersions {
-		t.Run(ver, func(t *testing.T) {
-			client := forge.NewFakeClient()
-			var buf bytes.Buffer
-			printer := ui.New(&buf)
-			layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", ver)
-
-			err := layer.Install(context.Background())
-			require.NoError(t, err)
-
-			var actionContent string
-			for _, f := range client.CommittedFiles[0].Files {
-				if f.Path == actionYMLPath {
-					actionContent = string(f.Content)
-					break
-				}
-			}
-			require.NotEmpty(t, actionContent, "action.yml should have been written")
-			assert.Contains(t, actionContent, "default: latest",
-				"non-release version %q should fall back to latest", ver)
-			assert.Contains(t, buf.String(), "not a release",
-				"should warn about non-release version")
-		})
-	}
-}
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
 	client := &forge.FakeClient{
@@ -252,10 +146,13 @@ func TestWorkflowsLayer_Install_ExecutableModes(t *testing.T) {
 		modes[f.Path] = f.Mode
 	}
 
-	assert.Equal(t, "100755", modes["scripts/pre-triage.sh"])
-	assert.Equal(t, "100755", modes["scripts/scan-secrets"])
-	assert.Equal(t, "100644", modes["agents/triage.md"])
 	assert.Equal(t, "100644", modes[".github/workflows/triage.yml"])
+	assert.Equal(t, "100644", modes["customized/agents/.gitkeep"])
+	assert.Equal(t, "100644", modes["AGENTS.md"])
+
+	for path, mode := range modes {
+		assert.Equal(t, "100644", mode, "all installed files should be 100644 (no executables after layering): %s", path)
+	}
 }
 
 

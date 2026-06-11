@@ -20,10 +20,10 @@ describe("markdownToHtml", () => {
     const md = "[x](./other.md)";
     const { html } = await markdownToHtml(
       md,
-      "docs/guides/admin/installation.md",
+      "docs/guides/getting-started/installation.md",
       repoRoot,
     );
-    expect(html).toContain('href="#/guides/admin/other"');
+    expect(html).toContain('href="#/guides/getting-started/other"');
   });
 
   it("strips front matter from HTML body", async () => {
@@ -38,10 +38,10 @@ describe("markdownToHtml", () => {
     const md = "[z](./other.md#Section-One)";
     const { html } = await markdownToHtml(
       md,
-      "docs/guides/admin/installation.md",
+      "docs/guides/getting-started/installation.md",
       repoRoot,
     );
-    expect(html).toMatch(/href="#\/guides\/admin\/other::section-one"/);
+    expect(html).toMatch(/href="#\/guides\/getting-started\/other::section-one"/);
   });
 
   it("marks mermaid fence for client render", async () => {
@@ -55,7 +55,7 @@ describe("markdownToHtml", () => {
     const md = "[p](../../problems)";
     const { html } = await markdownToHtml(
       md,
-      "docs/guides/admin/installation.md",
+      "docs/guides/getting-started/installation.md",
       repoRoot,
     );
     expect(html).toContain('href="#/problems/"');

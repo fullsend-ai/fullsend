@@ -1,5 +1,12 @@
+---
 # fullsend-stage: retro
 name: Retro
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
 
 on:
   workflow_dispatch:
@@ -19,65 +26,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  retro:
-    name: Retro
+  debounce:
     runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
-      id-token: write
-      issues: write
-
+    permissions: {}
     steps:
-      - name: Checkout .fullsend repository
-        uses: actions/checkout@v6
+      - run: sleep 60
 
-      - name: Validate enrollment and extract repo metadata
-        id: repo-parts
-        uses: ./.github/actions/validate-enrollment
-        with:
-          source_repo: ${{ inputs.source_repo }}
-
-      - name: Mint retro token
-        id: app-token
-        uses: ./.github/actions/mint-token
-        with:
-          role: retro
-          repos: ${{ steps.repo-parts.outputs.name }},.fullsend
-          mint_url: ${{ vars.FULLSEND_MINT_URL }}
-
-      - name: Checkout target repository
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ inputs.source_repo }}
-          token: ${{ steps.app-token.outputs.token }}
-          path: target-repo
-          fetch-depth: 1
-
-      - name: Setup GCP and prepare credentials
-        uses: ./.github/actions/setup-gcp
-        with:
-          gcp_auth_mode: ${{ vars.FULLSEND_GCP_AUTH_MODE }}
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_wif_sa_email: ${{ secrets.FULLSEND_GCP_WIF_SA_EMAIL }}
-          gcp_sa_key_json: ${{ secrets.FULLSEND_GCP_SA_KEY_JSON }}
-
-      - name: Setup agent environment
-        env:
-          AGENT_PREFIX: RETRO_
-          RETRO_GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          RETRO_TARGET_REPO_DIR: target-repo
-          RETRO_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          RETRO_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
-        run: bash .github/scripts/setup-agent-env.sh
-
-      - name: Run retro agent
-        uses: ./.github/actions/fullsend
-        env:
-          ORIGINATING_URL: ${{ fromJSON(inputs.event_payload).pull_request.html_url || fromJSON(inputs.event_payload).issue.html_url }}
-          RETRO_COMMENT: ${{ fromJSON(inputs.event_payload).comment.body || '' }}
-          REPO_FULL_NAME: ${{ inputs.source_repo }}
-          RETRO_SANDBOX_TOKEN: ${{ steps.app-token.outputs.token }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        with:
-          agent: retro
+  retro:
+    needs: debounce
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
+    with:
+      event_type: ${{ inputs.event_type }}
+      source_repo: ${{ inputs.source_repo }}
+      event_payload: ${{ inputs.event_payload }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      fullsend_ai_ref: v0
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

@@ -2,6 +2,7 @@
 #
 # Extends the base fullsend sandbox image with tools needed by the code agent:
 #   - Go (compile + test target repos written in Go)
+#   - lychee (markdown link checker for pre-commit hooks)
 #   - scan-secrets (gitleaks wrapper for code-implementation skill)
 #
 # The base image already provides Claude Code, rsync, gitleaks, tirith,
@@ -55,9 +56,9 @@ RUN git config --system http.sslCAInfo /etc/ssl/certs/ca-certificates.crt 2>/dev
 #
 # Pinned version + SHA256 checksum for supply chain safety.
 # To update: get the latest linux-{amd64,arm64} archive + sha256 from https://go.dev/dl/?mode=json
-ARG GO_VERSION=1.24.13
-ARG GO_SHA256_AMD64=1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730
-ARG GO_SHA256_ARM64=74d97be1cc3a474129590c67ebf748a96e72d9f3a2b6fef3ed3275de591d49b3
+ARG GO_VERSION=1.26.0
+ARG GO_SHA256_AMD64=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
+ARG GO_SHA256_ARM64=bd03b743eb6eb4193ea3c3fd3956546bf0e3ca5b7076c8226334afe6b75704cd
 
 RUN case "$TARGETARCH" in \
       amd64) GO_SHA="$GO_SHA256_AMD64" ;; \
@@ -70,9 +71,28 @@ RUN case "$TARGETARCH" in \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    GOPATH="/sandbox/go" \
-    GOMODCACHE="/sandbox/go/pkg/mod"
+# ---------------------------------------------------------------------------
+# lychee — markdown link checker used by pre-commit hooks (lint-md-links).
+# Baked into the image so pre-commit hooks work without network access.
+# The release archive nests the binary under lychee-<target>/.
+# To update: bump LYCHEE_VERSION and LYCHEE_SHA256_{AMD64,ARM64} from:
+#   https://github.com/lycheeverse/lychee/releases
+ARG LYCHEE_VERSION=0.24.2
+ARG LYCHEE_SHA256_AMD64=1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+ARG LYCHEE_SHA256_ARM64=91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c
+RUN case "$TARGETARCH" in \
+      amd64) LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="$LYCHEE_SHA256_AMD64" ;; \
+      arm64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="$LYCHEE_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
+      -o /tmp/lychee.tar.gz \
+    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C /tmp \
+    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" /usr/local/bin/lychee \
+    && chmod +x /usr/local/bin/lychee \
+    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
 
 # ---------------------------------------------------------------------------
 # gitleaks is already installed in the base sandbox image.
@@ -92,3 +112,18 @@ COPY scan-secrets /usr/local/bin/scan-secrets
 RUN chmod +x /usr/local/bin/scan-secrets
 
 USER sandbox
+
+# ---------------------------------------------------------------------------
+# Go environment — explicit so the sandbox user's GOPATH/GOMODCACHE are
+# self-documenting and don't rely on HOME inference.
+# /sandbox/go/bin is placed AFTER system paths so sandbox-user binaries
+# cannot shadow trusted system tools (go, git, scan-secrets, etc.).
+ENV GOPATH="/sandbox/go" \
+    PATH="/usr/local/go/bin:/sandbox/go/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# gopls — Go language server for Claude Code LSP code intelligence.
+# Installed as sandbox user so /sandbox/go is owned by sandbox at runtime,
+# allowing go build and go test to write the module cache.
+ARG GOPLS_VERSION=0.22.0
+RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version

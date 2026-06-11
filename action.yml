@@ -1,0 +1,339 @@
+name: Fullsend
+description: >-
+  Install fullsend-cli, create ${GITHUB_WORKSPACE}/output, invoke fullsend run with
+  --output-dir pointing at that directory, then upload it with actions/upload-artifact. Does not
+  read agent configuration from the repository; configure the job environment or CLI as needed.
+
+branding:
+  icon: zap
+  color: purple
+
+inputs:
+  agent:
+    description: Agent name passed to fullsend run (e.g. triage, code, review).
+    required: true
+  version:
+    description: >-
+      Release tag or version: use latest, v0.0.1, or 0.0.1. Download URLs use a leading v; asset
+      names use the version without v (fullsend_0.0.1_linux_amd64.tar.gz).
+    default: latest
+  fullsend-dir:
+    description: Path to fullsend config directory (default GITHUB_WORKSPACE).
+    default: ""
+  target-repo:
+    description: Path to target repo checkout (default GITHUB_WORKSPACE/target-repo).
+    default: ""
+  github_token:
+    description: >-
+      GitHub token for authenticated API calls (avoids 60 req/hour unauthenticated rate limit).
+    default: ${{ github.token }}
+  run-url:
+    description: URL of the CI/CD run for status comments (optional).
+    default: ""
+  status-repo:
+    description: Repository (owner/repo) for status comments (optional).
+    default: ""
+  status-number:
+    description: Issue/PR number for status comments (optional).
+    default: ""
+  status-token:
+    description: Token for status comments (defaults to GH_TOKEN env var).
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Detect install method
+      id: detect
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        # retry_curl: retry a curl command up to MAX_ATTEMPTS times with exponential backoff.
+        # Usage: retry_curl [curl args...]
+        retry_curl() {
+          local max_attempts=3
+          local attempt=1
+          local delay=5
+          while true; do
+            if curl "$@"; then
+              return 0
+            fi
+            if (( attempt >= max_attempts )); then
+              echo "::error::API request failed after ${max_attempts} attempts"
+              return 1
+            fi
+            echo "::warning::API attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
+            sleep "${delay}"
+            (( attempt++ ))
+            (( delay *= 3 ))
+          done
+        }
+
+        # Use vendored binary if present (placed by fullsend admin install --vendor-fullsend-binary).
+        # Per-org mode stores it at bin/fullsend (in .fullsend config repo);
+        # per-repo mode stores it at .fullsend/bin/fullsend (in the target repo).
+        # GitHub Contents API does not preserve the executable bit, so check -f not -x.
+        VENDORED=""
+        if [[ -f "${GITHUB_WORKSPACE}/.fullsend/bin/fullsend" ]]; then
+          VENDORED="${GITHUB_WORKSPACE}/.fullsend/bin/fullsend"
+        elif [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+          VENDORED="${GITHUB_WORKSPACE}/bin/fullsend"
+        fi
+        if [[ -n "${VENDORED}" ]]; then
+          echo "Using vendored binary: ${VENDORED#"${GITHUB_WORKSPACE}/"}"
+          echo "install-method=vendored" >> "${GITHUB_OUTPUT}"
+          echo "vendored-path=${VENDORED}" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        VERSION="$(printf '%s' "${VERSION:-latest}" | tr -d '[:space:]')"
+        VERSION="${VERSION:-latest}"
+
+        # Resolve 'latest' to the actual tag before checking the release API.
+        if [[ "${VERSION}" == "latest" ]]; then
+          TAG="$(retry_curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/fullsend-ai/fullsend/releases/latest" | jq -r '.tag_name')"
+          if [[ -z "${TAG}" || "${TAG}" == "null" ]]; then
+            echo "::error::Could not resolve latest release tag"
+            exit 1
+          fi
+          VERSION="${TAG}"
+        fi
+
+        if [[ "${VERSION}" == v* ]]; then
+          VERSION_URL="${VERSION}"
+          VERSION_ASSET="${VERSION#v}"
+        else
+          VERSION_URL="v${VERSION}"
+          VERSION_ASSET="${VERSION}"
+        fi
+
+        HTTP_STATUS="$(retry_curl -sL -o /dev/null -w "%{http_code}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          "https://api.github.com/repos/fullsend-ai/fullsend/releases/tags/${VERSION_URL}")"
+
+        if [[ "${HTTP_STATUS}" == "200" ]]; then
+          echo "Found release ${VERSION_URL}; downloading pre-built binary"
+          echo "install-method=release" >> "${GITHUB_OUTPUT}"
+          echo "version-url=${VERSION_URL}" >> "${GITHUB_OUTPUT}"
+          echo "version-asset=${VERSION_ASSET}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${HTTP_STATUS}" == "404" ]]; then
+          echo "No release found for ${VERSION_URL}; building from source at ref: ${VERSION}"
+          echo "install-method=source" >> "${GITHUB_OUTPUT}"
+          echo "source-ref=${VERSION}" >> "${GITHUB_OUTPUT}"
+        else
+          echo "::error::Unexpected HTTP ${HTTP_STATUS} checking release ${VERSION_URL}; cannot proceed"
+          exit 1
+        fi
+
+    - name: Install vendored binary
+      if: steps.detect.outputs.install-method == 'vendored'
+      shell: bash
+      env:
+        VENDORED: ${{ steps.detect.outputs.vendored-path }}
+      run: |
+        set -euo pipefail
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
+        chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+    - name: Download release binary
+      if: steps.detect.outputs.install-method == 'release'
+      shell: bash
+      env:
+        VERSION_URL: ${{ steps.detect.outputs.version-url }}
+        VERSION_ASSET: ${{ steps.detect.outputs.version-asset }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        # retry_curl: retry a curl command up to MAX_ATTEMPTS times with exponential backoff.
+        # Usage: retry_curl [curl args...]
+        retry_curl() {
+          local max_attempts=3
+          local attempt=1
+          local delay=5
+          while true; do
+            if curl "$@"; then
+              return 0
+            fi
+            if (( attempt >= max_attempts )); then
+              echo "::error::Download failed after ${max_attempts} attempts"
+              return 1
+            fi
+            echo "::warning::Download attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
+            sleep "${delay}"
+            (( attempt++ ))
+            (( delay *= 3 ))
+          done
+        }
+
+        os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
+        case "${os}" in
+          macos) os=darwin ;;
+        esac
+
+        arch="$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
+        case "${arch}" in
+          x64) arch=amd64 ;;
+          x86) arch=386 ;;
+          arm64|aarch64) arch=arm64 ;;
+        esac
+
+        ASSET_NAME="fullsend_${VERSION_ASSET}_${os}_${arch}.tar.gz"
+        URL="https://github.com/fullsend-ai/fullsend/releases/download/${VERSION_URL}/${ASSET_NAME}"
+
+        echo "Downloading from: ${URL}"
+        retry_curl -fsSL "${URL}" -o "/tmp/${ASSET_NAME}"
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        tar -xzf "/tmp/${ASSET_NAME}" -C "${RUNNER_TEMP}/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+    - name: Clone fullsend at ref for source build
+      if: steps.detect.outputs.install-method == 'source'
+      shell: bash
+      env:
+        SOURCE_REF: ${{ steps.detect.outputs.source-ref }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::${GH_TOKEN}"
+        SRC="${RUNNER_TEMP}/fullsend-src"
+        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git"
+        echo "Cloning fullsend at ref: ${SOURCE_REF}"
+        git init "${SRC}"
+        git -C "${SRC}" remote add origin "${REMOTE}"
+        # Shallow fetch works for branch/tag refs but not bare commit SHAs (GitHub disallows
+        # unadvertised SHA fetches). Fall back to a full clone when shallow fetch fails.
+        if ! git -C "${SRC}" fetch --depth 1 origin "${SOURCE_REF}"; then
+          echo "Shallow fetch failed (ref may be a commit SHA); falling back to full clone"
+          rm -rf "${SRC}"
+          git clone "${REMOTE}" "${SRC}"
+          git -C "${SRC}" checkout "${SOURCE_REF}"
+        else
+          git -C "${SRC}" checkout FETCH_HEAD
+        fi
+
+    - name: Set up Go for source build
+      if: steps.detect.outputs.install-method == 'source'
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
+        cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
+
+    - name: Build fullsend from source
+      if: steps.detect.outputs.install-method == 'source'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        cd "${RUNNER_TEMP}/fullsend-src"
+        make go-build
+        cp bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+    - name: Print fullsend version
+      shell: bash
+      run: fullsend --version
+
+    - name: Install Podman
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y podman
+        podman --version
+
+    - name: Configure rootless Podman
+      shell: bash
+      run: |
+        test -f /sys/fs/cgroup/cgroup.controllers || { echo "::error::cgroups v2 required"; exit 1; }
+        whoami_user="$(whoami)"
+        grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+        podman system migrate
+        podman info
+        systemctl --user start podman.socket
+
+    - name: Set OpenShell version
+      shell: bash
+      run: |
+        echo "OPENSHELL_VERSION=0.0.54" >> "${GITHUB_ENV}"
+        # SHA corresponding to 0.0.54
+        echo "OPENSHELL_SHA=79aa355dd008e496a7d8f97b361a7b2866066fbc" >> "${GITHUB_ENV}"
+
+    - name: Install OpenShell CLI
+      shell: bash
+      run: |
+        mkdir -p $HOME/.config/openshell/
+        cat > $HOME/.config/openshell/gateway.env << EOF
+        OPENSHELL_BIND_ADDRESS=0.0.0.0
+        EOF
+
+        curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
+        openshell --version
+
+    - name: Pre-pull sandbox image
+      shell: bash
+      run: |
+        IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
+        echo "Pre-pulling sandbox image: ${IMAGE}"
+        timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
+
+    - name: Install validation dependencies
+      shell: bash
+      run: pip install --quiet "jsonschema>=4.18.0"
+
+    - name: Run fullsend
+      if: inputs.agent != '__install_only__'
+      shell: bash
+      env:
+        AGENT: ${{ inputs.agent }}
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+        STATUS_RUN_URL: ${{ inputs.run-url }}
+        STATUS_REPO: ${{ inputs.status-repo }}
+        STATUS_NUMBER: ${{ inputs.status-number }}
+        STATUS_TOKEN: ${{ inputs.status-token }}
+      run: |
+        set -euo pipefail
+        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
+        TARGET_REPO="${TARGET_REPO:-${GITHUB_WORKSPACE}/target-repo}"
+        mkdir -p "${GITHUB_WORKSPACE}/output"
+        # SECURITY: Never expose --no-post-script as a workflow input.
+        # Post-scripts enforce secret scanning, protected-path blocks,
+        # and review-downgrade controls. Skipping them in CI bypasses
+        # all post-push security gates.
+        if [[ -n "${STATUS_TOKEN}" ]]; then
+          echo "::add-mask::${STATUS_TOKEN}"
+        fi
+        STATUS_FLAGS=()
+        if [[ -n "${STATUS_REPO}" && -n "${STATUS_NUMBER}" ]]; then
+          STATUS_FLAGS+=(--status-repo "${STATUS_REPO}" --status-number "${STATUS_NUMBER}")
+          if [[ -n "${STATUS_RUN_URL}" ]]; then
+            STATUS_FLAGS+=(--run-url "${STATUS_RUN_URL}")
+          fi
+          if [[ -n "${STATUS_TOKEN}" ]]; then
+            STATUS_FLAGS+=(--status-token "${STATUS_TOKEN}")
+          fi
+        fi
+        fullsend run "${AGENT}" \
+          --fullsend-dir "${FULLSEND_DIR}" \
+          --output-dir "${GITHUB_WORKSPACE}/output" \
+          --target-repo "${TARGET_REPO}" \
+          "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
+
+    - name: Upload fullsend artifacts
+      if: always() && inputs.agent != '__install_only__'
+      uses: actions/upload-artifact@v7
+      with:
+        name: fullsend-${{ inputs.agent }}
+        path: ${{ github.workspace }}/output

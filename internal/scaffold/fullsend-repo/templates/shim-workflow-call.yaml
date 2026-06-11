@@ -1,3 +1,5 @@
+---
+# --- fullsend managed below - do not edit ---
 # lint-workflow-size: max-lines=280
 # fullsend shim workflow (workflow_call mode)
 # Routes events to agent workflows in .fullsend via workflow_call.
@@ -11,9 +13,10 @@
 #
 # __ORG__ is replaced by reconcile-repos.sh at deploy time.
 #
-# Command matching: exact, space-delimited args, or newline-delimited body.
-# fromJSON('"\n"') produces a literal newline (GHA strings lack escape support).
-# Assumes LF line endings; GitHub's web UI normalizes to LF (CRLF only via API).
+# Routing: this shim forwards the raw event context to dispatch.yml, which
+# determines the stage from event_type + event_action + payload fields.
+# Adding a new stage requires only a case branch in dispatch.yml — zero
+# changes to enrolled repos.
 name: fullsend
 
 permissions:
@@ -33,180 +36,23 @@ on:
     types: [submitted]
 
 jobs:
-  dispatch-triage:
+  dispatch:
     concurrency:
-      group: triage-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
+      group: fullsend-dispatch-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     if: >-
-      (github.event_name == 'issues'
-        && (github.event.action == 'opened' || github.event.action == 'edited')) ||
-      (github.event_name == 'issue_comment' && (
-        github.event.comment.body == '/triage' ||
-        startsWith(github.event.comment.body, '/triage ') ||
-        startsWith(github.event.comment.body, format('{0}{1}', '/triage', fromJSON('"\n"'))) ||
-        (
-          (github.event.comment.author_association != 'NONE' ||
-            github.event.comment.user.login == github.event.issue.user.login) &&
-          !endsWith(github.event.comment.user.login, '[bot]') &&
-          contains(toJSON(github.event.issue.labels.*.name), 'needs-info') &&
-          !contains(toJSON(github.event.issue.labels.*.name), 'type/feature')
-        )
-      ))
+      github.event_name != 'issue_comment'
+      || github.event.comment.user.type != 'Bot'
     uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
     with:
-      stage: triage
-    secrets: {}
+      event_action: ${{ github.event.action }}
 
-  dispatch-code:
-    concurrency:
-      group: code-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
-    if: >-
-      (github.event_name == 'issues' && github.event.action == 'labeled'
-        && github.event.label.name == 'ready-to-code') ||
-      (github.event_name == 'issue_comment'
-        && !github.event.issue.pull_request
-        && (
-          github.event.comment.body == '/code' ||
-          startsWith(github.event.comment.body, '/code ') ||
-          startsWith(github.event.comment.body, format('{0}{1}', '/code', fromJSON('"\n"')))
-        ))
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: code
-    secrets: {}
-
-  dispatch-review:
-    concurrency:
-      group: review-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
-    # The review agent is NOT dispatched on pull_request_review events.
-    # Bot changes_requested reviews dispatch the fix agent (dispatch-fix-bot).
-    # All other review submissions (human approve/comment/etc.) are ignored —
-    # re-reviewing after a human approves would be wasteful and confusing.
-    if: >-
-      (github.event_name == 'issues' && github.event.action == 'labeled'
-        && github.event.label.name == 'ready-for-review') ||
-      (github.event_name == 'issue_comment' && (
-        github.event.comment.body == '/review' ||
-        startsWith(github.event.comment.body, '/review ') ||
-        startsWith(github.event.comment.body, format('{0}{1}', '/review', fromJSON('"\n"')))
-      )) ||
-      (github.event_name == 'pull_request_target'
-        && github.event.action != 'closed')
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: review
-    secrets: {}
-
-  dispatch-fix-bot:
-    concurrency:
-      group: fix-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    if: >-
-      github.event_name == 'pull_request_review'
-        && github.event.review.state == 'changes_requested'
-        && github.event.review.user.login == format('{0}-review[bot]', github.repository_owner)
-        && github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
-        && !contains(github.event.pull_request.labels.*.name, 'fullsend-no-fix')
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: fix
-      trigger_source: ${{ github.event.review.user.login }}
-    secrets: {}
-
-  dispatch-fix-human:
-    concurrency:
-      group: fix-${{ github.event.issue.number }}
-      cancel-in-progress: true
-    # Fork PR blocking is handled by fix.yml after token mint — workflow_call
-    # jobs cannot have steps, so the check runs inside the agent workflow.
+  stop-fix:
     if: >-
       github.event_name == 'issue_comment'
         && github.event.issue.pull_request
         && github.event.comment.user.type != 'Bot'
-        && (
-          github.event.comment.body == '/fix'
-          || startsWith(github.event.comment.body, '/fix ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/fix', fromJSON('"\n"')))
-        )
-        && (
-          github.event.comment.author_association == 'OWNER'
-          || github.event.comment.author_association == 'MEMBER'
-          || github.event.comment.author_association == 'COLLABORATOR'
-        )
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: fix
-      trigger_source: ${{ github.event.comment.user.login }}
-    secrets: {}
-
-  dispatch-retro:
-    concurrency:
-      group: retro-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    if: >-
-      github.event_name == 'pull_request_target'
-        && github.event.action == 'closed'
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: retro
-    secrets: {}
-
-  dispatch-retro-command:
-    concurrency:
-      group: retro-${{ github.event.issue.number }}
-      cancel-in-progress: true
-    if: >-
-      github.event_name == 'issue_comment'
-        && github.event.comment.user.type != 'Bot'
-        && (
-          github.event.comment.body == '/retro'
-          || startsWith(github.event.comment.body, '/retro ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/retro', fromJSON('"\n"')))
-          || github.event.comment.body == '/fullsend retro'
-          || startsWith(github.event.comment.body, '/fullsend retro ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/fullsend retro', fromJSON('"\n"')))
-        )
-        && (
-          github.event.comment.author_association == 'OWNER'
-          || github.event.comment.author_association == 'MEMBER'
-          || github.event.comment.author_association == 'COLLABORATOR'
-        )
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: retro
-    secrets: {}
-
-  dispatch-prioritize:
-    concurrency:
-      group: prioritize-${{ github.event.issue.number }}
-      cancel-in-progress: true
-    if: >-
-      github.event_name == 'issue_comment'
-        && !github.event.issue.pull_request
-        && github.event.comment.user.type != 'Bot'
-        && (
-          github.event.comment.body == '/prioritize'
-          || startsWith(github.event.comment.body, '/prioritize ')
-          || startsWith(github.event.comment.body, format('{0}{1}', '/prioritize', fromJSON('"\n"')))
-        )
-        && (
-          github.event.comment.author_association == 'OWNER'
-          || github.event.comment.author_association == 'MEMBER'
-          || github.event.comment.author_association == 'COLLABORATOR'
-        )
-    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
-    with:
-      stage: prioritize
-    secrets: {}
-
-  dispatch-stop-fix:
-    if: >-
-      github.event_name == 'issue_comment'
-        && github.event.issue.pull_request
-        && github.event.comment.user.type != 'Bot'
-        && github.event.comment.body == '/stop-fix'
+        && github.event.comment.body == '/fs-fix-stop'
         && (
           github.event.comment.author_association == 'OWNER'
           || github.event.comment.author_association == 'MEMBER'
@@ -232,47 +78,4 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "$REPO" \
             --add-label "fullsend-no-fix"
           gh pr comment "$PR_NUMBER" --repo "$REPO" \
-            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fix\` to re-engage."
-
-  post-run-link:
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
-    if: always() && !cancelled()
-    needs:
-      [
-        dispatch-triage,
-        dispatch-code,
-        dispatch-review,
-        dispatch-fix-bot,
-        dispatch-fix-human,
-        dispatch-retro,
-        dispatch-retro-command,
-        dispatch-prioritize,
-      ]
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Post run link comment
-        env:
-          AGENT: >-
-            ${{ needs.dispatch-triage.result == 'success' && 'triage'
-             || needs.dispatch-code.result == 'success' && 'code'
-             || needs.dispatch-review.result == 'success' && 'review'
-             || needs.dispatch-fix-bot.result == 'success' && 'fix'
-             || needs.dispatch-fix-human.result == 'success' && 'fix'
-             || needs.dispatch-retro.result == 'success' && 'retro'
-             || needs.dispatch-retro-command.result == 'success' && 'retro'
-             || needs.dispatch-prioritize.result == 'success' && 'prioritize'
-             || '' }}
-          SHIM_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-        run: |
-          if [ -z "${AGENT}" ] || [ -z "${ITEM_NUMBER}" ]; then
-            echo "No dispatch or item number — skipping comment"
-            exit 0
-          fi
-          gh issue comment "${ITEM_NUMBER}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --body "**fullsend ${AGENT}** is working on this — [view logs](${SHIM_URL})"
+            --body "Fix agent disabled for this PR. Remove the \`fullsend-no-fix\` label or use \`/fs-fix\` to re-engage."

@@ -40,17 +40,19 @@ This isn't a temporary implementation limitation that will be solved by bigger m
 
 ### The defense-in-depth argument
 
-A single monolithic review agent is a single point of failure. If that agent is fooled — by prompt injection, by a cleverly disguised malicious change, by a subtle logic error — all review is compromised. Multiple specialized sub-agents with different concerns create defense in depth: even if the correctness agent is fooled, the security agent might catch it. Even if the security agent misses something, the intent alignment agent might flag that the change doesn't match any authorized work.
+A single monolithic review agent is a single point of failure. If that agent is fooled — by prompt injection, by a cleverly disguised malicious change, by a subtle logic error — all review is compromised. Multiple specialized sub-agents with different concerns create defense in depth: even if the correctness agent is fooled, the security agent might catch it. Even if the security sub-agent misses something, the intent & coherence sub-agent might flag that the change doesn't match any authorized work.
 
 This maps directly to the zero-trust principle from the [security threat model](security-threat-model.md). Sub-agents don't trust each other's judgments — each independently evaluates the change from its own perspective. A merge requires all sub-agents to pass, not just one generalist to approve.
 
 ### The specialization argument
 
-Different review concerns require different context. A correctness reviewer needs deep understanding of the codebase's logic and patterns. A security reviewer needs knowledge of common vulnerability patterns and the organization's specific threat model. An intent alignment reviewer needs access to the intent repo and the feature authorization state. Loading all of this context into one agent is wasteful — each sub-agent loads only the context relevant to its concern, using its context window more effectively.
+Different review concerns require different context. A correctness reviewer needs deep understanding of the codebase's logic and patterns. A security reviewer needs knowledge of common vulnerability patterns and the organization's specific threat model. An intent & coherence reviewer needs access to the intent repo and the feature authorization state. Loading all of this context into one agent is wasteful — each sub-agent loads only the context relevant to its concern, using its context window more effectively.
 
 ## Review sub-agent decomposition
 
-### Correctness agent
+Six specialized sub-agents (implemented from a conceptual decomposition of nine axes), each independently evaluating the change from its own perspective. High-stakes adversarial dimensions (correctness, security) run on opus; mechanical-matching dimensions run on sonnet.
+
+### Correctness agent (opus)
 
 Evaluates whether the code does what it claims to do.
 
@@ -58,11 +60,32 @@ Evaluates whether the code does what it claims to do.
 - Edge cases and error paths
 - Consistency with existing codebase patterns
 - Test adequacy — are the right things being tested?
-- **Test integrity** — do the tests actually verify the behavior they claim to? When reviewing a production change, the agent should examine whether the relevant tests meaningfully constrain the code's behavior or merely assert that it runs without error. If test files covering the changed code were recently modified, the agent should check whether those modifications weakened the test's ability to catch regressions. (See [security-threat-model.md](security-threat-model.md#cross-cutting-attack-pattern-temporal-split-payload-test-poisoning) for why this matters.)
+- Do tests actually verify the behavior they claim to?
+- If test files covering the changed code were recently modified, did those modifications weaken the test's ability to catch regressions?
+- Split-payload attacks: a production change paired with a test modification that masks the real behavior. (See [security-threat-model.md](security-threat-model.md#cross-cutting-attack-pattern-temporal-split-payload-test-poisoning) for why this matters.)
+- Coverage reduction: does the change remove or weaken existing test coverage?
 
-**Context needed:** The diff, relevant surrounding code, test files, existing patterns in the repo. For test integrity checks: git history of relevant test files.
+**Context needed:** The diff, relevant surrounding code, test files, git history of relevant test files, existing patterns in the repo.
 
-### Intent alignment agent
+### Security agent (opus)
+
+Reviews changes for threats to the platform and its users. Collapses the platform security and content security concerns into a single agent. Organization-specific concerns are configured in [applied docs](applied/).
+
+- RBAC and authorization changes
+- Authentication flows
+- Data exposure risks
+- Privilege escalation paths
+- Injection vulnerabilities (SQL, command, LDAP, etc.)
+- Content security: sandboxing gaps, XSS, SSRF
+- Permission manifest changes (GitHub App manifests, workflow `permissions:` blocks, IAM policies, etc.)
+- Code comments and string literals
+- Configuration files and test data
+- Prompt Injection (patterns that look like agent instructions embedded in code)
+- **Non-rendering Unicode characters** — Tag characters (U+E0000–U+E007F), zero-width characters, bidirectional overrides, and other invisible codepoints that can encode hidden instructions. See [security-threat-model.md](security-threat-model.md#steganographic-injection-invisible-unicode-payloads) for the full threat description.
+
+**Context needed:** The diff, security-relevant code paths, RBAC configuration, known vulnerability patterns, sandboxing mechanisms.
+
+### Intent & Coherence (sonnet)
 
 Evaluates whether the change matches an authorized intent and whether its scope matches its claimed tier.
 
@@ -70,50 +93,42 @@ Evaluates whether the change matches an authorized intent and whether its scope 
 - Does the implementation match what the issue/feature describes?
 - Is the change scope consistent with its tier classification? (The [tier escalation problem](intent-representation.md#the-tier-escalation-problem) — a "bug fix" that's really a feature request.)
 - Does the change go beyond what was authorized?
+- Does the change fit the overall design of the module/system?
+- Is the complexity proportional to the value delivered?
+- Are there simpler alternatives that achieve the same goal?
 
-**Context needed:** The diff summary, the linked issue/feature file, the intent repo state, the tier classification criteria.
+**Context needed:** The diff summary, the linked issue/feature file, surrounding module architecture, design docs, the intent repo state, the tier classification criteria.
 
-### Platform security agent
-
-Reviews changes for threats to the platform itself. The specific concerns depend on the organization's domain — see [applied docs](applied/) for organization-specific security agent configurations.
-
-- RBAC and authorization changes
-- Authentication flows
-- Data exposure risks
-- Privilege escalation paths
-- Injection vulnerabilities (SQL, command, LDAP, etc.)
-
-**Context needed:** The diff, security-relevant code paths, RBAC configuration, known vulnerability patterns.
-
-### Content security agent
-
-For platform organizations (CI/CD systems, cloud services, etc.), reviews changes that affect content passing through the platform — protecting the platform's users. The specific concerns are organization-dependent — see [applied docs](applied/) for examples.
-
-**Context needed:** The diff, platform-specific code paths, sandboxing mechanisms.
-
-### Injection defense agent
-
-Specifically looks for prompt injection patterns targeting other agents in the system.
-
-- PR descriptions and commit messages
-- Code comments and string literals
-- Configuration files and test data
-- Patterns that look like agent instructions embedded in code
-- **Non-rendering Unicode characters** — Tag characters (U+E0000–U+E007F), zero-width characters, bidirectional overrides, and other invisible codepoints that can encode hidden instructions. See [security-threat-model.md](security-threat-model.md#steganographic-injection-invisible-unicode-payloads) for the full threat description.
-
-This agent has a unique role: it's protecting the other review agents, not the codebase. It evaluates whether the PR content is trying to manipulate the review process itself.
-
-**Context needed:** The raw PR content (description, commit messages, diff), known injection patterns. Notably, this agent should see the *unprocessed* content, not a summary — summaries might strip out the injection attempts. "Unprocessed" means raw bytes, not rendered text — the agent must be able to detect non-rendering Unicode sequences that are invisible in rendered output but present in the underlying data. This is a byte-level inspection concern, not just a text pattern matching concern.
-
-### Style/conventions agent
+### Style/conventions agent (sonnet)
 
 Evaluates adherence to repo-specific patterns and conventions.
 
 - Code style beyond what linters catch
-- Naming conventions, API patterns, error handling idioms
-- Documentation adequacy
+- Naming conventions, API patterns, error handling idioms, code organization
 
 **Context needed:** The diff, repo style guides, examples of existing patterns. This is the lowest-stakes review concern and could potentially be handled by the code agent's pre-PR self-review rather than a separate sub-agent.
+
+### Docs currency agent (sonnet)
+
+Evaluates whether documentation is stale as a result of the change. Follows the `docs-review` skill inline.
+
+- Do docs reference behavior, APIs, or configurations changed by the PR?
+- Are any docs now inaccurate, stale, incomplete, or misleading?
+
+**Context needed:** The diff, documentation files, file-change overlap analysis.
+
+### Cross-repo contracts agent (sonnet)
+
+Evaluates whether the change breaks API surfaces consumed by other repositories.
+
+- Protobuf definitions, shared types, CLI flags, REST/gRPC endpoints
+- Backward-incompatible changes to public interfaces
+- Version contract violations
+- API contract changes: does the change modify parameters sent to an
+  external API, and does the API accept the new values for every code
+  path?
+
+**Context needed:** The diff, API surface definitions, known downstream consumers.
 
 ## How sub-agents compose a decision
 

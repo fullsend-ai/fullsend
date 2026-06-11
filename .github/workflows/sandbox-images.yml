@@ -3,7 +3,7 @@ name: Sandbox Images
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]+.[0-9]+*"
     branches:
       - main
     paths:
@@ -16,8 +16,8 @@ on:
   workflow_dispatch:
 
 # NOTE: GitHub Actions ignores `paths` filters on tag pushes, so every
-# v* tag triggers a build.  This is intentional — the sandbox image is
-# published alongside the CLI so consumers can pin both to the same
+# semver tag triggers a build.  This is intentional — the sandbox image
+# is published alongside the CLI so consumers can pin both to the same
 # version.  Branch pushes and PRs still respect the paths filter.
 
 jobs:

@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/fullsend-ai/fullsend/internal/netutil"
 )
 
 // reURLPattern matches HTTP(S) and dangerous-scheme URLs in free text.
@@ -110,7 +112,7 @@ func (s *SSRFValidator) ValidateURL(rawURL string, resolveDNS bool) ScanResult {
 
 	// Check if hostname is a raw IP
 	if ip := net.ParseIP(hostname); ip != nil {
-		if reason := checkIP(ip); reason != "" {
+		if reason := netutil.CheckIP(ip); reason != "" {
 			return ScanResult{
 				Safe: false,
 				Findings: []Finding{{
@@ -139,7 +141,7 @@ func (s *SSRFValidator) ValidateURL(rawURL string, resolveDNS bool) ScanResult {
 		}
 		for _, addr := range addrs {
 			if ip := net.ParseIP(addr); ip != nil {
-				if reason := checkIP(ip); reason != "" {
+				if reason := netutil.CheckIP(ip); reason != "" {
 					return ScanResult{
 						Safe: false,
 						Findings: []Finding{{
@@ -188,39 +190,4 @@ func (s *SSRFValidator) Scan(text string) ScanResult {
 	}
 
 	return result
-}
-
-func checkIP(ip net.IP) string {
-	if ip.IsLoopback() {
-		return "loopback address"
-	}
-	if ip.IsPrivate() {
-		return "private address (RFC 1918)"
-	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return "link-local address"
-	}
-	if ip.IsMulticast() {
-		return "multicast address"
-	}
-	if ip.IsUnspecified() {
-		return "unspecified address"
-	}
-
-	// CGNAT / shared address space (RFC 6598): 100.64.0.0/10
-	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
-	if cgnat.Contains(ip) {
-		return "CGNAT address (RFC 6598)"
-	}
-
-	// Documentation ranges
-	docRanges := []string{"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"}
-	for _, cidr := range docRanges {
-		_, network, _ := net.ParseCIDR(cidr)
-		if network.Contains(ip) {
-			return "documentation address"
-		}
-	}
-
-	return ""
 }

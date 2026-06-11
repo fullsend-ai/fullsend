@@ -1,3 +1,33 @@
 # AGENTS.md
 
 See [CLAUDE.md](CLAUDE.md) for project rules and design decisions.
+
+## Commit messages
+
+You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages. Getting the prefix right is not optional — GoReleaser uses it to build release notes.
+
+## Forge abstraction
+
+All git forge operations (GitHub API calls, PR comments, issue creation, workflow dispatch, etc.) **must** go through the `forge.Client` interface defined in `internal/forge/forge.go`. This is a fundamental architectural rule — the codebase supports multiple forges (GitHub, GitLab, Forgejo) and direct coupling to any single forge breaks the abstraction.
+
+**Prohibited outside `internal/forge/github/`:**
+
+- `exec.Command("gh", ...)` — shelling out to the GitHub CLI
+- Direct GitHub REST or GraphQL API calls (e.g., raw `net/http` to `api.github.com`)
+- Any other forge-specific operation that bypasses `forge.Client`
+
+**Where forge-specific code belongs:** Only the `internal/forge/github/` package (the GitHub implementation of `forge.Client`) should contain GitHub-specific logic. All other packages must use the `forge.Client` interface, which is injected as a dependency.
+
+**When writing code:** If you need a forge operation that `forge.Client` does not yet support, add a new method to the interface and implement it in the GitHub client — do not work around the interface.
+
+**When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
+
+## Architecture Decision Records (ADRs)
+
+These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full authoring guidance is in [`skills/writing-adrs/SKILL.md`](skills/writing-adrs/SKILL.md); invoke that skill when writing a new ADR.
+
+**Immutability:** Once an ADR on `main` has status **Accepted**, it is a point-in-time record. Do not substantially rewrite its Context, Decision, or Consequences sections. When circumstances change, write a **new** ADR that supersedes the old one. Minor annotations are welcome: cross-references to related ADRs, short notes linking to newer decisions, typo and broken-link fixes, and status changes (e.g., to Deprecated or Superseded). Call out any edits to accepted ADRs in the PR description.
+
+**New ADRs in pull requests:** Approval happens at **merge**, not when the branch is created. If the decision is made, set status to **Accepted** in the ADR you are proposing (not **Proposed** merely because the PR is open). Use **Proposed** or **Undecided** only when the decision itself is still unsettled. When status is Accepted, update `docs/architecture.md` and related problem docs in the same PR per the writing-adrs skill.
+
+**When reviewing PRs:** Flag substantial rewrites to Context, Decision, or Consequences on Accepted ADRs already on `main` as a policy violation. Allow minor annotations (cross-references, short notes, typo fixes), status updates, and supersession links. For brand-new ADR files on the PR branch, evaluate whether the recorded decision matches the diff — do not treat **Accepted** on a new file as a mistake if the ADR is ready for human review at merge.

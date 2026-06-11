@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -310,6 +311,68 @@ func TestGetAuthenticatedUser(t *testing.T) {
 	assert.Equal(t, "test-bot", user)
 }
 
+func TestGetAuthenticatedUser_FallbackToApp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			// Simulate GitHub App installation token: /user returns 403.
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Resource not accessible by integration",
+			})
+		case "/app":
+			json.NewEncoder(w).Encode(map[string]any{
+				"slug": "fullsend-ai-review",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	user, err := client.GetAuthenticatedUser(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai-review[bot]", user)
+}
+
+func TestGetAuthenticatedUser_BothFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "forbidden",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUser(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get authenticated user")
+}
+
+func TestGetAuthenticatedUser_AppEmptySlug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "forbidden",
+			})
+		case "/app":
+			json.NewEncoder(w).Encode(map[string]any{
+				"slug": "",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUser(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty slug")
+}
+
 func TestCreateRepoSecret(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -502,8 +565,14 @@ func TestListOrgInstallations(t *testing.T) {
 
 		json.NewEncoder(w).Encode(map[string]any{
 			"installations": []map[string]any{
-				{"id": 1, "app_id": 100, "app_slug": "myorg-fullsend"},
-				{"id": 2, "app_id": 200, "app_slug": "myorg-triage"},
+				{
+					"id": 1, "app_id": 100, "app_slug": "myorg-fullsend",
+					"app": map[string]any{"owner": map[string]any{"login": "myorg"}},
+				},
+				{
+					"id": 2, "app_id": 200, "app_slug": "myorg-triage",
+					"app": map[string]any{"owner": map[string]any{"login": "other-org"}},
+				},
 			},
 		})
 	}))
@@ -515,7 +584,9 @@ func TestListOrgInstallations(t *testing.T) {
 	require.Len(t, installs, 2)
 	assert.Equal(t, 1, installs[0].ID)
 	assert.Equal(t, "myorg-fullsend", installs[0].AppSlug)
+	assert.Equal(t, "myorg", installs[0].AppOwnerLogin)
 	assert.Equal(t, 200, installs[1].AppID)
+	assert.Equal(t, "other-org", installs[1].AppOwnerLogin)
 }
 
 func TestAPIError(t *testing.T) {
@@ -544,6 +615,57 @@ func TestAPIError_ErrorString(t *testing.T) {
 	}
 	assert.Contains(t, err.Error(), "404")
 	assert.Contains(t, err.Error(), "Not Found")
+}
+
+func TestAPIError_ErrorStringWithDetails(t *testing.T) {
+	err := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Resource: "Repository", Field: "name", Code: "custom", Message: "name already exists on this account"},
+		},
+	}
+	assert.Contains(t, err.Error(), "422")
+	assert.Contains(t, err.Error(), "Validation Failed")
+	assert.Contains(t, err.Error(), "name already exists on this account")
+}
+
+func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "You have exceeded a secondary rate limit",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":           "test-repo",
+			"full_name":      "org/test-repo",
+			"default_branch": "main",
+			"private":        false,
+		})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:   "test-token",
+		baseURL: srv.URL,
+		http:    srv.Client(),
+	}
+
+	// Override the backoff for testing — we don't want to wait 60s.
+	origBackoff := secondaryRateLimitBackoff
+	defer func() { secondaryRateLimitBackoff = origBackoff }()
+	secondaryRateLimitBackoff = 10 * time.Millisecond
+
+	repo, err := client.CreateRepo(context.Background(), "org", "test-repo", "desc", false)
+	require.NoError(t, err)
+	assert.Equal(t, "test-repo", repo.Name)
+	assert.Equal(t, 3, attempts, "should have retried twice before succeeding")
 }
 
 func TestCreateFileOnBranch(t *testing.T) {
@@ -1092,12 +1214,12 @@ func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
 }
 
 func TestIsTransientStatus(t *testing.T) {
-	transient := []int{404, 409, 502, 503, 504}
+	transient := []int{404, 409, 500, 502, 503, 504}
 	for _, code := range transient {
 		assert.True(t, isTransientStatus(code), "expected %d to be transient", code)
 	}
 
-	nonTransient := []int{200, 201, 400, 401, 403, 422, 500}
+	nonTransient := []int{200, 201, 400, 401, 403, 422}
 	for _, code := range nonTransient {
 		assert.False(t, isTransientStatus(code), "expected %d to not be transient", code)
 	}
@@ -1292,4 +1414,17 @@ func TestCommitFiles_Empty(t *testing.T) {
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", nil)
 	require.NoError(t, err)
 	assert.False(t, committed)
+}
+
+func TestDeleteIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
 }

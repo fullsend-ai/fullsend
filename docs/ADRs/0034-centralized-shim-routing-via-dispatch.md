@@ -1,6 +1,6 @@
 ---
 title: "34. Centralized shim routing via dispatch.yml"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-infrastructure
 topics:
@@ -16,7 +16,7 @@ Date: 2026-05-07
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -99,7 +99,7 @@ The shim has three jobs:
 `dispatch.yml` gains a routing step that maps `event_type` + payload fields to
 a stage name:
 
-- `issue_comment` with `/triage`, `/code`, `/review`, `/fix`, `/retro`
+- `issue_comment` with `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
   commands → corresponding stage
 - `issue_comment` on `needs-info` issue from non-bot → `triage`
 - `issues` + `labeled` with `ready-to-code` or `ready-for-review` → `code`
@@ -126,7 +126,7 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   prevent script injection from attacker-controlled fields.
 - **Fork-PR blocking** for the fix stage moves to `fix.yml`, where it already
   exists (redundant with the shim's current check).
-- **Author association checks** for `/fix`, `/retro`, `/stop-fix` move to
+- **Author association checks** for `/fs-fix`, `/fs-retro`, `/fs-fix-stop` move to
   `dispatch.yml`'s routing step.
 - **`workflow_call` inputs stay under 10.** The current 5 inputs minus `stage`
   plus `event_action` and `trigger_source` = 6 inputs.

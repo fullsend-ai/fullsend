@@ -1,0 +1,132 @@
+#!/bin/bash
+# Lint: every default harness YAML must have a doc: field pointing to an existing file.
+# Also checks that docs/agents/README.md links to every agent doc.
+set -euo pipefail
+shopt -s nullglob
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HARNESS_DIR="$REPO_ROOT/internal/scaffold/fullsend-repo/harness"
+AGENTS_README="$REPO_ROOT/docs/agents/README.md"
+
+errors=0
+
+echo "Checking default harness files for doc: field..."
+echo "================================================"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    name="$(basename "$yaml_file")"
+    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+
+    if [[ -z "$doc_value" ]]; then
+        echo "  ERROR: $name: missing 'doc:' field"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        echo "  ERROR: $name: doc '$doc_value' does not exist"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    echo "  $name: OK ($doc_value)"
+done
+
+echo ""
+echo "Checking docs/agents/README.md index coverage..."
+echo "================================================"
+
+if [[ ! -f "$AGENTS_README" ]]; then
+    echo "  ERROR: docs/agents/README.md does not exist"
+    errors=$((errors + 1))
+else
+    for yaml_file in "$HARNESS_DIR"/*.yaml; do
+        name="$(basename "$yaml_file" .yaml)"
+        doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+        if [[ -z "$doc_value" ]]; then
+            continue
+        fi
+        doc_basename="$(basename "$doc_value")"
+        if ! grep -qF "($doc_basename)" "$AGENTS_README"; then
+            echo "  ERROR: docs/agents/README.md does not link to $doc_basename (from $name.yaml)"
+            errors=$((errors + 1))
+        else
+            echo "  $name: linked in README"
+        fi
+    done
+fi
+
+echo ""
+echo "Checking agent doc structure..."
+echo "================================================"
+
+REQUIRED_SECTIONS="How the agent works|How it helps|Commands|Control labels|Configuration and extension|Source"
+IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    if [[ -z "$doc_value" ]]; then
+        continue
+    fi
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        continue
+    fi
+    doc_basename="$(basename "$doc_value")"
+
+    # Check that the top-level heading ends with " Agent"
+    h1="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); print; exit}' "$doc_path")"
+    if [[ -n "$h1" ]] && [[ "$h1" != *" Agent" ]]; then
+        echo "  $doc_basename: top heading \"# $h1\" must end with \" Agent\" (e.g. \"# ${h1} Agent\")"
+        errors=$((errors + 1))
+    fi
+
+    # Extract ## headers outside fenced code blocks
+    actual_sections="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); print}' "$doc_path")"
+
+    missing=()
+    extra=()
+    for section in "${SECTION_LIST[@]}"; do
+        if ! echo "$actual_sections" | grep -Fqx "$section"; then
+            missing+=("$section")
+        fi
+    done
+
+    while IFS= read -r section; do
+        [[ -z "$section" ]] && continue
+        found=false
+        for required in "${SECTION_LIST[@]}"; do
+            if [[ "$section" == "$required" ]]; then
+                found=true
+                break
+            fi
+        done
+        if [[ "$found" == "false" ]]; then
+            extra+=("$section")
+        fi
+    done <<< "$actual_sections"
+
+    if [[ ${#missing[@]} -gt 0 || ${#extra[@]} -gt 0 ]]; then
+        echo "  $doc_basename: FAIL"
+        for s in "${missing[@]+"${missing[@]}"}"; do
+            echo "    missing: \"## $s\""
+            errors=$((errors + 1))
+        done
+        for s in "${extra[@]+"${extra[@]}"}"; do
+            echo "    unexpected: \"## $s\" — adding new sections is fine, but please add them to the REQUIRED_SECTIONS list in hack/lint-agent-docs so all agent docs stay consistent"
+            errors=$((errors + 1))
+        done
+    else
+        echo "  $doc_basename: OK"
+    fi
+done
+
+echo ""
+echo "================================================"
+if [[ $errors -gt 0 ]]; then
+    echo "FAILED: $errors error(s) found"
+    exit 1
+else
+    echo "OK: All default harness files have valid doc references and structure"
+fi

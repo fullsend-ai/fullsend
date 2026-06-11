@@ -1,0 +1,51 @@
+[
+  {
+    "number": 100,
+    "title": "Unassigned backlog with score",
+    "assignees": [],
+    "open_blockers": [],
+    "score": 42.5
+  },
+  {
+    "number": 101,
+    "title": "Unassigned no score",
+    "assignees": [],
+    "open_blockers": [],
+    "score": null
+  },
+  {
+    "number": 102,
+    "title": "Unassigned lower score",
+    "assignees": [],
+    "open_blockers": [],
+    "score": 10.0
+  },
+  {
+    "number": 103,
+    "title": "Blocked high-score backlog",
+    "assignees": [],
+    "open_blockers": [{"repo": "acme/widget", "number": 788}],
+    "score": 99.0
+  },
+  {
+    "number": 200,
+    "title": "Assigned to alice",
+    "assignees": ["alice"],
+    "open_blockers": [],
+    "score": 99.0
+  },
+  {
+    "number": 201,
+    "title": "Assigned to bob",
+    "assignees": ["bob"],
+    "open_blockers": [],
+    "score": 50.0
+  },
+  {
+    "number": 202,
+    "title": "Assigned to alice lower",
+    "assignees": ["alice"],
+    "open_blockers": [],
+    "score": 5.0
+  }
+]

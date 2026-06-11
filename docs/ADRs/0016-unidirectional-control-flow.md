@@ -1,6 +1,6 @@
 ---
 title: "16. Unidirectional control flow through the execution stack"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -17,7 +17,7 @@ Date: 2026-03-27
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

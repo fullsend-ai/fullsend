@@ -36,7 +36,10 @@ set -euo pipefail
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 LYCHEE_VERSION="0.24.2"
-LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+LYCHEE_SHA256_AMD64="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+LYCHEE_SHA256_ARM64="91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
+UV_VERSION="0.11.14"
+UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -57,6 +60,38 @@ fi
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 
 echo "::add-mask::${PUSH_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# Error reporting — post a comment on the issue when the post-script fails.
+#
+# This ensures humans get feedback without checking workflow logs. The
+# function is called from a trap on ERR. It is a best-effort operation:
+# if the comment fails (e.g. token expired), we still exit non-zero.
+# ---------------------------------------------------------------------------
+report_failure_to_issue() {
+  local exit_code=$?
+  # Only report if we have the necessary context
+  if [ -z "${GH_TOKEN:-}" ]; then
+    export GH_TOKEN="${PUSH_TOKEN}"
+  fi
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+  local comment_body="⚠️ **Post-code script failed** (exit code ${exit_code})
+
+The code agent completed, but the post-code script failed while \
+pushing the branch or creating the PR.
+
+**Workflow run:** ${run_url}
+
+Please check the workflow logs for details and retry with \`/fs-code\` \
+if appropriate."
+
+  echo "::warning::Posting failure comment to issue #${ISSUE_NUMBER}..."
+  gh issue comment "${ISSUE_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --body "${comment_body}" 2>/dev/null || \
+    echo "::warning::Failed to post error comment to issue #${ISSUE_NUMBER}"
+}
+trap report_failure_to_issue ERR
 
 # ---------------------------------------------------------------------------
 # 1. Verify feature branch
@@ -92,6 +127,59 @@ echo "Changed files:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # ---------------------------------------------------------------------------
+# 2b. Strip agent working directories (defense-in-depth)
+#
+# Agent working dirs (.agentready/, .fullsend-workspace/) should never
+# appear in commits. The harness excludes them via .git/info/exclude, but
+# if an agent manages to stage them anyway, strip them here before push.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+STRIPPED_FILES=""
+for file in ${CHANGED_FILES}; do
+  is_artifact=false
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"  # strip trailing slash for prefix matching
+    case "${file}" in
+      "${dir}"/*|"${dir}") is_artifact=true; break ;;
+      */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
+    esac
+  done
+  if [ "${is_artifact}" = "true" ]; then
+    echo "::warning::Stripping agent artifact from commit: ${file}"
+    STRIPPED_FILES="${STRIPPED_FILES} ${file}"
+  fi
+done
+
+if [ -n "${STRIPPED_FILES}" ]; then
+  echo "::warning::Agent committed working directory artifacts — stripping before push"
+  # shellcheck disable=SC2086
+  git rm --cached --quiet ${STRIPPED_FILES}
+  git commit --amend --no-edit
+
+  # Rebuild CHANGED_FILES without the stripped artifacts.
+  CLEAN_FILES=""
+  for file in ${CHANGED_FILES}; do
+    is_stripped=false
+    for sf in ${STRIPPED_FILES}; do
+      if [ "${file}" = "${sf}" ]; then
+        is_stripped=true
+        break
+      fi
+    done
+    if [ "${is_stripped}" = "false" ]; then
+      CLEAN_FILES="${CLEAN_FILES}${CLEAN_FILES:+
+}${file}"
+    fi
+  done
+  CHANGED_FILES="${CLEAN_FILES}"
+
+  if [ -z "${CHANGED_FILES}" ]; then
+    echo "::notice::All changed files were agent artifacts — nothing to push"
+    exit 0
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Authoritative secret scan
 # ---------------------------------------------------------------------------
 echo "Running authoritative secret scan on agent's commit..."
@@ -123,17 +211,40 @@ echo "Secret scan passed — no leaks in agent's commit(s)"
 if ! command -v lychee >/dev/null 2>&1; then
   echo "Installing lychee v${LYCHEE_VERSION}..."
   mkdir -p "${HOME}/.local/bin"
+  case "$(uname -m)" in
+    x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
+    aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
+    *) echo "::error::Unsupported architecture for lychee: $(uname -m)"; exit 1 ;;
+  esac
   curl -fsSL \
-    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
     -o /tmp/lychee.tar.gz \
-    && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
-    && rm /tmp/lychee.tar.gz
+    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C /tmp \
+    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" "${HOME}/.local/bin/" \
+    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Authoritative pre-commit check
+# 5. Install uv and uvx (for pre-commit Python tooling)
+# ---------------------------------------------------------------------------
+if ! command -v uvx >/dev/null 2>&1; then
+  echo "Installing uv v${UV_VERSION} (includes uvx)..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/uv.tar.gz \
+    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/uv.tar.gz -C /tmp \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
+    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
 if [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -165,21 +276,55 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Push branch
+# 7. Push branch
 # ---------------------------------------------------------------------------
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
-# Plain push (no --force-with-lease). Agents always create new
-# commits (amend is in disallowedTools), so force-push is unnecessary
-# and plain push is safer (refuses diverged branches).
-echo "Pushing branch ${BRANCH}..."
-git push -u origin -- "${BRANCH}" 2>&1
+export GH_TOKEN="${PUSH_TOKEN}"
 
 # ---------------------------------------------------------------------------
-# 7. Create PR
+# 7a. Delete stale remote branch if it exists with no open PR.
+#
+# When a human closes a code agent PR and re-triggers /fs-code, the old
+# remote branch still exists. A plain push will fail with non-fast-forward
+# because the local branch was created fresh from origin/main. Delete the
+# stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
-export GH_TOKEN="${PUSH_TOKEN}"
+REMOTE_REF="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | head -1 || true)"
+if [ -n "${REMOTE_REF}" ]; then
+  echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
+  OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
+    --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+  if [ -z "${OPEN_PR}" ]; then
+    echo "No open PR uses ${BRANCH} — deleting stale remote branch"
+    git push origin --delete "${BRANCH}" 2>&1 || \
+      echo "::warning::Failed to delete stale remote branch ${BRANCH}"
+  else
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} — keeping remote branch"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
+# ---------------------------------------------------------------------------
+echo "Pushing branch ${BRANCH}..."
+PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+echo "${PUSH_OUTPUT}"
+
+if [ "${PUSH_RC}" -ne 0 ]; then
+  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+  else
+    echo "::error::Push failed with unexpected error"
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Create PR
+# ---------------------------------------------------------------------------
 
 EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
   --json number --jq '.[0].number' 2>/dev/null || true)"

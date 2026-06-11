@@ -168,13 +168,12 @@ Test all three modes using a fake GCPClient and forge.FakeClient:
 #### 3a. `internal/cli/admin.go` — New flags and wiring
 
 Add flags to `install` command:
-- `--gcp-project` (string): GCP project ID
-- `--gcp-service-account` (string): existing SA name (optional)
-- `--gcp-credentials-file` (string): path to pre-made key JSON file (optional)
+- `--inference-project` (string): GCP project ID for inference
+- `--inference-region` (string, default: `global`): GCP region for inference
+- `--inference-wif-provider` (string, optional): WIF provider resource name (auto-provisioned if omitted)
 
-The flags determine which mode is used. Validation:
-- If `--gcp-credentials-file` is set, `--gcp-service-account` is ignored (mode 3).
-- `--gcp-project` is required when any GCP flag is provided.
+Validation:
+- `--inference-project` is required when `--inference-region` or `--inference-wif-provider` is provided.
 
 Wire the inference provider into `buildLayerStack()` — add `inference.Provider` parameter.
 

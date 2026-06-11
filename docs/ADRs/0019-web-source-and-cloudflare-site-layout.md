@@ -23,13 +23,13 @@ This repository mixes design documents, Go CLI code (`cmd/`), and a small **brow
 
 ## Decision
 
-1. **Browser-oriented source** (static HTML today; future Vite entrypoints and assets) lives under **`web/`**, starting with the document graph as **`web/public/index.html`** (served at `/` in production). **Node tooling** (`package.json`, lockfile, and scripts such as `npm run dev` / `npm run build`) stays at the **repository root** so day-to-day work does not require `cd web`; Vite config may still point `root` at `web/` (or a subdirectory) for resolution.
+1. **Browser-oriented source** (static HTML today; future Vite entrypoints and assets) lives under **`web/`**. The landing page is **`web/public/index.html`** (served at `/`); the interactive document graph is **`web/public/graph.html`** (served at `/graph.html`). **Node tooling** (`package.json`, lockfile, and scripts such as `npm run dev` / `npm run build`) stays at the **repository root** so day-to-day work does not require `cd web`; Vite config may still point `root` at `web/` (or a subdirectory) for resolution.
 2. The **sole Wrangler project** in this repository lives under **`cloudflare_site/`** (`wrangler.toml` from the default-branch checkout on deploy, plus **`public/`** and **`worker/`** filled from the Build Site artifact). The GitHub Actions **Deploy Site** workflow continues to use **`workingDirectory: cloudflare_site`**, downloads the artifact to **`_bundle/`**, and copies only **`public/`** and **`worker/`** into **`cloudflare_site/`**; workflow **names** (`Build Site`, artifact `site`, environments `site-preview` / `site-production`) stay stable for existing automation and operators.
 3. **Build Site** assembles **`_bundle/`** from `web/` (and later from JS build outputs) without changing that deploy contract.
 
 ## Consequences
 
-- Contributors edit the live mindmap at **`web/public/index.html`** instead of **`docs/mindmap.html`**.
+- Contributors edit the landing page at **`web/public/index.html`** and the document graph at **`web/public/graph.html`** (formerly `docs/mindmap.html`, then `web/public/index.html`).
 - Paths in runbooks and local Wrangler preview use **`cloudflare_site/`** instead of **`site/`**.
 - Future SPA work adds **Vite** (and related devDependencies) using the **root** `package.json`, with source and config under **`web/`**, and extends **`site-build.yml`** to merge build output into **`_bundle/public/`** (and keep **`_bundle/worker/`** in sync) without renaming **`cloudflare_site/`** again.
 - Links and docs that referred to `site/wrangler.toml` or `docs/mindmap.html` must be updated when backporting older instructions.

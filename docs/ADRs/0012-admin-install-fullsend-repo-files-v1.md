@@ -1,6 +1,6 @@
 ---
 title: "12. Normative v1 Git-tracked files under `.fullsend` for admin install"
-status: Proposed
+status: Accepted
 relates_to:
   - governance
   - codebase-context
@@ -17,7 +17,7 @@ Date: 2026-04-05
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -33,9 +33,9 @@ v1 contents for each path except that body.
 
 ## Decision
 
-Adopt **`docs/normative/admin-install/v1/adr-0012-fullsend-repo-files/SPEC.md`**
-as the single normative description of the **v1** set of files committed in
-`<org>/.fullsend` by admin install, including exact required contents for:
+The **v1** set of files committed in `<org>/.fullsend` by admin install is
+defined by the scaffold implementation (`internal/scaffold/`) and its test
+suite. Required contents include:
 
 - `.github/workflows/agent.yaml`
 - `.github/workflows/repo-onboard.yaml`
@@ -46,10 +46,10 @@ The `config.yaml` path is included in that tracked set; its **document body**
 
 ## Consequences
 
-- Installers, reviewers, and CI can validate `.fullsend` against one SPEC for
-  file paths and workflow/CODEOWNERS bodies.
-- Changes to tracked paths or workflow bodies require a SPEC revision and a
-  new or superseding ADR, not silent drift in Go constants alone.
+- Installers, reviewers, and CI can validate `.fullsend` against the scaffold
+  implementation and its test suite.
+- Changes to tracked paths or workflow bodies require updating the
+  implementation and tests.
 - Secret and variable storage in `.fullsend` stays outside Git, as described in
   the SPEC’s out-of-scope section.
 - Enrollment shims in application repositories remain outside this tracked set.

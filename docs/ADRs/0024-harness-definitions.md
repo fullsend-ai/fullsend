@@ -147,8 +147,8 @@ Additional files can be delivered into the sandbox via `host_files`.
 
 The harness definition is the input to harness assembly
 ([#173](https://github.com/fullsend-ai/fullsend/issues/173)). It connects to
-`config.yaml` ([ADR 0011](../normative/admin-install/v1/adr-0011-org-config-yaml/SPEC.md)),
-`agent-dispatch-v1.yaml` ([ADR 0012](../normative/admin-install/v1/adr-0012-fullsend-repo-files/SPEC.md)),
+`config.yaml` ([ADR 0011](0011-admin-install-org-config-yaml-v1.md)),
+`agent-dispatch-v1.yaml` ([ADR 0012](0012-admin-install-fullsend-repo-files-v1.md)),
 and the agent wrapper concept ([#101](https://github.com/fullsend-ai/fullsend/issues/101)).
 
 [PR #231](https://github.com/fullsend-ai/fullsend/pull/231) implements the
@@ -230,12 +230,12 @@ agents/             # Agent definitions (.md, following Claude standard)
   arch-reviewer.md
   docs-reviewer.md
 
-skills/             # Skill definitions (SKILL.md, following AgentSkills standard)
-  triage-coordination/SKILL.md
-  detect-duplicates/SKILL.md
-  assess-completeness/SKILL.md
-  code-implementation/SKILL.md
-  testing-conventions/SKILL.md
+skills/             # Skill directories (each contains SKILL.md + companion files)
+  triage-coordination/
+  detect-duplicates/
+  assess-completeness/
+  code-implementation/
+  testing-conventions/
 
 env/                # Environment files delivered into the sandbox
   gcp-vertex.env    # May contain ${VAR} references expanded at bootstrap
