@@ -684,17 +684,18 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	// 5. Compute expected blob SHAs and filter to changed files.
-	var changedEntries []map[string]string
+	var changedEntries []map[string]any
 	for _, f := range files {
 		expectedSHA := blobSHA(f.Content)
 		if info, ok := existing[f.Path]; ok && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
 		}
-		changedEntries = append(changedEntries, map[string]string{
-			"path":    f.Path,
-			"mode":    f.Mode,
-			"type":    "blob",
-			"content": string(f.Content),
+		changedEntries = append(changedEntries, map[string]any{
+			"path":     f.Path,
+			"mode":     f.Mode,
+			"type":     "blob",
+			"encoding": "base64",
+			"content":  base64.StdEncoding.EncodeToString(f.Content),
 		})
 	}
 

@@ -90,21 +90,7 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 		return l.vendorFn(ctx, l.client, l.ui, l.org, l.repo)
 	}
 
-	paths, err := scaffold.ResolveVendoredCleanupPaths(ctx, l.client, l.org, l.repo, l.workflowPrefix(), l.binaryPath())
-	if err != nil {
-		return fmt.Errorf("resolving vendored cleanup paths: %w", err)
-	}
-
-	l.ui.StepStart("Removing stale vendored content")
-	removed, err := DeleteVendoredPaths(ctx, l.client, l.org, l.repo, paths)
-	if err != nil {
-		l.ui.StepFail("Failed to remove vendored content")
-		return fmt.Errorf("deleting vendored content: %w", err)
-	}
-	if removed > 0 {
-		l.ui.StepDone(fmt.Sprintf("removed %d stale vendored files", removed))
-	}
-	return nil
+	return RemoveStaleVendoredAssets(ctx, l.client, l.ui, l.org, l.repo, l.workflowPrefix(), l.binaryPath())
 }
 
 // Uninstall is a no-op. Vendored assets are removed when the config repo is

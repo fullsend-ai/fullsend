@@ -8,6 +8,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 const (
@@ -142,4 +144,38 @@ func DeleteVendoredPaths(ctx context.Context, client forge.Client, owner, repo s
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// RemoveStaleVendoredAssets deletes vendored assets when --vendor is not set.
+// It skips work when neither the vendor manifest nor vendored binary exists.
+func RemoveStaleVendoredAssets(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, workflowPrefix, binaryPath string) error {
+	manifestPath := scaffold.VendorManifestPath(workflowPrefix)
+	_, manifestErr := client.GetFileContent(ctx, owner, repo, manifestPath)
+	if manifestErr != nil && forge.IsNotFound(manifestErr) {
+		_, binErr := client.GetFileContent(ctx, owner, repo, binaryPath)
+		if binErr != nil && forge.IsNotFound(binErr) {
+			return nil
+		}
+		if binErr != nil {
+			return fmt.Errorf("checking vendored binary: %w", binErr)
+		}
+	} else if manifestErr != nil {
+		return fmt.Errorf("checking vendor manifest: %w", manifestErr)
+	}
+
+	paths, err := scaffold.ResolveVendoredCleanupPaths(ctx, client, owner, repo, workflowPrefix, binaryPath)
+	if err != nil {
+		return fmt.Errorf("resolving vendored cleanup paths: %w", err)
+	}
+
+	printer.StepStart("Removing stale vendored content")
+	removed, err := DeleteVendoredPaths(ctx, client, owner, repo, paths)
+	if err != nil {
+		printer.StepFail("Failed to remove vendored content")
+		return fmt.Errorf("deleting vendored content: %w", err)
+	}
+	if removed > 0 {
+		printer.StepDone(fmt.Sprintf("Removed %d stale vendored files", removed))
+	}
+	return nil
 }

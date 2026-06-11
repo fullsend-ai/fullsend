@@ -161,21 +161,7 @@ func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer
 		destPath = layers.VendoredBinaryPathPerRepo
 	}
 
-	paths, err := scaffold.ResolveVendoredCleanupPaths(ctx, client, owner, repo, pathPrefix, destPath)
-	if err != nil {
-		return fmt.Errorf("resolving vendored cleanup paths: %w", err)
-	}
-
-	printer.StepStart("Removing stale vendored content")
-	removed, err := layers.DeleteVendoredPaths(ctx, client, owner, repo, paths)
-	if err != nil {
-		printer.StepFail("Failed to remove vendored content")
-		return fmt.Errorf("deleting vendored content: %w", err)
-	}
-	if removed > 0 {
-		printer.StepDone(fmt.Sprintf("Removed %d stale vendored files", removed))
-	}
-	return nil
+	return layers.RemoveStaleVendoredAssets(ctx, client, printer, owner, repo, pathPrefix, destPath)
 }
 
 func vendorDryRunMessage(fullsendBinary, fullsendSource, destPath string) string {

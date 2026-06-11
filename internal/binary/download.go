@@ -176,6 +176,15 @@ func FetchSourceTree(version, destDir string) error {
 	return extractSourceTree(bytes.NewReader(buf.Bytes()), destDir)
 }
 
+func pathWithinDir(dir, target string) bool {
+	dir = filepath.Clean(dir)
+	target = filepath.Clean(target)
+	if target == dir {
+		return true
+	}
+	return strings.HasPrefix(target, dir+string(os.PathSeparator))
+}
+
 func extractSourceTree(r io.Reader, destDir string) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -218,6 +227,9 @@ func extractSourceTree(r io.Reader, destDir string) error {
 			continue
 		}
 		target := filepath.Join(tmpDir, rel)
+		if !pathWithinDir(tmpDir, target) {
+			return fmt.Errorf("extract path escapes destination: %s", rel)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
