@@ -42,6 +42,32 @@ Calibrate investigation to the diff size and nature.
   scope. If there is no linked issue, flag a `missing-authorization`
   finding — non-trivial changes require explicit authorization.
 
+## Resolving conflicts between linked issue and design specs
+
+When the linked issue explicitly authorizes behavior that deviates from
+an existing design spec, ADR, or AGENTS.md guidance, the issue represents
+the current decision — the spec represents the prior state. Do not flag
+this as scope creep or an architectural violation.
+
+Instead, raise an info-level `spec-drift` finding noting which spec is
+now outdated, so it can be updated separately. Reserve `scope-creep`
+findings for changes that go beyond what the linked issue authorized.
+
+To distinguish the two cases:
+
+- **Issue-authorized deviation:** The linked issue describes changing
+  behavior that a spec documents. The PR implements what the issue asks
+  for. This is not scope creep — the issue is the newer decision. Emit
+  an info-level `spec-drift` finding identifying the outdated spec.
+- **Unauthorized deviation:** The PR changes behavior beyond what the
+  linked issue describes, whether or not a spec covers that behavior.
+  This is scope creep. Flag it at the appropriate severity.
+
+When the issue references a spec indirectly (e.g., "change the uninstall
+behavior" without naming the spec), still treat the issue as authoritative
+for the behavior it describes. The `spec-drift` finding should identify
+which spec is affected so maintainers can update it.
+
 ## Revert PR authorization
 
 A PR is a candidate revert if **at least two** of the following signals
