@@ -106,7 +106,8 @@ lint-md-links:
 	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
 
 script-test:
-	bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh
+	bash scripts/check-e2e-authorization-test.sh
+	bash internal/scaffold/fullsend-repo/scripts/post-triage-github-test.sh
 	bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh
 	bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh
 	bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh
@@ -116,8 +117,8 @@ script-test:
 	bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh
 	python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py
 	python3 skills/topissues/scripts/topissues_test.py
-	bash internal/scaffold/fullsend-repo/scripts/pre-jira-triage-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-jira-triage-test.sh
+	bash internal/scaffold/fullsend-repo/scripts/pre-triage-jira-test.sh
+	bash internal/scaffold/fullsend-repo/scripts/post-triage-jira-test.sh
 
 test: lint-all go-test script-test
 

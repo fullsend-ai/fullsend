@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-jira-triage.sh — Fetch Jira issue data and prepare context for the triage agent.
+# pre-triage-jira.sh — Fetch Jira issue data and prepare context for the triage agent.
 #
 # Runs on the GitHub Actions host before the sandbox is created. Fetches issue
 # data from Jira using credentials that never enter the sandbox.
@@ -17,7 +17,7 @@ set -euo pipefail
 
 # --- Validate required env vars ---
 
-if [[ ! "${ISSUE_KEY:-}" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+if [[ ! "${ISSUE_KEY:-}" =~ ^[A-Z][A-Z0-9_]+-[0-9]+$ ]]; then
   echo "ERROR: ISSUE_KEY does not match Jira key pattern (e.g., PROJECT-123): ${ISSUE_KEY:-<unset>}"
   exit 1
 fi

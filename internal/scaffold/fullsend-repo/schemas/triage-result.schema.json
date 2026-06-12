@@ -26,7 +26,7 @@
     "duplicate_of": {
       "oneOf": [
         { "type": "integer", "minimum": 1 },
-        { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" }
+        { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+-[0-9]+$" }
       ],
       "description": "Issue number (GitHub) or issue key (Jira, e.g., PROJ-123)"
     },

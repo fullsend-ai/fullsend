@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# post-jira-triage.sh — Parse triage agent JSON output and apply Jira mutations.
+# post-triage-jira.sh — Parse triage agent JSON output and apply Jira mutations.
 #
 # Runs on the host after sandbox cleanup. Working directory is the fullsend
 # run output directory (e.g., /tmp/fullsend/agent-triage-<id>/iteration-1/).
@@ -191,7 +191,7 @@ case "${ACTION}" in
       exit 1
     fi
     # Validate that blocked_by looks like a Jira issue URL or key.
-    if [[ ! "${BLOCKED_BY}" =~ ^https?:// ]] && [[ ! "${BLOCKED_BY}" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+    if [[ ! "${BLOCKED_BY}" =~ ^https?:// ]] && [[ ! "${BLOCKED_BY}" =~ ^[A-Z][A-Z0-9_]+-[0-9]+$ ]]; then
       echo "ERROR: blocked_by must be a URL or a Jira issue key (e.g., PROJ-123): ${BLOCKED_BY}"
       exit 1
     fi
