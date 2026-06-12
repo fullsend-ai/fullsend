@@ -404,8 +404,15 @@ if [ -n "$ENABLED_REPOS" ]; then
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
-      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      # Compare decoded text instead of base64 to avoid false-positive drift
+      # detection from encoding differences (trailing newlines, line wrapping).
+      EXPECTED_DECODED=$(printf '%s' "$EXPECTED_B64" | base64 -d | tr -d '\r')
+      REMOTE_DECODED=$(printf '%s' "$REMOTE_B64" | base64 -d | tr -d '\r')
+      EXPECTED_MANAGED=$(printf '%s\n' "$EXPECTED_DECODED" | extract_managed_content)
+      REMOTE_MANAGED=$(printf '%s\n' "$REMOTE_DECODED" | extract_managed_content)
+      # When no sentinel is found (pre-sentinel shim), compare full decoded content.
+      [ -z "$EXPECTED_MANAGED" ] && EXPECTED_MANAGED="$EXPECTED_DECODED"
+      [ -z "$REMOTE_MANAGED" ] && REMOTE_MANAGED="$REMOTE_DECODED"
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))

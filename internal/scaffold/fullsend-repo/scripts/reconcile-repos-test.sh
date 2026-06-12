@@ -743,3 +743,107 @@ if ! grep -q "::warning::test-repo: non-comment content above sentinel was rejec
 fi
 
 echo "PASS: non-comment YAML above sentinel rejected by content-injection guard"
+
+# ===========================
+# Test 5: identical content with different trailing newlines is not flagged as stale
+# ===========================
+
+# Regression test for issue #2247: base64 comparison produced false-positive
+# drift detection when the remote and expected content were logically identical
+# but encoded with different trailing newlines (e.g. one trailing \n vs two).
+# The fix compares decoded text instead of re-encoded base64.
+
+rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
+
+# Generate the expected content (template with sentinel) — the "truth".
+IDENTICAL_MANAGED=$(cat "${CONFIG_DIR}/templates/shim-workflow-call.yaml")
+# The remote has the same text but an extra trailing newline, producing
+# different base64 from shim_content_b64. This simulates encoding
+# differences that can arise from GitHub's content API.
+IDENTICAL_REMOTE=$(printf '%s\n\n' "$IDENTICAL_MANAGED")
+IDENTICAL_B64=$(printf '%s' "$IDENTICAL_REMOTE" | /usr/bin/base64 | tr -d '\r\n')
+
+cat > "${MOCK_BIN}/gh" <<EOF5
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+has_input=false
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
+  cat > "${TMPDIR}/blob-input-test-repo.json"
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
+    json='{"content":"${IDENTICAL_B64}","sha":"file-sha"}'
+    ;;
+  repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF5
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout5.log" 2>&1 || true
+
+if grep -q "shim is stale" "${TMPDIR}/stdout5.log"; then
+  echo "FAIL: identical content with different trailing newline was flagged as stale"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+if ! grep -q "already enrolled (shim up to date)" "${TMPDIR}/stdout5.log"; then
+  echo "FAIL: identical content with different trailing newline was not recognized as current"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+if [ -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: blob was created for identical content (false positive drift)"
+  exit 1
+fi
+
+echo "PASS: identical content with different trailing newlines not flagged as stale"
