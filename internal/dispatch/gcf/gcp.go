@@ -1861,7 +1861,11 @@ func (c *LiveGCFClient) GetProjectNumber(ctx context.Context, projectID string) 
 	reqURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s",
 		url.PathEscape(projectID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+	// CRM is a global API — omit x-goog-user-project to avoid requiring
+	// the API to be enabled on the target project.
+	noQuotaClient := *c.Client
+	noQuotaClient.QuotaProject = ""
+	resp, err := noQuotaClient.DoRequest(ctx, http.MethodGet, reqURL, "")
 	if err != nil {
 		return "", fmt.Errorf("looking up project number: %w", err)
 	}
