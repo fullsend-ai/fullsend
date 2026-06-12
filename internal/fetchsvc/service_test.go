@@ -419,6 +419,29 @@ func TestServeHTTP_BadJSON(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_OversizedBody(t *testing.T) {
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/"),
+		WorkspaceRoot: t.TempDir(),
+		MaxFetches:    10,
+	})
+
+	longURL := `{"url":"https://example.com/` + strings.Repeat("a", maxRequestBytes) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/fetch", strings.NewReader(longURL))
+	rec := httptest.NewRecorder()
+
+	svc.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	var resp FetchResponse
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Error != "request body too large" {
+		t.Fatalf("error = %q, want 'request body too large'", resp.Error)
+	}
+}
+
 func TestServeHTTP_Forbidden(t *testing.T) {
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/allowed-org/"),

@@ -185,11 +185,12 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 			}
 		}
 
-		if _, err := fetch.CachePutDir(s.workspaceRoot, cleanURL, files); err != nil {
+		treeHash, err := fetch.CachePutDir(s.workspaceRoot, cleanURL, files)
+		if err != nil {
 			return FetchResponse{}, &fetchError{"failed to cache skill directory", http.StatusInternalServerError}
 		}
 
-		cachePath, err := fetch.CachePath(s.workspaceRoot, expectedHash)
+		cachePath, err := fetch.CachePath(s.workspaceRoot, treeHash)
 		if err != nil {
 			return FetchResponse{}, &fetchError{"internal error computing cache path", http.StatusInternalServerError}
 		}
@@ -215,7 +216,7 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 	}
 
 	if s.auditLogPath != "" {
-		_ = fetch.AppendFetchAudit(s.auditLogPath, fetch.FetchAuditEntry{
+		if err := fetch.AppendFetchAudit(s.auditLogPath, fetch.FetchAuditEntry{
 			TraceID:   s.traceID,
 			FetchTime: fetchedAt,
 			URL:       cleanURL,
@@ -223,7 +224,9 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 			FetchType: "runtime",
 			AllowedBy: allowedBy,
 			CacheHit:  cacheHit,
-		})
+		}); err != nil {
+			return FetchResponse{}, &fetchError{"failed to write audit log", http.StatusInternalServerError}
+		}
 	}
 
 	committed = true
@@ -241,6 +244,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var req FetchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, FetchResponse{Error: "request body too large"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, FetchResponse{Error: "invalid request body"})
 		return
 	}

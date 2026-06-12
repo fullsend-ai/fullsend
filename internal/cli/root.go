@@ -27,6 +27,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newInferenceCmd())
 	cmd.AddCommand(newLockCmd())
 	cmd.AddCommand(newMintCmd())
+	cmd.AddCommand(newFetchSkillCmd())
 	cmd.AddCommand(newRunCmd())
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newPostReviewCmd())
