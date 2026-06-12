@@ -301,10 +301,42 @@ runs:
       run: |
         IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
         echo "Pre-pulling sandbox image: ${IMAGE}"
-        DIGEST_BEFORE="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
+
+        # Check the digest of the locally loaded image (from cache).
+        LOCAL_DIGEST="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
+
+        # If we have a cached image, check the remote digest before pulling.
+        # skopeo inspect --no-tags issues a lightweight HEAD request (~1s) to
+        # the registry. When the remote digest matches the loaded image, we
+        # skip the pull entirely — saving ~30s of pull + ~2.5 min of
+        # save+upload on every run where the image hasn't changed.
+        SKIP_PULL=false
+        if [[ -n "${LOCAL_DIGEST}" ]]; then
+          # Prefer skopeo if available; fall back to unconditional pull.
+          if command -v skopeo &>/dev/null; then
+            REMOTE_DIGEST="$(skopeo inspect --no-tags "docker://${IMAGE}" 2>/dev/null | jq -r '.Digest // empty' || true)"
+            if [[ -n "${REMOTE_DIGEST}" && "${LOCAL_DIGEST}" == "${REMOTE_DIGEST}" ]]; then
+              echo "Cached image is current (digest: ${LOCAL_DIGEST}); skipping pull"
+              SKIP_PULL=true
+            elif [[ -n "${REMOTE_DIGEST}" ]]; then
+              echo "Remote digest differs (local: ${LOCAL_DIGEST}, remote: ${REMOTE_DIGEST}); pulling"
+            else
+              echo "::warning::Could not determine remote digest; falling back to pull"
+            fi
+          else
+            echo "::warning::skopeo not available; falling back to unconditional pull"
+          fi
+        fi
+
+        if [[ "${SKIP_PULL}" == "true" ]]; then
+          # Image is current — no pull, no save needed.
+          exit 0
+        fi
+
+        # Pull the image (first run, stale cache, or skopeo unavailable).
         timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
         DIGEST_AFTER="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
-        if [ "${DIGEST_BEFORE}" != "${DIGEST_AFTER}" ]; then
+        if [[ "${LOCAL_DIGEST}" != "${DIGEST_AFTER}" ]]; then
           echo "changed=true" >> "${GITHUB_OUTPUT}"
         fi
 
