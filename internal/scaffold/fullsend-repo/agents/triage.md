@@ -143,7 +143,7 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 
 **Resolution threshold: overall clarity >= 0.80**
 
-**Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with information gaps. The `sufficient` action means there are zero open questions that could affect implementation. When in doubt, ask.
+**Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open *user-facing* questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with user-facing information gaps. The `sufficient` action means there are zero open user-facing questions that could affect implementation. When in doubt, ask. Implementation-facing questions that cannot be self-resolved from repository context should be noted in `reasoning` but do not require `action: "insufficient"` unless they materially prevent triage — see the question classification rules above.
 
 ## Step 4: Decide and write result
 
