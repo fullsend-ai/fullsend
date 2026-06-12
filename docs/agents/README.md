@@ -6,7 +6,7 @@ the YAML files in [`internal/scaffold/fullsend-repo/harness/`](../../internal/sc
 
 | Agent | Summary |
 |-------|---------|
-| [Triage](triage.md) | Inspects new issues and produces structured triage decisions |
+| [Triage](triage.md) | Inspects issues (GitHub, Jira) and produces structured triage decisions |
 | [Prioritize](prioritize.md) | Scores issues using the RICE framework for project board ranking |
 | [Code](code.md) | Implements fixes and features from triaged issues |
 | [Review](review.md) | Reviews pull requests for correctness, security, and intent alignment |

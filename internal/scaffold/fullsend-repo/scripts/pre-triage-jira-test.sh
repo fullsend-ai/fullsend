@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# pre-jira-triage-test.sh — Test pre-jira-triage.sh with mock curl responses.
+# pre-triage-jira-test.sh — Test pre-triage-jira.sh with mock curl responses.
 #
 # Uses a mock curl command to capture calls without hitting a real Jira instance.
-# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/pre-jira-triage-test.sh
+# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/pre-triage-jira-test.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PRE_SCRIPT="${SCRIPT_DIR}/pre-jira-triage.sh"
+PRE_SCRIPT="${SCRIPT_DIR}/pre-triage-jira.sh"
 FAILURES=0
 
 # Create a temp directory for test fixtures and mock state.
@@ -220,7 +220,7 @@ export ISSUE_KEY="PROJ-123"
   bash "${PRE_SCRIPT}"
 ) > /dev/null 2>&1
 
-CONTEXT_FILE="/tmp/fullsend-jira-context-${ISSUE_KEY}.json"
+CONTEXT_FILE="/tmp/fullsend-triage-context-${ISSUE_KEY}.json"
 if [[ -f "${CONTEXT_FILE}" ]]; then
   echo "PASS: issue-context-json-written"
 else

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# post-jira-triage-test.sh — Test post-jira-triage.sh with fixture JSON inputs.
+# post-triage-jira-test.sh — Test post-triage-jira.sh with fixture JSON inputs.
 #
 # Uses mock curl and python3 commands to capture calls without hitting Jira.
-# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/post-jira-triage-test.sh
+# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/post-triage-jira-test.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-jira-triage.sh"
+POST_SCRIPT="${SCRIPT_DIR}/post-triage-jira.sh"
 FAILURES=0
 
 # Create a temp directory for test fixtures and mock state.

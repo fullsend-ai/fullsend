@@ -2,13 +2,15 @@
 
 <img src="icons/triage.png" alt="Triage agent icon" width="80">
 
-Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a structured triage decision that determines whether the issue is ready for implementation.
+Inspects an issue from any supported source (GitHub, Jira), assesses information sufficiency, asks clarifying questions when needed, and produces a structured triage decision that determines whether the issue is ready for implementation.
 
 ## How the agent works
 
-The triage agent is triggered when a new issue is opened or when an existing issue is updated. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
+The triage agent is source-agnostic. It supports GitHub issues (triggered on issue open/update) and Jira issues (triggered via Jira Automation webhook). The `TRIAGE_SOURCE` environment variable (`github` or `jira`) selects the data source; the scoring logic, questioning guidelines, and output schema are identical across sources.
 
-The agent runs in a read-only sandbox. It cannot modify issues, push code, or interact with external services. Its only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
+For GitHub issues, the agent fetches issue content via the `gh` CLI at runtime. For Jira issues, a pre-script fetches all data from Jira's REST API on the host (Jira credentials never enter the sandbox) and mounts it as a JSON file.
+
+The agent runs in a read-only sandbox. It cannot modify issues, push code, or interact with external services. Its only output is a structured JSON triage result consumed by the source-specific post-script, which applies labels and posts a summary comment (markdown for GitHub, ADF for Jira).
 
 ## How it helps
 
@@ -20,14 +22,24 @@ The agent runs in a read-only sandbox. It cannot modify issues, push code, or in
 
 | Command | Where | Effect |
 |---------|-------|--------|
-| `/fs-triage` | Issue comment | Runs triage on the issue |
+| `/fs-triage` | GitHub issue comment | Runs triage on the issue |
+| `/fs-triage` | Jira issue comment | Runs triage on the Jira issue (via Jira Automation webhook) |
 
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
+### GitHub triggers
+
 Triage also runs automatically when a new issue is opened, when an issue is
 edited, and when someone comments on an issue labeled `needs-info` (to
 re-evaluate after the reporter provides clarification).
+
+### Jira triggers
+
+Triage runs automatically when a new issue is created in an enrolled Jira
+project. The automatic trigger fires once at creation time; subsequent edits do
+not re-trigger automatically. Use `/fs-triage` in a Jira comment to re-evaluate
+after the reporter provides clarification or the issue is updated.
 
 ## Control labels
 
@@ -123,6 +135,42 @@ This gives the triage agent the subtlety it needs to distinguish between
 `kind/bug` and `kind/flaky-test`, or to know that `area/operator` applies to
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
+
+## Jira integration
+
+### Enrolling a Jira project
+
+To enable triage for a Jira project, run:
+
+```
+fullsend jira enroll <PROJECT-KEY> --host <jira-host>
+```
+
+This registers the project key in your `.fullsend` config repo and creates the
+two Jira Automation rules that fire the agent. See the
+[Jira Automation Webhook runbook](../runbooks/jira-automation-webhook.md) for
+the manual setup procedure.
+
+### Jira control labels
+
+Jira control labels are namespaced with `fullsend:` to avoid conflicts with
+your team's existing labeling scheme:
+
+| Label | Meaning |
+|-------|---------|
+| `fullsend:needs-info` | Same as `needs-info` for GitHub issues |
+| `fullsend:ready-to-code` | Same as `ready-to-code` for GitHub issues |
+| `fullsend:triaged` | Same as `triaged` for GitHub issues |
+| `fullsend:duplicate` | Same as `duplicate` for GitHub issues |
+| `fullsend:blocked` | Same as `blocked` for GitHub issues |
+| `fullsend:question` | Same as `question` for GitHub issues |
+| `fullsend:feature` | Feature request awaiting human prioritization |
+
+### Jira comment format
+
+Triage comments on Jira issues are posted in Atlassian Document Format (ADF).
+The post-script converts the agent's markdown output to ADF automatically via
+`scripts/markdown-to-adf.py`.
 
 ## Source
 

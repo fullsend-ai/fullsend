@@ -111,13 +111,14 @@ jobs:
             echo "::error::config.yaml not found in .fullsend repo"
             exit 1
           fi
-          ENROLLED=$(python3 -c "
-          import yaml
-          with open('${CONFIG_FILE}') as f:
+          ENROLLED=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('config.yaml') as f:
               cfg = yaml.safe_load(f)
           projects = cfg.get('jira_projects', [])
           keys = [p.get('project_key','') for p in projects]
-          print('true' if '${PROJECT_KEY}' in keys else 'false')
+          print('true' if key in keys else 'false')
           " 2>/dev/null || echo "false")
           if [[ "${ENROLLED}" != "true" ]]; then
             echo "::error::Jira project ${PROJECT_KEY} is not enrolled in fullsend"
@@ -131,34 +132,36 @@ jobs:
           PROJECT_KEY: ${{ inputs.project_key }}
         run: |
           set -euo pipefail
-          JIRA_HOST=$(python3 -c "
-          import yaml
+          JIRA_HOST=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
           with open('config.yaml') as f:
               cfg = yaml.safe_load(f)
           projects = cfg.get('jira_projects', [])
           for p in projects:
-              if p.get('project_key') == '${PROJECT_KEY}':
+              if p.get('project_key') == key:
                   print(p.get('host', ''))
                   break
           ")
-          LINKED_REPOS=$(python3 -c "
-          import yaml
+          LINKED_REPOS=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
           with open('config.yaml') as f:
               cfg = yaml.safe_load(f)
           projects = cfg.get('jira_projects', [])
           for p in projects:
-              if p.get('project_key') == '${PROJECT_KEY}':
+              if p.get('project_key') == key:
                   print(' '.join(p.get('linked_github_repos', [])))
                   break
           ")
           echo "jira_host=${JIRA_HOST}" >> "$GITHUB_OUTPUT"
           echo "linked_repos=${LINKED_REPOS}" >> "$GITHUB_OUTPUT"
 
-      - name: Mint jira-triage token
+      - name: Mint triage token
         id: app-token
         uses: ./.defaults/.github/actions/mint-token
         with:
-          role: jira-triage
+          role: triage
           repos: ${{ steps.jira-config.outputs.linked_repos || github.event.repository.name }}
           mint_url: ${{ inputs.mint_url }}
 
@@ -170,21 +173,22 @@ jobs:
 
       - name: Setup agent environment
         env:
-          AGENT_PREFIX: JIRA_TRIAGE_
-          JIRA_TRIAGE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          JIRA_TRIAGE_ISSUE_KEY: ${{ inputs.issue_key }}
-          JIRA_TRIAGE_JIRA_HOST: ${{ steps.jira-config.outputs.jira_host }}
-          JIRA_TRIAGE_LINKED_GITHUB_REPOS: ${{ steps.jira-config.outputs.linked_repos }}
-          JIRA_TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          JIRA_TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          AGENT_PREFIX: TRIAGE_
+          TRIAGE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TRIAGE_ISSUE_KEY: ${{ inputs.issue_key }}
+          TRIAGE_JIRA_HOST: ${{ steps.jira-config.outputs.jira_host }}
+          TRIAGE_LINKED_GITHUB_REPOS: ${{ steps.jira-config.outputs.linked_repos }}
+          TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
         run: bash .github/scripts/setup-agent-env.sh
 
-      - name: Run jira-triage agent
+      - name: Run triage agent
         uses: ./.defaults/
         env:
+          TRIAGE_SOURCE: jira
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         with:
-          agent: jira-triage
+          agent: triage
           version: ${{ inputs.fullsend_version }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
