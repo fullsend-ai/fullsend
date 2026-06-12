@@ -23,7 +23,20 @@ import (
 
 var validRunID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+var startBodyRe = regexp.MustCompile(`🤖 (.+?) · Started (\d{1,2}:\d{2} [AP]M UTC)`)
+
 const terminalTag = "<!-- fullsend:status:terminal -->"
+
+// TerminationReason describes why the agent process was terminated.
+type TerminationReason string
+
+const (
+	ReasonTerminated TerminationReason = "terminated"
+	ReasonCancelled  TerminationReason = "cancelled"
+)
+
+// now is overridable in tests to fix the current time for ReconcileOrphaned.
+var now = time.Now
 
 // Notifier manages status comment lifecycle for a single agent run.
 type Notifier struct {
@@ -312,7 +325,7 @@ func statusEmoji(status string) string {
 // the process that created it is gone.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string) error {
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -332,7 +345,9 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 			return nil
 		}
 		// Still in "Started" state — finalize it.
-		body := buildInterruptedBody(marker, runURL, sha)
+		desc, startTimeStr := parseStartBody(c.Body)
+		endTime := now().UTC()
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
 		if err := client.UpdateIssueComment(ctx, owner, repo, c.ID, body); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -344,15 +359,31 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 	return nil
 }
 
+// parseStartBody extracts the description and start time from an existing
+// start comment body. Returns empty strings if the pattern is not found.
+func parseStartBody(body string) (description, startTime string) {
+	m := startBodyRe.FindStringSubmatch(body)
+	if len(m) < 3 {
+		return "", ""
+	}
+	return m[1], m[2]
+}
+
 // buildInterruptedBody constructs the comment body for an orphaned status
-// comment that was interrupted by a hard process kill.
-func buildInterruptedBody(marker, runURL, sha string) string {
+// comment that was interrupted by a hard process kill or job cancellation.
+func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason) string {
+	statusLabel, heading := reasonLabel(reason, description)
+
 	var b strings.Builder
 	b.WriteString(marker)
 	b.WriteString("\n")
 	b.WriteString(terminalTag)
 	b.WriteString("\n")
-	b.WriteString("🤖 Agent run interrupted (process terminated)")
+	fmt.Fprintf(&b, "🤖 %s · %s", heading, statusLabel)
+	if startTimeStr != "" {
+		fmt.Fprintf(&b, " · Started %s", startTimeStr)
+	}
+	fmt.Fprintf(&b, " · Ended %s", formatTime(endTime))
 
 	var parts []string
 	if short := shortSHA(sha); short != "" {
@@ -366,4 +397,24 @@ func buildInterruptedBody(marker, runURL, sha string) string {
 		b.WriteString(strings.Join(parts, " · "))
 	}
 	return b.String()
+}
+
+func reasonLabel(reason TerminationReason, description string) (statusLabel, heading string) {
+	switch reason {
+	case ReasonCancelled:
+		statusLabel = "⚠️ Cancelled"
+		if description != "" {
+			heading = description
+		} else {
+			heading = "Agent run cancelled"
+		}
+	default:
+		statusLabel = "❌ Terminated"
+		if description != "" {
+			heading = description
+		} else {
+			heading = "Agent run interrupted"
+		}
+	}
+	return statusLabel, heading
 }

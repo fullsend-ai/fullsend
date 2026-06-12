@@ -66,6 +66,7 @@ fullsend
     ├── --run-id <string>                    #   Workflow run ID (marker key)
     ├── --run-url <url>                      #   Workflow run URL (optional)
     ├── --sha <string>                       #   Commit SHA (optional)
+    ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     └── --token <token>                      #   GitHub token (default: $GITHUB_TOKEN)
 ```
 

@@ -19,6 +19,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		runURL string
 		sha    string
 		token  string
+		reason string
 	)
 
 	cmd := &cobra.Command{
@@ -51,8 +52,16 @@ finalized, this is a no-op.`,
 			}
 			owner, repoName := parts[0], parts[1]
 
+			var termReason statuscomment.TerminationReason
+			switch reason {
+			case "cancelled":
+				termReason = statuscomment.ReasonCancelled
+			default:
+				termReason = statuscomment.ReasonTerminated
+			}
+
 			client := gh.New(token)
-			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha)
+			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason)
 		},
 	}
 
@@ -62,6 +71,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&runURL, "run-url", "", "URL to the workflow run (optional)")
 	cmd.Flags().StringVar(&sha, "sha", "", "commit SHA (optional, shown as short hash)")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&reason, "reason", "terminated", "termination reason: terminated or cancelled")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")

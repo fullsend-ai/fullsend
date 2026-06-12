@@ -395,6 +395,7 @@ runs:
         RUN_ID: ${{ github.run_id }}
         RUN_URL: ${{ inputs.run-url }}
         COMMIT_SHA: ${{ github.sha }}
+        JOB_STATUS: ${{ job.status }}
       run: |
         set -euo pipefail
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
@@ -413,6 +414,9 @@ runs:
         fi
         if [[ -n "${COMMIT_SHA}" ]]; then
           RECONCILE_FLAGS+=(--sha "${COMMIT_SHA}")
+        fi
+        if [[ "${JOB_STATUS}" == "cancelled" ]]; then
+          RECONCILE_FLAGS+=(--reason cancelled)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"

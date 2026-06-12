@@ -355,9 +355,16 @@ func TestMustBuildMarker_ValidInput(t *testing.T) {
 	})
 }
 
+func setNow(t *testing.T, fixed time.Time) {
+	t.Helper()
+	orig := now
+	now = func() time.Time { return fixed }
+	t.Cleanup(func() { now = orig })
+}
+
 func TestReconcileOrphaned_InvalidRunID(t *testing.T) {
 	fc := forge.NewFakeClient()
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "-->bad", "", "")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "-->bad", "", "", ReasonTerminated)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid run ID")
 }
@@ -529,6 +536,7 @@ func TestShortSHA_NonHexRejected(t *testing.T) {
 func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
 
 	// Simulate a "Started" comment left by a killed process.
 	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
@@ -539,16 +547,20 @@ func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
 	assert.Equal(t, 42, fc.UpdatedComments[0].CommentID)
-	assert.Contains(t, fc.UpdatedComments[0].Body, "interrupted")
-	assert.Contains(t, fc.UpdatedComments[0].Body, "<!-- fullsend:agent-status:run-99 -->")
-	assert.Contains(t, fc.UpdatedComments[0].Body, "<!-- fullsend:status:terminal -->")
-	assert.Contains(t, fc.UpdatedComments[0].Body, "Commit: `abc1234`")
-	assert.Contains(t, fc.UpdatedComments[0].Body, "[View workflow run →](https://ci/run/99)")
+	assert.Contains(t, body, "Code")
+	assert.Contains(t, body, "❌ Terminated")
+	assert.Contains(t, body, "Started 6:43 AM UTC")
+	assert.Contains(t, body, "Ended 7:12 AM UTC")
+	assert.Contains(t, body, "<!-- fullsend:agent-status:run-99 -->")
+	assert.Contains(t, body, "<!-- fullsend:status:terminal -->")
+	assert.Contains(t, body, "Commit: `abc1234`")
+	assert.Contains(t, body, "[View workflow run →](https://ci/run/99)")
 }
 
 func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
@@ -564,7 +576,7 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
@@ -574,7 +586,7 @@ func TestReconcileOrphaned_NoMatchingComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	// No comments at all.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
 	require.NoError(t, err)
 	assert.Empty(t, fc.UpdatedComments)
 }
@@ -592,7 +604,7 @@ func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not touch comment from different run")
@@ -602,7 +614,7 @@ func TestReconcileOrphaned_ListError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["ListIssueComments"] = fmt.Errorf("api error")
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing comments")
 }
@@ -610,6 +622,7 @@ func TestReconcileOrphaned_ListError(t *testing.T) {
 func TestReconcileOrphaned_NoURLOrSHA(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
 
 	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
 		{
@@ -619,13 +632,17 @@ func TestReconcileOrphaned_NoURLOrSHA(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
-	assert.Contains(t, fc.UpdatedComments[0].Body, "interrupted")
-	assert.NotContains(t, fc.UpdatedComments[0].Body, "Commit:")
-	assert.NotContains(t, fc.UpdatedComments[0].Body, "View workflow run")
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Code")
+	assert.Contains(t, body, "❌ Terminated")
+	assert.Contains(t, body, "Started 6:43 AM UTC")
+	assert.Contains(t, body, "Ended 7:12 AM UTC")
+	assert.NotContains(t, body, "Commit:")
+	assert.NotContains(t, body, "View workflow run")
 }
 
 func TestReconcileOrphaned_SkipsAlreadyInterrupted(t *testing.T) {
@@ -640,7 +657,7 @@ func TestReconcileOrphaned_SkipsAlreadyInterrupted(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not re-update already-interrupted comment")
@@ -660,7 +677,7 @@ func TestReconcileOrphaned_UpdateError(t *testing.T) {
 
 	fc.Errors["UpdateIssueComment"] = fmt.Errorf("api rate limited")
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def")
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating orphaned comment")
 }
@@ -730,4 +747,125 @@ func TestPostCompletion_AnalyzeTimelineError_UpdatesStartInPlace(t *testing.T) {
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Working")
 	comments := fc.IssueComments["org/repo/7"]
 	assert.Len(t, comments, 1, "should not create a new comment")
+}
+
+func TestReconcileOrphaned_CancelledReason(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 14, 47, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Reviewing this PR · Started 2:34 PM UTC\nCommit: `abc1234` · [View workflow run →](https://ci/run/99)",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled)
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Reviewing this PR")
+	assert.Contains(t, body, "⚠️ Cancelled")
+	assert.Contains(t, body, "Started 2:34 PM UTC")
+	assert.Contains(t, body, "Ended 2:47 PM UTC")
+	assert.Contains(t, body, terminalTag)
+}
+
+func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 14, 47, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\nSome manually edited comment",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Agent run interrupted")
+	assert.Contains(t, body, "❌ Terminated")
+	assert.NotContains(t, body, "Started")
+	assert.Contains(t, body, "Ended 2:47 PM UTC")
+	assert.Contains(t, body, terminalTag)
+}
+
+func TestParseStartBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantDesc  string
+		wantStart string
+	}{
+		{
+			name:      "standard",
+			body:      "🤖 Code · Started 2:34 PM UTC",
+			wantDesc:  "Code",
+			wantStart: "2:34 PM UTC",
+		},
+		{
+			name:      "multi-word description",
+			body:      "🤖 Reviewing this PR · Started 6:43 AM UTC\nCommit: `abc`",
+			wantDesc:  "Reviewing this PR",
+			wantStart: "6:43 AM UTC",
+		},
+		{
+			name:      "midnight",
+			body:      "🤖 Working · Started 12:00 AM UTC",
+			wantDesc:  "Working",
+			wantStart: "12:00 AM UTC",
+		},
+		{
+			name:      "no match",
+			body:      "no time here",
+			wantDesc:  "",
+			wantStart: "",
+		},
+		{
+			name:      "empty body",
+			body:      "",
+			wantDesc:  "",
+			wantStart: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, start := parseStartBody(tt.body)
+			assert.Equal(t, tt.wantDesc, desc)
+			assert.Equal(t, tt.wantStart, start)
+		})
+	}
+}
+
+func TestReconcileOrphaned_UnknownReasonDefaultsToTerminated(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 14, 47, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"))
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Code")
+	assert.Contains(t, body, "❌ Terminated")
+	assert.Contains(t, body, "Started 6:43 AM UTC")
+	assert.Contains(t, body, "Ended 2:47 PM UTC")
 }
