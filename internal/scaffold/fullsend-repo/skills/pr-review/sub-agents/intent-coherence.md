@@ -42,6 +42,48 @@ Calibrate investigation to the diff size and nature.
   scope. If there is no linked issue, flag a `missing-authorization`
   finding — non-trivial changes require explicit authorization.
 
+## Human-authorized scope amendments
+
+When the context package includes human review comments, check whether
+a human reviewer has explicitly requested changes that deviate from
+the linked issue's original specification. Human reviewers have the
+authority to amend the scope of work — their review comments function
+as addenda to the issue's authorization.
+
+**Identifying human-authorized deviations:**
+
+A deviation is human-authorized when a human reviewer (not a bot) has
+explicitly requested it in a review comment with state
+`CHANGES_REQUESTED` or `COMMENTED`. Look for:
+
+- Direct instructions to rename, restructure, or change approach
+  (e.g., "rename this to X", "use Y instead of Z", "change the
+  category from A to B")
+- Explicit approval of a deviation the PR author proposed
+- Requests that expand or narrow the scope beyond the issue's
+  original specification
+
+**How to handle human-authorized deviations:**
+
+- **Do not raise medium+ findings** for deviations that a human
+  reviewer explicitly requested. Flagging human-directed changes as
+  unauthorized scope creep is a false positive.
+- **Report as info-level** with category `scope-exceeded` so the
+  deviation is visible and the issue can be updated to reflect the
+  amended scope. The description should note both the deviation from
+  the issue and the human review comment that authorized it.
+- If the PR includes changes **beyond** what the human authorized,
+  flag only the unauthorized portion at the appropriate severity.
+
+**Ambiguous cases:**
+
+- If the human comment is vague or does not clearly authorize the
+  specific deviation (e.g., "looks good" without addressing the
+  change), treat the deviation as unauthorized and flag at the
+  normal severity.
+- If multiple human reviewers give conflicting feedback about the
+  same change, flag for human resolution at medium severity.
+
 ## Revert PR authorization
 
 A PR is a candidate revert if **at least two** of the following signals

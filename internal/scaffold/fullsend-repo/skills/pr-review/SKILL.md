@@ -181,6 +181,29 @@ rewrite), or if `total_commits` exceeds 250 (the compare API
 silently truncates file lists at 300 files), treat all files as
 changed — no anchoring for this run.
 
+### 2b. Human review comments
+
+Fetch human review comments from the PR to provide sub-agents with
+context about human-authorized scope changes. Human reviewers may
+request changes that deviate from the linked issue's original
+specification — sub-agents need visibility into these requests to
+avoid flagging human-directed changes as unauthorized scope creep.
+
+```bash
+# Fetch all review comments (not inline diff comments)
+PR_REVIEWS=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
+  --jq '[.[] | select(.user.type != "Bot") | {author: .user.login, state: .state, body: .body}]')
+```
+
+Filter to **human-authored reviews only** (exclude bot reviews by
+checking `.user.type != "Bot"`). Include the review state (`APPROVED`,
+`CHANGES_REQUESTED`, `COMMENTED`) so sub-agents can distinguish
+between casual comments and explicit change requests.
+
+If no human reviews exist, set `human_review_comments` to an empty
+list. This is normal for first-review PRs or PRs that have only
+received bot reviews.
+
 ### 3. Triage
 
 Classify the change and prepare context packages for sub-agents. This
@@ -303,6 +326,10 @@ For each selected sub-agent, assemble a context package containing:
 - `pr_metadata`: title, body, author, labels
 - `issue_context`: linked issue title, body, comments (for
   `intent-coherence`)
+- `human_review_comments`: human-authored review comments from prior
+  PR review cycles (from 2b), for `intent-coherence`. These provide
+  context about human-authorized scope amendments that may deviate
+  from the linked issue's original specification.
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
 
 ### 4. Dispatch sub-agents
@@ -349,6 +376,9 @@ For each selected sub-agent:
 
    ### Issue context
    <linked issue content or "no linked issue">
+
+   ### Human review comments
+   <human review comments JSON or "none">
    ```
 
    **Part 5 — Dispatch guard flag:**
