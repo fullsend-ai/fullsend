@@ -130,6 +130,12 @@ Examples of work that could move this forward:
 
 With feature refinement establishing the pattern, extend agent capabilities deeper into project management — picking up stories, refining acceptance criteria, and linking implementation back to tracking. This extends fullsend's trigger model beyond forge events into project management systems.
 
+Examples of work that could move this forward:
+
+- JIRA trigger model ([#2263](https://github.com/fullsend-ai/fullsend/issues/2263))
+- Per-agent JIRA support: triage ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), code ([#2265](https://github.com/fullsend-ai/fullsend/issues/2265)), prioritize ([#2266](https://github.com/fullsend-ai/fullsend/issues/2266)), retro ([#2267](https://github.com/fullsend-ai/fullsend/issues/2267)), review ([#2268](https://github.com/fullsend-ai/fullsend/issues/2268)), refine ([#1341](https://github.com/fullsend-ai/fullsend/issues/1341))
+- JIRA identity and credential management ([#2269](https://github.com/fullsend-ai/fullsend/issues/2269))
+
 ### Auto-merge readiness
 
 With trustworthiness evidence accumulating, we begin reasoning about where auto-merge is safe — identifying specific codepaths or repositories where the evidence supports it and defining what the threshold looks like.
