@@ -1,17 +1,14 @@
-# Reusable triage agent workflow. Called by thin callers in .fullsend repos
+# Reusable Jira triage agent workflow. Called by thin callers in .fullsend repos
 # via workflow_call. Runs in the caller's repo context (secrets, checkout).
-name: Triage Agent
+name: Jira Triage Agent
 
 on:
   workflow_call:
     inputs:
-      event_type:
+      issue_key:
         required: true
         type: string
-      source_repo:
-        required: true
-        type: string
-      event_payload:
+      project_key:
         required: true
         type: string
       mint_url:
@@ -38,6 +35,10 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      JIRA_EMAIL:
+        required: true
+      JIRA_API_TOKEN:
+        required: true
 
 jobs:
   triage:
@@ -47,7 +48,6 @@ jobs:
       actions: write
       contents: read
       id-token: write
-      issues: write
 
     steps:
       - name: Checkout config repository
@@ -100,29 +100,70 @@ jobs:
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
-      - name: Validate enrollment and extract repo metadata
-        id: repo-parts
-        uses: ./.defaults/.github/actions/validate-enrollment
-        with:
-          source_repo: ${{ inputs.source_repo }}
-          install_mode: ${{ inputs.install_mode }}
+      - name: Validate Jira enrollment
+        id: validate
+        env:
+          PROJECT_KEY: ${{ inputs.project_key }}
+        run: |
+          set -euo pipefail
+          CONFIG_FILE="config.yaml"
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "::error::config.yaml not found in .fullsend repo"
+            exit 1
+          fi
+          ENROLLED=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          keys = [p.get('project_key','') for p in projects]
+          print('true' if key in keys else 'false')
+          " 2>/dev/null || echo "false")
+          if [[ "${ENROLLED}" != "true" ]]; then
+            echo "::error::Jira project ${PROJECT_KEY} is not enrolled in fullsend"
+            exit 1
+          fi
+          echo "::notice::Jira project ${PROJECT_KEY} is enrolled — proceeding with triage"
+
+      - name: Extract Jira project config
+        id: jira-config
+        env:
+          PROJECT_KEY: ${{ inputs.project_key }}
+        run: |
+          set -euo pipefail
+          JIRA_HOST=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          for p in projects:
+              if p.get('project_key') == key:
+                  print(p.get('host', ''))
+                  break
+          ")
+          LINKED_REPOS=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          for p in projects:
+              if p.get('project_key') == key:
+                  print(' '.join(p.get('linked_github_repos', [])))
+                  break
+          ")
+          echo "jira_host=${JIRA_HOST}" >> "$GITHUB_OUTPUT"
+          echo "linked_repos=${LINKED_REPOS}" >> "$GITHUB_OUTPUT"
 
       - name: Mint triage token
         id: app-token
         uses: ./.defaults/.github/actions/mint-token
         with:
           role: triage
-          repos: ${{ steps.repo-parts.outputs.name }}
+          repos: ${{ steps.jira-config.outputs.linked_repos || github.event.repository.name }}
           mint_url: ${{ inputs.mint_url }}
-
-      - name: Checkout target repository
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ inputs.source_repo }}
-          token: ${{ steps.app-token.outputs.token }}
-          path: target-repo
-          fetch-depth: 1
-          persist-credentials: false
 
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp
@@ -134,7 +175,9 @@ jobs:
         env:
           AGENT_PREFIX: TRIAGE_
           TRIAGE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TRIAGE_TARGET_REPO_DIR: target-repo
+          TRIAGE_ISSUE_KEY: ${{ inputs.issue_key }}
+          TRIAGE_JIRA_HOST: ${{ steps.jira-config.outputs.jira_host }}
+          TRIAGE_LINKED_GITHUB_REPOS: ${{ steps.jira-config.outputs.linked_repos }}
           TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
         run: bash .github/scripts/setup-agent-env.sh
@@ -142,12 +185,10 @@ jobs:
       - name: Run triage agent
         uses: ./.defaults/
         env:
-          TRIAGE_SOURCE: github
-          GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          TRIAGE_SOURCE: jira
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         with:
           agent: triage
           version: ${{ inputs.fullsend_version }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          status-repo: ${{ inputs.source_repo }}
-          status-number: ${{ fromJSON(inputs.event_payload).issue.number }}
-          status-token: ${{ steps.app-token.outputs.token }}

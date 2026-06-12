@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# post-triage-test.sh — Test post-triage.sh with fixture JSON inputs.
+# post-triage-github-test.sh — Test post-triage-github.sh with fixture JSON inputs.
 #
 # Uses a mock gh command to capture calls without hitting GitHub.
-# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh
+# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/post-triage-github-test.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-triage.sh"
+POST_SCRIPT="${SCRIPT_DIR}/post-triage-github.sh"
 FAILURES=0
 
 # Create a temp directory for test fixtures and mock state.

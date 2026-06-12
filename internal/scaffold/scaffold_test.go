@@ -94,6 +94,13 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/post-prioritize-test.sh",
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
+		".github/workflows/jira-dispatch.yml",
+		".github/workflows/jira-triage.yml",
+		"scripts/pre-triage-github.sh",
+		"scripts/post-triage-github.sh",
+		"scripts/pre-triage-jira.sh",
+		"scripts/post-triage-jira.sh",
+		"scripts/markdown-to-adf.py",
 	}
 
 	for _, path := range expected {

@@ -24,16 +24,19 @@
       "$ref": "#/$defs/clarity_scores"
     },
     "duplicate_of": {
-      "type": "integer",
-      "minimum": 1
+      "oneOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" }
+      ],
+      "description": "Issue number (GitHub) or issue key (Jira, e.g., PROJ-123)"
     },
     "triage_summary": {
       "$ref": "#/$defs/triage_summary"
     },
     "blocked_by": {
       "type": "string",
-      "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$",
-      "description": "HTML URL of the blocking issue or PR (e.g., https://github.com/org/repo/issues/99 or https://github.com/org/repo/pull/55)"
+      "pattern": "^([A-Z][A-Z0-9_]+-[0-9]+|https?://.+)$",
+      "description": "Blocking issue: GitHub URL, Jira key (e.g., PROJ-99), or Jira browse URL"
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
