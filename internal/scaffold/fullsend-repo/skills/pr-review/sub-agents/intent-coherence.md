@@ -49,24 +49,32 @@ an existing design spec, ADR, or AGENTS.md guidance, the issue represents
 the current decision — the spec represents the prior state. Do not flag
 this as scope creep or an architectural violation.
 
-Instead, raise an info-level `spec-drift` finding noting which spec is
-now outdated, so it can be updated separately. Reserve `scope-creep`
-findings for changes that go beyond what the linked issue authorized.
+Instead, raise a `spec-change` finding noting which spec the issue's
+decision supersedes. If the PR does not include updates to the affected
+spec (or a new ADR superseding it), flag this as a medium-severity
+`spec-change` finding — the PR should land with in-repo documentation
+consistent with the new behavior. If the PR does update the spec, emit
+the `spec-change` finding at info level for transparency. Reserve
+`scope-creep` findings for changes that go beyond what the linked issue
+authorized.
 
 To distinguish the two cases:
 
 - **Issue-authorized deviation:** The linked issue describes changing
   behavior that a spec documents. The PR implements what the issue asks
   for. This is not scope creep — the issue is the newer decision. Emit
-  an info-level `spec-drift` finding identifying the outdated spec.
+  a `spec-change` finding identifying the affected spec. If the PR
+  updates the spec to match, use info severity. If the spec is not
+  updated in the PR, use medium severity so the author adds the update
+  before merging.
 - **Unauthorized deviation:** The PR changes behavior beyond what the
   linked issue describes, whether or not a spec covers that behavior.
   This is scope creep. Flag it at the appropriate severity.
 
 When the issue references a spec indirectly (e.g., "change the uninstall
 behavior" without naming the spec), still treat the issue as authoritative
-for the behavior it describes. The `spec-drift` finding should identify
-which spec is affected so maintainers can update it.
+for the behavior it describes. The `spec-change` finding should identify
+which spec is affected so the PR can include the necessary updates.
 
 ## Revert PR authorization
 
