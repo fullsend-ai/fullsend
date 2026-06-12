@@ -17,6 +17,10 @@ host_files:
   - src: env/triage.env
     dest: /sandbox/workspace/.env.d/triage.env
     expand: true
+  # Jira context JSON — pre-script writes this on host; only exists for Jira runs.
+  - src: /tmp/fullsend-triage-context-${ISSUE_KEY}.json
+    dest: /sandbox/workspace/issue-context.json
+    optional: true
 
 skills:
   - skills/issue-labels
@@ -30,8 +34,14 @@ validation_loop:
 post_script: scripts/post-triage.sh
 
 runner_env:
-  GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+  TRIAGE_SOURCE: ${TRIAGE_SOURCE}
   GH_TOKEN: ${GH_TOKEN}
   FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
+  # GitHub-specific (empty when source=jira)
+  GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+  # Jira-specific (empty when source=github)
+  ISSUE_KEY: ${ISSUE_KEY}
+  JIRA_HOST: ${JIRA_HOST}
+  LINKED_GITHUB_REPOS: ${LINKED_GITHUB_REPOS}
 
 timeout_minutes: 10

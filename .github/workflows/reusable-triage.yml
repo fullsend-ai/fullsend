@@ -142,6 +142,7 @@ jobs:
       - name: Run triage agent
         uses: ./.defaults/
         env:
+          TRIAGE_SOURCE: github
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
         with:
           agent: triage

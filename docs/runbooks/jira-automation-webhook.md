@@ -226,7 +226,7 @@ Use the same `<ORG>` value as Rule 1.
 - **Project not enrolled.** Run `fullsend jira enroll <PROJECT-KEY> --host <jira-host>`.
   Check the `.fullsend` repo for a config entry for the project key.
 - **Jira credentials missing.** The agent needs a Jira API token to read issue
-  content and post comments. Check that `JIRA_API_TOKEN` and `JIRA_USER_EMAIL`
+  content and post comments. Check that `JIRA_API_TOKEN` and `JIRA_EMAIL`
   are configured in the `.fullsend` repo's GitHub Actions secrets.
 - **Read the run logs.** In GitHub → `.fullsend` → **Actions** → click the
   failed run → expand the failing step. The agent logs the exact error before

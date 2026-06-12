@@ -10,7 +10,7 @@
 #   JIRA_EMAIL          — Jira user email
 #   JIRA_API_TOKEN      — Jira API token
 #
-# Output: writes issue-context.json to /tmp/fullsend-jira-context-${ISSUE_KEY}.json
+# Output: writes issue-context.json to /tmp/fullsend-triage-context-${ISSUE_KEY}.json
 # The harness mounts this into the sandbox at /sandbox/workspace/issue-context.json.
 
 set -euo pipefail
@@ -39,7 +39,7 @@ fi
 
 # FULLSEND_WORKSPACE is an in-sandbox path not available to pre-scripts.
 # Write to a deterministic host temp path; the harness mounts it into the sandbox.
-CONTEXT_FILE="/tmp/fullsend-jira-context-${ISSUE_KEY}.json"
+CONTEXT_FILE="/tmp/fullsend-triage-context-${ISSUE_KEY}.json"
 
 JIRA_BASE="https://${JIRA_HOST}/rest/api/3"
 # base64 -w0 is Linux-specific; macOS base64 wraps at 76 chars by default.
@@ -172,7 +172,10 @@ TEAM_USAGE=$(jira_get "${JIRA_BASE}/search?jql=project=${PROJECT_KEY}+AND+issuet
     }' \
   || echo '{"type_counts": [], "common_labels": []}')
 
-echo "::notice::Step 2 complete: issue=${ISSUE_KEY}, type=${ISSUE_TYPE}, level=${LEVEL}, status=${STATUS}"
+SAFE_TYPE=$(echo "${ISSUE_TYPE}" | tr -dc '[:alnum:] _-')
+SAFE_STATUS=$(echo "${STATUS}" | tr -dc '[:alnum:] _-')
+SAFE_LEVEL=$(echo "${LEVEL}" | tr -dc '[:alnum:]_-')
+echo "::notice::Step 2 complete: issue=${ISSUE_KEY}, type=${SAFE_TYPE}, level=${SAFE_LEVEL}, status=${SAFE_STATUS}"
 
 # --- Step 3: JQL search for related (potentially duplicate) issues ---
 

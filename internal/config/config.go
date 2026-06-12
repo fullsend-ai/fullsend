@@ -80,7 +80,7 @@ type OrgConfig struct {
 
 // ValidRoles returns the set of recognized agent roles.
 func ValidRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "jira-triage"}
+	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize"}
 }
 
 // ValidProviders returns the set of recognized inference providers.

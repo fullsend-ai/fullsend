@@ -1,9 +1,11 @@
 ---
 version: 1
 
-# Sandbox policy for the triage agent.
+# Sandbox policy for the triage agent (all sources: GitHub, Jira, etc.).
 #
 # Needs GitHub API for issue/PR triage and Vertex AI for inference.
+# For Jira sources, all Jira data is pre-fetched by the host-side pre-script;
+# Jira credentials never enter the sandbox.
 # curl intentionally excluded from vertex_ai binaries to prevent
 # disallowedTools bypass via raw HTTP with the injected GH_TOKEN.
 
