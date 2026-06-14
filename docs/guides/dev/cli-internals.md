@@ -33,6 +33,7 @@ fullsend
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── lock             <agent-name>             # Pin remote deps to lock.yaml
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
@@ -42,6 +43,7 @@ fullsend
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
+│   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
 │   ├── --debug [filter]                     #   Enable Claude Code debug logging
 │   ├── --offline                            #   Reject network fetches
@@ -51,13 +53,22 @@ fullsend
 │   ├── --status-repo <owner/repo>           #   Repository for status comments
 │   ├── --status-number <int>                #   Issue/PR number for status comments
 │   └── --status-token <token>               #   Token for status comments (default: GH_TOKEN)
+├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
 ├── post-review                              # Post PR review comments to GitHub
-└── post-comment                             # Post issue/PR comments to GitHub
+├── post-comment                             # Post issue/PR comments to GitHub
+└── reconcile-status                         # Finalize orphaned status comments
+    ├── --repo <owner/repo>                  #   Repository in owner/repo format
+    ├── --number <int>                       #   Issue/PR number
+    ├── --run-id <string>                    #   Workflow run ID (marker key)
+    ├── --run-url <url>                      #   Workflow run URL (optional)
+    ├── --sha <string>                       #   Commit SHA (optional)
+    ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
+    └── --token <token>                      #   GitHub token (default: $GITHUB_TOKEN)
 ```
 
 ### Command Decomposition
@@ -71,7 +82,7 @@ The `admin install` command performs all setup in a single invocation. The `mint
 | Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
-The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md).
+The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md).
 
 ### Token Resolution Chain
 
@@ -261,7 +272,8 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────┐                                                │
-│  │ Load harness │ Parse YAML config for agent                   │
+│  │ Load harness │ LoadWithBase: unmarshal → compose base →       │
+│  │              │ ResolveForge(--forge / env) → Validate        │
 │  └──────┬──────┘                                                │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -303,6 +315,8 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 │  │  ├── PATH=/sandbox/workspace/bin:$PATH   │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
+│  │  ├── FULLSEND_FETCH_URL=http://host:port/fetch (if active)│  │
+│  │  ├── FULLSEND_FETCH_TOKEN=<per-run token> (if active)│       │
 │  │  └── sources .env.d/*.env files          │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
@@ -532,8 +546,8 @@ var executableFiles = map[string]struct{}{
 ## See Also
 
 - [Local Development](local-dev.md) — Development environment setup
-- [Installing fullsend](../getting-started/installation.md) — End-user setup and all-in-one admin install
-- [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup guide
+- [Installing fullsend](../../reference/installation.md) — End-user setup and all-in-one admin install
+- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
 - [Customizing Agents](../user/customizing-agents.md) — User customization guide

@@ -1,6 +1,6 @@
 # Infrastructure Reference
 
-This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Installation Guide](../getting-started/installation.md).
+This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Installation Guide](../../reference/installation.md).
 
 ## Token Mint (OIDC) — GCF Cloud Function
 
@@ -185,7 +185,7 @@ During installation, the GCF provisioner creates:
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) for the full GitHub management guide.
+> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) for the full GitHub management guide.
 
 Secrets and variables are deployed at different scopes depending on the installation mode.
 
@@ -303,7 +303,7 @@ The GCF provisioner avoids redundant Cloud Function deployments by computing a S
 
 ## See Also
 
-- [Installation Guide](../getting-started/installation.md) — Setup instructions (end-user and all-in-one)
+- [Installation Guide](../../reference/installation.md) — Setup instructions (end-user and all-in-one)
 - [Mint service administration](mint-administration.md) — Deploying and managing the token mint
-- [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup guide
+- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
 - [Local Development](../dev/local-dev.md) — Developer setup

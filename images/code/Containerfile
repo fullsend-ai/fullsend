@@ -5,7 +5,7 @@
 #   - lychee (markdown link checker for pre-commit hooks)
 #   - scan-secrets (gitleaks wrapper for code-implementation skill)
 #
-# The base image already provides Claude Code, rsync, gitleaks, tirith,
+# The base image already provides Claude Code, jq, gitleaks, tirith,
 # pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model.
 # See images/sandbox/Containerfile in fullsend-ai/fullsend for the base definition.
 #
@@ -71,16 +71,6 @@ RUN case "$TARGETARCH" in \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    GOPATH="/sandbox/go" \
-    GOMODCACHE="/sandbox/go/pkg/mod"
-
-# ---------------------------------------------------------------------------
-# gopls — Go language server for Claude Code LSP code intelligence.
-ARG GOPLS_VERSION=0.22.0
-RUN GOBIN=/usr/local/go/bin go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" \
-    && gopls version
-
 # ---------------------------------------------------------------------------
 # lychee — markdown link checker used by pre-commit hooks (lint-md-links).
 # Baked into the image so pre-commit hooks work without network access.
@@ -122,3 +112,18 @@ COPY scan-secrets /usr/local/bin/scan-secrets
 RUN chmod +x /usr/local/bin/scan-secrets
 
 USER sandbox
+
+# ---------------------------------------------------------------------------
+# Go environment — explicit so the sandbox user's GOPATH/GOMODCACHE are
+# self-documenting and don't rely on HOME inference.
+# /sandbox/go/bin is placed AFTER system paths so sandbox-user binaries
+# cannot shadow trusted system tools (go, git, scan-secrets, etc.).
+ENV GOPATH="/sandbox/go" \
+    PATH="/usr/local/go/bin:/sandbox/go/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# gopls — Go language server for Claude Code LSP code intelligence.
+# Installed as sandbox user so /sandbox/go is owned by sandbox at runtime,
+# allowing go build and go test to write the module cache.
+ARG GOPLS_VERSION=0.22.0
+RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version

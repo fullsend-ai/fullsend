@@ -5,6 +5,9 @@ model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/prioritize.yaml
 
+role: prioritize
+slug: fullsend-ai-prioritize
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

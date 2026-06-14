@@ -56,16 +56,21 @@ is_bot_user() {
 # Configuration
 # ---------------------------------------------------------------------------
 PROTECTED_PATHS=(
-  ".github/"
   ".claude/"
+  ".cursor/"
+  ".gitattributes"
+  ".github/"
+  ".pre-commit-config.yaml"
+  "AGENTS.md"
   "agents/"
+  "api-servers/"
+  "CLAUDE.md"
+  "CODEOWNERS"
   "harness/"
   "plugins/"
   "policies/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
+  "scripts/"
+  "skills/"
 )
 
 GITLEAKS_VERSION="8.30.1"
@@ -192,6 +197,23 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
   echo "Secret scan passed — no leaks in agent's commit(s)"
+
+  # -------------------------------------------------------------------------
+  # 2b. Reject Signed-off-by trailers
+  #
+  # Agents must never produce Signed-off-by trailers. DCO is a human
+  # attestation — the DCO app already waives the check for bot authors.
+  # The bot noreply email makes the trailer ~90 characters, which causes
+  # gitlint body-max-line-length failures in repos with a 72-char limit.
+  # -------------------------------------------------------------------------
+  echo "Checking for Signed-off-by trailers in agent's commit(s)..."
+  if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+    echo "::error::BLOCKED — agent commit contains a Signed-off-by trailer"
+    echo "::error::Agents must not use 'git commit -s' or append Signed-off-by trailers."
+    echo "::error::DCO is a human attestation; the DCO app waives the check for bots."
+    exit 1
+  fi
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
 
 # ---------------------------------------------------------------------------

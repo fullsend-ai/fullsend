@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +40,7 @@ type Runtime interface {
 	WorkspaceDir() string
 	EnvExports() []string
 	Bootstrap(input BootstrapInput) error
-	Run(params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (exitCode int, err error)
+	Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (exitCode int, err error)
 	ClearIterationArtifacts(sandboxName string) error
 }
 

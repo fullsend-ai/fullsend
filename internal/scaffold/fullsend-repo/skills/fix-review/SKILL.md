@@ -347,6 +347,13 @@ git diff --cached --stat
 scan-secrets --staged
 ```
 
+**NEVER use `git commit -s` or add `Signed-off-by` trailers.** DCO is a
+human attestation of personhood and legal authority to contribute — agents
+are not people. The DCO app already waives the check for bot authors, so
+the trailer is unnecessary. Including it causes gitlint
+`body-max-line-length` failures because the bot noreply email makes the
+trailer ~90 characters.
+
 **8c. Commit**
 
 The commit message must:

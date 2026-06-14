@@ -991,31 +991,53 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
 	}
 
-	var vendorAssetCount int
 	if vendor {
 		var vendorErr error
-		files, vendorAssetCount, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, vendor, fullsendBinary, fullsendSource)
+		files, _, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, vendor, fullsendBinary, fullsendSource)
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
 	}
-	if vendorAssetCount > 0 {
-		printer.StepStart(fmt.Sprintf("Writing per-repo scaffold and vendored assets (%d content files)", vendorAssetCount))
-	} else {
-		printer.StepStart("Writing per-repo scaffold files")
+
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets); err != nil {
+		return err
 	}
+
+	if !vendor {
+		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo, true); err != nil {
+			return err
+		}
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Per-repo installation complete for %s/%s", owner, repo))
+	return nil
+}
+
+// applyPerRepoScaffold commits scaffold files to the repo's default branch
+// and configures the repository variables and secrets needed for fullsend.
+func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.Printer,
+	owner, repo string, files []forge.TreeFile,
+	repoVars, repoSecrets map[string]string) error {
+
+	targetRepo, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("getting repo info: %w", err)
+	}
+	printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
+		owner, repo, targetRepo.DefaultBranch))
 	committed, err := client.CommitFiles(ctx, owner, repo,
 		fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version), files)
 	if err != nil {
-		printer.StepFail("Failed to write scaffold files")
+		printer.StepFail("Failed to commit scaffold files")
 		return fmt.Errorf("committing scaffold files: %w", err)
 	}
 	if committed {
-		if vendorAssetCount > 0 {
-			printer.StepDone(fmt.Sprintf("Wrote %d scaffold files and vendored binary (%d content files)", len(files), vendorAssetCount))
-		} else {
-			printer.StepDone(fmt.Sprintf("Wrote %d files", len(files)))
+		noun := "files"
+		if len(files) == 1 {
+			noun = "file"
 		}
+		printer.StepDone(fmt.Sprintf("Pushed %d %s to %s", len(files), noun, targetRepo.DefaultBranch))
 	} else {
 		printer.StepDone("Scaffold up to date")
 	}
@@ -1038,14 +1060,6 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	}
 	printer.StepDone(fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
 
-	if !vendor {
-		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo, true); err != nil {
-			return err
-		}
-	}
-
-	printer.Blank()
-	printer.StepDone(fmt.Sprintf("Per-repo installation complete for %s/%s", owner, repo))
 	return nil
 }
 
@@ -1593,6 +1607,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	// apps that block reinstallation (PEM keys are one-shot).
 	var agentSlugs []string
 	var configMode string
+	var enrolledRepos []string
 	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
 		if parsedCfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
@@ -1600,6 +1615,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 				agentSlugs = append(agentSlugs, agent.Slug)
 			}
 			configMode = parsedCfg.Dispatch.Mode
+			enrolledRepos = parsedCfg.EnabledRepos()
 		} else {
 			printer.StepWarn(fmt.Sprintf("Could not parse existing config: %v; using defaults", parseErr))
 		}
@@ -1649,7 +1665,6 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	}
 
 	// Build a minimal stack for uninstall.
-	// Only ConfigRepoLayer matters for uninstall since other layers are no-ops.
 	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "")
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
@@ -1657,7 +1672,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewInferenceLayer(org, client, nil, printer),
 		dispatchLayer,
-		layers.NewEnrollmentLayer(org, client, nil, nil, printer),
+		layers.NewEnrollmentLayer(org, client, nil, enrolledRepos, printer),
 	)
 
 	if err := runPreflight(ctx, stack, layers.OpUninstall, client, printer); err != nil {

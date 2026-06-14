@@ -14,6 +14,9 @@ model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/code.yaml
 
+role: coder
+slug: fullsend-ai-coder
+
 pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 

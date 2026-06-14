@@ -577,17 +577,21 @@ findings.
 
 Protected paths (kept in sync with `post-review.sh`):
 
-- `.github/`
 - `.claude/`
+- `.cursor/`
+- `.gitattributes`
+- `.github/`
+- `.pre-commit-config.yaml`
+- `AGENTS.md`
 - `agents/`
+- `api-servers/`
+- `CLAUDE.md`
+- `CODEOWNERS`
 - `harness/`
 - `plugins/`
 - `policies/`
 - `scripts/`
-- `api-servers/`
-- `CODEOWNERS`
-- `.pre-commit-config.yaml`
-- `.gitattributes`
+- `skills/`
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the list above.
@@ -692,8 +696,9 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 - **Only include finding severity sections that have findings.** If
   there are no critical findings, omit the `#### Critical` heading
   entirely. If the only findings are medium/low/info, only show that
-  section. If there are no findings at all, state "No findings." in
-  place of the findings section.
+  section. If there are no findings at all, set the body to
+  the hidden SHA comment followed by a newline and "Looks good to me"
+  — omit the `## Review` header and `### Findings` section entirely.
 - **No footer.** Do not repeat the outcome or include boilerplate
   about pushes clearing the review.
 
@@ -710,7 +715,7 @@ The table below lists the **additional** required fields per action:
 
 | Outcome         | Action            | Required fields                                                                               |
 |-----------------|-------------------|-----------------------------------------------------------------------------------------------|
-| approve         | `approve`         | `body`, `head_sha`; include `findings[]` when low/info findings are actionable follow-up work |
+| approve         | `approve`         | `body`, `head_sha`; set `body` to "Looks good to me" (preceded by the hidden SHA comment) when there are no findings; include `findings[]` when low/info findings are actionable follow-up work |
 | request-changes | `request-changes` | `body`, `head_sha`, `findings[]`                                                              |
 | comment-only    | `comment`         | `body`, `head_sha`                                                                            |
 | failure         | `failure`         | `reason` (body optional)                                                                      |

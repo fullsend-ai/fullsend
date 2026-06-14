@@ -2,7 +2,6 @@
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
 #   - Claude Code (official installer)
-#   - rsync (for safe repo write-back)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - acli (Atlassian CLI for Jira issue queries)
@@ -34,9 +33,9 @@ USER root
 ARG TARGETARCH
 
 # ---------------------------------------------------------------------------
-# Install rsync (for safe repo write-back) and jq (JSON parsing in scripts).
+# Install jq (JSON parsing in agent scripts and skills).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends rsync jq \
+    && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------

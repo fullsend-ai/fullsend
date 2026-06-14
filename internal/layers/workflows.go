@@ -94,23 +94,35 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 		vendorAssetCount = count
 	}
 
+	cfgRepo, err := l.client.GetRepo(ctx, l.org, forge.ConfigRepoName)
+	if err != nil {
+		return fmt.Errorf("getting config repo info: %w", err)
+	}
+
 	commitMsg := fmt.Sprintf("chore: update fullsend-%s scaffold", l.version)
 	if vendorAssetCount > 0 {
 		commitMsg = fmt.Sprintf("chore: update fullsend-%s scaffold with vendored assets", l.version)
-		l.ui.StepStart(fmt.Sprintf("Writing scaffold and vendored assets (%d content files)", vendorAssetCount))
+		l.ui.StepStart(fmt.Sprintf("Writing scaffold and vendored assets (%d content files) to %s/%s (%s branch)",
+			vendorAssetCount, l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
 	} else {
-		l.ui.StepStart("Writing scaffold files")
+		l.ui.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
+			l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
 	}
 	committed, err := l.client.CommitFiles(ctx, l.org, forge.ConfigRepoName, commitMsg, files)
 	if err != nil {
-		l.ui.StepFail("Failed to write scaffold files")
+		l.ui.StepFail("Failed to commit scaffold files")
 		return fmt.Errorf("committing scaffold files: %w", err)
 	}
 	if committed {
 		if vendorAssetCount > 0 {
-			l.ui.StepDone(fmt.Sprintf("Wrote %d scaffold files and vendored binary (%d content files)", len(files), vendorAssetCount))
+			l.ui.StepDone(fmt.Sprintf("Wrote %d scaffold files and vendored binary (%d content files) to %s",
+				len(files), vendorAssetCount, cfgRepo.DefaultBranch))
 		} else {
-			l.ui.StepDone(fmt.Sprintf("Wrote %d files", len(files)))
+			noun := "files"
+			if len(files) == 1 {
+				noun = "file"
+			}
+			l.ui.StepDone(fmt.Sprintf("Pushed %d %s to %s", len(files), noun, cfgRepo.DefaultBranch))
 		}
 	} else {
 		l.ui.StepDone("Scaffold up to date")

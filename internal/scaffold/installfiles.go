@@ -30,7 +30,7 @@ func CollectInstallFiles(opts CollectInstallFilesOptions) (InstallFiles, error) 
 		}
 		files = append(files, InstallFile{
 			Path:    opts.PathPrefix + path,
-			Content: rendered,
+			Content: PrependManagedHeader(path, rendered),
 			Mode:    FileMode(path),
 		})
 		return nil
@@ -72,7 +72,7 @@ func CollectPerRepoInstallFiles(vendored bool) (InstallFiles, error) {
 
 	files := InstallFiles{{
 		Path:    ".github/workflows/fullsend.yaml",
-		Content: shimRendered,
+		Content: PrependManagedHeader(".github/workflows/fullsend.yaml", shimRendered),
 		Mode:    "100644",
 	}}
 

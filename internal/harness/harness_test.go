@@ -1144,3 +1144,163 @@ func TestValidate_SlugInvalid(t *testing.T) {
 		assert.Contains(t, err.Error(), "slug")
 	}
 }
+
+// --- LoadRaw tests ---
+
+func TestLoadRaw_ReturnsUnvalidatedHarness(t *testing.T) {
+	// LoadRaw should not call Validate(), so a harness missing the required
+	// 'agent' field should load without error.
+	content := `
+skills:
+  - skills/a
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadRaw(path)
+	require.NoError(t, err)
+	assert.Empty(t, h.Agent)
+	assert.Equal(t, []string{"skills/a"}, h.Skills)
+}
+
+func TestLoadRaw_PreservesForgeMap(t *testing.T) {
+	content := `
+agent: agents/test.md
+forge:
+  github:
+    pre_script: scripts/pre-gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadRaw(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.Forge)
+	require.Contains(t, h.Forge, "github")
+	assert.Equal(t, "scripts/pre-gh.sh", h.Forge["github"].PreScript)
+}
+
+func TestLoadRaw_FileNotFound(t *testing.T) {
+	_, err := LoadRaw("/nonexistent/harness.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading harness file")
+}
+
+// --- LoadWithOpts tests ---
+
+func TestLoadWithOpts_AppliesForgeResolution(t *testing.T) {
+	content := `
+agent: agents/test.md
+pre_script: scripts/pre-common.sh
+skills:
+  - skills/common
+forge:
+  github:
+    pre_script: scripts/pre-gh.sh
+    skills:
+      - skills/gh-specific
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/pre-gh.sh", h.PreScript)
+	assert.Equal(t, []string{"skills/common", "skills/gh-specific"}, h.Skills)
+	assert.Nil(t, h.Forge, "forge map should be consumed after ResolveForge")
+}
+
+func TestLoadWithOpts_NoForge_SameAsLoad(t *testing.T) {
+	content := `
+agent: agents/test.md
+pre_script: scripts/pre.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/pre.sh", h.PreScript)
+}
+
+func TestLoadWithOpts_EmptyPlatform_PreservesForge(t *testing.T) {
+	content := `
+agent: agents/test.md
+forge:
+  github:
+    pre_script: scripts/pre-gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: ""})
+	require.NoError(t, err)
+	assert.NotNil(t, h.Forge, "forge map should be preserved when platform is empty")
+}
+
+func TestLoadWithOpts_InvalidPlatform(t *testing.T) {
+	content := `
+agent: agents/test.md
+forge:
+  github:
+    pre_script: scripts/pre-gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "bitbucket"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid")
+}
+
+func TestLoadWithOpts_ValidationAfterForge(t *testing.T) {
+	// A harness with a forge override that produces valid state should pass.
+	// The validation_loop in the forge block replaces the top-level one.
+	content := `
+agent: agents/test.md
+forge:
+  github:
+    validation_loop:
+      script: scripts/validate-gh.sh
+      max_iterations: 2
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate-gh.sh", h.ValidationLoop.Script)
+}
+
+func TestLoadWithOpts_PlatformNotConfigured(t *testing.T) {
+	content := `
+agent: agents/test.md
+forge:
+  github:
+    pre_script: scripts/pre-gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "gitlab"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+}
+
+// --- ValidForgePlatform tests ---
+
+func TestValidForgePlatform(t *testing.T) {
+	assert.True(t, ValidForgePlatform("github"))
+	assert.True(t, ValidForgePlatform("gitlab"))
+	assert.False(t, ValidForgePlatform("bitbucket"))
+	assert.False(t, ValidForgePlatform(""))
+}

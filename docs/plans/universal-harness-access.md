@@ -323,13 +323,13 @@ The current design requires all dependencies to be declared in the harness. A fu
 
 ```markdown
 # Agent encounters unfamiliar code
-The agent uses Bash to run: fullsend-fetch-skill rust-conventions
+The agent uses Bash to run: fullsend fetch-skill https://github.com/org/skills/tree/abc/rust-conventions#sha256=...
 The runner fetches the skill if it matches allowed_remote_resources
 ```
 
 This requires:
 
-1. **Runtime fetch API:** A `fullsend-fetch-skill` binary available in the sandbox, which sends a fetch request to the runner over a Unix socket.
+1. **Runtime fetch API:** The `fullsend fetch-skill` subcommand available in the sandbox, which sends an HTTP request to the runner's fetch service using `FULLSEND_FETCH_URL` and `FULLSEND_FETCH_TOKEN` (per ADR-0046).
 2. **Access policy enforcement:** The harness declares `allowed_remote_resources: ["https://github.com/fullsend-ai/skills/"]`. Runtime fetches are allowed only if the URL matches a declared prefix.
 3. **Audit logging:** All runtime fetches are logged with the agent's trace ID.
 
@@ -1422,7 +1422,7 @@ harnesses:
 
 ### Phase 4: Runtime dependency loading
 
-- Implement `fullsend-fetch-skill` binary for sandbox use
+- Implement `fullsend fetch-skill` subcommand for sandbox use
 - Add `allow_runtime_fetch: true` flag to harness schema
 - Enforce runtime fetches against `allowed_remote_resources`
 - Audit log all runtime fetches

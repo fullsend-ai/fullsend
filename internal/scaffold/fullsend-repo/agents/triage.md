@@ -102,6 +102,27 @@ Use this phased approach to evaluate the issue:
 - Are reproduction steps present and specific (not vague)?
 - Is the environment described (OS, browser, version, configuration)?
 
+### Question classification
+
+Before forming any clarifying question, classify it:
+
+**User-facing questions** — the reporter can answer from their own experience:
+- What behavior did you observe vs. expect?
+- What OS, version, or configuration are you using?
+- Can you share the exact error message or log?
+- Does this happen every time or intermittently?
+
+**Implementation-facing questions** — require knowledge of how the project works internally:
+- Which document format should be used (ADR, problem doc, etc.)?
+- How should a given feature be architected?
+- Which internal component owns this behavior?
+- What is the project's convention for X?
+
+**Rule:** Implementation-facing questions must NOT be directed at the reporter. Instead:
+1. Attempt to self-resolve using the repository context gathered in Step 2 (README, CLAUDE.md, AGENTS.md, docs/, ADRs, CONTRIBUTING.md).
+2. If self-resolution succeeds, incorporate the answer into your analysis without asking anyone.
+3. If self-resolution fails (the answer is genuinely not in the repo), flag it in `reasoning` as an open architectural question for maintainers — but still attempt to proceed with the best available information. Only use `action: "insufficient"` if the gap materially prevents triage.
+
 ### Phase 3 — Hypothesis formation and dependency analysis
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
@@ -122,7 +143,7 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 
 **Resolution threshold: overall clarity >= 0.80**
 
-**Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with information gaps. The `sufficient` action means there are zero open questions that could affect implementation. When in doubt, ask.
+**Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open *user-facing* questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with user-facing information gaps. The `sufficient` action means there are zero open user-facing questions that could affect implementation. When in doubt, ask. Implementation-facing questions that cannot be self-resolved from repository context should be noted in `reasoning` but do not require `action: "insufficient"` unless they materially prevent triage — see the question classification rules above.
 
 ## Step 4: Decide and write result
 
@@ -162,7 +183,7 @@ Information is missing that would change the triage outcome. Ask ONE focused, sp
     "impact": 0.0,
     "overall": 0.0
   },
-  "comment": "Your clarifying question, written as a professional GitHub comment. Address the reporter as a person. Ask ONE question — the most diagnostic question that would move clarity scores the most. Be specific about what you need."
+  "comment": "Your clarifying question, written as a professional GitHub comment. Address the reporter as a person. Ask ONE question — the most diagnostic question that would move clarity scores the most. Be specific about what you need. The question must be user-facing (something the reporter can answer from their own experience). Never ask about internal project conventions, document formats, or architecture decisions — those are implementation-facing questions that must be self-resolved from repository context."
 }
 ```
 
@@ -244,6 +265,7 @@ Information is sufficient for a developer to investigate and fix.
 - Reference prior comments: "You mentioned X earlier — can you elaborate on [specific aspect]?"
 - Be empathetic but efficient. Acknowledge the reporter's experience, then ask your question.
 - Do NOT ask questions whose answers would not change your triage outcome.
+- **Only direct user-facing questions to the reporter.** Never ask the reporter about internal project conventions, document formats, architecture decisions, or implementation details. If you have an implementation-facing question, apply the self-resolve rule from the question classification section above.
 
 ## Output rules
 

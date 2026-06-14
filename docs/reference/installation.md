@@ -35,7 +35,7 @@ Your setup path depends on what GCP infrastructure is already in place and how m
 | **[GitHub-only setup](github-setup.md)** | Both GCP inference and mint are pre-provisioned | GitHub org access + GCP config values from your admin (no GCP credentials needed) |
 | **[All-in-one admin install](#all-in-one-admin-install)** | You manage everything — GCP mint, inference, and GitHub | Full GCP + GitHub access |
 
-> **Mint service note:** The token mint is fully self-hostable, but most users currently use the mint service hosted by the fullsend team. Work is in progress to offer this as a secure, trusted public service — reducing the need for per-org enrollment. See [Mint service administration](../infrastructure/mint-administration.md) for self-hosting details.
+> **Mint service note:** The token mint is fully self-hostable, but most users currently use the mint service hosted by the fullsend team. Work is in progress to offer this as a secure, trusted public service — reducing the need for per-org enrollment. See [Mint service administration](../guides/infrastructure/mint-administration.md) for self-hosting details.
 
 ---
 
@@ -86,7 +86,7 @@ This is the standard path for organizations using a hosted mint service. You pro
 
 ### Step 1: Request mint enrollment
 
-Contact your mint service admin and request enrollment for your GitHub organization. They will run `fullsend mint enroll <your-org>` on the mint project (see [Mint service administration](../infrastructure/mint-administration.md)). Once enrolled, they will provide you with the mint URL.
+Contact your mint service admin and request enrollment for your GitHub organization. They will run `fullsend mint enroll <your-org>` on the mint project (see [Mint service administration](../guides/infrastructure/mint-administration.md)). Once enrolled, they will provide you with the mint URL.
 
 ### Step 2: Provision inference access
 
@@ -266,7 +266,7 @@ The installer automatically detects when the deployed mint function is up-to-dat
 
 ### Multi-org setup
 
-A single token mint can serve multiple GitHub organizations. See [Mint service administration — Multi-org setup](../infrastructure/mint-administration.md#multi-org-setup) for the complete multi-org workflow.
+A single token mint can serve multiple GitHub organizations. See [Mint service administration — Multi-org setup](../guides/infrastructure/mint-administration.md#multi-org-setup) for the complete multi-org workflow.
 
 ### Vendored vs layered installs
 
@@ -424,7 +424,7 @@ When a platform operator has pre-provisioned shared public GitHub Apps and a tok
 
 > **Tip:** For GitHub-only setup without GCP access, use `fullsend github setup` instead of `admin install`. See [Setting up with pre-provisioned infrastructure](github-setup.md).
 
-> This section documents the **SaaS installation profile** defined in [ADR 0033 §6](../../ADRs/0033-per-repo-installation-mode.md#6-credential-models). If you are reusing apps from your own prior per-org installation, see [Reusing existing infrastructure](#reusing-existing-infrastructure) instead.
+> This section documents the **SaaS installation profile** defined in [ADR 0033 §6](../ADRs/0033-per-repo-installation-mode.md#6-credential-models). If you are reusing apps from your own prior per-org installation, see [Reusing existing infrastructure](#reusing-existing-infrastructure) instead.
 
 **Prerequisites:**
 
@@ -611,7 +611,7 @@ The `admin install` command performs all setup in a single invocation. For organ
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
-See [Setting up with pre-provisioned infrastructure](github-setup.md) for the complete GitHub maintainer guide and [Mint service administration](../infrastructure/mint-administration.md) for the mint admin guide.
+See [Setting up with pre-provisioned infrastructure](github-setup.md) for the complete GitHub maintainer guide and [Mint service administration](../guides/infrastructure/mint-administration.md) for the mint admin guide.
 
 ### Per-command IAM role breakdown
 
@@ -745,7 +745,7 @@ All reusable workflows pass these inputs automatically.
 ## See Also
 
 - [Setting up with pre-provisioned infrastructure](github-setup.md) — GitHub-only setup when GCP is already provisioned
-- [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
-- [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
-- [Enabling fullsend on private repositories](../infrastructure/private-repositories.md) — Additional guardrails for private repos
-- [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details
+- [Mint service administration](../guides/infrastructure/mint-administration.md) — Deploying and managing the token mint
+- [Infrastructure Reference](../guides/infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
+- [Enabling fullsend on private repositories](../guides/infrastructure/private-repositories.md) — Additional guardrails for private repos
+- [CLI Internals](../guides/dev/cli-internals.md) — Command structure and implementation details

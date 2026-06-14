@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,23 @@ func TestExec_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	_, _, _, err := Exec("test-sandbox", "echo hello", 10*time.Second)
+	assert.Error(t, err)
+}
+
+func TestExecContext_CancelledContext(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, err := ExecContext(ctx, "test-sandbox", "echo hello", 10*time.Second)
+	assert.Error(t, err)
+}
+
+func TestExecStreamReader_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	_, _, _, err := ExecStreamReader(context.Background(), "test-sandbox", "echo hello", 10*time.Second, os.Stderr)
 	assert.Error(t, err)
 }
 

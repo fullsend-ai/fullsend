@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -61,7 +62,10 @@ func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 		// Enrollment dispatches repo-maintenance.yml on .fullsend.
 		return []string{"repo"}
 	case OpUninstall:
-		return nil // no-op
+		if len(l.disabledRepos) > 0 {
+			return []string{"repo"}
+		}
+		return nil
 	case OpAnalyze:
 		return []string{"repo"}
 	default:
@@ -266,9 +270,88 @@ func (l *EnrollmentLayer) reportPRByTitle(ctx context.Context, repo, title strin
 	}
 }
 
-// Uninstall is a no-op. Individual repo cleanup is not automated —
-// repos keep their shim workflows.
-func (l *EnrollmentLayer) Uninstall(_ context.Context) error {
+// Uninstall updates config.yaml to mark all repos as disabled and
+// dispatches the repo-maintenance workflow to create unenrollment PRs
+// that remove shim workflows from enrolled repos. This runs before
+// ConfigRepoLayer deletes the .fullsend repo (layers uninstall in
+// reverse order), so the workflow is still available to dispatch.
+//
+// Errors during unenrollment are non-fatal — the user is informed but
+// the uninstall continues. Repos that cannot be unenrolled
+// automatically will need manual removal of .github/workflows/fullsend.yaml.
+func (l *EnrollmentLayer) Uninstall(ctx context.Context) error {
+	if len(l.disabledRepos) == 0 {
+		l.ui.StepInfo("no repositories to unenroll")
+		return nil
+	}
+
+	// Read current config and mark all repos as disabled so the
+	// reconcile script knows to create unenrollment PRs.
+	cfgData, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, "config.yaml")
+	if err != nil {
+		if forge.IsNotFound(err) {
+			l.ui.StepInfo("config repo unavailable, skipping unenrollment")
+			return nil
+		}
+		l.ui.StepWarn(fmt.Sprintf("could not read config for unenrollment: %v", err))
+		return nil
+	}
+
+	cfg, err := config.ParseOrgConfig(cfgData)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not parse config for unenrollment: %v", err))
+		return nil
+	}
+
+	for name, rc := range cfg.Repos {
+		rc.Enabled = false
+		cfg.Repos[name] = rc
+	}
+
+	data, err := cfg.Marshal()
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not marshal config for unenrollment: %v", err))
+		return nil
+	}
+
+	l.ui.StepStart("Updating config to disable all repos")
+	err = l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, "config.yaml",
+		"chore: disable all repos for uninstall", data)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not update config: %v", err))
+		return nil
+	}
+	l.ui.StepDone("Disabled all repos in config")
+
+	// Dispatch repo-maintenance to create unenrollment PRs.
+	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
+	l.ui.StepStart("Dispatching repo-maintenance for unenrollment")
+	err = l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not dispatch unenrollment workflow: %v", err))
+		l.ui.StepInfo("repos may need manual cleanup of .github/workflows/fullsend.yaml")
+		return nil
+	}
+	l.ui.StepDone("Dispatched repo-maintenance for unenrollment")
+
+	// Wait for the workflow run to complete.
+	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not confirm unenrollment: %v", err))
+		l.ui.StepInfo("check the repo-maintenance workflow in .fullsend for results")
+		return nil
+	}
+
+	if run.Conclusion == "success" {
+		l.ui.StepDone("Unenrollment completed successfully")
+	} else {
+		l.ui.StepWarn(fmt.Sprintf("unenrollment workflow completed with conclusion: %s", run.Conclusion))
+		l.showWorkflowLogs(ctx, run.ID)
+	}
+	l.ui.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
+
+	l.reportReconciliationPRs(ctx)
+
 	return nil
 }
 

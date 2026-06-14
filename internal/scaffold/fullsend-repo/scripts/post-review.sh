@@ -73,16 +73,21 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # point — the code agent is free to propose changes to any path.
 # ---------------------------------------------------------------------------
 REVIEW_PROTECTED_PATHS=(
-  ".github/"
   ".claude/"
+  ".cursor/"
+  ".gitattributes"
+  ".github/"
+  ".pre-commit-config.yaml"
+  "AGENTS.md"
   "agents/"
+  "api-servers/"
+  "CLAUDE.md"
+  "CODEOWNERS"
   "harness/"
   "plugins/"
   "policies/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
+  "scripts/"
+  "skills/"
 )
 
 DOWNGRADED=false

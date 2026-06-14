@@ -448,4 +448,4 @@ After PR 3 merges, verify Phase 2 end-to-end:
 
 ### Phase 4: Runtime dependency loading (2 PRs)
 - `allow_runtime_fetch` + `max_runtime_fetches` harness fields
-- `fullsend-fetch-skill` binary in sandbox, Unix socket to runner, rate limiting
+- `fullsend fetch-skill` subcommand in sandbox, HTTP to runner (ADR-0046), rate limiting

@@ -1,4 +1,4 @@
-# Implementation Plan: ADR-0045 Forge-Portable Harness Schema
+# Implementation Plan: ADR-0045 Forge-Portable Harness Schema — Phase 1
 
 ## Context
 

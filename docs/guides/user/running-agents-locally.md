@@ -193,6 +193,7 @@ resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). Auto-detected from CI env vars (`GITHUB_ACTIONS`, `GITLAB_CI`) when omitted |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
@@ -206,6 +207,10 @@ generated. Generate or update a lock file with:
 ```bash
 fullsend lock code --fullsend-dir /path/to/.fullsend
 ```
+
+When `--forge` is specified, only that platform variant is locked. When omitted,
+all forge variants defined in the harness are resolved and the union of their
+dependencies is locked.
 
 When the lock entry is current (harness SHA256 matches), dependencies are
 resolved from the local cache without network access. If the harness has changed
@@ -240,7 +245,7 @@ fullsend run triage \
 ```
 
 Status comment behavior is configured via `status_notifications` in
-`config.yaml`. See the [installation guide](../getting-started/installation.md#status-notifications).
+`config.yaml`. See the [installation guide](../../reference/installation.md#status-notifications).
 
 ## Simulating Fullsend's real customization layers
 

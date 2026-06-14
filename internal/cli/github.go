@@ -254,7 +254,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
-			printer.StepDone(fmt.Sprintf("Would write: %s (%d bytes)", f.Path, len(f.Content)))
+			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
 		}
 		printer.Blank()
 		printer.StepInfo("Would set repository variables:")
@@ -281,52 +281,17 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 	printer.Blank()
 
-	var vendorAssetCount int
 	if cfg.vendor {
 		var vendorErr error
-		files, vendorAssetCount, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
+		files, _, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
 	}
-	if vendorAssetCount > 0 {
-		printer.StepStart(fmt.Sprintf("Writing per-repo scaffold and vendored assets (%d content files)", vendorAssetCount))
-	} else {
-		printer.StepStart("Writing per-repo scaffold files")
-	}
-	committed, err := client.CommitFiles(ctx, owner, repo,
-		fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version), files)
-	if err != nil {
-		printer.StepFail("Failed to write scaffold files")
-		return fmt.Errorf("committing scaffold files: %w", err)
-	}
-	if committed {
-		if vendorAssetCount > 0 {
-			printer.StepDone(fmt.Sprintf("Wrote %d scaffold files and vendored binary (%d content files)", len(files), vendorAssetCount))
-		} else {
-			printer.StepDone(fmt.Sprintf("Wrote %d files", len(files)))
-		}
-	} else {
-		printer.StepDone("Scaffold up to date")
-	}
 
-	printer.StepStart("Configuring repository variables")
-	for _, name := range sortedStringMapKeys(repoVars) {
-		if err := client.CreateOrUpdateRepoVariable(ctx, owner, repo, name, repoVars[name]); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to set variable %s", name))
-			return fmt.Errorf("setting repo variable %s: %w", name, err)
-		}
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets); err != nil {
+		return err
 	}
-	printer.StepDone(fmt.Sprintf("Set %d repository variables", len(repoVars)))
-
-	printer.StepStart("Configuring repository secrets")
-	for _, name := range sortedStringMapKeys(repoSecrets) {
-		if err := client.CreateRepoSecret(ctx, owner, repo, name, repoSecrets[name]); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to set secret %s", name))
-			return fmt.Errorf("setting repo secret %s: %w", name, err)
-		}
-	}
-	printer.StepDone(fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
 
 	if !cfg.vendor {
 		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo, true); err != nil {

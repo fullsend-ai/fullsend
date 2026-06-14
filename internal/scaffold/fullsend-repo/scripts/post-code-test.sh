@@ -618,6 +618,82 @@ run_artifact_test "strip-empty-input" \
   "" \
   ""
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the Signed-off-by trailer detection logic from
+# post-code.sh section 3b. Given commit body text, returns whether the
+# trailer was detected.
+# ---------------------------------------------------------------------------
+detect_signed_off_by() {
+  local commit_body="$1"
+
+  if echo "${commit_body}" | grep -q '^Signed-off-by:'; then
+    echo "blocked:signed-off-by"
+  else
+    echo "pass"
+  fi
+}
+
+run_signoff_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(detect_signed_off_by "${commit_body}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  commit_body:  '${commit_body}'"
+    echo "  expected:     '${expected}'"
+    echo "  actual:       '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Signed-off-by detection test cases ---
+
+# Commit with Signed-off-by trailer should be blocked
+run_signoff_test "signoff-present-blocked" \
+  "Fix widget rendering.
+
+Signed-off-by: fullsend-ai-coder[bot] <123456+fullsend-ai-coder[bot]@users.noreply.github.com>" \
+  "blocked:signed-off-by"
+
+# Commit without Signed-off-by trailer should pass
+run_signoff_test "signoff-absent-passes" \
+  "Fix widget rendering.
+
+Closes #42" \
+  "pass"
+
+# Empty commit body should pass
+run_signoff_test "signoff-empty-body-passes" \
+  "" \
+  "pass"
+
+# Signed-off-by mentioned mid-line (not a trailer) should pass
+run_signoff_test "signoff-mid-line-passes" \
+  "Removed the Signed-off-by: trailer from commits." \
+  "pass"
+
+# Multiple trailers including Signed-off-by should be blocked
+run_signoff_test "signoff-among-other-trailers-blocked" \
+  "Fix rendering bug.
+
+Co-authored-by: someone <someone@example.com>
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "blocked:signed-off-by"
+
+# Variant casing should pass (detection is intentionally case-sensitive)
+run_signoff_test "signoff-variant-casing-passes" \
+  "Fix rendering bug.
+
+signed-off-by: bot <bot@noreply.github.com>" \
+  "pass"
+
 # --- Summary ---
 
 echo ""

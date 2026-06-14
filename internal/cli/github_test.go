@@ -499,6 +499,7 @@ func TestParseTarget_Repo(t *testing.T) {
 func TestRunGitHubSetupPerRepo(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.TokenScopes = []string{"repo", "workflow"}
 	printer := ui.New(&discardWriter{})
 
@@ -625,6 +626,7 @@ func TestRunGitHubSetupPerRepo_DryRun(t *testing.T) {
 func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.TokenScopes = []string{"repo", "workflow"}
 	// Pre-populate secrets as if a previous run stored them.
 	client.Secrets = map[string]bool{
@@ -661,6 +663,7 @@ func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
 func TestRunGitHubSetupPerRepo_PartialReuse_ProjectOnly(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.TokenScopes = []string{"repo", "workflow"}
 	// Only the project secret exists; WIF is provided via flag.
 	client.Secrets = map[string]bool{
@@ -720,6 +723,7 @@ func TestRunGitHubSetupPerRepo_MissingWIFNoExistingSecret(t *testing.T) {
 func TestRunGitHubSetupPerRepo_PartialReuse_WIFOnly(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.TokenScopes = []string{"repo", "workflow"}
 	// Only the WIF secret exists; project is provided via flag.
 	client.Secrets = map[string]bool{

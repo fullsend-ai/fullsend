@@ -202,17 +202,119 @@ func TestEnrollmentLayer_Install_WorkflowWarning(t *testing.T) {
 	assert.Contains(t, output, "conclusion: failure")
 }
 
-func TestEnrollmentLayer_Uninstall_Noop(t *testing.T) {
+func TestEnrollmentLayer_Uninstall_NoRepos(t *testing.T) {
 	client := &forge.FakeClient{}
-	layer, _ := newEnrollmentLayer(t, client, []string{"repo-a"}, nil)
+	layer, buf := newEnrollmentLayer(t, client, nil, nil)
 
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
 
-	assert.Empty(t, client.CreatedBranches)
-	assert.Empty(t, client.CreatedFiles)
-	assert.Empty(t, client.CreatedProposals)
-	assert.Empty(t, client.DeletedRepos)
+	output := buf.String()
+	assert.Contains(t, output, "no repositories to unenroll")
+}
+
+func TestEnrollmentLayer_Uninstall_DisablesAndDispatches(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Seed config.yaml with an enabled repo.
+	cfgYAML := `version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  max_implementation_retries: 2
+  auto_merge: false
+agents: []
+repos:
+  repo-a:
+    enabled: true
+  repo-b:
+    enabled: true
+`
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/.fullsend/config.yaml": []byte(cfgYAML),
+		},
+		WorkflowRuns: map[string]*forge.WorkflowRun{
+			"test-org/.fullsend/repo-maintenance.yml": {
+				ID:         42,
+				Status:     "completed",
+				Conclusion: "success",
+				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/42",
+			},
+		},
+		PullRequests: map[string][]forge.ChangeProposal{
+			"test-org/repo-a": {
+				{Title: "chore: disconnect from fullsend agent pipeline", URL: "https://github.com/test-org/repo-a/pull/10"},
+			},
+			"test-org/repo-b": {
+				{Title: "chore: disconnect from fullsend agent pipeline", URL: "https://github.com/test-org/repo-b/pull/11"},
+			},
+		},
+	}
+
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-a", "repo-b"})
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "Disabled all repos in config")
+	assert.Contains(t, output, "Dispatched repo-maintenance for unenrollment")
+	assert.Contains(t, output, "Unenrollment completed successfully")
+	assert.Contains(t, output, "repo-a/pull/10")
+	assert.Contains(t, output, "repo-b/pull/11")
+
+	// Verify config was updated with all repos disabled.
+	require.Len(t, client.CreatedFiles, 1)
+	assert.Equal(t, "config.yaml", client.CreatedFiles[0].Path)
+	assert.Contains(t, string(client.CreatedFiles[0].Content), "enabled: false")
+	assert.NotContains(t, string(client.CreatedFiles[0].Content), "enabled: true")
+}
+
+func TestEnrollmentLayer_Uninstall_ConfigNotFound(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{},
+	}
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-a"})
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "config repo unavailable")
+}
+
+func TestEnrollmentLayer_Uninstall_DispatchError(t *testing.T) {
+	cfgYAML := `version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  max_implementation_retries: 2
+  auto_merge: false
+agents: []
+repos:
+  repo-a:
+    enabled: true
+`
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/.fullsend/config.yaml": []byte(cfgYAML),
+		},
+		Errors: map[string]error{
+			"DispatchWorkflow": assert.AnError,
+		},
+	}
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-a"})
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err) // non-fatal
+
+	output := buf.String()
+	assert.Contains(t, output, "could not dispatch unenrollment workflow")
+	assert.Contains(t, output, "manual cleanup")
 }
 
 func TestEnrollmentLayer_Analyze_AllEnrolled(t *testing.T) {

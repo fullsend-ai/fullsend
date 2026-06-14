@@ -5,6 +5,9 @@ model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/triage.yaml
 
+role: triage
+slug: fullsend-ai-triage
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

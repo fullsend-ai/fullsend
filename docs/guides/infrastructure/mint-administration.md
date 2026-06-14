@@ -2,7 +2,7 @@
 
 This guide covers deploying and managing the fullsend token mint Cloud Function. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories.
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Installing fullsend](../getting-started/installation.md) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Installing fullsend](../../reference/installation.md) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
 
 ## Hosted mint
 
@@ -127,7 +127,7 @@ fullsend mint enroll acme-corp --project="$GCP_PROJECT"
 fullsend mint enroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
-Enrollment does **not** grant Agent Platform (inference) access — use `fullsend inference provision` separately after enrollment. See [Installing fullsend](../getting-started/installation.md) for the end-user inference setup path.
+Enrollment does **not** grant Agent Platform (inference) access — use `fullsend inference provision` separately after enrollment. See [Installing fullsend](../../reference/installation.md) for the end-user inference setup path.
 
 ### Flags
 
@@ -414,7 +414,7 @@ gcloud functions logs read fullsend-mint \
 
 ## See Also
 
-- [Installing fullsend](../getting-started/installation.md) — End-user setup (inference + GitHub)
-- [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup when GCP is already provisioned
+- [Installing fullsend](../../reference/installation.md) — End-user setup (inference + GitHub)
+- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup when GCP is already provisioned
 - [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details

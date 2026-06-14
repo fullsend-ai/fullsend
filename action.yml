@@ -250,7 +250,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y podman
+        sudo apt-get install -y podman skopeo
         podman --version
 
     - name: Configure rootless Podman
@@ -281,12 +281,66 @@ runs:
         curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
         openshell --version
 
+    - name: Restore cached sandbox image
+      id: sandbox-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: /tmp/sandbox-image.tar
+        key: sandbox-image-${{ runner.os }}-${{ runner.arch }}-${{ env.FULLSEND_SANDBOX_IMAGE || 'ghcr.io/fullsend-ai/fullsend-code:latest' }}
+        restore-keys: |
+          sandbox-image-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Load cached sandbox image
+      if: steps.sandbox-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: podman load -i /tmp/sandbox-image.tar || echo "::warning::Cached image load failed; will pull fresh"
+
     - name: Pre-pull sandbox image
+      id: sandbox-pull
       shell: bash
       run: |
         IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
         echo "Pre-pulling sandbox image: ${IMAGE}"
+
+        LOCAL_DIGEST="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
+
+        if [[ -n "${LOCAL_DIGEST}" ]]; then
+          # Check remote digest without pulling (~1s HEAD request).
+          REMOTE_DIGEST="$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${IMAGE}" 2>/dev/null || true)"
+          if [[ -z "${REMOTE_DIGEST}" ]]; then
+            echo "Could not fetch remote digest; falling through to pull"
+          elif [[ "${LOCAL_DIGEST}" == "${REMOTE_DIGEST}" ]]; then
+            echo "Local image is current (digest ${LOCAL_DIGEST:0:19}…); skipping pull"
+            exit 0
+          else
+            echo "Digest mismatch (local=${LOCAL_DIGEST:0:19}… remote=${REMOTE_DIGEST:0:19}…); pulling"
+          fi
+        fi
+
         timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
+        PULLED_DIGEST="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
+        if [[ "${LOCAL_DIGEST}" != "${PULLED_DIGEST}" ]]; then
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+        fi
+
+    - name: Save sandbox image for cache
+      if: steps.sandbox-cache.outputs.cache-hit != 'true' || steps.sandbox-pull.outputs.changed == 'true'
+      shell: bash
+      run: |
+        IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
+        if podman image exists -- "${IMAGE}"; then
+          rm -f /tmp/sandbox-image.tar
+          podman save -o /tmp/sandbox-image.tar -- "${IMAGE}"
+        else
+          echo "::warning::Image not available to cache"
+        fi
+
+    - name: Update sandbox image cache
+      if: steps.sandbox-cache.outputs.cache-hit != 'true' || steps.sandbox-pull.outputs.changed == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: /tmp/sandbox-image.tar
+        key: sandbox-image-${{ runner.os }}-${{ runner.arch }}-${{ env.FULLSEND_SANDBOX_IMAGE || 'ghcr.io/fullsend-ai/fullsend-code:latest' }}
 
     - name: Install validation dependencies
       shell: bash
@@ -330,6 +384,43 @@ runs:
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \
           "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
+
+    - name: Finalize orphaned status comment
+      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != ''
+      shell: bash
+      env:
+        STATUS_TOKEN: ${{ inputs.status-token }}
+        STATUS_REPO: ${{ inputs.status-repo }}
+        STATUS_NUMBER: ${{ inputs.status-number }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_URL: ${{ inputs.run-url }}
+        COMMIT_SHA: ${{ github.sha }}
+        JOB_STATUS: ${{ job.status }}
+      run: |
+        set -euo pipefail
+        # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
+        # the deferred PostCompletion call never runs and the status comment
+        # remains in "Started" state. This step runs unconditionally (if:
+        # always()) to detect and finalize orphaned comments. See #2149.
+        TOKEN="${STATUS_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -z "${TOKEN}" ]]; then
+          echo "::warning::No token available for status comment reconciliation"
+          exit 0
+        fi
+        echo "::add-mask::${TOKEN}"
+        RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}" --token "${TOKEN}")
+        if [[ -n "${RUN_URL}" ]]; then
+          RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
+        fi
+        if [[ -n "${COMMIT_SHA}" ]]; then
+          RECONCILE_FLAGS+=(--sha "${COMMIT_SHA}")
+        fi
+        if [[ "${JOB_STATUS}" == "cancelled" ]]; then
+          RECONCILE_FLAGS+=(--reason cancelled)
+        fi
+        fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
+          echo "::warning::Could not reconcile orphaned status comment"
+        }
 
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,9 +80,9 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	return installClaudeHooks(sandboxName, hooksInput.ClaudeSandboxHooks())
 }
 
-func (ClaudeRuntime) Run(params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
+func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	cmd := buildRunCommand(params)
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(params.SandboxName, cmd, params.Timeout, os.Stderr)
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
 		return -1, err
 	}

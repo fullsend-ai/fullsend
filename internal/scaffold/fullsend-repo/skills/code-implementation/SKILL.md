@@ -594,6 +594,13 @@ scan-secrets --staged
 This is not a repeat of 9a — it scans what you *actually staged*, which may
 differ from what you named. If the scan fails, do not commit.
 
+**NEVER use `git commit -s` or add `Signed-off-by` trailers.** DCO is a
+human attestation of personhood and legal authority to contribute — agents
+are not people. The DCO app already waives the check for bot authors, so
+the trailer is unnecessary. Including it causes gitlint
+`body-max-line-length` failures because the bot noreply email makes the
+trailer ~90 characters.
+
 **10c. Commit**
 
 The commit message must:

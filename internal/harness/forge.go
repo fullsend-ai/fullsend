@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -23,12 +24,27 @@ var validForgeKeys = map[string]bool{
 	"gitlab": true,
 }
 
+// ValidForgePlatform reports whether platform is a recognized forge key.
+func ValidForgePlatform(platform string) bool {
+	return validForgeKeys[platform]
+}
+
+// ForgeKeyList returns a comma-separated list of valid forge platform keys.
+func ForgeKeyList() string {
+	keys := make([]string, 0, len(validForgeKeys))
+	for k := range validForgeKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
 // validateForge checks that the forge section contains only recognized keys
 // and that each ForgeConfig uses valid field values.
 func (h *Harness) validateForge() error {
 	for key, fc := range h.Forge {
 		if !validForgeKeys[key] {
-			return fmt.Errorf("forge: unrecognized key %q (valid keys are: github, gitlab)", key)
+			return fmt.Errorf("forge: unrecognized key %q (valid: %s)", key, ForgeKeyList())
 		}
 		if fc == nil {
 			continue
@@ -63,18 +79,17 @@ func (h *Harness) validateForge() error {
 // h.Forge is nil, this is a no-op. If platform is not present in h.Forge,
 // an error is returned.
 //
-// Pipeline ordering: ResolveForge runs between Unmarshal and Validate. It
-// consumes h.Forge (sets it to nil), so validateForge — which validates the
-// pre-merge forge map structure — must run before ResolveForge if both are
-// called. In the planned pipeline (PR 3), LoadWithOpts calls ResolveForge
-// then Validate; validateForge sees nil and is a no-op, which is correct
-// because the forge map was already validated before merging.
+// Pipeline ordering: LoadWithOpts calls validateForge → ResolveForge →
+// Validate. validateForge must run first because ResolveForge consumes
+// h.Forge (sets it to nil). After ResolveForge, Validate's validateForge
+// call sees nil and is a no-op, which is correct because the forge map
+// was already validated before merging.
 func (h *Harness) ResolveForge(platform string) error {
 	if platform == "" || h.Forge == nil {
 		return nil
 	}
 	if !validForgeKeys[platform] {
-		return fmt.Errorf("forge platform %q is not valid (valid keys are: github, gitlab)", platform)
+		return fmt.Errorf("forge platform %q is not valid (valid: %s)", platform, ForgeKeyList())
 	}
 	fc, ok := h.Forge[platform]
 	if !ok {

@@ -314,8 +314,15 @@ func Delete(name string) error {
 }
 
 // Exec runs a command inside a sandbox and returns stdout, stderr, and exit code.
+// It uses context.Background() internally. Use ExecContext for cancellation support.
 func Exec(sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+10*time.Second)
+	return ExecContext(context.Background(), sandboxName, command, timeout)
+}
+
+// ExecContext is like Exec but accepts a parent context for cancellation.
+// Cancelling the parent (e.g. on SIGTERM) terminates the subprocess.
+func ExecContext(ctx context.Context, sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
 
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
@@ -352,8 +359,13 @@ func Exec(sandboxName, command string, timeout time.Duration) (stdout, stderr st
 // ExecStreamReader runs a command inside a sandbox, returning an io.ReadCloser for
 // stdout so the caller can parse structured output. Stderr is forwarded to the
 // given writer. The caller must read stdout to completion, then call cmd.Wait().
-func ExecStreamReader(sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+//
+// The parent context is used as the base for the timeout context, so
+// cancelling the parent (e.g. on SIGTERM) terminates the subprocess. This
+// allows CLI-level signal handling to propagate into long-running sandbox
+// commands.
+func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "exec",

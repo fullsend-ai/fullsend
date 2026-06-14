@@ -65,6 +65,7 @@ harnesses:
 - For each pinned dependency, verifies content exists in local cache
 - For `type: "file"` entries: uses `CacheGet` and returns `content` path
 - For `type: "directory"` entries: uses `CacheGetDir` and returns `tree/` path
+- For `field: "base"` entries: verifies cache presence only (base composition is already resolved by `LoadWithBase` before `resolveFromLock` runs)
 - Applies mutations to harness only after all deps are confirmed in cache
 - Falls back to normal network resolution on failure
 

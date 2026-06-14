@@ -28,12 +28,32 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 - **If you need to block a PR on your feedback, use "Request changes."** A comment alone is advisory — the author may resolve it at their discretion. The "Request changes" review status is how a reviewer signals that the PR should not merge until their concern is addressed. This is the only mechanism for enforcing your review.
 - **Be constructive.** This is a design exploration — disagreement is expected and valuable. Critique ideas, not people. When you push back on a proposal, suggest an alternative or explain what concern drives your objection.
 
+### Reworking a PR
+
+When a PR needs a significant change in approach — not just addressing review feedback, but rethinking the implementation or design — close the existing PR with a comment explaining why, and open a new one. Link the new PR to the old one for historical continuity. This is preferred over force-pushing because:
+
+- Reviewers see a fresh PR in their queue instead of missing that the content changed completely.
+- The closed PR preserves the original discussion and the reasoning behind the pivot.
+- Metrics can track rework cycles accurately.
+
+Small adjustments in response to review feedback are normal iteration — this guideline applies when the underlying approach changes.
+
 ### Merging
 
 - PRs require approval from a [CODEOWNERS](CODEOWNERS) member before merging.
+
 ## Working with ADRs
 
 ADRs (Architecture Decision Records) are **point-in-time records**. Once accepted, do not substantially rewrite their Context, Decision, or Consequences sections — if a decision needs to change, write a new ADR that supersedes the old one. Minor annotations are welcome: cross-references to related ADRs, short notes linking to newer decisions, and typo fixes. See the [ADR template](docs/ADRs/0000-adr-template.md) and [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md) for full details.
+
+### ADRs and implementation code
+
+Human contributors may include an ADR and its implementation in the same PR when it makes sense. Bundling helps reviewers see what a decision actually means in code and avoids an extra review cycle. Use your judgment based on two factors:
+
+- **PR size.** If adding the implementation would make the PR excessively large, submit the ADR first and follow up with implementation.
+- **Rewrite risk.** If the ADR discussion is likely to change direction — causing significant implementation rework — submit the ADR on its own. Get alignment on the decision before writing the code.
+
+**Autonomous agents should always submit ADRs and implementation as separate PRs.** The ADR should be merged first, then a separate issue drives the implementation. This keeps agent-produced PRs focused and independently reviewable.
 
 ### ADR numbering
 

@@ -1,17 +1,21 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 type bootstrapInput struct {
@@ -282,4 +286,51 @@ func TestBuildPluginConfigs_EmptyPluginList(t *testing.T) {
 	require.NoError(t, json.Unmarshal(entries[3].data, &settings))
 	enabled := settings["enabledPlugins"].(map[string]any)
 	assert.Len(t, enabled, 0)
+}
+
+func TestClaudeRuntime_Run_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	var metrics RunMetrics
+	printer := ui.New(io.Discard)
+
+	exitCode, err := ClaudeRuntime{}.Run(context.Background(), RunParams{
+		SandboxName:   "test-sandbox",
+		AgentBaseName: "test-agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Timeout:       10 * time.Second,
+	}, printer, time.Now(), &metrics)
+
+	assert.Error(t, err)
+	assert.Equal(t, -1, exitCode)
+}
+
+func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	agentDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "agent.md"), []byte("test"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentDir,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "creating runtime config dirs")
+}
+
+func TestClaudeRuntime_ClearIterationArtifacts_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	err := ClaudeRuntime{}.ClearIterationArtifacts("test-sandbox")
+	assert.Error(t, err)
+}
+
+func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	outputDir := t.TempDir()
+	err := ClaudeRuntime{}.ExtractTranscripts("test-sandbox", "test-agent", outputDir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "finding transcripts")
 }

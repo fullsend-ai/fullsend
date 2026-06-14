@@ -17,10 +17,33 @@ import (
 
 func newWorkflowsLayer(t *testing.T, client *forge.FakeClient, vendored bool) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
+	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored)
 	return layer, &buf
+}
+
+func ensureFakeConfigRepo(client *forge.FakeClient) {
+	fullName := "test-org/" + forge.ConfigRepoName
+	for _, r := range client.Repos {
+		if r.FullName == fullName {
+			goto ensureConfig
+		}
+	}
+	client.Repos = append(client.Repos, forge.Repository{
+		Name:          forge.ConfigRepoName,
+		FullName:      fullName,
+		DefaultBranch: "main",
+	})
+ensureConfig:
+	if client.FileContents == nil {
+		client.FileContents = map[string][]byte{}
+	}
+	configKey := fullName + "/config.yaml"
+	if _, ok := client.FileContents[configKey]; !ok {
+		client.FileContents[configKey] = []byte("repos: {}\n")
+	}
 }
 
 func TestWorkflowsLayer_Name(t *testing.T) {
@@ -53,7 +76,9 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Contains(t, paths, "CODEOWNERS")
 	assert.Contains(t, paths["CODEOWNERS"], "admin-user")
 
-	require.Len(t, client.CreatedFiles, 0, "config activation requires config.yaml in repo")
+	require.Len(t, client.CreatedFiles, 1)
+	assert.Equal(t, "config.yaml", client.CreatedFiles[0].Path)
+	assert.Equal(t, "chore: activate fullsend workflows", client.CreatedFiles[0].Message)
 }
 
 func TestWorkflowsLayer_Install_ActivatesRepoMaintenance(t *testing.T) {
@@ -86,13 +111,19 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 	}
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 
-	assert.Contains(t, triageContent, "fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
+	raw, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	require.NoError(t, err)
+	expected := string(scaffold.PrependManagedHeader(".github/workflows/triage.yml", rendered))
+	assert.Equal(t, expected, triageContent)
 	assert.NotContains(t, triageContent, "distribution_mode")
 	assert.NotContains(t, triageContent, "fullsend_ai_repo:")
 }
 
 func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 	client := forge.NewFakeClient()
+	ensureFakeConfigRepo(client)
 	collectFn := func(_ context.Context, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
 		assert.Equal(t, "test-org", owner)
 		assert.Equal(t, forge.ConfigRepoName, repo)
@@ -134,7 +165,7 @@ func TestWorkflowsLayer_Install_VendoredUsesLocalReusablePaths(t *testing.T) {
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 
 	assert.Contains(t, triageContent, "uses: ./.github/workflows/reusable-triage.yml")
-	assert.NotContains(t, triageContent, "fullsend-ai/fullsend/")
+	assert.NotContains(t, triageContent, "uses: fullsend-ai/fullsend/")
 	assert.NotContains(t, triageContent, "distribution_mode")
 }
 
@@ -154,13 +185,39 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 	}
 	require.NotEmpty(t, maintenanceContent, "repo-maintenance.yml should have been written")
 
-	expected, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
+	raw, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
-	assert.Equal(t, string(expected), maintenanceContent)
+	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	require.NoError(t, err)
+	expected := string(scaffold.PrependManagedHeader(".github/workflows/repo-maintenance.yml", rendered))
+	assert.Equal(t, expected, maintenanceContent)
+}
+
+func TestWorkflowsLayer_Install_ManagedHeaders(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	for _, f := range client.CommittedFiles[0].Files {
+		header := scaffold.ManagedHeader(f.Path)
+		if header != "" {
+			assert.True(t, strings.HasPrefix(string(f.Content), header),
+				"installed file %s should start with managed header", f.Path)
+		} else {
+			assert.False(t, strings.Contains(string(f.Content), "managed by fullsend"),
+				"installed file %s should NOT have a managed header", f.Path)
+		}
+	}
 }
 
 func TestWorkflowsLayer_Install_Error(t *testing.T) {
 	client := &forge.FakeClient{
+		Repos: []forge.Repository{{
+			FullName:      "test-org/" + forge.ConfigRepoName,
+			DefaultBranch: "main",
+		}},
 		Errors: map[string]error{
 			"CommitFiles": errors.New("write failed"),
 		},

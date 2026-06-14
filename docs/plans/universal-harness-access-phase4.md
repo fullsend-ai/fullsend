@@ -19,17 +19,17 @@ allow_runtime_fetch: true        # opt-in (default: false)
 max_runtime_fetches: 10          # rate limit per agent run
 ```
 
-### In-sandbox fetch binary
+### In-sandbox fetch subcommand
 
-A `fullsend-fetch-skill` binary available inside the sandbox. When the agent runs it:
+The `fullsend fetch-skill` subcommand reuses the existing fullsend binary already in the sandbox. When the agent runs it:
 
-1. Agent calls: `fullsend-fetch-skill https://github.com/fullsend-ai/library/tree/abc123/skills/python-linting#sha256=<tree-hash>...`
-2. Binary sends request to runner over Unix socket
+1. Agent calls: `fullsend fetch-skill https://github.com/fullsend-ai/library/tree/abc123/skills/python-linting#sha256=<tree-hash>...`
+2. Subcommand sends HTTP request to runner via `FULLSEND_FETCH_URL` with bearer token from `FULLSEND_FETCH_TOKEN`
 3. Runner validates URL against `allowed_remote_resources`
 4. Runner uses forge API to list and fetch the skill directory (skills are directories, requiring `ListDirectoryContents` and `GetFileContentAtRef`)
 5. Runner verifies tree hash (hash covers entire directory tree)
 6. Runner stores in cache via `CachePutDir` and uploads directory tree to sandbox
-7. Binary returns the sandbox-local skill directory path
+7. Subcommand returns the sandbox-local skill directory path
 
 ### Security constraints
 
@@ -44,23 +44,24 @@ A `fullsend-fetch-skill` binary available inside the sandbox. When the agent run
 
 ### Implementation steps
 
-#### PR 1: Runner-side fetch service
-- Unix socket listener in the runner process
+#### PR 1: Runner-side fetch service (#2173, merged)
+- HTTP service implementing `fetchsvc.Service` with `ServeHTTP` handler
 - Request/response protocol: URL -> local path or error
-- Rate limiting enforcement
+- Rate limiting enforcement via atomic counter
 - Forge API integration for skill directory fetching (reuses Phase 1 forge client)
 - Audit logging with `fetch_type: "runtime"`
 
-#### PR 2: In-sandbox fetch binary
-- `fullsend-fetch-skill` binary compiled and uploaded to sandbox during bootstrap
-- Connects to Unix socket passed via environment variable
+#### PR 2: In-sandbox fetch subcommand (#2223)
+- `fullsend fetch-skill` subcommand reusing the existing fullsend binary in the sandbox
+- Runner starts HTTP server on dynamic TCP port with per-run bearer token auth (ADR-0046)
+- `FULLSEND_FETCH_URL` and `FULLSEND_FETCH_TOKEN` env vars injected during bootstrap
 - Reports errors to stderr, success path to stdout
 - Returns the sandbox-local skill directory path (not a single file path)
 
 #### PR 3: Harness schema and CLI integration
 - Add `allow_runtime_fetch` and `max_runtime_fetches` to harness schema
 - Validation: reject runtime fetch fields if `allowed_remote_resources` is empty
-- Socket setup in sandbox provisioning
+- Gate fetch service startup behind `allow_runtime_fetch`
 
 ## Verification
 

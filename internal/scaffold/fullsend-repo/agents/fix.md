@@ -97,16 +97,19 @@ merge conflicts, linter suggestions, or other incidental context:
 
 - `.claude/` — agent settings and configuration
 - `.cursor/` — editor agent configuration
+- `.gitattributes`
+- `.github/` — CI and GitHub configuration
+- `.pre-commit-config.yaml`
+- `AGENTS.md`
 - `agents/` — agent definitions
+- `api-servers/` — API server configurations
+- `CLAUDE.md`
+- `CODEOWNERS`
 - `harness/` — harness definitions
 - `plugins/` — plugin definitions
 - `policies/` — sandbox policies
 - `scripts/` — pre/post scripts
-- `api-servers/` — API server configurations
-- `.github/workflows/` — CI configuration
-- `CODEOWNERS`
-- `.pre-commit-config.yaml`
-- `.gitattributes`
+- `skills/` — skill definitions
 
 These are governance and infrastructure files. The `post-fix.sh` safety
 script blocks commits that touch them, discarding **all** of your work —

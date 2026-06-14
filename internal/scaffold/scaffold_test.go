@@ -809,6 +809,56 @@ func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
 	assert.True(t, checked >= 20, "expected at least 20 YAML files, got %d", checked)
 }
 
+func TestManagedHeader(t *testing.T) {
+	tests := []struct {
+		path   string
+		expect string
+	}{
+		// YAML workflow files get a header
+		{
+			path:   ".github/workflows/triage.yml",
+			expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/triage.yml\n",
+		},
+		// YAML template files get a header
+		{
+			path:   "templates/shim-per-repo.yaml",
+			expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml\n",
+		},
+		// Markdown files are skipped (user-readable docs)
+		{path: "AGENTS.md", expect: ""},
+		// .gitkeep files are skipped
+		{path: "customized/agents/.gitkeep", expect: ""},
+		// JSON files are skipped (no comment syntax)
+		{path: "schemas/triage-result.schema.json", expect: ""},
+		// Shell scripts get a header
+		{path: "scripts/pre-triage.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/pre-triage.sh\n"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got := ManagedHeader(tc.path)
+			assert.Equal(t, tc.expect, got)
+		})
+	}
+}
+
+func TestManagedHeaderPreservesShebang(t *testing.T) {
+	// When content starts with #!, the header should go after the shebang line
+	content := []byte("#!/bin/bash\nset -euo pipefail\n")
+	header := ManagedHeader("scripts/pre-triage.sh")
+	result := PrependManagedHeader("scripts/pre-triage.sh", content)
+
+	assert.True(t, strings.HasPrefix(string(result), "#!/bin/bash\n"))
+	assert.Contains(t, string(result), header)
+	assert.Contains(t, string(result), "set -euo pipefail")
+}
+
+func TestPrependManagedHeaderNoHeader(t *testing.T) {
+	content := []byte("# AGENTS.md\nSome content\n")
+	result := PrependManagedHeader("AGENTS.md", content)
+	assert.Equal(t, content, result, "files without headers should be returned unchanged")
+}
+
 func TestValidateTriageDeleted(t *testing.T) {
 	_, err := FullsendRepoFile("scripts/validate-triage.sh")
 	assert.Error(t, err, "validate-triage.sh should have been deleted")
