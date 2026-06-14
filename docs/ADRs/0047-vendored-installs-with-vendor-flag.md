@@ -1,5 +1,5 @@
 ---
-title: "46. Vendored installs with --vendor"
+title: "47. Vendored installs with --vendor"
 status: Accepted
 relates_to:
   - testing-agents
@@ -9,7 +9,7 @@ topics:
   - workflows
 ---
 
-# ADR 0046: Vendored installs with `--vendor`
+# ADR 0047: Vendored installs with `--vendor`
 
 ## Status
 
@@ -109,7 +109,8 @@ dropped in favor of `--vendor` plus runtime marker detection:
 
 ## References
 
-- [Installation guide](../guides/getting-started/installation.md)
+- [Installation guide](../reference/installation.md)
 - [Testing workflows](../guides/dev/testing-workflows.md)
 - ADR 0031 (reusable workflows for distribution)
 - ADR 0033 (per-repo installation mode)
+- ADR 0035 (layered content resolution)

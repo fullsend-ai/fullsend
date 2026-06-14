@@ -42,7 +42,7 @@ vendored vs layered mode from `.defaults/action.yml` presence.
 Runtime skips the upstream sparse checkout when `.defaults/action.yml` is
 present (vendored install) and stages content from `.defaults/` instead.
 
-See [ADR 0046](../../ADRs/0046-vendored-installs-with-vendor-flag.md) for the
+See [ADR 0047](../../ADRs/0047-vendored-installs-with-vendor-flag.md) for the
 full distribution model.
 
 ## Layered installs: pin upstream ref

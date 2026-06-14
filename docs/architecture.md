@@ -43,7 +43,7 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Repo maintenance: a workflow in `.fullsend` (`.github/workflows/repo-maintenance.yml`) reconciles enrollment shims in target repos when `config.yaml` changes or on manual dispatch. The CLI's `EnrollmentLayer.Install()` dispatches this workflow via `workflow_dispatch` and monitors it for completion, then reports any enrollment PRs created in target repos.
 - Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
-- Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **`--vendor`** ([ADR 0046](ADRs/0046-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
+- Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **`--vendor`** ([ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 
 **Open questions:**
@@ -348,7 +348,7 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
   harness, policies, scripts) are provided at runtime via sparse checkout of
   `fullsend-ai/fullsend@v0`, or from vendored files when `--vendor` was used at
   install (detected via `.defaults/action.yml` — see
-  [ADR 0046](ADRs/0046-vendored-installs-with-vendor-flag.md)). The
+  [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)). The
   scaffold installs only org-specific files and a `customized/` directory for org
   overrides. Org files in `customized/` overwrite upstream defaults at runtime
   ([ADR 0035](ADRs/0035-layered-content-resolution.md)).
