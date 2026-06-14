@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/playwright-community/playwright-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,7 +30,6 @@ import (
 type e2eEnv struct {
 	cfg           envConfig
 	org           string // the org acquired from the pool
-	page          playwright.Page
 	client        *gh.LiveClient
 	token         string
 	runID         string
@@ -39,8 +37,7 @@ type e2eEnv struct {
 	binary        string
 }
 
-// setupE2ETest performs the common Playwright, login, PAT, lock, and cleanup
-// steps. Returns the shared env.
+// setupE2ETest performs lock acquisition, cleanup, and shared test setup.
 func setupE2ETest(t *testing.T) *e2eEnv {
 	t.Helper()
 	if testing.Short() {
@@ -54,72 +51,25 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	}
 	_ = os.MkdirAll(screenshotDir, 0o755)
 
-	// Build CLI binary early so we fail fast on compilation errors.
 	binary := buildCLIBinary(t)
 
-	// --- Playwright setup ---
-	pw, err := playwright.Run()
-	require.NoError(t, err, "starting Playwright")
-	t.Cleanup(func() {
-		if stopErr := pw.Stop(); stopErr != nil {
-			t.Logf("warning: could not stop Playwright: %v", stopErr)
-		}
-	})
-
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(os.Getenv("E2E_HEADED") != "true"),
-	})
-	require.NoError(t, err, "launching Playwright browser")
-	t.Cleanup(func() { _ = browser.Close() })
-
-	// Load pre-authenticated session via storageState (ADR 0010).
-	t.Logf("Loading browser session from %s", cfg.sessionFile)
-	browserCtx, err := browser.NewContext(playwright.BrowserNewContextOptions{
-		StorageStatePath: playwright.String(cfg.sessionFile),
-	})
-	require.NoError(t, err, "creating browser context with storageState")
-	t.Cleanup(func() { _ = browserCtx.Close() })
-
-	page, err := browserCtx.NewPage()
-	require.NoError(t, err, "creating Playwright page")
-
-	// Verify the session is valid by navigating to a page that requires auth.
-	err = verifyGitHubSession(page, screenshotDir, t.Logf)
-	require.NoError(t, err, "verifying GitHub session — session may be expired, re-export it locally")
-
-	// Generate a PAT for API access.
-	patNote := fmt.Sprintf("fullsend-e2e-%d", time.Now().Unix())
-	t.Logf("Creating PAT: %s", patNote)
-	token, err := createPAT(page, patNote, cfg.password, cfg.totpSecret, screenshotDir, t.Logf)
-	require.NoError(t, err, "creating PAT")
-	t.Cleanup(func() {
-		t.Log("Deleting PAT...")
-		if delErr := deletePAT(page, patNote, t.Logf); delErr != nil {
-			t.Logf("warning: could not delete PAT: %v", delErr)
-		}
-	})
-
-	// --- GitHub client ---
-	client := newLiveClient(token)
-
-	// Acquire an org from the pool.
 	runID := uuid.New().String()
 	t.Logf("E2E run ID: %s", runID)
 
-	org, err := acquireOrg(context.Background(), client, token, runID, orgPool, cfg.lockTimeout, t.Logf)
+	org, token, err := acquireOrg(context.Background(), cfg, runID, orgPool, cfg.lockTimeout, t.Logf)
 	require.NoError(t, err, "acquiring org from pool")
 	t.Logf("Acquired org: %s", org)
+
+	client := newLiveClient(token)
 	t.Cleanup(func() {
 		releaseLock(context.Background(), client, org, runID, t)
 	})
 
-	// Teardown-first cleanup.
 	cleanupStaleResources(context.Background(), client, token, org, t)
 
 	return &e2eEnv{
 		cfg:           cfg,
 		org:           org,
-		page:          page,
 		client:        client,
 		token:         token,
 		runID:         runID,

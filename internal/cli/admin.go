@@ -48,6 +48,7 @@ func newAdminCmd() *cobra.Command {
 	cmd.AddCommand(newAnalyzeCmd())
 	cmd.AddCommand(newEnableCmd())
 	cmd.AddCommand(newDisableCmd())
+	cmd.AddCommand(newForeignCmd())
 	return cmd
 }
 

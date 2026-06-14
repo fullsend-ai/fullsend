@@ -64,6 +64,12 @@ var canonicalRolePermissions = map[string]map[string]string{
 	"retro":      {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
 	"prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
 	"fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+	"e2e": {
+		"actions": "write", "actions_variables": "read", "administration": "write",
+		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
+		"organization_administration": "write", "pull_requests": "write",
+		"secrets": "write", "workflows": "write",
+	},
 }
 
 // RolePermissions returns a deep copy of the role-to-permissions map,
@@ -194,6 +200,143 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 	}
 
 	return inst.ID, nil
+}
+
+// FindOrgInstallation looks up a GitHub App's installation ID for an organization.
+func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org string) (int64, error) {
+	reqURL := fmt.Sprintf("%s/orgs/%s/installation", githubBaseURL, org)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("creating org installation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("getting org installation: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return 0, fmt.Errorf("getting org installation for %s returned status %d", org, resp.StatusCode)
+	}
+
+	var inst installationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+		return 0, fmt.Errorf("decoding org installation: %w", err)
+	}
+
+	if inst.ID == 0 {
+		return 0, fmt.Errorf("no installation found for org %s", org)
+	}
+
+	if !strings.EqualFold(inst.Account.Login, org) {
+		return 0, fmt.Errorf("installation for org %s belongs to %s, not %s",
+			org, inst.Account.Login, org)
+	}
+
+	return inst.ID, nil
+}
+
+// orgVariableResponse is the response from GET /orgs/{org}/actions/variables/{name}.
+type orgVariableResponse struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// GetOrgVariable reads an org-level Actions variable using an installation token.
+func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, org, name string) (value string, exists bool, err error) {
+	reqURL := fmt.Sprintf("%s/orgs/%s/actions/variables/%s", githubBaseURL, org, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("creating org variable request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+installationToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("getting org variable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", false, fmt.Errorf("getting org variable %s returned status %d", name, resp.StatusCode)
+	}
+
+	var varResp orgVariableResponse
+	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+		return "", false, fmt.Errorf("decoding org variable: %w", err)
+	}
+	return varResp.Value, true, nil
+}
+
+// createInstallationTokenWithPermissions creates an installation access token with explicit permissions.
+func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
+	tokenReqBody := map[string]interface{}{
+		"permissions": perms,
+	}
+	if len(repos) > 0 {
+		tokenReqBody["repositories"] = repos
+	}
+
+	tokenReqBytes, err := json.Marshal(tokenReqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshaling token request: %w", err)
+	}
+
+	reqURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", githubBaseURL, installationID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(tokenReqBytes))
+	if err != nil {
+		return "", fmt.Errorf("creating token request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("creating installation token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("creating installation token returned status %d", resp.StatusCode)
+	}
+
+	var tokenResp installationTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+	if tokenResp.Token == "" {
+		return "", fmt.Errorf("empty installation token returned")
+	}
+	return tokenResp.Token, nil
+}
+
+// ReadForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from the target org.
+func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+		map[string]string{"actions_variables": "read"}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating policy check token: %w", err)
+	}
+
+	value, exists, err := GetOrgVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
+	if err != nil {
+		return nil, err
+	}
+	if !exists || strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	return ParseForeignAllowlist(value), nil
 }
 
 // CreateInstallationToken exchanges a JWT for an installation access token,

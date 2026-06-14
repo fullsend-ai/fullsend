@@ -32,18 +32,20 @@ When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
 2. **Vet:** Run `make go-vet` to catch common issues.
-3. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against a live GitHub org using Playwright browser automation.
+3. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, `internal/layers/`, or `internal/mintcore/`. These tests exercise the full admin install/uninstall flow against a live GitHub org from the halfsend pool.
 
 ### Running e2e tests
 
-The e2e tests require GitHub credentials. There are three ways to provide them:
+**CI:** GitHub Actions mints cross-org installation tokens via `E2E_MINT_URL` (role `e2e`, `target_org` = pool org). Pool orgs must install the e2e app and set `FULLSEND_FOREIGN_E2E_REPOS=fullsend-ai/fullsend` — see [ADR 0046](docs/ADRs/0046-cross-org-mint-authorization-via-org-variables.md) and [e2e-testing.md](docs/guides/dev/e2e-testing.md).
 
-- **`E2E_GITHUB_PASSWORD` env var:** Set directly with the password.
-- **`E2E_GITHUB_PASSWORD_FILE` env var:** Set to a file path containing the password (used in devaipod environments where secrets are mounted as files).
-- **`E2E_GITHUB_SESSION_FILE` env var:** Set to a pre-exported Playwright session file (skips login).
-- **`E2E_GITHUB_TOTP_SECRET` env var:** Optional. The TOTP secret (base32) for the test account's 2FA. Required only when the test account has 2FA enabled — used during session export and sudo confirmation.
+**Local:** Authenticate with pool-org admin access:
 
-If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
+```bash
+gh auth login --web
+make e2e-test
+```
+
+Alternatively set `GH_TOKEN` or `GITHUB_TOKEN`. See `make help` and [e2e-testing.md](docs/guides/dev/e2e-testing.md) for pool provisioning (`hack/setup-new-e2e-org.sh`) and CI secrets.
 
 ## Key design decisions made
 

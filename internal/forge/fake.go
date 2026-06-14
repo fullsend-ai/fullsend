@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -1144,18 +1145,57 @@ func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, val
 	return nil
 }
 
-func (f *FakeClient) OrgVariableExists(_ context.Context, org, name string) (bool, error) {
+func (f *FakeClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
+	f.mu.Lock()
+	e := f.err("OrgVariableExists")
+	f.mu.Unlock()
+	if e != nil {
+		return false, e
+	}
+	_, exists, err := f.GetOrgVariable(ctx, org, name)
+	return exists, err
+}
+
+func (f *FakeClient) GetOrgVariable(_ context.Context, org, name string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("OrgVariableExists"); e != nil {
-		return false, e
+	if e := f.err("GetOrgVariable"); e != nil {
+		return "", false, e
 	}
 
-	if f.OrgVariables == nil {
-		return false, nil
+	key := org + "/" + name
+	if f.OrgVariables == nil || !f.OrgVariables[key] {
+		return "", false, nil
 	}
-	return f.OrgVariables[org+"/"+name], nil
+	if f.OrgVariableValues == nil {
+		return "", true, nil
+	}
+	return f.OrgVariableValues[key], true, nil
+}
+
+func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVariable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListOrgVariables"); e != nil {
+		return nil, e
+	}
+
+	prefix := org + "/"
+	var out []OrgVariable
+	for key, ok := range f.OrgVariables {
+		if !ok || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		name := strings.TrimPrefix(key, prefix)
+		val := ""
+		if f.OrgVariableValues != nil {
+			val = f.OrgVariableValues[key]
+		}
+		out = append(out, OrgVariable{Name: name, Value: val})
+	}
+	return out, nil
 }
 
 func (f *FakeClient) SetOrgVariableRepos(_ context.Context, org, name string, repoIDs []int64) error {

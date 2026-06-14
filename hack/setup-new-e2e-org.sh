@@ -10,7 +10,7 @@
 set -euo pipefail
 
 APP_SET="fullsend-ai"
-ROLES=(fullsend triage coder review retro prioritize)
+ROLES=(fullsend triage coder review retro prioritize e2e)
 BOT_USER="botsend"
 
 # open_browser tries to open a URL in the default browser.
@@ -174,6 +174,39 @@ for role in "${ROLES[@]}"; do
     echo "    OK: ${slug} is now installed"
   fi
 done
+
+# --- 4b. cross-org mint authorization for CI ---
+echo
+echo "==> Checking cross-org mint authorization (FULLSEND_FOREIGN_E2E_REPOS)..."
+FOREIGN_VAR="FULLSEND_FOREIGN_E2E_REPOS"
+FOREIGN_CALLER="fullsend-ai/fullsend"
+foreign_value=$(gh api "/orgs/${ORG}/actions/variables/${FOREIGN_VAR}" --jq '.value' 2>/dev/null || echo "")
+
+if echo "${foreign_value}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qx "${FOREIGN_CALLER}"; then
+  echo "    OK: ${FOREIGN_VAR} lists ${FOREIGN_CALLER}"
+else
+  echo "    MISSING: ${FOREIGN_VAR} does not authorize ${FOREIGN_CALLER}"
+  if command -v fullsend &>/dev/null; then
+    echo "    Running: fullsend admin foreign allow --org ${ORG} --role e2e --caller ${FOREIGN_CALLER}"
+    fullsend admin foreign allow --org "${ORG}" --role e2e --caller "${FOREIGN_CALLER}"
+    echo "    OK: updated ${FOREIGN_VAR}"
+  else
+    new_value="${FOREIGN_CALLER}"
+    if [[ -n "${foreign_value}" ]]; then
+      new_value="${foreign_value}, ${FOREIGN_CALLER}"
+    fi
+    echo "    Setting ${FOREIGN_VAR} via gh api..."
+    gh api "/orgs/${ORG}/actions/variables/${FOREIGN_VAR}" \
+      -X PATCH \
+      -f value="${new_value}" 2>/dev/null \
+      || gh api "/orgs/${ORG}/actions/variables" \
+        -f name="${FOREIGN_VAR}" \
+        -f value="${new_value}" \
+        -f visibility="all"
+    echo "    OK: updated ${FOREIGN_VAR}"
+  fi
+fi
+echo "    Verify with: fullsend admin foreign list --org ${ORG}"
 
 # --- 5. check mint enrollment ---
 MINT_PROJECT="${MINT_PROJECT:?MINT_PROJECT must be set}"

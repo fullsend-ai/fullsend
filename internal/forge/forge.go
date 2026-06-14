@@ -114,6 +114,12 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
+// OrgVariable is an org-level GitHub Actions variable.
+type OrgVariable struct {
+	Name  string
+	Value string
+}
+
 // TreeFile represents a file to be committed via the Git Trees API.
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
@@ -228,6 +234,8 @@ type Client interface {
 	// Org-level variables (for dispatch function URL)
 	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
 	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
+	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
+	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
 	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
 	// GetOrgVariableRepos returns the list of repository IDs that have access

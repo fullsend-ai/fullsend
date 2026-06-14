@@ -2165,22 +2165,65 @@ func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, v
 
 // OrgVariableExists checks if an org-level variable exists.
 func (c *LiveClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
+	_, exists, err := c.GetOrgVariable(ctx, org, name)
+	return exists, err
+}
+
+// GetOrgVariable reads an org-level Actions variable value.
+func (c *LiveClient) GetOrgVariable(ctx context.Context, org, name string) (string, bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), nil)
 	if err != nil {
-		return false, fmt.Errorf("check org variable %s: %w", name, err)
+		return "", false, fmt.Errorf("get org variable %s: %w", name, err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return true, nil
+		var varResp struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+			return "", false, fmt.Errorf("decoding org variable %s: %w", name, err)
+		}
+		return varResp.Value, true, nil
 	case http.StatusNotFound:
-		return false, nil
+		return "", false, nil
 	case http.StatusForbidden:
-		return false, &APIError{StatusCode: http.StatusForbidden, Message: "insufficient permissions to check org variable (missing admin:org scope?)"}
+		return "", false, &APIError{StatusCode: http.StatusForbidden, Message: "insufficient permissions to read org variable (missing admin:org scope?)"}
 	default:
-		return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking org variable"}
+		return "", false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status reading org variable"}
 	}
+}
+
+// ListOrgVariables lists org-level Actions variables (paginated).
+func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.OrgVariable, error) {
+	var all []forge.OrgVariable
+	page := 1
+	for {
+		path := fmt.Sprintf("/orgs/%s/actions/variables?per_page=100&page=%d", org, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list org variables: %w", err)
+		}
+
+		var result struct {
+			Variables  []forge.OrgVariable `json:"variables"`
+			TotalCount int                 `json:"total_count"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding org variables: %w", err)
+		}
+		resp.Body.Close()
+
+		all = append(all, result.Variables...)
+		if len(all) >= result.TotalCount || len(result.Variables) == 0 {
+			break
+		}
+		page++
+	}
+	return all, nil
 }
 
 // DeleteOrgVariable deletes an org-level variable. It is idempotent: a 404

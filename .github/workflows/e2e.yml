@@ -101,29 +101,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install Playwright system dependencies
-        run: npx playwright install-deps chromium
-
       - name: Check for secrets
         id: secrets-check
         run: |
-          if [ -z "$E2E_GITHUB_SESSION_B64" ]; then
-            echo "::warning::E2E secrets are not configured. Skipping e2e tests."
+          if [ -z "$E2E_MINT_URL" ]; then
+            echo "::warning::E2E_MINT_URL is not configured. Skipping e2e tests."
             echo "available=false" >> "$GITHUB_OUTPUT"
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
-
-      - name: Decode session
-        if: steps.secrets-check.outputs.available == 'true'
-        run: |
-          SESSION_FILE="${RUNNER_TEMP}/github-session.json"
-          printf '%s' "$E2E_GITHUB_SESSION_B64" | base64 -d > "$SESSION_FILE"
-          echo "E2E_GITHUB_SESSION_FILE=${SESSION_FILE}" >> "$GITHUB_ENV"
-        env:
-          E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
+          E2E_MINT_URL: ${{ secrets.E2E_MINT_URL }}
 
       - name: Authenticate to GCP
         if: steps.secrets-check.outputs.available == 'true'
@@ -137,8 +125,6 @@ jobs:
         run: make e2e-test
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
-          E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
-          E2E_GITHUB_TOTP_SECRET: ${{ secrets.E2E_GITHUB_TOTP_SECRET }}
           E2E_MINT_URL: ${{ secrets.E2E_MINT_URL }}
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
 
