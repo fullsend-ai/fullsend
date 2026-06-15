@@ -171,23 +171,23 @@ PRs 1, 2, 3, 5 can start in parallel. PR 4 depends on PR 3 (needs the base URL b
 
 **Create `internal/scaffold/baseurl.go`:**
 
-- `ScaffoldBaseURL(harnessName, commitSHA string) string`:
+- `HarnessBaseURL(harnessName, commitSHA string) (string, error)`:
   - Returns `https://raw.githubusercontent.com/fullsend-ai/fullsend/<commitSHA>/internal/scaffold/fullsend-repo/harness/<harnessName>.yaml`
   - Validates `harnessName` matches `^[a-z][a-z0-9_-]*$` (same pattern as role validation)
   - Validates `commitSHA` is a 40-character hex string
   - No hash fragment -- the caller appends `#sha256=...` after computing the content hash
 
-- `ScaffoldContentHash(harnessName string) (string, error)`:
+- `HarnessContentHash(harnessName string) (string, error)`:
   - Reads the embedded harness file from `fullsend-repo/harness/<harnessName>.yaml` via the embedded `embed.FS`
   - Returns the SHA-256 hex digest of the raw file content
   - This hash is the integrity hash that goes into the `#sha256=...` URL fragment
   - The hash is computed from the compile-time embedded content, which matches what `raw.githubusercontent.com` serves for the release tag's commit SHA
 
-- `ScaffoldBaseURLWithHash(harnessName, commitSHA string) (string, error)`:
-  - Convenience wrapper: calls `ScaffoldBaseURL` + `ScaffoldContentHash` and returns the full URL with `#sha256=...` fragment
+- `HarnessBaseURLWithHash(harnessName, commitSHA string) (string, error)`:
+  - Convenience wrapper: calls `HarnessBaseURL` + `HarnessContentHash` and returns the full URL with `#sha256=...` fragment
   - Returns an error if the harness name does not exist in the embedded scaffold
 
-- `ScaffoldHarnessNames() []string`:
+- `HarnessNames() ([]string, error)`:
   - Returns the list of harness names available in the embedded scaffold (e.g., `["code", "fix", "prioritize", "retro", "review", "triage"]`)
   - Derived from `fullsend-repo/harness/*.yaml` in the embedded FS
   - Sorted alphabetically
@@ -201,12 +201,12 @@ PRs 1, 2, 3, 5 can start in parallel. PR 4 depends on PR 3 (needs the base URL b
 - **The `allowed_remote_resources` prefix:** Generated base URLs use the `https://raw.githubusercontent.com/fullsend-ai/fullsend/` prefix. The install flow must add this prefix to `config.yaml`'s `allowed_remote_resources` if not already present (handled in PR 4).
 
 **Create `internal/scaffold/baseurl_test.go`:**
-- `ScaffoldBaseURL` returns expected URL format
-- `ScaffoldBaseURL` rejects invalid harness names and commit SHAs
-- `ScaffoldContentHash` returns a 64-character hex string for each known harness
-- `ScaffoldContentHash` errors on unknown harness name
-- `ScaffoldBaseURLWithHash` produces a valid URL with `#sha256=...` fragment
-- `ScaffoldHarnessNames` returns the expected set of names, sorted
+- `HarnessBaseURL` returns expected URL format
+- `HarnessBaseURL` rejects invalid harness names and commit SHAs
+- `HarnessContentHash` returns a 64-character hex string for each known harness
+- `HarnessContentHash` errors on unknown harness name
+- `HarnessBaseURLWithHash` produces a valid URL with `#sha256=...` fragment
+- `HarnessNames` returns the expected set of names, sorted
 - Hash stability: hash of a known harness matches `sha256sum` of the embedded file content
 
 **After merge:** The scaffold package can generate integrity-verified base URLs for any embedded harness template. No install flow changes yet.
@@ -230,7 +230,7 @@ The `WorkflowsLayer` currently uses `scaffold.WalkFullsendRepo()` which skips `l
 **`Install() error`:**
 1. For each agent in `agents`:
    - Derive the harness name from `agent.Role`. Special case: role `"coder"` maps to harness name `"code"` (matching the existing scaffold convention where `code.yaml` has `role: coder`). Role `"fullsend"` is the org-level app and has no harness -- skip it.
-   - Call `scaffold.ScaffoldBaseURLWithHash(harnessName, commitSHA)` to get the base URL
+   - Call `scaffold.HarnessBaseURLWithHash(harnessName, commitSHA)` to get the base URL
    - Generate wrapper YAML:
      ```yaml
      # This file is managed by fullsend. Do not edit it directly.
@@ -363,7 +363,7 @@ The `HarnessWrappersLayer` maintains this mapping. A helper function `harnessNam
      - `Base` is empty (consumed by LoadWithBase)
 
 2. **All scaffold templates through forge.github resolution:**
-   - For each harness in `scaffold.ScaffoldHarnessNames()`:
+   - For each harness in `scaffold.HarnessNames()`:
      - Load via `LoadWithOpts` with `ForgePlatform: "github"`
      - Verify `PreScript != ""` and `PostScript != ""` (they come from `forge.github`)
      - Verify `RunnerEnv` is non-empty and contains expected keys
@@ -383,9 +383,9 @@ The `HarnessWrappersLayer` maintains this mapping. A helper function `harnessNam
    - Verify sorting by role
 
 5. **Base URL integrity:**
-   - For each harness, compute `ScaffoldContentHash(name)`
+   - For each harness, compute `HarnessContentHash(name)`
    - Load the embedded file directly from `embed.FS`, compute `sha256.Sum256`, compare
-   - Verify `ScaffoldBaseURLWithHash` produces a URL whose hash fragment matches
+   - Verify `HarnessBaseURLWithHash` produces a URL whose hash fragment matches
 
 **Update `internal/scaffold/scaffold_test.go`:**
 
@@ -405,7 +405,7 @@ After all PRs merge, verify Phase 2 end-to-end:
 4. **Scaffold templates:** Each template in `internal/scaffold/fullsend-repo/harness/` has `forge.github:` block with `pre_script`, `post_script`, and GitHub-specific `runner_env` keys. Platform-neutral `runner_env` keys remain at top level.
 5. **Forge resolution:** `LoadWithOpts(path, {ForgePlatform: "github"})` on each scaffold template produces the same effective config as the pre-Phase-2 templates (same `PreScript`, `PostScript`, `RunnerEnv` key set). Verify with a comparison test.
 6. **DiscoverAgents:** `DiscoverAgents(scaffoldHarnessDir)` returns 6 agents with correct role/slug pairs: `coder/fullsend-ai-coder` (code.yaml), `coder/fullsend-ai-coder` (fix.yaml), `prioritize/fullsend-ai-prioritize`, `retro/fullsend-ai-retro`, `review/fullsend-ai-review`, `triage/fullsend-ai-triage`.
-7. **Base URLs:** `ScaffoldBaseURLWithHash("triage", "<sha>")` returns a well-formed URL with `#sha256=...` that matches the embedded file's hash.
+7. **Base URLs:** `HarnessBaseURLWithHash("triage", "<sha>")` returns a well-formed URL with `#sha256=...` that matches the embedded file's hash.
 8. **Wrapper generation:** Simulated install produces wrapper YAML files that parse correctly via `LoadRaw()` and contain expected `base:`, `role:`, `slug:` fields.
 9. **Wrapper loading:** Wrapper YAML loaded via `LoadWithBase()` with `ForgePlatform: "github"` produces a fully-populated harness with all fields from the base scaffold resolved.
 10. **Lock --all:** `fullsend lock --all` in a directory with wrapper harnesses records all base URL dependencies in `lock.yaml`.
