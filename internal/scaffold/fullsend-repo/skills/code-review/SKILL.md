@@ -149,12 +149,13 @@ dimension carry over to another — each requires its own scrutiny.
 - **Agent behavior definition changes:** If the diff modifies any file
   that defines agent behavior — skill definitions (`skills/*/SKILL.md`),
   agent definitions (`agents/*.md`), harness configs (`harness/*.yaml`),
-  or policy files (`policies/*.yaml`) — always produce a finding. These
+  or policy files (`policies/*.yaml`) — always produce a finding. Use
+  category `agent-behavior-definition` for these findings. These
   files control how agents review, triage, and implement changes;
   modifications warrant careful human review because agents have a
   structural blind spot when evaluating changes to their own
   instructions. Severity: **info** for additive changes (new rules, new
-  checks, expanded coverage). **Medium** for modifications that relax
+  checks, expanded coverage). **medium** for modifications that relax
   existing checks, remove constraints, or weaken review criteria.
 
 For the injection defense portion of this dimension, inspect raw
