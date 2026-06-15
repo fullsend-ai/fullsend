@@ -1,5 +1,5 @@
 ---
-title: "46. Functional tests for agent pipelines"
+title: "48. Functional tests for agent pipelines"
 status: Accepted
 relates_to:
   - testing-agents
@@ -7,7 +7,7 @@ topics:
   - testing
 ---
 
-# 44. Functional tests for agent pipelines
+# 48. Functional tests for agent pipelines
 
 Date: 2026-05-29
 

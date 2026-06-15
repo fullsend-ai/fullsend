@@ -139,9 +139,9 @@ We do **not** gate on raw `input_tokens` or `output_tokens` because:
 - When statistical evals provide per-model token distributions, we can add
   token thresholds as a refinement. The `metrics.json` already records them.
 
-### 5. ADR 0046 update
+### 5. ADR 0048 update
 
-ADR 0046 gets a new section documenting this decision: behavioral thresholds
+ADR 0048 gets a new section documenting this decision: behavioral thresholds
 are mandatory for all functional test cases, enforced universally by the
 orchestrator, and baselined roughly until statistical evals provide observed
 distributions.
@@ -162,7 +162,7 @@ directory so the orchestrator can find it.
 | `eval/fullsend-runner.sh` | Copy `metrics.json` to case output directory |
 | `eval/run-functional.sh` | Add pre-flight validation and post-run threshold checks |
 | `eval/triage/cases/001-bug-url-encoding/annotations.yaml` | Add `max_turns` and `max_cost_usd` |
-| `docs/ADRs/0046-functional-tests-for-agent-pipelines.md` | Add behavioral thresholds section |
+| `docs/ADRs/0048-functional-tests-for-agent-pipelines.md` | Add behavioral thresholds section |
 | `docs/testing/functional-tests.md` | Document threshold requirements |
 
 ## Open questions
