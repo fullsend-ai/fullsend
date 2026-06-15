@@ -12,6 +12,89 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestEnsureProvider_AlreadyExists_DeleteAndRecreate(t *testing.T) {
+	// Create a fake openshell that returns AlreadyExists on first create,
+	// succeeds on delete, and succeeds on second create.
+	binDir := t.TempDir()
+	stateFile := filepath.Join(binDir, "state")
+
+	// The fake openshell tracks calls via a state file.
+	// First "provider create" → AlreadyExists (exit 1)
+	// "provider delete" → success (exit 0)
+	// Second "provider create" → success (exit 0)
+	fakeScript := `#!/bin/sh
+if [ "$1" = "provider" ] && [ "$2" = "create" ]; then
+  if [ ! -f "` + stateFile + `" ]; then
+    echo "created" > "` + stateFile + `"
+    echo "Error: × status: AlreadyExists, message: \"provider already exists\"" >&2
+    exit 1
+  fi
+  exit 0
+fi
+if [ "$1" = "provider" ] && [ "$2" = "delete" ]; then
+  exit 0
+fi
+exit 1
+`
+	fakeBin := filepath.Join(binDir, "openshell")
+	require.NoError(t, os.WriteFile(fakeBin, []byte(fakeScript), 0o755))
+
+	t.Setenv("PATH", binDir)
+
+	err := EnsureProvider("github", "github-app", nil, nil)
+	assert.NoError(t, err, "EnsureProvider should succeed when provider already exists")
+}
+
+func TestEnsureProvider_AlreadyExists_DeleteFails(t *testing.T) {
+	binDir := t.TempDir()
+
+	// Fake openshell: create returns AlreadyExists, delete fails.
+	fakeScript := `#!/bin/sh
+if [ "$1" = "provider" ] && [ "$2" = "create" ]; then
+  echo "Error: × status: AlreadyExists, message: \"provider already exists\"" >&2
+  exit 1
+fi
+if [ "$1" = "provider" ] && [ "$2" = "delete" ]; then
+  echo "delete failed" >&2
+  exit 1
+fi
+exit 1
+`
+	fakeBin := filepath.Join(binDir, "openshell")
+	require.NoError(t, os.WriteFile(fakeBin, []byte(fakeScript), 0o755))
+
+	t.Setenv("PATH", binDir)
+
+	err := EnsureProvider("github", "github-app", nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "provider delete")
+	assert.Contains(t, err.Error(), "during recreate")
+}
+
+func TestEnsureProvider_CreateFails_NotAlreadyExists(t *testing.T) {
+	binDir := t.TempDir()
+
+	fakeScript := `#!/bin/sh
+echo "some other error" >&2
+exit 1
+`
+	fakeBin := filepath.Join(binDir, "openshell")
+	require.NoError(t, os.WriteFile(fakeBin, []byte(fakeScript), 0o755))
+
+	t.Setenv("PATH", binDir)
+
+	err := EnsureProvider("test", "custom", nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "provider create \"test\" failed")
+	assert.Contains(t, err.Error(), "some other error")
+}
+
+func TestRedactSecrets(t *testing.T) {
+	got := redactSecrets("token abc123 is invalid", []string{"abc123"})
+	assert.Equal(t, "token *** is invalid", got)
+	assert.NotContains(t, got, "abc123")
+}
+
 func TestEnsureAvailable_OpenshellNotInPath(t *testing.T) {
 	// Save and clear PATH to ensure openshell is not found.
 	t.Setenv("PATH", "")

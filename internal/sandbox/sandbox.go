@@ -115,14 +115,32 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Redact known credential values from error output.
-		outStr := string(out)
-		for _, s := range secrets {
-			outStr = strings.ReplaceAll(outStr, s, "***")
+		// If the provider already exists, delete it and recreate with
+		// current credentials. This keeps EnsureProvider idempotent and
+		// ensures credentials are never stale across runs.
+		if strings.Contains(string(out), "AlreadyExists") {
+			delCmd := exec.Command("openshell", "provider", "delete", name)
+			if delOut, delErr := delCmd.CombinedOutput(); delErr != nil {
+				return fmt.Errorf("provider delete %q failed during recreate: %s", name, redactSecrets(string(delOut), secrets))
+			}
+			retryCmd := exec.Command("openshell", args...)
+			retryCmd.Env = append(os.Environ(), extraEnv...)
+			if retryOut, retryErr := retryCmd.CombinedOutput(); retryErr != nil {
+				return fmt.Errorf("provider create %q failed after delete: %s", name, redactSecrets(string(retryOut), secrets))
+			}
+			return nil
 		}
-		return fmt.Errorf("provider create %q failed: %s", name, outStr)
+		return fmt.Errorf("provider create %q failed: %s", name, redactSecrets(string(out), secrets))
 	}
 	return nil
+}
+
+// redactSecrets replaces known credential values in s with "***".
+func redactSecrets(s string, secrets []string) string {
+	for _, secret := range secrets {
+		s = strings.ReplaceAll(s, secret, "***")
+	}
+	return s
 }
 
 // buildProviderArgs constructs the CLI args and child environment entries for
