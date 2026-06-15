@@ -24,6 +24,14 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
+// ErrAlreadyExists indicates that the resource already exists.
+var ErrAlreadyExists = errors.New("already exists")
+
+// IsAlreadyExists reports whether err indicates a duplicate resource.
+func IsAlreadyExists(err error) bool {
+	return errors.Is(err, ErrAlreadyExists)
+}
+
 // ErrBranchProtected indicates that a ref update failed because the
 // target branch has protection rules that prevent direct pushes.
 var ErrBranchProtected = errors.New("branch is protected")

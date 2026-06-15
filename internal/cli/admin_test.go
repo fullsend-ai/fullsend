@@ -2086,7 +2086,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
-	client.Errors["CreateBranch"] = fmt.Errorf("already exists")
+	client.Errors["CreateBranch"] = fmt.Errorf("branch: %w", forge.ErrAlreadyExists)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
@@ -2177,7 +2177,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
-	client.Errors["CreateChangeProposal"] = fmt.Errorf("already exists")
+	client.Errors["CreateChangeProposal"] = fmt.Errorf("pr: %w", forge.ErrAlreadyExists)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 

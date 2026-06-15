@@ -3,7 +3,6 @@ package layers
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -21,7 +20,7 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 
 		const scaffoldBranch = "fullsend/scaffold-install"
 		if branchErr := client.CreateBranch(ctx, owner, repo, scaffoldBranch); branchErr != nil {
-			if !strings.Contains(branchErr.Error(), "already exists") {
+			if !forge.IsAlreadyExists(branchErr) {
 				printer.StepFail("Failed to create scaffold branch")
 				return fmt.Errorf("creating scaffold branch: %w", branchErr)
 			}
@@ -29,6 +28,10 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 
 		branchCommitted, commitErr := client.CommitFilesToBranch(ctx, owner, repo, scaffoldBranch, commitMsg, files)
 		if commitErr != nil {
+			if forge.IsBranchProtected(commitErr) {
+				printer.StepFail("Scaffold branch is also protected — cannot commit")
+				return fmt.Errorf("scaffold branch %q is protected; configure branch protection to allow pushes to scaffold branches: %w", scaffoldBranch, commitErr)
+			}
 			printer.StepFail("Failed to commit scaffold files to branch")
 			return fmt.Errorf("committing scaffold files to branch: %w", commitErr)
 		}
@@ -37,7 +40,7 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 			proposal, prErr := client.CreateChangeProposal(ctx, owner, repo,
 				prTitle, prBody, scaffoldBranch, defaultBranch)
 			if prErr != nil {
-				if !strings.Contains(prErr.Error(), "already exists") {
+				if !forge.IsAlreadyExists(prErr) {
 					printer.StepFail("Failed to create scaffold PR")
 					return fmt.Errorf("creating scaffold PR: %w", prErr)
 				}

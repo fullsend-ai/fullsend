@@ -71,10 +71,13 @@ func (e *APIError) Error() string {
 	return s
 }
 
-// Unwrap returns forge.ErrNotFound for 404 errors, enabling errors.Is checks.
+// Unwrap returns sentinel errors for well-known API responses.
 func (e *APIError) Unwrap() error {
 	if e.StatusCode == http.StatusNotFound {
 		return forge.ErrNotFound
+	}
+	if e.StatusCode == http.StatusUnprocessableEntity && isAlreadyExistsError(e) {
+		return forge.ErrAlreadyExists
 	}
 	return nil
 }
@@ -762,7 +765,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	refUpdateResp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch), refPayload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isBranchProtectionError(apiErr) {
 			return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
 		}
 		return false, fmt.Errorf("update ref: %w", err)
@@ -770,6 +773,24 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	refUpdateResp.Body.Close()
 
 	return true, nil
+}
+
+// isBranchProtectionError checks whether a 422 APIError indicates branch
+// protection rather than another validation failure (e.g. non-fast-forward).
+func isBranchProtectionError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "protected") || strings.Contains(msg, "required status") || strings.Contains(msg, "required review")
+}
+
+func isAlreadyExistsError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "already exists")
 }
 
 // blobSHA computes the Git blob object SHA-1 for the given content.

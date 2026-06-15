@@ -114,13 +114,14 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	l.ui.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 		l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
 	commitMsg := fmt.Sprintf("chore: update fullsend-%s scaffold", l.version)
+	prTitle := "chore: add fullsend scaffold files"
 	prBody := fmt.Sprintf("This PR adds the fullsend scaffold files to the %s config repo.\n\n"+
 		"The default branch (%s) has branch protection rules that prevent direct pushes, "+
 		"so these files are delivered via PR instead.\n\n"+
 		"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName, cfgRepo.DefaultBranch)
 	return CommitScaffoldFiles(ctx, l.client, l.ui,
 		l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
-		commitMsg, commitMsg, prBody, files)
+		commitMsg, prTitle, prBody, files)
 }
 
 // Uninstall is a no-op. Workflow files are removed when the config repo
