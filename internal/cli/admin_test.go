@@ -1100,6 +1100,7 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		false, // vendorBinary
 		nil,   // vendorFn
 		nil,   // dispatcher
+		"dev", // commitSHA
 	)
 
 	// The enrollment layer (last in the stack) should have no repos to
@@ -1134,6 +1135,7 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 		false,
 		[]string{}, // explicitly empty (not nil)
 		nil, nil, nil, false, nil, nil,
+		"dev", // commitSHA
 	)
 
 	// The enrollment layer should have disabled repos to reconcile.
@@ -1211,6 +1213,7 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
 		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version"),
+		layers.NewHarnessWrappersLayer("test-org", nil, ui.New(&discardWriter{}), nil, "dev"),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),

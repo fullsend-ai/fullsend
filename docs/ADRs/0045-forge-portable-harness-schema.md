@@ -582,6 +582,21 @@ forge-specific artifact. The harness and agent definition are portable.
   removing an agent is deleting a file, adding one is creating a thin
   wrapper with `base:`.
 
+- **Default URL allowlist for `base` composition.** `fullsend install`
+  sets `allowed_remote_resources` in `config.yaml` to include the
+  fullsend scaffold URL prefix
+  (`https://raw.githubusercontent.com/fullsend-ai/fullsend/`), ensuring
+  generated `base:` URLs pass the allowlist without manual configuration.
+  Integrity is enforced by the mandatory `#sha256=...` hash in each URL.
+
+- **Phase 2 dual-write.** During Phase 2, agent identity (`role`, `slug`)
+  is written to both `config.yaml`'s `agents:` block and harness wrapper
+  files. The `agents:` block remains the source of truth for existing
+  consumers (`loadKnownSlugs`, `runUninstall`, `SecretsLayer`). Phase 3
+  migrates consumers to harness-file discovery; Phase 4 removes the
+  `agents:` block. Reconciliation between the two is not needed because
+  both are written atomically during `fullsend install`.
+
 - **Merge semantics add complexity.** The inheritance rules (scalars
   override, skills concatenate, runner_env merges, validation_loop replaces)
   must be well-documented and tested. Edge cases — such as a forge block

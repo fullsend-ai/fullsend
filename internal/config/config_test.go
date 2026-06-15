@@ -57,6 +57,8 @@ func TestNewOrgConfig(t *testing.T) {
 	assert.Equal(t, "fullsend", cfg.Agents[0].Role)
 	assert.Equal(t, "test", cfg.Agents[0].Name)
 	assert.Equal(t, "test-slug", cfg.Agents[0].Slug)
+
+	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}, cfg.AllowedRemoteResources)
 }
 
 func TestOrgConfigMarshal(t *testing.T) {

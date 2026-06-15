@@ -1211,7 +1211,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	} else {
 		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
 	}
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), dispatcher)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), dispatcher, commitSHA)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1572,7 +1572,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		}, gcf.NewLiveGCFClient(mintProject))
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), disp)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), disp, commitSHA)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1818,7 +1818,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, dispatcher)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, dispatcher, commitSHA)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -1843,6 +1843,7 @@ func buildLayerStack(
 	vendorBinary bool,
 	vendorFn layers.VendorFunc,
 	dispatcher dispatch.Dispatcher,
+	commitSHA string,
 ) *layers.Stack {
 	dispatchLayer := layers.NewOIDCDispatchLayer(org, client, enrolledRepoIDs, dispatcher, printer)
 
@@ -1859,6 +1860,7 @@ func buildLayerStack(
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
 		layers.NewWorkflowsLayer(org, client, printer, user, version),
+		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA),
 		layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendorBinary, vendorFn),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),

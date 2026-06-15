@@ -251,9 +251,9 @@ type Layer interface {
 ```
 
 ```
-Stack order:  ConfigRepo → Workflows → VendorBinary → Secrets → Inference → Dispatch → Enrollment
-Install:      process 1→7 (forward)
-Uninstall:    process 7→1 (reverse)
+Stack order:  ConfigRepo → Workflows → HarnessWrappers → VendorBinary → Secrets → Inference → Dispatch → Enrollment
+Install:      process 1→8 (forward)
+Uninstall:    process 8→1 (reverse)
 ```
 
 Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` and `runGitHubSetupPerRepo()` since there's no need for composable uninstall ordering with a single repo. Binary vendoring (when `--vendor-fullsend-binary` is set) and stale binary cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.

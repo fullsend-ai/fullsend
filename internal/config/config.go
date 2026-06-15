@@ -115,6 +115,10 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 		},
 		Agents: agents,
 		Repos:  repos,
+		// Default allowlist for base: composition in harness wrappers (ADR-0045 Phase 2).
+		AllowedRemoteResources: []string{
+			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		},
 	}
 	if inferenceProvider != "" {
 		cfg.Inference = InferenceConfig{Provider: inferenceProvider}

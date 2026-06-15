@@ -7,10 +7,16 @@ import (
 )
 
 var version = "dev"
+var commitSHA = "dev"
 
 // Version returns the CLI version string set at build time.
 func Version() string {
 	return version
+}
+
+// CommitSHA returns the git commit SHA set at build time.
+func CommitSHA() string {
+	return commitSHA
 }
 
 func newRootCmd() *cobra.Command {
