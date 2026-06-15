@@ -347,10 +347,10 @@ runs:
       run: pip install --quiet "jsonschema>=4.18.0"
 
     - name: Set up Go for target repo pre-commit hooks
-      if: hashFiles('target-repo/go.mod') != ''
+      if: hashFiles(format('{0}/go.mod', inputs.target-repo)) != ''
       uses: actions/setup-go@v6
       with:
-        go-version-file: target-repo/go.mod
+        go-version-file: ${{ inputs.target-repo }}/go.mod
         cache: false
 
     - name: Run fullsend
