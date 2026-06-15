@@ -587,7 +587,10 @@ Protected paths (kept in sync with `post-review.sh`):
 - `api-servers/`
 - `CLAUDE.md`
 - `CODEOWNERS`
+- `Containerfile`
+- `Dockerfile`
 - `harness/`
+- `images/`
 - `plugins/`
 - `policies/`
 - `scripts/`
