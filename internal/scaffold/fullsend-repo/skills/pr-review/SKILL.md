@@ -45,6 +45,7 @@ and `description`.
 | `style-conventions`    | sonnet | parallel   | Naming, error handling idioms, API shape, code organization                    |
 | `docs-currency`        | sonnet | parallel   | Documentation staleness (follows docs-review skill inline)                     |
 | `cross-repo-contracts` | sonnet | parallel   | API contract breakage affecting other repos (conditional)                      |
+| `security-triage`      | haiku  | pre-pass   | Classifies files by security relevance for large PRs (≥ 30 files)             |
 | `challenger`           | opus   | sequential | Adversarial challenge of findings, false-positive removal, deduplication       |
 
 The Model column reflects each sub-agent's current frontmatter. Any
@@ -287,6 +288,78 @@ complex PR that triggers all conditions legitimately needs all 6.
 | CI/CD pipeline change          | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change      | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
 
+#### 3c-1. Security-critical file triage (large PRs)
+
+When `FILE_COUNT` (from step 2) is **≥ 30**, run a lightweight triage
+pass to identify security-critical files before preparing context
+packages. For PRs under 30 files, skip this step — all files receive
+uniform attention.
+
+**Why:** On large PRs, security-critical files compete with
+boilerplate for the review agent's context window and reasoning
+budget. A triage pass ensures files touching auth, permissions,
+token handling, trust boundaries, and similar concerns receive
+dedicated review context rather than being diluted across dozens of
+routine changes. See #2096 for the motivating incident.
+
+**Procedure:**
+
+1. Read `sub-agents/security-triage.md` for the sub-agent definition.
+2. Compose a spawn prompt containing:
+
+   **Part 1 — Sub-agent definition:** the full markdown body of the
+   security-triage sub-agent file (everything after the frontmatter)
+
+   **Part 2 — Context:** the PR's changed file list with per-file
+   diff stats (additions, deletions), plus a brief diff summary for
+   each file (first 20 lines of each file's diff, enough for import
+   statements and function signatures). Format as:
+
+   ```markdown
+   ## Files to classify
+
+   | File | Additions | Deletions |
+   |------|-----------|-----------|
+   | <path> | <n> | <n> |
+   ...
+
+   ## Diff summaries
+   ### <path>
+   <first ~20 lines of the file's diff>
+   ...
+   ```
+
+3. Spawn via Agent tool with:
+   - `model`: `haiku` (from the sub-agent frontmatter)
+   - `subagent_type`: `Explore` (read-only)
+   - `prompt`: composed from parts 1–2
+
+   This agent runs **synchronously** (not in the background) because
+   its output feeds into step 3d's context package assembly. It uses
+   haiku for speed — classification does not require deep reasoning.
+
+4. Parse the triage output. The security-triage sub-agent returns a
+   JSON object with `security_critical_files` (array of objects with
+   `file` and `reason`), `standard_files` (array of paths), and
+   `summary` (string).
+
+5. Store the classification result for use in step 3d. If the
+   security-triage sub-agent fails (timeout, parse error, empty
+   response), fall back to treating **all files as
+   security-critical** — this preserves the existing uniform-attention
+   behavior as a safe default.
+
+**Edge cases:**
+
+- **All files classified as security-critical:** The deep-review pass
+  covers all files with full context. This is equivalent to the
+  standard review behavior for smaller PRs — no degradation.
+- **No files classified as security-critical:** All files receive
+  standard review. The triage cost (one haiku call) is minimal.
+- **Triage sub-agent failure:** Fall back to uniform attention (all
+  files treated as security-critical). Log an info-level note in the
+  review output.
+
 #### 3d. Prepare context packages
 
 For each selected sub-agent, assemble a context package containing:
@@ -306,6 +379,45 @@ For each selected sub-agent, assemble a context package containing:
 - `issue_context`: linked issue title, body, comments (for
   `intent-coherence`)
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
+
+**Security-prioritized context (large PRs with triage results):**
+
+When step 3c-1 produced a security triage classification (i.e., the PR
+has ≥ 30 files and the triage pass succeeded), modify the context
+packages for the `security` and `correctness` sub-agents as follows:
+
+1. **Security sub-agent:** Provide the full per-file diffs for all
+   `security_critical_files` first, clearly marked with a
+   `### Security-critical file: <path>` header and the triage reason.
+   Include standard files' diffs after, under a
+   `### Standard files` header. This ordering ensures
+   security-critical files receive primary attention within the
+   sub-agent's context window.
+
+2. **Correctness sub-agent:** Same prioritized ordering — security-
+   critical files first with their triage classification, then
+   standard files. Correctness and security findings often overlap on
+   the same code (e.g., a fail-open bug is both a logic error and a
+   security vulnerability), so the correctness sub-agent also benefits
+   from knowing which files the triage pass flagged.
+
+3. **Other sub-agents** (`intent-coherence`, `style-conventions`,
+   `docs-currency`, `cross-repo-contracts`): Receive the standard
+   context package without prioritization. These dimensions are not
+   affected by the security triage classification.
+
+4. **Include the triage summary** in the context package for both
+   `security` and `correctness` sub-agents:
+
+   ```markdown
+   ### Security triage classification
+   <triage summary from step 3c-1>
+   Security-critical files: <list with reasons>
+   ```
+
+If step 3c-1 was skipped (PR under 30 files) or the triage sub-agent
+failed (fallback to uniform attention), prepare all context packages
+using the standard format described above — no prioritization.
 
 ### 4. Dispatch sub-agents
 
