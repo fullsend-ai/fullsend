@@ -304,16 +304,18 @@ func loadAppSetPEMs(ctx context.Context, pemDir, appSet string) (map[string][]by
 func newMintCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mint",
-		Short: "Manage token mint infrastructure (requires GCP access)",
-		Long: `Manage the GCP Cloud Function that mints GitHub App installation tokens.
+		Short: "Manage token mint infrastructure and mint tokens",
+		Long: `Manage the GCP Cloud Function that mints GitHub App installation tokens,
+and mint short-lived tokens via OIDC.
 
-These commands require GCP project access but do NOT require a GitHub token.
-Use 'fullsend github setup' for GitHub-side setup.`,
+Infrastructure subcommands (deploy, enroll, unenroll, status) require GCP
+project access. The 'token' subcommand requires only GitHub Actions OIDC.`,
 	}
 	cmd.AddCommand(newMintDeployCmd())
 	cmd.AddCommand(newMintEnrollCmd())
 	cmd.AddCommand(newMintUnenrollCmd())
 	cmd.AddCommand(newMintStatusCmd())
+	cmd.AddCommand(newMintTokenCmd())
 	return cmd
 }
 

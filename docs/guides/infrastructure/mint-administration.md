@@ -234,6 +234,22 @@ The status command reports overall health as one of:
 | `degraded` | No enrolled orgs, OR template diverges from traffic-serving revision |
 | `not-installed` | Mint function not found in the specified project/region |
 
+## Minting tokens at runtime
+
+`fullsend mint token` exchanges a GitHub Actions OIDC JWT for a short-lived, role-scoped GitHub App installation token. This is a runtime operation intended for use inside GitHub Actions workflows (not infrastructure management).
+
+```bash
+# Mint a token for the triage role scoped to a specific repo
+fullsend mint token --role triage --repos my-repo --mint-url "$FULLSEND_MINT_URL"
+
+# Mint a token scoped to multiple repos
+fullsend mint token --role coder --repos repo-a,repo-b --mint-url "$FULLSEND_MINT_URL"
+```
+
+The command prints the token to stdout for shell capture. When running in GitHub Actions (`GITHUB_ACTIONS=true`), it also emits `::add-mask::` to stderr to prevent the token from appearing in logs.
+
+**Required environment:** The calling GitHub Actions job must declare `id-token: write` permission so that `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are available.
+
 ## Multi-org setup
 
 A single token mint can serve multiple GitHub organizations. The first org deploys the mint infrastructure and creates **public unlisted** GitHub Apps; additional orgs reuse the existing mint and install the same apps.

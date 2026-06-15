@@ -47,6 +47,7 @@ func TestMintCommand_HasSubcommands(t *testing.T) {
 	assert.True(t, names["enroll <org|owner/repo>"], "expected enroll subcommand")
 	assert.True(t, names["unenroll <org|owner/repo>"], "expected unenroll subcommand")
 	assert.True(t, names["status [org]"], "expected status subcommand")
+	assert.True(t, names["token"], "expected token subcommand")
 }
 
 func TestMintCommand_RegisteredInRoot(t *testing.T) {

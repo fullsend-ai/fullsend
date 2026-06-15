@@ -14,11 +14,16 @@ fullsend
 │   │   └── repos    <org> [repo...]         # Enable agent on repos
 │   └── disable
 │       └── repos    <org> [repo...]         # Disable agent on repos
-├── mint                                     # GCP: token mint management
+├── mint                                     # Token mint management
 │   ├── deploy                               # Deploy/update mint Cloud Function
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
-│   └── status       [org]                   # Inspect mint state and PEM health
+│   ├── status       [org]                   # Inspect mint state and PEM health
+│   └── token                                # Mint a short-lived token via OIDC
+│       ├── --role <name>                    #   Agent role (triage, coder, review)
+│       ├── --repos <list>                   #   Comma-separated repo names
+│       ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
+│       └── --audience <string>              #   OIDC audience (default: fullsend-mint)
 ├── inference                                # GCP: inference WIF management
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
