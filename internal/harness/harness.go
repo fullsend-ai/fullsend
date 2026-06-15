@@ -218,6 +218,8 @@ type Harness struct {
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
+	AllowRuntimeFetch      bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
+	MaxRuntimeFetches      *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 }
 
@@ -351,6 +353,17 @@ func (h *Harness) Validate() error {
 	}
 	if err := h.ValidateResourceTypes(); err != nil {
 		return err
+	}
+	if h.AllowRuntimeFetch && len(h.AllowedRemoteResources) == 0 {
+		return fmt.Errorf("allow_runtime_fetch requires at least one entry in allowed_remote_resources")
+	}
+	if h.MaxRuntimeFetches != nil {
+		if !h.AllowRuntimeFetch {
+			return fmt.Errorf("max_runtime_fetches requires allow_runtime_fetch to be true")
+		}
+		if *h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000 {
+			return fmt.Errorf("max_runtime_fetches must be between 1 and 1000, got %d", *h.MaxRuntimeFetches)
+		}
 	}
 	if err := h.validateForge(); err != nil {
 		return err
@@ -698,6 +711,17 @@ func (h *Harness) ValidateResourceTypes() error {
 	}
 
 	return nil
+}
+
+const defaultMaxRuntimeFetches = 10 // must match fetchsvc.DefaultMaxFetches
+
+// EffectiveMaxRuntimeFetches returns the configured max runtime fetches,
+// or defaultMaxRuntimeFetches (10) when the field is omitted.
+func (h *Harness) EffectiveMaxRuntimeFetches() int {
+	if h.MaxRuntimeFetches == nil {
+		return defaultMaxRuntimeFetches
+	}
+	return *h.MaxRuntimeFetches
 }
 
 // HasURLSkills reports whether any skill field contains a URL. Used to determine

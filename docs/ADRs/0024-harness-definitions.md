@@ -424,6 +424,22 @@ security:
       enabled: true
     ssrf_pretool: true
     secret_redact_posttool: true
+
+# Remote resource access (ADR-0038). URL-prefix allowlist for skills, agents,
+# and policies fetched from HTTPS endpoints with SHA256 integrity verification.
+allowed_remote_resources:
+  - https://example.com/skills/
+  - https://example.com/policies/
+
+# Opt-in to runtime skill fetching. When true, the runner starts a fetch
+# service that agents can call mid-run via `fullsend fetch-skill`. Requires
+# at least one entry in allowed_remote_resources. Default: false.
+allow_runtime_fetch: true
+
+# Maximum number of runtime fetch requests per agent run. Requires
+# allow_runtime_fetch to be true. When omitted, uses the default (10).
+# Must be between 1 and 1000.
+max_runtime_fetches: 10
 ```
 
 ### Example: triage harness (with container image)

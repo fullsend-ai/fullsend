@@ -565,12 +565,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	traceID := security.GenerateTraceID()
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
-	// Only started when the harness declares remote resources — without
-	// them there is nothing to fetch, and skipping avoids exposing the
-	// service to prompt-injected agents. PR 3 will add a dedicated
-	// allow_runtime_fetch harness field for finer-grained control.
 	var fetchEnvVal fetchServiceEnv
-	if h.HasURLSkills() || len(h.AllowedRemoteResources) > 0 {
+	startFetch, deprecationWarning := shouldStartFetchService(h)
+	if deprecationWarning != "" {
+		printer.StepWarn(deprecationWarning)
+	}
+	if startFetch {
 		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.forgeClient, h, resolveToken, fetchsvc.ServiceConfig{
 			Harness:       h,
 			FetchPolicy:   fetch.DefaultPolicy,
@@ -578,7 +578,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			TraceID:       traceID,
 			SandboxName:   sandboxName,
-			MaxFetches:    fetchsvc.DefaultMaxFetches,
+			MaxFetches:    h.EffectiveMaxRuntimeFetches(),
 			Uploader:      &fetchsvc.SandboxUploader{},
 			SkillDestDir:  sandbox.SandboxClaudeConfig + "/skills",
 		}, printer.StepWarn)
@@ -1099,13 +1099,30 @@ type fetchServiceEnv struct {
 	token string // bearer token
 }
 
+const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resources without allow_runtime_fetch: true; " +
+	"the runtime fetch service will start for backward compatibility, but this behavior is " +
+	"deprecated — add allow_runtime_fetch: true to the harness to silence this warning"
+
+// shouldStartFetchService decides whether the runtime fetch HTTP service
+// should be started, and returns a deprecation warning if the harness relies
+// on the legacy implicit opt-in via allowed_remote_resources.
+func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
+	if h.HasURLSkills() || h.AllowRuntimeFetch {
+		return true, ""
+	}
+	if len(h.AllowedRemoteResources) > 0 {
+		return true, deprecatedImplicitFetchWarning
+	}
+	return false, ""
+}
+
 // setupFetchService resolves a forge client for runtime fetching and starts
 // the HTTP fetch service. It returns the service address/token as a
 // fetchServiceEnv, a shutdown function, and any error.
 func setupFetchService(ctx context.Context, forgeClient forge.Client, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
 	if forgeClient != nil {
 		cfg.ForgeClient = forgeClient
-	} else if h.HasURLSkills() || len(h.AllowedRemoteResources) > 0 {
+	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
 			cfg.ForgeClient = gh.New(token)
 		} else {

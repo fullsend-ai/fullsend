@@ -150,9 +150,15 @@ runner_env:
   FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
 
 timeout_minutes: 20
+
+# Optional: enable runtime skill fetching (ADR-0038 Phase 4)
+# allowed_remote_resources:
+#   - https://github.com/org/skills/
+# allow_runtime_fetch: true
+# max_runtime_fetches: 10
 ```
 
-See [Customizing agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, and `plugins` blocks).
+See [Customizing agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 

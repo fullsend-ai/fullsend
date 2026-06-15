@@ -1097,3 +1097,26 @@ runner_env:
 
 	assert.Equal(t, map[string]string{"KEY1": "value1"}, h.RunnerEnv)
 }
+
+func TestLoadWithBase_RuntimeFetchFieldsNotInherited(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+allowed_remote_resources:
+  - https://example.com/
+allow_runtime_fetch: true
+max_runtime_fetches: 50
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.False(t, h.AllowRuntimeFetch)
+	assert.Nil(t, h.MaxRuntimeFetches)
+	assert.Empty(t, h.AllowedRemoteResources)
+}

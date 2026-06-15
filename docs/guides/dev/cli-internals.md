@@ -320,8 +320,8 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 │  │  ├── PATH=/sandbox/workspace/bin:$PATH   │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
-│  │  ├── FULLSEND_FETCH_URL=http://host:port/fetch (if active)│  │
-│  │  ├── FULLSEND_FETCH_TOKEN=<per-run token> (if active)│       │
+│  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
+│  │  ├── FULLSEND_FETCH_TOKEN=<per-run token> (if above)│       │
 │  │  └── sources .env.d/*.env files          │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │

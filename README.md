@@ -44,6 +44,8 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Universal Harness Access](docs/plans/universal-harness-access.md) — Making harnesses and agents universally accessible via URLs and paths, enabling community sharing and composability
   - [Universal Harness Access — Phase 1 Implementation](docs/plans/universal-harness-access-phase1.md) — Phased PR breakdown for ADR-0038 Phase 1 (MVP)
   - [Universal Harness Access — Phase 2 Implementation](docs/plans/universal-harness-access-phase2.md) — Phased PR breakdown for ADR-0038 Phase 2 (transitive dependency resolution)
+  - [Universal Harness Access — Phase 3 Implementation](docs/plans/universal-harness-access-phase3.md) — Phased PR breakdown for ADR-0038 Phase 3 (lock files and integrity verification)
+  - [Universal Harness Access — Phase 4 Implementation](docs/plans/universal-harness-access-phase4.md) — Phased PR breakdown for ADR-0038 Phase 4 (runtime dependency loading)
   - [Agent Execution Environment](docs/plans/agent-execution-environment.md) — Sandbox and runtime environment for agent execution
   - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
   - [ADR-0045 Forge-Portable Harness Schema — Phase 1](docs/plans/adr-0045-forge-portable-harness-phase1.md) — Implementation plan for ADR-0045 forge-portable harness schema (Phase 1)

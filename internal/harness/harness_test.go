@@ -1296,6 +1296,128 @@ forge:
 	assert.Contains(t, err.Error(), "not configured")
 }
 
+// --- Runtime fetch field tests ---
+
+func TestValidate_AllowRuntimeFetchWithoutAllowedResources(t *testing.T) {
+	h := &Harness{
+		Agent:             "agents/code.md",
+		AllowRuntimeFetch: true,
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allow_runtime_fetch requires at least one entry in allowed_remote_resources")
+}
+
+func TestValidate_MaxRuntimeFetchesWithoutAllowRuntimeFetch(t *testing.T) {
+	v := 5
+	h := &Harness{
+		Agent:             "agents/code.md",
+		MaxRuntimeFetches: &v,
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_runtime_fetches requires allow_runtime_fetch to be true")
+}
+
+func TestValidate_MaxRuntimeFetchesNegative(t *testing.T) {
+	v := -1
+	h := &Harness{
+		Agent:                  "agents/code.md",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
+		MaxRuntimeFetches:      &v,
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_runtime_fetches must be between 1 and 1000")
+}
+
+func TestValidate_MaxRuntimeFetchesExceedsUpperBound(t *testing.T) {
+	v := 1001
+	h := &Harness{
+		Agent:                  "agents/code.md",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
+		MaxRuntimeFetches:      &v,
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_runtime_fetches must be between 1 and 1000")
+}
+
+func TestValidate_AllowRuntimeFetchValid(t *testing.T) {
+	v := 5
+	h := &Harness{
+		Agent:                  "agents/code.md",
+		AllowRuntimeFetch:      true,
+		MaxRuntimeFetches:      &v,
+		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
+	}
+	err := h.Validate()
+	require.NoError(t, err)
+}
+
+func TestValidate_AllowRuntimeFetchDefaultMaxFetches(t *testing.T) {
+	h := &Harness{
+		Agent:                  "agents/code.md",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
+	}
+	err := h.Validate()
+	require.NoError(t, err)
+	assert.Nil(t, h.MaxRuntimeFetches)
+	assert.Equal(t, 10, h.EffectiveMaxRuntimeFetches())
+}
+
+func TestValidate_MaxRuntimeFetchesExplicitZero(t *testing.T) {
+	v := 0
+	h := &Harness{
+		Agent:                  "agents/code.md",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
+		MaxRuntimeFetches:      &v,
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_runtime_fetches must be between 1 and 1000")
+}
+
+func TestLoad_RuntimeFetchFields(t *testing.T) {
+	content := `
+agent: agents/code.md
+allowed_remote_resources:
+  - https://github.com/fullsend-ai/library/
+allow_runtime_fetch: true
+max_runtime_fetches: 15
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fetch.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, h.AllowRuntimeFetch)
+	require.NotNil(t, h.MaxRuntimeFetches)
+	assert.Equal(t, 15, *h.MaxRuntimeFetches)
+	assert.Equal(t, 15, h.EffectiveMaxRuntimeFetches())
+}
+
+func TestLoad_RuntimeFetchFieldsOmitted(t *testing.T) {
+	content := `
+agent: agents/code.md
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "minimal.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, h.AllowRuntimeFetch)
+	assert.Nil(t, h.MaxRuntimeFetches)
+}
+
 // --- ValidForgePlatform tests ---
 
 func TestValidForgePlatform(t *testing.T) {

@@ -55,6 +55,11 @@ providers:                       # Inference providers (loaded from providers/ d
 validation_loop:
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
 
+allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
+  - https://github.com/org/       # Resources must match a prefix to be fetched
+allow_runtime_fetch: true         # Opt-in to runtime skill fetching (default: false)
+max_runtime_fetches: 10           # Max runtime fetch requests per run (1–1000, default: 10)
+
 security:                        # Security is enabled by default with fail_mode: closed
   enabled: true                  # All scanners enabled by default
   fail_mode: closed              # "closed" (reject on failure) or "open" (warn only)

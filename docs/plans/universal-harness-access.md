@@ -340,7 +340,7 @@ This requires:
 - Fetch requests are rate-limited (max 10 per agent run)
 - Anomalous fetch patterns trigger alerts
 
-**Status:** Not implemented in initial design. Tracked in a future issue.
+**Status:** Implemented in Phase 4. Harness schema fields (`allow_runtime_fetch`, `max_runtime_fetches`) and CLI wiring added. See `docs/plans/universal-harness-access-phase4.md`.
 
 ### Access Policy Model
 

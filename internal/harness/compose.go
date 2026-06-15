@@ -414,10 +414,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 		merged = append(merged, child.Providers...)
 		child.Providers = merged
 	}
-	// AllowedRemoteResources is NOT merged from base harnesses to prevent
-	// privilege escalation: a base cannot inject arbitrary URL prefixes
-	// into the child's allowlist. The child must declare its own allowlist
-	// which is validated against the org-level allowlist.
+	// AllowedRemoteResources, AllowRuntimeFetch, and MaxRuntimeFetches are
+	// NOT merged from base harnesses to prevent privilege escalation: a base
+	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
+	// child. The child must declare its own allowlist and fetch settings.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)
