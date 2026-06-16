@@ -6,23 +6,25 @@
 # security-sensitive component in the fix pipeline.
 #
 # Security layers (defense-in-depth):
-#   - Protected-path check — reject if agent touched forbidden paths
 #   - Authoritative secret scan — final gate before any push
 #   - Authoritative pre-commit — run repo hooks on changed files
 #   - Branch validation — refuse to push main/master
 #   - Token isolation — PUSH_TOKEN never enters the sandbox
 #
+# Protected-path enforcement lives in post-review.sh: the review agent
+# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
+# agents/). The fix agent is free to propose changes to any path.
+#
 # Steps:
 #   0. Check for agent commits
-#   1. Protected-path check
-#   2. Authoritative secret scan
-#   3. Install lychee
-#   4. Install uv and uvx
-#   5. Authoritative pre-commit check
-#   6. Push branch
-#   7. Process structured output
-#   8. Iteration-cap warning label
-#   9. Summary
+#   1. Authoritative secret scan
+#   2. Install lychee
+#   3. Install uv and uvx
+#   4. Authoritative pre-commit check
+#   5. Push branch
+#   6. Process structured output
+#   7. Iteration-cap warning label
+#   8. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -55,24 +57,6 @@ is_bot_user() {
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PROTECTED_PATHS=(
-  ".claude/"
-  ".cursor/"
-  ".gitattributes"
-  ".github/"
-  ".pre-commit-config.yaml"
-  "AGENTS.md"
-  "agents/"
-  "api-servers/"
-  "CLAUDE.md"
-  "CODEOWNERS"
-  "harness/"
-  "plugins/"
-  "policies/"
-  "scripts/"
-  "skills/"
-)
-
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 LYCHEE_VERSION="0.24.2"
@@ -145,38 +129,18 @@ else
     || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
-# ---------------------------------------------------------------------------
-# 1. Protected-path check (only if pushing)
-# ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   echo "Changed files (agent commits):"
   echo "${CHANGED_FILES}" | sed 's/^/  /'
 
   if [ "${BRANCH_CHANGED_FILES}" != "${CHANGED_FILES}" ]; then
-    echo "Branch-only changed files (merge-base-aware, used for protected-path check):"
+    echo "Branch-only changed files (merge-base-aware, used for pre-commit):"
     echo "${BRANCH_CHANGED_FILES}" | sed 's/^/  /'
   fi
-
-  # Use BRANCH_CHANGED_FILES for the protected-path check. This ensures
-  # that files changed only in upstream (e.g., .github/ workflows modified
-  # on main since the branch was created) are not falsely attributed to
-  # the agent after a rebase.
-  while IFS= read -r file; do
-    [ -z "${file}" ] && continue
-    for pattern in "${PROTECTED_PATHS[@]}"; do
-      if [[ "${file}" == ${pattern}* ]]; then
-        echo "::error::BLOCKED — agent modified protected path: ${pattern}"
-        echo "::error::  ${file}"
-        exit 1
-      fi
-    done
-  done <<< "${BRANCH_CHANGED_FILES}"
-
-  echo "Protected-path check passed"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Authoritative secret scan (only if pushing)
+# 1. Authoritative secret scan (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   echo "Running authoritative secret scan on agent's commit..."
@@ -199,7 +163,7 @@ if [ "${NO_PUSH}" = "false" ]; then
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
-  # 2b. Reject Signed-off-by trailers
+  # 1b. Reject Signed-off-by trailers
   #
   # Agents must never produce Signed-off-by trailers. DCO is a human
   # attestation — the DCO app already waives the check for bot authors.
@@ -217,7 +181,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Install lychee (for pre-commit markdown link checking)
+# 2. Install lychee (for pre-commit markdown link checking)
 # ---------------------------------------------------------------------------
 if ! command -v lychee >/dev/null 2>&1; then
   echo "Installing lychee v${LYCHEE_VERSION}..."
@@ -238,7 +202,7 @@ if ! command -v lychee >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Install uv and uvx (for pre-commit Python tooling)
+# 3. Install uv and uvx (for pre-commit Python tooling)
 # ---------------------------------------------------------------------------
 if ! command -v uvx >/dev/null 2>&1; then
   echo "Installing uv v${UV_VERSION} (includes uvx)..."
@@ -255,7 +219,7 @@ if ! command -v uvx >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Authoritative pre-commit check (only if pushing)
+# 4. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -281,7 +245,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Push branch (only if we have commits)
+# 5. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
@@ -296,7 +260,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Process structured output (fix-result.json)
+# 6. Process structured output (fix-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -348,7 +312,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Iteration-cap warning label
+# 7. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -367,7 +331,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Summary
+# 8. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"
