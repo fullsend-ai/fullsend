@@ -47,6 +47,56 @@ func TestVendorDryRunMessage(t *testing.T) {
 	msg := vendorDryRunMessage("/tmp/fullsend", "", layers.VendoredBinaryPathPerRepo)
 	assert.Contains(t, msg, "/tmp/fullsend")
 	assert.Contains(t, msg, layers.VendoredBinaryPathPerRepo)
+
+	msg = vendorDryRunMessage("/tmp/fullsend", "/tmp/src", layers.VendoredBinaryPathPerRepo)
+	assert.Contains(t, msg, "content from /tmp/src")
+
+	msg = vendorDryRunMessage("", "/tmp/src", layers.VendoredBinaryPath)
+	assert.Contains(t, msg, "Would cross-compile from /tmp/src")
+
+	msg = vendorDryRunMessage("", "", layers.VendoredBinaryPath)
+	assert.True(t, strings.Contains(msg, "Would cross-compile and upload") ||
+		strings.Contains(msg, "Would download release") ||
+		strings.Contains(msg, "Would fail: dev CLI"))
+}
+
+func TestAppendVendorTreeFiles_Disabled(t *testing.T) {
+	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
+	out, count, err := appendVendorTreeFiles(ui.New(nil), "org", "my-repo", files, false, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, files, out)
+	assert.Equal(t, 0, count)
+}
+
+func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs Linux ELF binary")
+	}
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
+	var buf strings.Builder
+	out, count, err := appendVendorTreeFiles(ui.New(&buf), "org", "my-repo", files, true, exe, "")
+	require.NoError(t, err)
+	assert.Greater(t, len(out), len(files))
+	assert.Greater(t, count, 0)
+}
+
+func TestMakeVendorCollectFunc(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs Linux ELF binary")
+	}
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	var buf strings.Builder
+	fn := makeVendorCollectFunc(exe, "")
+	require.NotNil(t, fn)
+	files, count, err := fn(context.Background(), ui.New(&buf), "org", "my-repo")
+	require.NoError(t, err)
+	assert.NotEmpty(t, files)
+	assert.Greater(t, count, 0)
 }
 
 func TestAcquireAndVendor_ExplicitPath(t *testing.T) {
