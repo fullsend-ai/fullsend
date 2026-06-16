@@ -142,8 +142,9 @@ agent definition `.md` file). `agent` describes *how* the agent behaves;
 `role` describes *what function* the agent serves in the pipeline; `slug`
 describes *who* the agent authenticates as. During Phase 1-2, `role` and
 `slug` are optional — `Validate()` does not require them. In Phase 3,
-`Validate()` emits warnings when `role` is missing. In Phase 4,
-`Validate()` requires `role`.
+`Validate()` continues to allow missing `role`, but `Lint()` emits
+warnings when `role` is missing. In Phase 4, `Validate()` requires
+`role`.
 
 `base` references another harness file whose fields serve as defaults for
 this harness. Any field set in the child overrides the corresponding base
@@ -516,11 +517,10 @@ func (h *Harness) ResolveForge(platform string) error { ... }
    Note: `role`/`slug` becoming required is independent of the `forge:`
    section — a harness that only targets one platform still needs `role`
    and `slug` but does not need `forge:`.
-   Implementation note: the current `Validate()` method returns hard errors
-   only — there is no warning/advisory path. Phase 3 will need a separate
-   `Lint()` method or log-level warnings to emit non-fatal diagnostics
-   without breaking existing callers that treat any `Validate()` error as
-   a hard stop.
+   Implementation note: `Validate()` returns hard errors only. Phase 3
+   adds a separate `Lint()` method that returns non-fatal `[]Diagnostic`
+   warnings without breaking existing callers that treat any `Validate()`
+   error as a hard stop.
 
 4. **Phase 4 (remove):** Require `role` in all harness files. Remove the
    `agents:` block from config.yaml entirely. Agent identity and
