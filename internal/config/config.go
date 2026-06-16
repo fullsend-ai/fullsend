@@ -265,9 +265,9 @@ func (c *OrgConfig) DefaultRoles() []string {
 // PerRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 type PerRepoConfig struct {
-	Version      string             `yaml:"version"`
-	KillSwitch   bool               `yaml:"kill_switch,omitempty"`
-	Roles        []string           `yaml:"roles,omitempty"`
+	Version      string              `yaml:"version"`
+	KillSwitch   bool                `yaml:"kill_switch,omitempty"`
+	Roles        []string            `yaml:"roles,omitempty"`
 	CreateIssues *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 }
 
