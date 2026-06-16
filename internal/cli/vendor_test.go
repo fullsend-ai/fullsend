@@ -187,3 +187,24 @@ func TestApplyDeprecatedVendorBinaryFlag(t *testing.T) {
 	applyDeprecatedVendorBinaryFlag(cmd, &vendor)
 	assert.True(t, vendor)
 }
+
+func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs Linux ELF binary")
+	}
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	bundle, cleanup, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	assert.Greater(t, bundle.assetCount, 0)
+	assert.NotEmpty(t, bundle.files)
+}
+
+func TestPrepareVendorFiles_InvalidExplicitBinary(t *testing.T) {
+	_, cleanup, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", "/nonexistent/fullsend", "")
+	require.Error(t, err)
+	cleanup()
+	assert.Contains(t, err.Error(), "validating --fullsend-binary")
+}

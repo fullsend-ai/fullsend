@@ -680,5 +680,57 @@ func TestExtractSourceTreeAggregateSizeLimit(t *testing.T) {
 	assert.Contains(t, err.Error(), "aggregate extracted size exceeds maximum")
 }
 
+func TestFetchSourceTree_ExtractsArchive(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	content := []byte("module root")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-1.0.0/go.mod",
+		Typeflag: tar.TypeReg,
+		Size:     int64(len(content)),
+		Mode:     0o644,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.0.0.tar.gz" {
+			w.Write(buf.Bytes())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	origBase := SourceArchiveBaseURL
+	SourceArchiveBaseURL = srv.URL
+	t.Cleanup(func() { SourceArchiveBaseURL = origBase })
+
+	dest := t.TempDir()
+	require.NoError(t, FetchSourceTree("1.0.0", dest))
+
+	data, err := os.ReadFile(filepath.Join(dest, "go.mod"))
+	require.NoError(t, err)
+	assert.Equal(t, content, data)
+}
+
+func TestFetchSourceTree_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	origBase := SourceArchiveBaseURL
+	SourceArchiveBaseURL = srv.URL
+	t.Cleanup(func() { SourceArchiveBaseURL = origBase })
+
+	err := FetchSourceTree("9.9.9", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned 404")
+}
+
 // Ensure io is used in download tests.
 var _ = io.Discard

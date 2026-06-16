@@ -1752,6 +1752,143 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunInstall_DiscoversRepos(t *testing.T) {
+	cfg := setupTestConfig(map[string]bool{"myrepo": false})
+	client := setupTestClient("testorg", cfg, []string{"myrepo"})
+	client.AuthenticatedUser = "testuser"
+
+	var agentCreds []layers.AgentCredentials
+	for _, role := range config.DefaultAgentRoles() {
+		agentCreds = append(agentCreds, layers.AgentCredentials{
+			AgentEntry: config.AgentEntry{Role: role},
+		})
+	}
+
+	var buf bytes.Buffer
+	err := runInstall(
+		context.Background(), client, ui.New(&buf), "testorg",
+		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, "",
+		false, "", "",
+		"gcf", "test-project", "us-central1", "", true,
+		"https://mint.example.com/v1/token",
+		true,
+		nil,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Discovering repositories")
+}
+
+func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "testuser"
+	discovered := []forge.Repository{
+		{Name: "myrepo", FullName: "testorg/myrepo"},
+	}
+
+	err := runInstall(
+		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
+		[]string{"missing-repo"}, config.DefaultAgentRoles(), nil,
+		nil, "",
+		false, "", "",
+		"gcf", "test-project", "us-central1", "", true,
+		"https://mint.example.com/v1/token",
+		true,
+		discovered,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing-repo")
+}
+
+func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
+	cfg := setupTestConfig(map[string]bool{"myrepo": false})
+	client := setupTestClient("testorg", cfg, []string{"myrepo"})
+	client.AuthenticatedUser = "testuser"
+
+	var agentCreds []layers.AgentCredentials
+	for _, role := range config.DefaultAgentRoles() {
+		agentCreds = append(agentCreds, layers.AgentCredentials{
+			AgentEntry: config.AgentEntry{Role: role},
+		})
+	}
+
+	var buf bytes.Buffer
+	err := runInstall(
+		context.Background(), client, ui.New(&buf), "testorg",
+		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, "",
+		true, "", "",
+		"gcf", "test-project", "us-central1", "", true,
+		"https://mint.example.com/v1/token",
+		true,
+		client.Repos,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "vendored assets")
+}
+
+func TestRunPerRepoInstall_ValidationErrors(t *testing.T) {
+	base := perRepoInstallConfig{
+		RepoFullName:     "acme/widget",
+		Agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		InferenceProject: "my-project",
+		MintProject:      "my-project",
+		MintURL:          "https://mint.example.com/v1/token",
+		SkipMintCheck:    true,
+	}
+	tests := []struct {
+		name string
+		cfg  perRepoInstallConfig
+		want string
+	}{
+		{
+			name: "url not owner/repo",
+			cfg: func() perRepoInstallConfig {
+				c := base
+				c.RepoFullName = "https://github.com/acme/widget"
+				return c
+			}(),
+			want: "expected owner/repo format",
+		},
+		{
+			name: "invalid owner",
+			cfg: func() perRepoInstallConfig {
+				c := base
+				c.RepoFullName = "-bad/widget"
+				return c
+			}(),
+			want: "invalid owner name",
+		},
+		{
+			name: "missing inference project",
+			cfg: func() perRepoInstallConfig {
+				c := base
+				c.InferenceProject = ""
+				return c
+			}(),
+			want: "--inference-project is required",
+		},
+		{
+			name: "missing mint project without skip",
+			cfg: func() perRepoInstallConfig {
+				c := base
+				c.SkipMintCheck = false
+				c.MintURL = ""
+				c.MintProject = ""
+				return c
+			}(),
+			want: "--mint-project",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runPerRepoInstall(context.Background(), tt.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
 func TestFilterSlugsByAppSet(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -2,6 +2,7 @@ package layers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,27 @@ func TestVendorBinary_RejectsDirectory(t *testing.T) {
 	err := VendorBinary(context.Background(), &forge.FakeClient{}, "org", forge.ConfigRepoName, VendoredBinaryPath, dir, "msg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is a directory")
+}
+
+func TestVendorBinary_RejectsMissingFile(t *testing.T) {
+	err := VendorBinary(context.Background(), &forge.FakeClient{}, "org", forge.ConfigRepoName, VendoredBinaryPath, "/nonexistent/fullsend", "msg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stat binary")
+}
+
+func TestVendorBinary_UploadError(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, []byte("bin"), 0o755))
+
+	client := &forge.FakeClient{
+		Errors: map[string]error{
+			"CreateOrUpdateFile": errors.New("upload denied"),
+		},
+	}
+	err := VendorBinary(context.Background(), client, "org", forge.ConfigRepoName, VendoredBinaryPath, binPath, "msg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploading vendored binary")
 }
 
 func TestDeleteVendoredPaths(t *testing.T) {
