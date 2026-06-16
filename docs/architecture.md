@@ -91,6 +91,11 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   runner_env) from platform-neutral fields. Forge blocks inherit from
   top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
+- Agent configuration env vars: behavioral knobs use `{ROLE}_{SETTING_NAME}`
+  naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via existing env var
+  mechanisms (`.env` files, `runner_env`). Each agent documents its config
+  vars in `docs/agents/<role>.md`
+  ([ADR 0047](ADRs/0047-agent-configuration-env-var-convention.md)).
 
 **Open questions:**
 
