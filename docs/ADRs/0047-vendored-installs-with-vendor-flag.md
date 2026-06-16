@@ -93,6 +93,20 @@ onto the workspace root at job start (inline prepare step).
 Thin caller `uses:` paths are rendered at install/sync time (local `./...` when
 `--vendor`, upstream `@v0` when layered).
 
+### Trust boundary for runtime defaults
+
+Reusable workflows gate upstream sparse checkout on `hashFiles('.defaults/action.yml',
+'.fullsend/.defaults/action.yml') == ''` — when vendored markers are absent, the
+job fetches defaults from `fullsend-ai/fullsend` at the configured ref.
+
+That gate is an optimization, not a security control. Whoever can write to the
+config repo (per-org `.fullsend`, or a target repo's `.fullsend/` tree in
+per-repo mode) already controls which workflows and composite actions run in
+enrolled repos. A writer with that access could omit or replace vendored marker
+files to change which defaults are fetched — equivalent to authoring or editing
+workflow YAML directly. Branch protection and CODEOWNERS on `.fullsend` (and
+target-repo guardrails) remain the enforcement layer.
+
 ### What this PR removes
 
 These existed on earlier iterations of the distribution-mode branch and are
