@@ -23,8 +23,8 @@ Accepted
 
 Agents need behavioral knobs — settings that tune *how* they work without
 changing the agent definition itself. Issue
-[#2333](https://github.com/fullsend-ai/fullsend/issues/2333) surfaced the
-first concrete case: the review agent should let repo owners set a minimum
+[#2333](https://github.com/fullsend-ai/fullsend/issues/2333) surfaced
+a concrete case: the review agent should let repo owners set a minimum
 severity threshold for reported findings. More knobs will follow for other
 agents.
 
@@ -33,8 +33,8 @@ files with `expand: true`
 ([ADR 0024](0024-harness-definitions.md)), and pre/post scripts read env vars
 from `runner_env` ([ADR 0045](0045-forge-portable-harness-schema.md)). The
 infrastructure for carrying configuration exists. What is missing is a
-**naming convention** that prevents collisions, ensures discoverability, and
-establishes a consistent pattern for every agent going forward.
+**naming convention** that establishes a consistent pattern for every agent
+going forward.
 
 This ADR covers only **agent configuration** env vars — behavioral knobs that
 tune agent behavior. It does not retroactively rename existing context vars
@@ -64,7 +64,10 @@ audit trivial: `grep ^REVIEW_ env/review.env` shows every knob for that agent.
 ### Where config vars live in the harness
 
 Config vars are carried the same way as other agent env vars — no new schema
-fields are needed:
+fields are needed. The `.env` file and `runner_env` serve different
+audiences: the `.env` file delivers vars into the sandbox for the agent at
+inference time, while `runner_env` makes vars available to pre/post scripts
+on the host. A config var needed by both must appear in both places.
 
 1. **For sandbox access (inference time):** Add the variable to the agent's
    `.env` file (e.g., `env/review.env`) with `${VAR}` expansion. The harness
@@ -72,8 +75,9 @@ fields are needed:
    environment before copying into the sandbox. The agent reads it at runtime.
 
 2. **For pre/post scripts (host side):** Add the variable to the harness's
-   `runner_env` or the forge-specific `runner_env` block. Scripts read it from
-   the environment.
+   `runner_env` or the forge-specific `runner_env` block. Scripts read it
+   from the environment. This is independent of the `.env` file — `runner_env`
+   controls the host-side environment, not the sandbox.
 
 3. **For CI workflow injection:** The CI workflow sets the value from org
    secrets, repo variables, or hardcoded defaults. This is the same mechanism
@@ -170,9 +174,12 @@ per-repo `.fullsend/`. This layering already applies to `.env` files and
 - **Agent system prompts stay flexible.** There is no required section
   structure for how `agents/<role>.md` references config vars. Agent
   authors place references where they make sense in the prompt flow.
-- **Each new config var requires updates in up to three places:** the
-  agent's `.env` file (for sandbox delivery), the agent's system prompt
-  (for behavioral conditioning), and `docs/agents/<role>.md` (for user
-  documentation). This is intentional — it keeps the documentation,
-  delivery, and behavior in sync without adding schema surface to the
-  harness.
+- **Each new config var requires updates in up to five places:** the
+  agent's `.env` file (for sandbox delivery), the harness `runner_env`
+  (for host-side script access), the agent's system prompt (for behavioral
+  conditioning), the pre/post scripts (for host-side logic), and
+  `docs/agents/<role>.md` (for user documentation). Not every var needs
+  all five — a var used only at inference time skips `runner_env` and
+  scripts, a var used only in scripts skips the `.env` file and system
+  prompt. This is intentional — it keeps the documentation, delivery, and
+  behavior in sync without adding schema surface to the harness.
