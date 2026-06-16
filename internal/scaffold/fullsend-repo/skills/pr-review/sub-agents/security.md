@@ -50,10 +50,14 @@ When evaluating any security control, follow this procedure:
 2. **Verify each independently.** For each enumerated input, confirm
    whether the security control is applied. Do not assume that
    applying the control to one input means others are covered.
-3. **Report coverage explicitly.** In your findings, state which
-   inputs you verified as protected and which you could not confirm.
-   A finding that says "sanitization is handled" without listing the
-   verified inputs is incomplete.
+3. **Report coverage explicitly.** In your findings, populate the
+   `verified_variables` array with the names of inputs you confirmed
+   are protected, and the `unchecked_variables` array with inputs you
+   could not confirm. A finding that says "sanitization is handled"
+   without listing the verified inputs is incomplete. Both arrays must
+   be present whenever a sanitization or security control function is
+   identified in a finding — omitting them is equivalent to claiming
+   unverified coverage.
 4. **Flag gaps, don't dismiss them.** If any input lacks the security
    control, raise a finding — even if the unprotected input appears
    low-risk. The risk assessment belongs in the finding's severity,

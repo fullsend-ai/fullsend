@@ -124,11 +124,13 @@ dimension carry over to another — each requires its own scrutiny.
   covers all attack surfaces based on verifying a subset. When you find
   a security-relevant function applied to one variable, explicitly
   enumerate ALL other variables in the same context and verify each one
-  individually. In your findings, state which inputs you verified as
-  protected and which you could not confirm. If any input lacks the
-  control, raise a finding even if the unprotected input appears
-  low-risk — the risk assessment belongs in the finding's severity, not
-  in a decision to omit the finding.
+  individually. In your findings, populate `verified_variables` with the
+  names of inputs you confirmed are protected, and `unchecked_variables`
+  with inputs you could not confirm. Both arrays must be present whenever
+  a sanitization or security control function is identified in a finding.
+  If any input lacks the control, raise a finding even if the unprotected
+  input appears low-risk — the risk assessment belongs in the finding's
+  severity, not in a decision to omit the finding.
 - Content security: does the change affect how user-supplied content is
   handled or rendered? Are there sandboxing gaps?
 - **Permission manifest changes:** If the diff modifies any file that

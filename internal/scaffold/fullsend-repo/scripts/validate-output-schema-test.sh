@@ -173,6 +173,24 @@ run_test_custom_filename "review-finding-additional-property-rejected" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+run_test_custom_filename "review-finding-with-verified-variables-valid" \
+  '{"action":"request-changes","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Sanitization gap.","findings":[{"severity":"high","category":"gha-injection","file":"action.yml","description":"Partial sanitization.","verified_variables":["message"],"unchecked_variables":["source","subtype"]}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-all-variables-verified-valid" \
+  '{"action":"request-changes","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"All checked.","findings":[{"severity":"low","category":"gha-injection","file":"action.yml","description":"Full coverage.","verified_variables":["message","source","subtype"],"unchecked_variables":[]}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-verified-variables-empty-string-rejected" \
+  '{"action":"request-changes","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Bad var.","findings":[{"severity":"high","category":"gha-injection","file":"action.yml","description":"Bad.","verified_variables":[""],"unchecked_variables":["source"]}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
 # Helper for custom-filename tests that also assert output content.
 run_test_custom_filename_output() {
   local test_name="$1"
@@ -219,7 +237,7 @@ run_test_custom_filename_output "nested-additional-property-shows-allowed" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
-  "allowed properties: actionable, category, description, file, line, remediation, severity"
+  "allowed properties: actionable, category, description, file, line, remediation, severity, unchecked_variables, verified_variables"
 
 # --- Structural failures ---
 
