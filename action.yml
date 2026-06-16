@@ -265,14 +265,7 @@ runs:
         podman info
         systemctl --user start podman.socket
 
-    - name: Set OpenShell version
-      shell: bash
-      run: |
-        echo "OPENSHELL_VERSION=0.0.54" >> "${GITHUB_ENV}"
-        # SHA corresponding to 0.0.54
-        echo "OPENSHELL_SHA=79aa355dd008e496a7d8f97b361a7b2866066fbc" >> "${GITHUB_ENV}"
-
-    - name: Install OpenShell CLI
+    - name: Configure OpenShell gateway
       shell: bash
       run: |
         mkdir -p $HOME/.config/openshell/
@@ -280,8 +273,9 @@ runs:
         OPENSHELL_BIND_ADDRESS=0.0.0.0
         EOF
 
-        curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
-        openshell --version
+    - name: Install OpenShell CLI
+      shell: bash
+      run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
     - name: Restore cached sandbox image
       id: sandbox-cache
