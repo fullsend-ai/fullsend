@@ -100,6 +100,94 @@ run_test "unknown-action-no-label" \
   "banana" "false" "none"
 
 # ---------------------------------------------------------------------------
+# Severity-threshold filtering logic
+# Mirrors severity_rank() in post-review.sh — keep in sync
+# ---------------------------------------------------------------------------
+
+severity_rank() {
+  case "$1" in
+    info)     echo 0 ;;
+    low)      echo 1 ;;
+    medium)   echo 2 ;;
+    high)     echo 3 ;;
+    critical) echo 4 ;;
+    *)        echo 1 ;;
+  esac
+}
+
+filter_findings_json() {
+  local result_json="$1"
+  local threshold="$2"
+  local threshold_rank
+  threshold_rank=$(severity_rank "$threshold")
+
+  echo "$result_json" | jq --argjson rank "$threshold_rank" '
+    if .findings then
+      .findings |= [.[] | select(
+        (if .severity == "info" then 0
+         elif .severity == "low" then 1
+         elif .severity == "medium" then 2
+         elif .severity == "high" then 3
+         elif .severity == "critical" then 4
+         else 1 end) >= $rank
+      )]
+    else . end
+  '
+}
+
+run_filter_test() {
+  local test_name="$1"
+  local input_json="$2"
+  local threshold="$3"
+  local expected_count="$4"
+
+  local filtered
+  filtered="$(filter_findings_json "$input_json" "$threshold")"
+  local actual_count
+  actual_count="$(echo "$filtered" | jq 'if .findings then (.findings | length) else -1 end')"
+
+  if [ "${actual_count}" != "${expected_count}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  threshold:      '${threshold}'"
+    echo "  expected count: '${expected_count}'"
+    echo "  actual count:   '${actual_count}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Severity filter test cases ---
+
+MIXED_FINDINGS='{"action":"request-changes","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"x"},
+  {"severity":"low","category":"style","file":"b.go","description":"y"},
+  {"severity":"medium","category":"bug","file":"c.go","description":"z"},
+  {"severity":"high","category":"security","file":"d.go","description":"w"},
+  {"severity":"critical","category":"security","file":"e.go","description":"v"}
+]}'
+
+run_filter_test "threshold-low-drops-info" \
+  "$MIXED_FINDINGS" "low" "4"
+
+run_filter_test "threshold-medium-drops-low-and-info" \
+  "$MIXED_FINDINGS" "medium" "3"
+
+run_filter_test "threshold-high" \
+  "$MIXED_FINDINGS" "high" "2"
+
+run_filter_test "threshold-critical" \
+  "$MIXED_FINDINGS" "critical" "1"
+
+run_filter_test "threshold-info-keeps-all" \
+  "$MIXED_FINDINGS" "info" "5"
+
+NO_FINDINGS='{"action":"approve"}'
+run_filter_test "no-findings-key-passthrough" \
+  "$NO_FINDINGS" "low" "-1"
+
+# ---------------------------------------------------------------------------
 # Control-label guard tests
 # ---------------------------------------------------------------------------
 

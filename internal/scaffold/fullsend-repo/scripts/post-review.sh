@@ -68,6 +68,51 @@ fi
 
 echo "Using result: ${RESULT_FILE}"
 
+# ---------------------------------------------------------------------------
+# Severity filtering: drop findings below the configured threshold.
+# Defense-in-depth — the agent should already have filtered, but the
+# post-script enforces it. The filter runs before ACTION is read so
+# that verdict recalculation (if all findings are removed) is possible.
+# ---------------------------------------------------------------------------
+REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
+
+severity_rank() {
+  case "$1" in
+    info)     echo 0 ;;
+    low)      echo 1 ;;
+    medium)   echo 2 ;;
+    high)     echo 3 ;;
+    critical) echo 4 ;;
+    *)        echo 1 ;;
+  esac
+}
+
+threshold_rank=$(severity_rank "$REVIEW_FINDING_SEVERITY_THRESHOLD")
+
+if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
+  original_count=$(jq '.findings | length' "${RESULT_FILE}")
+  FILTERED_RESULT=$(mktemp)
+  CLEANUP_FILES+=("${FILTERED_RESULT}")
+  jq --argjson rank "$threshold_rank" '
+    .findings |= [.[] | select(
+      (if .severity == "info" then 0
+       elif .severity == "low" then 1
+       elif .severity == "medium" then 2
+       elif .severity == "high" then 3
+       elif .severity == "critical" then 4
+       else 1 end) >= $rank
+    )]
+  ' "${RESULT_FILE}" > "${FILTERED_RESULT}"
+  filtered_count=$(jq '.findings | length' "${FILTERED_RESULT}")
+
+  if [ "${filtered_count}" -lt "${original_count}" ]; then
+    echo "Severity filter (threshold=${REVIEW_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
+    RESULT_FILE="${FILTERED_RESULT}"
+  else
+    rm -f "${FILTERED_RESULT}"
+  fi
+fi
+
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
 
