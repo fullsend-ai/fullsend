@@ -18,7 +18,7 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 
 ### Opening a PR
 
-- Run `make lint` before pushing and fix any failures.
+- Run `make lint-all` before pushing and fix any failures.
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
 
