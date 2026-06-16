@@ -471,6 +471,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			return err
 		}},
+		{"ListRepositoryFiles", func(fc *FakeClient) error {
+			_, err := fc.ListRepositoryFiles(ctx, "o", "r")
+			return err
+		}},
 		{"GetFileContentAtRef", func(fc *FakeClient) error {
 			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 			return err
@@ -544,6 +548,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
 			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			_, _ = fc.ListRepositoryFiles(ctx, "o", "r")
 			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 		}(i)
 	}

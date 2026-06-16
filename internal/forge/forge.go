@@ -192,6 +192,12 @@ type Client interface {
 	// Returns forge.ErrNotFound if the path does not exist or is not a directory.
 	ListDirectoryContents(ctx context.Context, owner, repo, path, ref string, recursive bool) ([]DirectoryEntry, error)
 
+	// ListRepositoryFiles returns all file paths in the repository's default
+	// branch using the Git Trees API. This retrieves the entire tree in a
+	// single API call, making it efficient for batch path-existence checks.
+	// Returns ErrNotFound if the repository does not exist.
+	ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error)
+
 	// GetFileContentAtRef retrieves the content of a file at a specific ref
 	// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
 	// the default branch, this reads from the specified ref.
