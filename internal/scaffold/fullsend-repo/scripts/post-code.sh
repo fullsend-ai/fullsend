@@ -116,7 +116,20 @@ report_failure_to_issue() {
     export GH_TOKEN="${PUSH_TOKEN}"
   fi
   local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}/actions/runs/${GITHUB_RUN_ID:-unknown}"
-  local comment_body="⚠️ **Post-code script failed** (exit code ${exit_code})
+
+  local comment_body
+  if [ "${AGENT_ERROR_EXIT:-false}" = "true" ]; then
+    # Agent itself errored (non-zero exit) and produced no changes.
+    comment_body="⚠️ **Code agent failed** (agent exit code ${AGENT_EXIT_CODE:-unknown})
+
+The code agent terminated with an error and produced no PR.
+
+**Workflow run:** ${run_url}
+
+Please check the workflow logs for details and retry with \`/fs-code\` \
+if appropriate."
+  else
+    comment_body="⚠️ **Post-code script failed** (exit code ${exit_code})
 
 The code agent completed, but the post-code script failed while \
 pushing the branch or creating the PR.
@@ -125,6 +138,7 @@ pushing the branch or creating the PR.
 
 Please check the workflow logs for details and retry with \`/fs-code\` \
 if appropriate."
+  fi
 
   echo "::warning::Posting failure comment to issue #${ISSUE_NUMBER}..."
   gh issue comment "${ISSUE_NUMBER}" \
@@ -140,6 +154,11 @@ trap report_failure_to_issue ERR
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
+  if [ "${AGENT_EXIT_CODE:-0}" != "0" ]; then
+    echo "::error::Agent exited with code ${AGENT_EXIT_CODE} and did not create a feature branch"
+    AGENT_ERROR_EXIT=true
+    exit 1
+  fi
   echo "::notice::Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
   exit 0
 fi
@@ -160,6 +179,11 @@ else
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
+  if [ "${AGENT_EXIT_CODE:-0}" != "0" ]; then
+    echo "::error::Agent exited with code ${AGENT_EXIT_CODE} and produced no changes"
+    AGENT_ERROR_EXIT=true
+    exit 1
+  fi
   echo "::notice::No changed files in agent's commit(s) — nothing to do"
   exit 0
 fi

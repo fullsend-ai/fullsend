@@ -259,15 +259,24 @@ count_closes_test "single-closes-empty-body" \
 detect_noop() {
   local branch="$1"
   local changed_files="$2"
+  local agent_exit_code="${3:-0}"
 
-  # Step 1: branch check (mirrors lines 64-67 of post-code.sh)
+  # Step 1: branch check (mirrors post-code.sh section 1)
   if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "master" ]; then
+    if [ "${agent_exit_code}" != "0" ]; then
+      echo "error:branch:Agent exited with code ${agent_exit_code} and did not create a feature branch"
+      return 1
+    fi
     echo "noop:branch:Agent did not create a feature branch (current: '${branch:-detached HEAD}') — nothing to do"
     return 0
   fi
 
-  # Step 2: changed files check (mirrors lines 84-87 of post-code.sh)
+  # Step 2: changed files check (mirrors post-code.sh section 2)
   if [ -z "${changed_files}" ]; then
+    if [ "${agent_exit_code}" != "0" ]; then
+      echo "error:files:Agent exited with code ${agent_exit_code} and produced no changes"
+      return 1
+    fi
     echo "noop:files:No changed files in agent's commit(s) — nothing to do"
     return 0
   fi
@@ -280,15 +289,17 @@ run_noop_test() {
   local test_name="$1"
   local branch="$2"
   local changed_files="$3"
-  local expected_prefix="$4"  # "noop:branch", "noop:files", or "proceed"
+  local expected_prefix="$4"  # "noop:branch", "noop:files", "error:branch", "error:files", or "proceed"
+  local agent_exit_code="${5:-0}"
 
   local actual
-  actual="$(detect_noop "${branch}" "${changed_files}")"
+  actual="$(detect_noop "${branch}" "${changed_files}" "${agent_exit_code}" 2>&1)" || true
 
   if [[ "${actual}" != ${expected_prefix}* ]]; then
     echo "FAIL: ${test_name}"
-    echo "  branch:         '${branch}'"
-    echo "  changed_files:  '${changed_files}'"
+    echo "  branch:          '${branch}'"
+    echo "  changed_files:   '${changed_files}'"
+    echo "  agent_exit_code: '${agent_exit_code}'"
     echo "  expected prefix: '${expected_prefix}'"
     echo "  actual:          '${actual}'"
     FAILURES=$((FAILURES + 1))
@@ -323,6 +334,28 @@ run_noop_test "proceed-feature-branch-with-changes" \
 # On main but with changes → still noop (branch check comes first)
 run_noop_test "noop-on-main-with-changes" \
   "main" "src/widget.go" "noop:branch"
+
+# --- Agent error detection test cases (#2378) ---
+
+# Agent errored (exit 1) on main with no changes → error via branch check
+run_noop_test "error-agent-failed-on-main" \
+  "main" "" "error:branch" "1"
+
+# Agent errored (exit 1) on feature branch with no changes → error via files check
+run_noop_test "error-agent-failed-no-changes" \
+  "agent/42-fix-widget" "" "error:files" "1"
+
+# Agent succeeded (exit 0) on feature branch with no changes → noop (not error)
+run_noop_test "noop-agent-success-no-changes" \
+  "agent/42-fix-widget" "" "noop:files" "0"
+
+# Agent errored but produced changes → proceed (changes take precedence)
+run_noop_test "proceed-agent-failed-with-changes" \
+  "agent/42-fix-widget" "src/widget.go" "proceed" "1"
+
+# Agent errored (exit 2) on detached HEAD → error via branch check
+run_noop_test "error-agent-failed-detached-head" \
+  "" "" "error:branch" "2"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the stale branch cleanup decision logic from
@@ -454,10 +487,23 @@ build_error_comment() {
   local repo_full_name="$2"
   local run_id="$3"
   local github_repository="${4:-}"  # GITHUB_REPOSITORY override (org-mode)
+  local agent_error_exit="${5:-false}"
+  local agent_exit_code="${6:-unknown}"
 
   local run_repo="${github_repository:-${repo_full_name}}"
   local run_url="https://github.com/${run_repo}/actions/runs/${run_id}"
-  echo "⚠️ **Post-code script failed** (exit code ${exit_code})
+
+  if [ "${agent_error_exit}" = "true" ]; then
+    echo "⚠️ **Code agent failed** (agent exit code ${agent_exit_code})
+
+The code agent terminated with an error and produced no PR.
+
+**Workflow run:** ${run_url}
+
+Please check the workflow logs for details and retry with \`/fs-code\` \
+if appropriate."
+  else
+    echo "⚠️ **Post-code script failed** (exit code ${exit_code})
 
 The code agent completed, but the post-code script failed while \
 pushing the branch or creating the PR.
@@ -466,6 +512,7 @@ pushing the branch or creating the PR.
 
 Please check the workflow logs for details and retry with \`/fs-code\` \
 if appropriate."
+  fi
 }
 
 run_error_comment_test() {
@@ -476,9 +523,11 @@ run_error_comment_test() {
   local check_pattern="$5"
   local expect_present="$6"
   local github_repository="${7:-}"  # optional GITHUB_REPOSITORY override
+  local agent_error_exit="${8:-false}"
+  local agent_exit_code="${9:-unknown}"
 
   local actual
-  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}" "${github_repository}")"
+  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}" "${github_repository}" "${agent_error_exit}" "${agent_exit_code}")"
 
   if [ "${expect_present}" = "yes" ]; then
     if ! echo "${actual}" | grep -qF "${check_pattern}"; then
@@ -538,6 +587,38 @@ run_error_comment_test "error-comment-non-org-mode-fallback" \
   "1" "my-org/my-repo" "67890" \
   "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
   ""
+
+# --- Agent error comment test cases (#2378) ---
+
+# Agent error comment should say "Code agent failed"
+run_error_comment_test "agent-error-comment-title" \
+  "1" "my-org/my-repo" "12345" \
+  "Code agent failed" "yes" \
+  "" "true" "1"
+
+# Agent error comment should include agent exit code
+run_error_comment_test "agent-error-comment-exit-code" \
+  "1" "my-org/my-repo" "12345" \
+  "agent exit code 1" "yes" \
+  "" "true" "1"
+
+# Agent error comment should NOT say "Post-code script failed"
+run_error_comment_test "agent-error-comment-not-postcode" \
+  "1" "my-org/my-repo" "12345" \
+  "Post-code script failed" "no" \
+  "" "true" "1"
+
+# Agent error comment should mention no PR was created
+run_error_comment_test "agent-error-comment-no-pr" \
+  "1" "my-org/my-repo" "12345" \
+  "produced no PR" "yes" \
+  "" "true" "1"
+
+# Non-agent error (default) should still say "Post-code script failed"
+run_error_comment_test "non-agent-error-default" \
+  "1" "my-org/my-repo" "12345" \
+  "Post-code script failed" "yes" \
+  "" "false" "0"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the agent artifact stripping logic from

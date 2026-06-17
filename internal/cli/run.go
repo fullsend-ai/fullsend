@@ -640,6 +640,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// ADR 0022's zero-trust model.
 	var validationPassed bool
 
+	// lastExitCode is declared here (before the post-script and status
+	// defers) so both closures can read the agent's final exit code.
+	// When the agent exits non-zero but the Go-level execution succeeds,
+	// runErr stays nil — this variable lets the post-script and status
+	// comment distinguish "agent errored" from "agent chose to do nothing".
+	// See #2378.
+	var lastExitCode int
+
 	// Post-script runs after sandbox cleanup (defers are LIFO).
 	// When a validation_loop is configured, the post-script only runs if
 	// validation passed (ADR 0022). When no validation_loop exists (e.g.,
@@ -665,6 +673,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
 			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
+			postCmd.Env = append(postCmd.Env, fmt.Sprintf("AGENT_EXIT_CODE=%d", lastExitCode))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
