@@ -300,8 +300,8 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ EnsureProvider()  │ Register inference provider              │
-│  │                   │ (bare-key credential form)               │
+│  │ Provider setup    │ profile import + create/update           │
+│  │                   │ per harness.providers list               │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -401,7 +401,7 @@ SandboxClaudeConfig = "/sandbox/claude-config"
 |-----------|------------|---------|
 | `EnsureAvailable()` | Check `openshell` binary | Verify runtime available |
 | `EnsureGateway()` | `openshell gateway ...` | Start inference gateway |
-| `EnsureProvider()` | `openshell provider ...` | Register model provider (bare-key form) |
+| Provider setup | `openshell provider profile import` + `openshell provider create --from-existing` (falling back to `provider update` if already exists) | Register/update providers declared in `harness.providers` |
 | `Create()` | `openshell sandbox create --image ...` | Spin up container |
 | `Exec()` | `openshell sandbox exec ...` | Run command in sandbox |
 | `ExecStreamReader()` | `openshell sandbox exec ...` | Streaming stdout reader |

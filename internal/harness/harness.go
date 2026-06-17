@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	validAgentName  = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	validModelName  = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
-	validPluginName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validAgentName    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validModelName    = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
+	validPluginName   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validProviderName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	// validRoleName mirrors mintcore.RolePattern — duplicated to avoid coupling harness→mintcore.
 	validRoleName = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	validSlugName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -38,51 +39,6 @@ type HostFile struct {
 	Dest     string `yaml:"dest"`               // destination path inside the sandbox
 	Expand   bool   `yaml:"expand,omitempty"`   // expand ${VAR} in file content before copying
 	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
-}
-
-// ProviderDef is a declarative definition of an OpenShell provider. Files in
-// the experiment's providers/ directory are loaded as ProviderDefs and
-// reconciled against the gateway before sandbox creation.
-type ProviderDef struct {
-	Name        string            `yaml:"name"`
-	Type        string            `yaml:"type"`
-	Credentials map[string]string `yaml:"credentials"`      // KEY: VALUE or KEY: ${HOST_VAR}
-	Config      map[string]string `yaml:"config,omitempty"` // e.g. OPENAI_BASE_URL
-}
-
-// LoadProviderDefs reads all YAML files from a providers/ directory and returns
-// the parsed definitions. Returns nil (no error) if the directory does not exist.
-func LoadProviderDefs(dir string) ([]ProviderDef, error) {
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading providers dir: %w", err)
-	}
-
-	var defs []ProviderDef
-	for _, e := range entries {
-		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("reading provider file %s: %w", e.Name(), err)
-		}
-		var def ProviderDef
-		if err := yaml.Unmarshal(data, &def); err != nil {
-			return nil, fmt.Errorf("parsing provider file %s: %w", e.Name(), err)
-		}
-		if def.Name == "" {
-			return nil, fmt.Errorf("provider file %s: name is required", e.Name())
-		}
-		if def.Type == "" {
-			return nil, fmt.Errorf("provider file %s: type is required", e.Name())
-		}
-		defs = append(defs, def)
-	}
-	return defs, nil
 }
 
 // SecurityConfig configures security scanning for the agent run.
@@ -334,6 +290,11 @@ func (h *Harness) Validate() error {
 		pluginBase := filepath.Base(p)
 		if !validPluginName.MatchString(pluginBase) {
 			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
+		}
+	}
+	for i, p := range h.Providers {
+		if !validProviderName.MatchString(p) {
+			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
 		}
 	}
 	if h.TimeoutMinutes < 0 {

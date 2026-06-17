@@ -455,19 +455,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 2b. Ensure providers exist on the gateway (if any declared).
 	if len(h.Providers) > 0 {
 		providersDir := filepath.Join(absFullsendDir, "providers")
-		providerDefs, err := harness.LoadProviderDefs(providersDir)
-		if err != nil {
-			printer.StepFail("Failed to load provider definitions")
-			return fmt.Errorf("loading provider definitions: %w", err)
+
+		if err := sandbox.ImportProviderProfiles(providersDir); err != nil {
+			printer.StepFail("Providers failed to load")
+			return fmt.Errorf("importing provider profiles from %s: %w", providersDir, err)
 		}
-		for _, pd := range providerDefs {
-			providerStart := time.Now()
-			printer.StepStart("Ensuring provider: " + pd.Name)
-			if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
-				printer.StepFail("Failed to create provider " + pd.Name)
-				return fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
+
+		for _, provider := range h.Providers {
+			if err := sandbox.EnsureProviderByName(provider); err != nil {
+				printer.StepFail(fmt.Sprintf("Provider %q failed to create", provider))
+				return fmt.Errorf("ensuring provider %q: %w", provider, err)
 			}
-			printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
 		}
 	}
 

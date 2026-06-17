@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,87 +25,6 @@ func TestEnsureAvailable_OpenshellNotInPath(t *testing.T) {
 func TestConstants(t *testing.T) {
 	assert.Equal(t, "/sandbox/workspace", SandboxWorkspace)
 	assert.Equal(t, "/sandbox/claude-config", SandboxClaudeConfig)
-}
-
-func TestBuildProviderArgs_BareKeyCredentials(t *testing.T) {
-	t.Setenv("MY_SECRET", "super-secret-value")
-
-	credentials := map[string]string{
-		"API_KEY": "${MY_SECRET}",
-	}
-	config := map[string]string{
-		"BASE_URL": "https://api.example.com",
-	}
-
-	args, extraEnv, secrets := buildProviderArgs("test-provider", "anthropic", credentials, config)
-
-	// Args must use bare-key form: --credential API_KEY (no =value).
-	assert.Contains(t, args, "--credential")
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "API_KEY") {
-			assert.Equal(t, "API_KEY", arg, "credential arg must be bare key, not KEY=VALUE")
-		}
-	}
-
-	// Secret value must NOT appear anywhere in args.
-	for _, arg := range args {
-		assert.NotContains(t, arg, "super-secret-value",
-			"secret value must not appear in CLI args")
-	}
-
-	// Secret value must be in extraEnv for the child process.
-	require.Len(t, extraEnv, 1)
-	assert.Equal(t, "API_KEY=super-secret-value", extraEnv[0])
-
-	// Secrets list captures expanded values for redaction.
-	require.Len(t, secrets, 1)
-	assert.Equal(t, "super-secret-value", secrets[0])
-
-	// Config values are not secrets — they appear as KEY=VALUE in args.
-	found := false
-	for _, arg := range args {
-		if arg == "BASE_URL=https://api.example.com" {
-			found = true
-		}
-	}
-	assert.True(t, found, "config should appear as KEY=VALUE in args")
-}
-
-func TestBuildProviderArgs_KeyRemapping(t *testing.T) {
-	// Credential key name differs from the host env var name.
-	t.Setenv("HOST_VAR_NAME", "the-secret")
-
-	credentials := map[string]string{
-		"PROVIDER_KEY": "${HOST_VAR_NAME}",
-	}
-
-	args, extraEnv, _ := buildProviderArgs("p", "custom", credentials, nil)
-
-	// Bare key uses the credential key name, not the host var name.
-	for _, arg := range args {
-		assert.NotContains(t, arg, "the-secret")
-	}
-
-	// The child env maps the credential key to the expanded value.
-	require.Len(t, extraEnv, 1)
-	assert.Equal(t, "PROVIDER_KEY=the-secret", extraEnv[0])
-}
-
-func TestBuildProviderArgs_EmptyCredential(t *testing.T) {
-	t.Setenv("EMPTY_VAR", "")
-
-	credentials := map[string]string{
-		"KEY": "${EMPTY_VAR}",
-	}
-
-	_, extraEnv, secrets := buildProviderArgs("p", "custom", credentials, nil)
-
-	// Empty values should still be set in env (openshell may accept empty).
-	require.Len(t, extraEnv, 1)
-	assert.Equal(t, "KEY=", extraEnv[0])
-
-	// Empty string is not added to secrets (nothing to redact).
-	assert.Empty(t, secrets)
 }
 
 func TestCollectLogs_OpenshellNotInPath(t *testing.T) {
@@ -484,91 +404,87 @@ func TestInGitDir(t *testing.T) {
 	}
 }
 
-func TestBuildProviderUpdateArgs(t *testing.T) {
-	t.Setenv("MY_TOKEN", "tok123")
-
-	credentials := map[string]string{"TOKEN": "${MY_TOKEN}"}
-	config := map[string]string{"BASE_URL": "https://example.com"}
-
-	args := buildProviderUpdateArgs("myprovider", credentials, config)
-
-	assert.Equal(t, "provider", args[0])
-	assert.Equal(t, "update", args[1])
-	assert.Equal(t, "myprovider", args[2])
-	assert.Contains(t, args, "--credential")
-	assert.Contains(t, args, "TOKEN")
-	assert.Contains(t, args, "--config")
-	assert.Contains(t, args, "BASE_URL=https://example.com")
-
-	// Secret value must not appear in args.
-	for _, arg := range args {
-		assert.NotContains(t, arg, "tok123", "secret must not appear in update args")
-	}
+// fakeOpenshell writes a shell script named "openshell" into a temp bin dir
+// and prepends it to PATH for the duration of the test.
+func fakeOpenshell(t *testing.T, script string) {
+	t.Helper()
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "openshell"), []byte("#!/bin/sh\n"+script+"\n"), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// TestEnsureProvider_AlreadyExists_FallsBackToUpdate uses a fake openshell
-// script: first invocation exits 1 with AlreadyExists, second exits 0.
-func TestEnsureProvider_AlreadyExists_FallsBackToUpdate(t *testing.T) {
-	dir := t.TempDir()
-
-	// Write a fake openshell that prints AlreadyExists on create, succeeds on update.
-	script := `#!/bin/sh
-if [ "$2" = "create" ]; then
-  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
-  exit 1
-elif [ "$2" = "update" ]; then
-  exit 0
-else
-  echo "unexpected subcommand: $2" >&2
-  exit 1
-fi
-`
-	fakePath := filepath.Join(dir, "openshell")
-	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
-	t.Setenv("PATH", dir)
-
-	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "tok"}, nil)
-	assert.NoError(t, err)
+func TestImportProviderProfiles_MissingDir(t *testing.T) {
+	assert.NoError(t, ImportProviderProfiles("/nonexistent/providers"))
 }
 
-// TestEnsureProvider_OtherError propagates non-AlreadyExists failures.
-func TestEnsureProvider_OtherError(t *testing.T) {
-	dir := t.TempDir()
-
-	script := `#!/bin/sh
-echo "status: PermissionDenied" >&2
-exit 1
-`
-	fakePath := filepath.Join(dir, "openshell")
-	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
-	t.Setenv("PATH", dir)
-
-	err := EnsureProvider("github", "github", nil, nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "provider create")
+func TestImportProviderProfiles_Success(t *testing.T) {
+	fakeOpenshell(t, `exit 0`)
+	assert.NoError(t, ImportProviderProfiles(t.TempDir()))
 }
 
-// TestEnsureProvider_AlreadyExists_UpdateAlsoFails verifies error propagation
-// and secret redaction when create returns AlreadyExists and update also fails.
-func TestEnsureProvider_AlreadyExists_UpdateAlsoFails(t *testing.T) {
-	dir := t.TempDir()
-
-	script := `#!/bin/sh
-if [ "$2" = "create" ]; then
-  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
-  exit 1
-elif [ "$2" = "update" ]; then
-  echo "gateway unavailable supersecret" >&2
-  exit 1
-fi
-`
-	fakePath := filepath.Join(dir, "openshell")
-	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
-	t.Setenv("PATH", dir)
-
-	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "supersecret"}, nil)
+func TestImportProviderProfiles_Error(t *testing.T) {
+	fakeOpenshell(t, `echo "connection refused"; exit 1`)
+	err := ImportProviderProfiles(t.TempDir())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "provider update")
-	assert.NotContains(t, err.Error(), "supersecret", "secret must be redacted in update error")
-	assert.Contains(t, err.Error(), "***")
+	assert.Contains(t, err.Error(), "provider import failed")
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
+func TestEnsureProviderByName_CreateSuccess(t *testing.T) {
+	// get fails (not found) → create succeeds.
+	bin := t.TempDir()
+	counter := filepath.Join(bin, "count")
+	require.NoError(t, os.WriteFile(counter, []byte("0"), 0o644))
+
+	script := fmt.Sprintf(`
+count=$(cat %s)
+count=$((count+1))
+echo $count > %s
+if [ "$count" -eq 1 ]; then exit 1; fi
+exit 0
+`, counter, counter)
+
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "openshell"), []byte("#!/bin/sh\n"+script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	assert.NoError(t, EnsureProviderByName("anthropic"))
+}
+
+func TestEnsureProviderByName_UpdateOnAlreadyExists(t *testing.T) {
+	// get succeeds (exists) → update succeeds.
+	fakeOpenshell(t, `exit 0`)
+	assert.NoError(t, EnsureProviderByName("anthropic"))
+}
+
+func TestEnsureProviderByName_CreateFails(t *testing.T) {
+	// get fails (not found) → create fails.
+	fakeOpenshell(t, `echo "gateway unreachable"; exit 1`)
+	err := EnsureProviderByName("anthropic")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `provider "anthropic" creation failed`)
+	assert.Contains(t, err.Error(), "gateway unreachable")
+}
+
+func TestEnsureProviderByName_UpdateFails(t *testing.T) {
+	// get succeeds (exists) → update fails.
+	bin := t.TempDir()
+	counter := filepath.Join(bin, "count")
+	require.NoError(t, os.WriteFile(counter, []byte("0"), 0o644))
+
+	script := fmt.Sprintf(`
+count=$(cat %s)
+count=$((count+1))
+echo $count > %s
+if [ "$count" -eq 1 ]; then exit 0; fi
+echo "update failed"
+exit 1
+`, counter, counter)
+
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "openshell"), []byte("#!/bin/sh\n"+script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := EnsureProviderByName("anthropic")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `provider "anthropic" update failed`)
+	assert.Contains(t, err.Error(), "update failed")
 }

@@ -16,3 +16,4 @@ curl -LsSf "https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_SHA}/
   | OPENSHELL_VERSION="v${OPENSHELL_VERSION}" sh
 
 openshell --version
+openshell settings set --global --key providers_v2_enabled --value true

@@ -133,6 +133,14 @@ sandbox. For auth flows incompatible with the provider placeholder model
 (e.g. GCP Vertex AI file-based auth), host files deliver credential files
 directly (tier 4).
 
+> **Implementation note (2026-06-17):** The provider reconciliation flow has
+> evolved. Named providers declared in `harness.providers` (e.g. `github`) are
+> now set up via `openshell provider profile import --from <providers/>` followed
+> by `openshell provider create <name> --from-existing` (falling back to
+> `openshell provider update <name> --from-existing` if the provider already
+> exists). The `GH_TOKEN` sandbox env injection via `.env.d/` files has been
+> removed; the GitHub provider delivers credentials at the gateway layer instead.
+
 **Files and binaries: SCP + images (Options A + B).** Agent definitions, skills,
 host files, and security hooks are SCP'd during bootstrap. Tool binaries and
 runtimes are baked into the container image. OpenShell's `--upload` (Option C)

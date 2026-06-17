@@ -8,6 +8,9 @@ policy: policies/retro.yaml
 role: retro
 slug: fullsend-ai-retro
 
+providers:
+  - github
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

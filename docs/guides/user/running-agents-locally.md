@@ -54,6 +54,7 @@ printed on your Fullsend workflow for better reproducibility.
 export OPENSHELL_VERSION=0.0.63
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
+openshell settings set --global --key providers_v2_enabled --value true
 ```
 
 ## Get Google Cloud Platform credentials
@@ -128,7 +129,6 @@ Add to an env file:
 
 ```bash
 # fullsend-triage.env
-GH_TOKEN={github-pat}
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 ```
 
@@ -166,7 +166,6 @@ Add to an env file:
 
 ```bash
 # fullsend-code.env
-GH_TOKEN={github-pat}
 PUSH_TOKEN={github-pat}
 PUSH_TOKEN_SOURCE=github-app
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}

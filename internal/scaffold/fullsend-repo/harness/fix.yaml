@@ -17,6 +17,9 @@ policy: policies/fix.yaml
 role: coder
 slug: fullsend-ai-coder
 
+providers:
+  - github
+
 pre_script: scripts/pre-fix.sh
 post_script: scripts/post-fix.sh
 

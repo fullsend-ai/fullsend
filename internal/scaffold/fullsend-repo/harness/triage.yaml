@@ -8,6 +8,9 @@ policy: policies/triage.yaml
 role: triage
 slug: fullsend-ai-triage
 
+providers:
+  - github
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

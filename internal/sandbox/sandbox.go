@@ -100,91 +100,39 @@ func inGitDir(path, root string) bool {
 	return false
 }
 
-// EnsureProvider creates or updates a provider on the gateway. Credential
-// values may contain ${VAR} references which are expanded from the host
-// environment before being passed to openshell.
-//
-// Credentials use the bare-key form (--credential KEY) so that secret values
-// never appear on the process command line. The expanded values are injected
-// into the child process environment, where openshell reads them directly.
-// See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
-func EnsureProvider(name, providerType string, credentials, config map[string]string) error {
-	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config)
-
-	cmd := exec.Command("openshell", args...)
-	cmd.Env = append(os.Environ(), extraEnv...)
-	out, err := cmd.CombinedOutput()
+// ImportProviderProfiles runs `openshell provider profile import` from dir.
+// If dir does not exist, it returns nil without error.
+// Profiles are openshell-managed metadata files; no secrets flow through
+// this process or appear in CombinedOutput.
+func ImportProviderProfiles(dir string) error {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	out, err := exec.Command("openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
 	if err != nil {
-		outStr := string(out)
-		// openshell emits: code: 'Some entity that we attempted to create already exists', message: "provider already exists"
-		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
-			// Provider exists from a prior run — update it with current credentials.
-			return updateProvider(name, credentials, config, extraEnv, secrets)
-		}
-		// Redact known credential values from error output.
-		for _, s := range secrets {
-			outStr = strings.ReplaceAll(outStr, s, "***")
-		}
-		return fmt.Errorf("provider create %q failed: %s", name, outStr)
+		return fmt.Errorf("provider import failed: %s: %w", out, err)
 	}
 	return nil
 }
 
-// updateProvider runs openshell provider update for an already-existing provider.
-func updateProvider(name string, credentials, config map[string]string, extraEnv, secrets []string) error {
-	args := buildProviderUpdateArgs(name, credentials, config)
-	cmd := exec.Command("openshell", args...)
-	cmd.Env = append(os.Environ(), extraEnv...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		outStr := string(out)
-		for _, s := range secrets {
-			outStr = strings.ReplaceAll(outStr, s, "***")
+// EnsureProviderByName creates a provider on the gateway, updating it if
+// it already exists. The --from-existing flag loads credentials from
+// existing local state (e.g. imported profiles) rather than accepting
+// them as CLI arguments or environment variables — no secrets pass
+// through this process's command line or CombinedOutput.
+func EnsureProviderByName(name string) error {
+	if err := exec.Command("openshell", "provider", "get", name).Run(); err != nil {
+		out, err := exec.Command("openshell", "provider", "create", "--name", name, "--type", name, "--from-existing").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("provider %q creation failed: %s: %w", name, out, err)
 		}
-		return fmt.Errorf("provider update %q failed: %s", name, outStr)
+		return nil
+	}
+	out, err := exec.Command("openshell", "provider", "update", name, "--from-existing").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("provider %q update failed: %s: %w", name, out, err)
 	}
 	return nil
-}
-
-// buildProviderUpdateArgs constructs CLI args for openshell provider update.
-// The update subcommand takes a positional name (not --name/--type).
-func buildProviderUpdateArgs(name string, credentials, config map[string]string) []string {
-	args := []string{"provider", "update", name}
-	for k := range credentials {
-		args = append(args, "--credential", k)
-	}
-	for k, v := range config {
-		expanded := os.ExpandEnv(v)
-		args = append(args, "--config", k+"="+expanded)
-	}
-	return args
-}
-
-// buildProviderArgs constructs the CLI args and child environment entries for
-// openshell provider create. Credentials use the bare-key form (--credential KEY)
-// so secret values never appear on the process command line. The expanded values
-// are returned as extra env vars to be set on the child process.
-// See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
-func buildProviderArgs(name, providerType string, credentials, config map[string]string) (args, extraEnv, secrets []string) {
-	args = []string{"provider", "create",
-		"--name", name,
-		"--type", providerType,
-	}
-
-	for k, v := range credentials {
-		expanded := os.ExpandEnv(v)
-		if expanded != "" {
-			secrets = append(secrets, expanded)
-		}
-		extraEnv = append(extraEnv, fmt.Sprintf("%s=%s", k, expanded))
-		args = append(args, "--credential", k)
-	}
-	for k, v := range config {
-		expanded := os.ExpandEnv(v)
-		args = append(args, "--config", k+"="+expanded)
-	}
-
-	return args, extraEnv, secrets
 }
 
 // EnsureAvailable checks that the openshell binary is in PATH.

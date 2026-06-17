@@ -8,6 +8,9 @@ policy: policies/review.yaml
 role: review
 slug: fullsend-ai-review
 
+providers:
+  - github
+
 skills:
   - skills/pr-review
   - skills/code-review

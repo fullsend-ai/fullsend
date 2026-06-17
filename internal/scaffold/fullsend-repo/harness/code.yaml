@@ -17,6 +17,9 @@ policy: policies/code.yaml
 role: coder
 slug: fullsend-ai-coder
 
+providers:
+  - github
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
