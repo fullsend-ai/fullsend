@@ -165,7 +165,8 @@ to OWNER/MEMBER/COLLABORATOR), it should do so by extending the
 - Maintainers retain full control: labels and slash commands let them
   trigger agents on external contributions when appropriate.
 - Bot-to-bot orchestration (e.g., triage → code handoff) is unaffected
-  because bot accounts bypass the human authorization check.
+  because it uses label-based triggers, which require write access and
+  do not pass through the slash command authorization gate.
 - The dispatch routing logic becomes consistent: every dispatch path
   checks authorization of the acting user, reducing cognitive load.
 - Unauthorized slash command attempts get visible feedback (reaction +
