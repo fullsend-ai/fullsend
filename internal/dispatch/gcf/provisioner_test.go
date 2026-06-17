@@ -3227,3 +3227,43 @@ func TestDeleteAgentPEM_InvalidRole(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid role name")
 }
+
+func TestDeleteAgentPEM_DeleteFails(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["DeleteSecret"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DeleteAgentPEM(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting secret")
+}
+
+func TestAddRoleToMint_RevisionRoutingFails(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+	}
+	fake.updateServiceRevision = "fullsend-mint-00099"
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("routing failed")
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.AddRoleToMint(context.Background(), "review", "200")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "traffic routing may have failed")
+	assert.Contains(t, err.Error(), "fullsend-mint-00099")
+}
+
+func TestRemoveRoleFromMint_UpdateEnvVarsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"100","review":"200"}`,
+			"ALLOWED_ROLES": "coder,review",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRoleFromMint(context.Background(), "review")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating mint env vars")
+}

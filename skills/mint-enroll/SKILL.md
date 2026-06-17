@@ -82,7 +82,7 @@ PEM keys and app IDs are tied to the role, not the org. Secrets use role-only na
 (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the
 mint. `ROLE_APP_IDS` uses the same model: one GitHub App ID per role (e.g.,
 `coder` → `123456`), shared by all enrolled orgs. PEMs and app IDs must already
-exist (from `mint deploy --pem-dir` or `fullsend admin install`); enrollment
+exist (from `mint deploy --pem-dir`, `mint add-role`, or `fullsend admin install`); enrollment
 does not create, copy, or modify PEM secrets or app ID mappings.
 
 Apps must be installed on the target org before the mint can produce tokens.

@@ -15,9 +15,19 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+)
+
+// Test hooks for browser-based add-role flow.
+var (
+	mintAddRoleResolveToken = resolveToken
+	mintAddRoleAppSetup     = func(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject string, mintURL string, publicApps bool, sharedSlugs map[string]string, appSet string, storedAppIDs map[string]string) ([]layers.AgentCredentials, error) {
+		return runAppSetup(ctx, client, printer, org, roles, mintProject, mintURL, publicApps, sharedSlugs, appSet, storedAppIDs)
+	}
 )
 
 type mintAddRoleMode int
@@ -373,14 +383,14 @@ func resolveAddRoleFromBrowser(ctx context.Context, printer *ui.Printer, provisi
 		return 0, err
 	}
 
-	token, err := resolveToken()
+	token, err := mintAddRoleResolveToken()
 	if err != nil {
 		return 0, err
 	}
 	client := gh.New(token)
 
 	printer.StepStart(fmt.Sprintf("Setting up GitHub App for role %q in org %s", cfg.role, org))
-	creds, err := runAppSetup(ctx, client, printer, org, []string{cfg.role}, cfg.project, "", cfg.publicApps, nil, cfg.appSet, nil)
+	creds, err := mintAddRoleAppSetup(ctx, client, printer, org, []string{cfg.role}, cfg.project, "", cfg.publicApps, nil, cfg.appSet, nil)
 	if err != nil {
 		printer.StepFail("GitHub App setup failed")
 		return 0, err
