@@ -1,7 +1,11 @@
 ---
-name: review-docs-currency
-description: Evaluates documentation staleness against code changes.
+name: docs-currency
+description: >-
+  Evaluates documentation staleness against code changes.
 model: claude-sonnet-4-6@default
+tools: Read, Grep, Glob
+permissionMode: dontAsk
+background: true
 ---
 
 # Docs Currency
