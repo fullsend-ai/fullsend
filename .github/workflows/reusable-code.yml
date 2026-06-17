@@ -179,7 +179,6 @@ jobs:
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           PUSH_TOKEN_SOURCE: github-app
-          TARGET_BRANCH: main
         with:
           agent: code
           version: ${{ inputs.fullsend_version }}
