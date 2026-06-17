@@ -129,48 +129,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve target branch
-        id: resolve-branch
-        env:
-          EVENT_PAYLOAD: ${{ inputs.event_payload }}
-          SOURCE_REPO: ${{ inputs.source_repo }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-
-          # 1. Check for explicit --branch override in comment
-          COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
-          EXPLICIT_BRANCH=""
-          if [[ -n "${COMMENT_BODY}" ]]; then
-            EXPLICIT_BRANCH="$(printf '%s\n' "${COMMENT_BODY}" \
-              | head -1 | tr -d '\r' \
-              | grep -oP '(?<=--branch\s)\S+' || true)"
-          fi
-
-          # 2. Auto-detect repo default branch via API
-          DEFAULT_BRANCH="$(gh api "repos/${SOURCE_REPO}" \
-            --jq '.default_branch' 2>/dev/null || echo '')"
-
-          # 3. Fallback chain: explicit > repo default > "main"
-          if [[ -n "${EXPLICIT_BRANCH}" ]]; then
-            TARGET="${EXPLICIT_BRANCH}"
-            echo "Using explicit branch override: ${TARGET}"
-          elif [[ -n "${DEFAULT_BRANCH}" ]]; then
-            TARGET="${DEFAULT_BRANCH}"
-            echo "Using repo default branch: ${TARGET}"
-          else
-            TARGET="main"
-            echo "::warning::Could not detect default branch — falling back to 'main'"
-          fi
-
-          # 4. Validate branch name
-          if [[ ! "${TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-            echo "::error::Invalid branch name: '${TARGET}'"
-            exit 1
-          fi
-
-          echo "target_branch=${TARGET}" >> "${GITHUB_OUTPUT}"
-
       - name: Validate inputs
         id: validate
         env:
@@ -221,7 +179,7 @@ jobs:
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           PUSH_TOKEN_SOURCE: github-app
-          TARGET_BRANCH: ${{ steps.resolve-branch.outputs.target_branch }}
+          TARGET_BRANCH: main
         with:
           agent: code
           version: ${{ inputs.fullsend_version }}
