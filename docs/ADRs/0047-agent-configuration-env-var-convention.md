@@ -48,18 +48,25 @@ Agent configuration environment variables follow a single convention:
 ### Naming
 
 ```
-{ROLE}_{SETTING_NAME}
+{AGENT}_{SETTING_NAME}
 ```
 
-- `{ROLE}` is the agent's role in uppercase: `REVIEW`, `CODE`, `TRIAGE`,
-  `FIX`, `PRIORITIZE`, `RETRO`, etc.
+- `{AGENT}` is the agent's **name** in uppercase, derived from the harness
+  filename: `REVIEW`, `CODE`, `TRIAGE`, `FIX`, `PRIORITIZE`, `RETRO`, etc.
 - `{SETTING_NAME}` is `SCREAMING_SNAKE_CASE` describing the setting.
 - Examples: `REVIEW_SEVERITY_THRESHOLD`, `CODE_MAX_FILE_SIZE`,
   `REVIEW_POST_INLINE`, `TRIAGE_SKIP_DUPLICATE_CHECK`.
+- A setting that applies to multiple agents gets separate vars per agent
+  (e.g., `CODE_MAX_FILE_SIZE` and `REVIEW_MAX_FILE_SIZE`), keeping each
+  agent's configuration independent.
 
-The role prefix prevents collisions when multiple agents share an execution
-environment or when env files are sourced together. It also makes `grep` and
-audit trivial: `grep ^REVIEW_ env/review.env` shows every knob for that agent.
+The agent name prefix prevents collisions when multiple agents share an
+execution environment or when env files are sourced together. Existing context
+vars (e.g., `PRIOR_REVIEW_SHA`) and credential vars (e.g., `FIX_GH_TOKEN`)
+already use agent-name prefixes — the `{AGENT}_` prefix alone does not
+distinguish config vars from those. The distinction is by purpose and
+documentation: config vars are behavioral knobs listed in
+`docs/agents/<agent>.md`.
 
 ### Where config vars live in the harness
 
@@ -85,18 +92,24 @@ on the host. A config var needed by both must appear in both places.
 
 ### Defaults
 
-Default values are **documented** in `docs/agents/<role>.md` and **applied by
-the agent itself** at inference time (e.g., "if `$REVIEW_SEVERITY_THRESHOLD`
-is unset, default to `low`"). The harness YAML and `.env` files carry no
-defaults for agent-specific config — they pass through whatever the CI
-workflow provides, or leave the variable unset.
+Default values live in the **canonical harness** (the scaffold's
+`harness/<agent>.yaml`). Downstream layers — the org `.fullsend` repo or a
+per-repo `.fullsend/` — override them via `base` composition
+([ADR 0045](0045-forge-portable-harness-schema.md)). Defaults are also
+**documented** in `docs/agents/<agent>.md` so users can discover them without
+reading harness YAML.
 
-Pre/post scripts that need a default should use standard shell defaulting:
-`${REVIEW_SEVERITY_THRESHOLD:-low}`.
+**For agent prompts,** the agent treats an unset or empty variable the same as
+"use the default." The `.env` file's `expand: true` mechanism resolves unset
+host vars to an empty string, not an absent var — so agents and scripts must
+handle both cases.
+
+**For pre/post scripts,** use standard shell defaulting, which already handles
+both empty and unset: `${REVIEW_SEVERITY_THRESHOLD:-low}`.
 
 ### Documentation
 
-Each agent's user-facing documentation (`docs/agents/<role>.md`) includes a
+Each agent's user-facing documentation (`docs/agents/<agent>.md`) includes a
 **Variables** subsection under the existing "Configuration and extension"
 section:
 
@@ -134,25 +147,15 @@ findings do not appear in the output — they are dropped entirely, not
 downgraded.
 ```
 
-The agent reads the value from its environment (e.g., via bash `echo
-$REVIEW_SEVERITY_THRESHOLD` or by referencing it in tool calls) and
-conditions its behavior accordingly. This is no different from how agents
-already read `$GITHUB_PR_URL` or `$ISSUE_NUMBER`.
-
-### Using config vars in pre/post scripts
-
-Scripts read config vars from the environment like any other variable:
-
-```bash
-# In post-review.sh
-threshold="${REVIEW_SEVERITY_THRESHOLD:-low}"
-# Filter findings array by severity before posting
-```
+The agent reads the value from its sandbox environment (e.g., via
+`printenv REVIEW_SEVERITY_THRESHOLD` or by referencing it in tool calls)
+and conditions its behavior accordingly. This is no different from how
+agents already read `$GITHUB_PR_URL` or `$ISSUE_NUMBER`.
 
 ### Precedence
 
 Config var values follow the existing harness layering from
-[ADR 0006](0006-ordered-layer-model.md) and
+[ADR 0045](0045-forge-portable-harness-schema.md) and
 [ADR 0003](0003-org-config-repo-convention.md): fullsend defaults (scaffold)
 can be overridden by the org `.fullsend` repo, which can be overridden by
 per-repo `.fullsend/`. This layering already applies to `.env` files and
@@ -164,22 +167,20 @@ per-repo `.fullsend/`. This layering already applies to `.env` files and
   delivery mechanisms (`host_files` with `expand: true`, `runner_env`,
   CI workflow `env:`). Agents start accepting config vars immediately by
   documenting them and referencing them in their prompts and scripts.
-- **Discoverability is centralized.** Users check `docs/agents/<role>.md`
+- **Discoverability is centralized.** Users check `docs/agents/<agent>.md`
   to see what knobs an agent supports. Agent authors document new config
   vars there when adding them.
-- **Collision-free by convention.** The `{ROLE}_` prefix scopes config vars
-  to the agent that owns them. A setting that applies to multiple agents
-  gets separate vars per agent (e.g., `CODE_MAX_FILE_SIZE` and
-  `REVIEW_MAX_FILE_SIZE`), keeping each agent's configuration independent.
+- **Collision-free by convention.** The `{AGENT}_` prefix scopes config vars
+  to the agent that owns them.
 - **Agent system prompts stay flexible.** There is no required section
   structure for how `agents/<role>.md` references config vars. Agent
   authors place references where they make sense in the prompt flow.
-- **Each new config var requires updates in up to five places:** the
-  agent's `.env` file (for sandbox delivery), the harness `runner_env`
-  (for host-side script access), the agent's system prompt (for behavioral
-  conditioning), the pre/post scripts (for host-side logic), and
-  `docs/agents/<role>.md` (for user documentation). Not every var needs
-  all five — a var used only at inference time skips `runner_env` and
-  scripts, a var used only in scripts skips the `.env` file and system
-  prompt. This is intentional — it keeps the documentation, delivery, and
-  behavior in sync without adding schema surface to the harness.
+- **Each new config var may require updates in several places:**
+  1. Agent `.env` file (sandbox delivery)
+  2. Harness `runner_env` (host-side script access)
+  3. Agent system prompt (behavioral conditioning)
+  4. Pre/post scripts (host-side logic)
+  5. `docs/agents/<agent>.md` (user documentation)
+
+  Not every var needs all five — a var used only at inference time skips 2
+  and 4; a var used only in scripts skips 1 and 3.
