@@ -64,7 +64,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skip != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -248,7 +248,7 @@ jobs:
             --json number --jq '.[].number' 2>/dev/null || true)"
           if [[ -n "${MENTIONING_PRS}" ]]; then
             echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
-            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Validate routed stage

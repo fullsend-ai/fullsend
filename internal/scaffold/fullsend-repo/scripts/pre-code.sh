@@ -57,7 +57,7 @@ echo "  GITHUB_ISSUE_URL=${GITHUB_ISSUE_URL}"
 # Skip if GH_TOKEN is not available (best-effort check).
 if [[ -z "${GH_TOKEN:-}" ]]; then
   echo "GH_TOKEN not set — skipping existing-PR check"
-  echo "skip=false" >> "${GITHUB_OUTPUT}"
+  echo "skipped=false" >> "${GITHUB_OUTPUT}"
   exit 0
 fi
 
@@ -65,7 +65,7 @@ fi
 echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; then
   echo "Force override — skipping existing-PR check"
-  echo "skip=false" >> "${GITHUB_OUTPUT}"
+  echo "skipped=false" >> "${GITHUB_OUTPUT}"
   exit 0
 fi
 
@@ -115,9 +115,9 @@ To override, comment \`/fs-code --force\` on this issue.
     --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
 
   echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
-  echo "skip=true" >> "${GITHUB_OUTPUT}"
+  echo "skipped=true" >> "${GITHUB_OUTPUT}"
   exit 0
 fi
 
 echo "No existing human PRs found — proceeding with code agent"
-echo "skip=false" >> "${GITHUB_OUTPUT}"
+echo "skipped=false" >> "${GITHUB_OUTPUT}"

@@ -389,7 +389,7 @@ run_test_stdout "no-force-reaches-pr-search" \
 run_test_github_output() {
   local test_name="$1"
   local pr_list_output="$2"
-  local expected_output="$3"    # e.g. "skip=true"
+  local expected_output="$3"    # e.g. "skipped=true"
   local expect_exit="$4"
   local extra_env="${5:-}"
 
@@ -438,26 +438,26 @@ run_test_github_output() {
 # Existing human PR → GITHUB_OUTPUT must contain skip=true.
 run_test_github_output "skip-output-set-on-existing-pr" \
   "${HUMAN_PR_JSON}" \
-  "skip=true" \
+  "skipped=true" \
   0
 
 # No existing PRs → GITHUB_OUTPUT must contain skip=false.
 run_test_github_output "skip-output-false-on-no-prs" \
   "" \
-  "skip=false" \
+  "skipped=false" \
   0
 
 # Force override → GITHUB_OUTPUT must NOT contain skip=true (force exits before PR check).
 run_test_github_output "skip-output-not-set-on-force" \
   "${HUMAN_PR_JSON}" \
-  "skip=false" \
+  "skipped=false" \
   0 \
   "CODE_FORCE=true"
 
 # No GH_TOKEN → GITHUB_OUTPUT must contain skip=false (proceeds without PR check).
 run_test_github_output "skip-output-false-on-no-token" \
   "" \
-  "skip=false" \
+  "skipped=false" \
   0 \
   "GH_TOKEN="
 
