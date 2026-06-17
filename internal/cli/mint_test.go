@@ -1231,7 +1231,7 @@ func TestMintTrafficRoleAppIDs_PrefersTrafficRevision(t *testing.T) {
 		URL:        "https://mint.example.com",
 		RoleAppIDs: map[string]string{"coder": "100"},
 	}
-	roles, err := mintTrafficRoleAppIDs(context.Background(), provisioner, discovery)
+	roles, err := mintTrafficRoleAppIDs(context.Background(), nil, provisioner, discovery)
 	require.NoError(t, err)
 	assert.Equal(t, "200", roles["review"])
 }
@@ -1343,7 +1343,7 @@ func TestMintTrafficRoleAppIDs_InvalidJSON(t *testing.T) {
 		}),
 	))
 	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
-	_, err := mintTrafficRoleAppIDs(context.Background(), provisioner, &gcf.MintDiscovery{})
+	_, err := mintTrafficRoleAppIDs(context.Background(), nil, provisioner, &gcf.MintDiscovery{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing traffic ROLE_APP_IDS")
 }
@@ -1354,7 +1354,7 @@ func TestMintTrafficRoleAppIDs_FallbackWhenTrafficEmpty(t *testing.T) {
 	))
 	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
 	discovery := &gcf.MintDiscovery{RoleAppIDs: map[string]string{"coder": "100"}}
-	roles, err := mintTrafficRoleAppIDs(context.Background(), provisioner, discovery)
+	roles, err := mintTrafficRoleAppIDs(context.Background(), nil, provisioner, discovery)
 	require.NoError(t, err)
 	assert.Equal(t, "100", roles["coder"])
 }
@@ -1453,9 +1453,12 @@ func TestMintTrafficRoleAppIDs_FallbackOnTrafficError(t *testing.T) {
 	))
 	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
 	discovery := &gcf.MintDiscovery{RoleAppIDs: map[string]string{"coder": "100"}}
-	roles, err := mintTrafficRoleAppIDs(context.Background(), provisioner, discovery)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	roles, err := mintTrafficRoleAppIDs(context.Background(), printer, provisioner, discovery)
 	require.NoError(t, err)
 	assert.Equal(t, "100", roles["coder"])
+	assert.Contains(t, out.String(), "traffic-serving env vars")
 }
 
 func withMintAddRoleHooks(t *testing.T, resolveToken func() (string, error), appSetup func(context.Context, forge.Client, *ui.Printer, string, []string, string, string, bool, map[string]string, string, map[string]string) ([]layers.AgentCredentials, error)) {
@@ -1658,6 +1661,7 @@ func TestRunMintSetupRemoveRole_DeletePEMFails(t *testing.T) {
 	err := runMintSetupRemoveRole(context.Background(), printer, "triage", "my-project-id", "us-central1", false, false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deleting PEM secret")
+	assert.Contains(t, err.Error(), "gcloud secrets delete")
 }
 
 func TestResolveAddRoleFromSlugPEM_LookupFails(t *testing.T) {

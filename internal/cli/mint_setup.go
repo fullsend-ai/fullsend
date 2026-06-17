@@ -253,7 +253,7 @@ func runMintSetupAddRole(ctx context.Context, printer *ui.Printer, cfg mintSetup
 	}
 	printer.StepDone(fmt.Sprintf("Found mint at %s", discovery.URL))
 
-	existing, err := mintTrafficRoleAppIDs(ctx, provisioner, discovery)
+	existing, err := mintTrafficRoleAppIDs(ctx, printer, provisioner, discovery)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving ROLE_APP_IDS: %w", err)
 	}
@@ -426,7 +426,7 @@ func runMintSetupRemoveRole(ctx context.Context, printer *ui.Printer, role, proj
 	}
 	printer.StepDone(fmt.Sprintf("Found mint at %s", discovery.URL))
 
-	existing, err := mintTrafficRoleAppIDs(ctx, provisioner, discovery)
+	existing, err := mintTrafficRoleAppIDs(ctx, printer, provisioner, discovery)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving ROLE_APP_IDS: %w", err)
 	}
@@ -453,21 +453,23 @@ func runMintSetupRemoveRole(ctx context.Context, printer *ui.Printer, role, proj
 		}
 	}
 
-	if !keepPEM {
-		printer.StepStart("Deleting PEM secret")
-		if err := provisioner.DeleteAgentPEM(ctx, role); err != nil {
-			printer.StepFail("Failed to delete PEM secret")
-			return fmt.Errorf("deleting PEM secret for role %q: %w", role, err)
-		}
-		printer.StepDone("PEM secret deleted")
-	}
-
 	printer.StepStart("Removing role from mint configuration")
 	if err := provisioner.RemoveRoleFromMint(ctx, role); err != nil {
 		printer.StepFail("Failed to update mint env vars")
 		return fmt.Errorf("removing role from mint: %w", err)
 	}
 	printer.StepDone("Role removed from mint env vars")
+
+	if !keepPEM {
+		printer.StepStart("Deleting PEM secret")
+		if err := provisioner.DeleteAgentPEM(ctx, role); err != nil {
+			printer.StepFail("Failed to delete PEM secret")
+			secretID := fmt.Sprintf("fullsend-%s-app-pem", mintcore.PemSecretRole(role))
+			return fmt.Errorf("deleting PEM secret for role %q: %w (role was removed from mint; delete the orphaned secret manually: gcloud secrets delete %s --project=%s)",
+				role, err, secretID, project)
+		}
+		printer.StepDone("PEM secret deleted")
+	}
 
 	printer.Blank()
 	summary := []string{
@@ -485,9 +487,12 @@ func runMintSetupRemoveRole(ctx context.Context, printer *ui.Printer, role, proj
 
 // mintTrafficRoleAppIDs returns role-only ROLE_APP_IDS from the traffic-serving
 // Cloud Run revision, falling back to discovery template env vars when needed.
-func mintTrafficRoleAppIDs(ctx context.Context, provisioner *gcf.Provisioner, discovery *gcf.MintDiscovery) (map[string]string, error) {
+func mintTrafficRoleAppIDs(ctx context.Context, printer *ui.Printer, provisioner *gcf.Provisioner, discovery *gcf.MintDiscovery) (map[string]string, error) {
 	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
 	if err != nil {
+		if printer != nil {
+			printer.StepWarn(fmt.Sprintf("Could not read traffic-serving env vars; using template ROLE_APP_IDS: %v", err))
+		}
 		return mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs), nil
 	}
 	if raw := trafficEnv["ROLE_APP_IDS"]; raw != "" {
