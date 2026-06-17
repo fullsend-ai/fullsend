@@ -1011,7 +1011,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepDone(fmt.Sprintf("Agent-input files copied (%.1fs)", time.Since(inputStart).Seconds()))
 	}
 
-	// 8c. Host-side scan (Path A): scan the target repo's context files
+	// 8c. Make the target repo read-only if the harness opts in.
+	// Runs after all repo-directory writes (8a, 8a-2) are complete.
+	// Excludes .git/ so git operations (index.lock, etc.) still work.
+	if h.ReadonlyRepo {
+		// -prune skips .git traversal entirely; -not -type l prevents symlink traversal.
+		// chown ensures the sandbox user (run_as_user) owns .git/ after root-owned extraction.
+		chmodCmd := fmt.Sprintf(
+			"find %s -path '*/.git' -prune -o -not -type l -exec chmod a-w {} + && chown -R sandbox:sandbox %s/.git && chmod -R u+w %s/.git",
+			remoteRepositoryDir, remoteRepositoryDir, remoteRepositoryDir,
+		)
+		if _, stderr, exitCode, err := sandbox.Exec(sandboxName, chmodCmd, 30*time.Second); err != nil {
+			printer.StepFail("Could not make repo read-only: " + err.Error())
+			return fmt.Errorf("Read-only repo enforcement failed: %w", err)
+		} else if exitCode != 0 {
+			printer.StepFail("Could not make repo read-only (exit " + fmt.Sprintf("%d", exitCode) + "): " + stderr)
+			return fmt.Errorf("read-only repo enforcement failed: exit code %d", exitCode)
+		}
+		printer.StepDone("Target repo set to read-only")
+	}
+
+	// 8d. Host-side scan (Path A): scan the target repo's context files
 	// (CLAUDE.md, AGENTS.md, SKILL.md, etc.) before the agent processes them.
 	// The target branch may contain attacker-controlled files from a PR.
 	if h.SecurityEnabled() {
