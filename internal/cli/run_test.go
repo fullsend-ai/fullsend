@@ -160,7 +160,8 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -183,7 +184,8 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -194,7 +196,8 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "nonexistent", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
 }
@@ -224,7 +227,8 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -254,7 +258,8 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -279,7 +284,8 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing org config")
 }
@@ -299,7 +305,8 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
 }
@@ -338,7 +345,8 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -362,7 +370,8 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
 }
@@ -389,7 +398,8 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing org config")
 }
@@ -1715,7 +1725,8 @@ func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 
 	// Command fails later (no openshell), but lint warning should be emitted
 	require.Error(t, err)
@@ -1748,7 +1759,8 @@ func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 
 	// Command fails later (no openshell)
 	require.Error(t, err)
