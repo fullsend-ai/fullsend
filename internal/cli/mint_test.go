@@ -48,6 +48,22 @@ func TestMintCommand_HasSubcommands(t *testing.T) {
 	assert.True(t, names["unenroll <org|owner/repo>"], "expected unenroll subcommand")
 	assert.True(t, names["status [org]"], "expected status subcommand")
 	assert.True(t, names["token"], "expected token subcommand")
+	assert.True(t, names["add-role <role>"], "expected add-role subcommand")
+	assert.True(t, names["remove-role <role>"], "expected remove-role subcommand")
+}
+
+func TestMintAddRoleCmd_Flags(t *testing.T) {
+	cmd := newMintAddRoleCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("slug"))
+	assert.NotNil(t, cmd.Flags().Lookup("pem"))
+	assert.NotNil(t, cmd.Flags().Lookup("use-existing-pem-secret"))
+}
+
+func TestMintRemoveRoleCmd_Flags(t *testing.T) {
+	cmd := newMintRemoveRoleCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("keep-pem"))
 }
 
 func TestMintCommand_RegisteredInRoot(t *testing.T) {
@@ -938,4 +954,153 @@ func TestConfirmUnenroll_NonTerminal(t *testing.T) {
 	err := confirmUnenroll(printer, "acme-org", reader, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stdin is not a terminal")
+}
+
+// --- mint add-role / remove-role tests ---
+
+func TestValidateMintSetupRole(t *testing.T) {
+	t.Parallel()
+	role, err := validateMintSetupRole("coder")
+	require.NoError(t, err)
+	assert.Equal(t, "coder", role)
+
+	_, err = validateMintSetupRole("fix")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "coder")
+
+	_, err = validateMintSetupRole("unknown")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported role")
+}
+
+func TestParseMintAddRoleMode(t *testing.T) {
+	t.Parallel()
+	mode, err := parseMintAddRoleMode("my-app", "/tmp/pem", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, addRoleModeSlugPEM, mode)
+
+	mode, err = parseMintAddRoleMode("my-app", "", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, addRoleModeExistingSecret, mode)
+
+	mode, err = parseMintAddRoleMode("", "", "acme", false)
+	require.NoError(t, err)
+	assert.Equal(t, addRoleModeBrowser, mode)
+
+	_, err = parseMintAddRoleMode("my-app", "/tmp/pem", "", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+
+	_, err = parseMintAddRoleMode("my-app", "", "acme", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined")
+
+	_, err = parseMintAddRoleMode("", "", "", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "specify one input mode")
+}
+
+func TestMintSetupAddRoleCmd_RequiresProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "add-role", "coder", "--slug=app", "--pem=/tmp/x.pem"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintSetupAddRoleCmd_PemAndUseExistingMutuallyExclusive(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-coder",
+		"--pem=/tmp/coder.pem",
+		"--use-existing-pem-secret",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestMintSetupAddRoleCmd_NoInputMode(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "add-role", "coder", "--project=my-project-id"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "specify one input mode")
+}
+
+func TestMintSetupAddRoleCmd_ExistingSecretDryRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": true,
+		}),
+	))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-review",
+		"--use-existing-pem-secret",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintSetupAddRoleCmd_AlreadyRegistered(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-coder",
+		"--use-existing-pem-secret",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already registered")
+}
+
+func TestMintSetupRemoveRoleCmd_DryRun(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "remove-role", "coder",
+		"--project=my-project-id",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintSetupRemoveRoleCmd_NotRegistered(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "remove-role", "review",
+		"--project=my-project-id",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not registered")
 }

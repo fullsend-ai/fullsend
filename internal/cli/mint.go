@@ -316,13 +316,15 @@ func newMintCmd() *cobra.Command {
 		Long: `Manage the GCP Cloud Function that mints GitHub App installation tokens,
 and mint short-lived tokens via OIDC.
 
-Infrastructure subcommands (deploy, enroll, unenroll, status) require GCP
+Infrastructure subcommands (deploy, enroll, unenroll, status, add-role, remove-role) require GCP
 project access. The 'token' subcommand requires only GitHub Actions OIDC.`,
 	}
 	cmd.AddCommand(newMintDeployCmd())
 	cmd.AddCommand(newMintEnrollCmd())
 	cmd.AddCommand(newMintUnenrollCmd())
 	cmd.AddCommand(newMintStatusCmd())
+	cmd.AddCommand(newMintAddRoleCmd())
+	cmd.AddCommand(newMintRemoveRoleCmd())
 	cmd.AddCommand(newMintTokenCmd())
 	return cmd
 }
