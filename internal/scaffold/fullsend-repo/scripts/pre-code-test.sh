@@ -454,6 +454,13 @@ run_test_github_output "skip-output-not-set-on-force" \
   0 \
   "CODE_FORCE=true"
 
+# No GH_TOKEN → GITHUB_OUTPUT must contain skip=false (proceeds without PR check).
+run_test_github_output "skip-output-false-on-no-token" \
+  "" \
+  "skip=false" \
+  0 \
+  "GH_TOKEN="
+
 # --- Summary ---
 
 echo ""
