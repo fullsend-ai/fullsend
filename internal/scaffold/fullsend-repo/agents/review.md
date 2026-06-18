@@ -108,6 +108,21 @@ This agent has three skills. Select based on invocation context:
 When invoked via `--print` for pre-push review, use `code-review`.
 When invoked for a GitHub PR, use `pr-review`.
 
+## PR metadata accuracy
+
+Never make claims about observable PR metadata — draft status, label
+presence, merge state, or review status — without verifying them
+against the GitHub API response. The PR metadata fetched via `gh api`
+in the `pr-review` skill (step 1) is the source of truth. Title
+conventions (e.g., "do not merge," "WIP," "DNM" prefixes) are not
+reliable indicators of API-level state. A PR titled "DNM: ..." may or
+may not be a GitHub draft — check the `draft` field, not the title.
+
+If a finding about PR metadata cannot be verified against the API
+data, do not include it. False claims about verifiable metadata (e.g.,
+stating a PR "is not a Draft" when `draft: true`) erode trust in the
+review across all reviewed PRs.
+
 ## Zero-trust principle
 
 You do not trust the code author, other agents, or claims about the
