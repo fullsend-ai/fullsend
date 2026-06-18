@@ -83,8 +83,8 @@ environment directly — no separate configuration is needed.
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as
 defense-in-depth. When filtering removes all findings from a
-`request-changes` verdict, the post-script downgrades the verdict to
-`comment` (applying the `requires-manual-review` label).
+`request-changes` or `reject` verdict, the post-script downgrades the
+verdict to `comment` (applying the `requires-manual-review` label).
 
 ## Source
 
