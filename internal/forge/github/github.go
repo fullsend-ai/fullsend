@@ -146,7 +146,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		retryAfter := resp.Header.Get("Retry-After")
 
 		if attempt == maxRetries-1 {
-			msg := fmt.Sprintf("rate limited after %d retries on %s %s (last delay: %s", maxRetries, method, path, delay)
+			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
 				msg += fmt.Sprintf(", Retry-After: %s", retryAfter)
 			}
@@ -168,8 +168,14 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 // GitHub uses 429 for primary rate limits and 403 for secondary rate limits.
 // Secondary rate limits may include a Retry-After header, or may only be
 // identifiable by the response body containing "secondary rate limit".
+// Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
+		io.Copy(io.Discard, resp.Body)
+		return true, nil
+	}
+	// Transient server errors.
+	if resp.StatusCode >= 500 && resp.StatusCode <= 504 {
 		io.Copy(io.Discard, resp.Body)
 		return true, nil
 	}
@@ -467,7 +473,7 @@ func (c *LiveClient) CreateFileOnBranch(ctx context.Context, owner, repo, branch
 func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		// Try to get existing file for its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
 		if err != nil {
@@ -506,7 +512,7 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		// Try to get existing file on the branch for its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath+"?ref="+branch, nil)
 		if err != nil {
@@ -541,10 +547,9 @@ func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo
 }
 
 // putFileWithRetry wraps a single PUT to the Contents API with retry on
-// transient errors (404 from async repo init, 409 from branch ref races,
-// 502/503/504 from server-side infrastructure issues).
+// repo race conditions (404 from async repo init, 409 from branch ref races).
 func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, payload map[string]any, path string) error {
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		resp, err := c.put(ctx, apiPath, payload)
 		if err != nil {
 			return fmt.Errorf("create file %s: %w", path, err)
@@ -554,12 +559,13 @@ func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, paylo
 	})
 }
 
-// retryOnTransient retries an operation that may fail with transient HTTP
-// errors. It handles 404 (async repo initialization), 409 (branch ref update
-// races), and server-side 5xx errors (502, 503, 504) that indicate transient
-// GitHub infrastructure issues. It uses linear backoff (2s between attempts)
-// and up to 5 attempts (~10s total).
-func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func() error) error {
+// retryOnRepoRace retries an operation that may fail due to GitHub
+// repository initialization races. It handles 404 (async repo/branch
+// creation where the ref is not yet materialized) and 409 (branch ref
+// update conflicts). Server-side 5xx errors are handled at a lower level
+// by do(). It uses linear backoff (2s between attempts) and up to 5
+// attempts (~10s total).
+func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func() error) error {
 	const attempts = 5
 	const delay = 2 * time.Second
 
@@ -591,16 +597,13 @@ func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func
 }
 
 // isTransientStatus returns true for HTTP status codes that indicate a
-// transient error worth retrying: 404 (async repo init), 409 (branch ref
-// conflict), and server-side 500, 502, 503, 504 (GitHub infrastructure errors).
+// repo/branch race condition worth retrying: 404 (async repo init) and
+// 409 (branch ref conflict). Server-side 5xx errors are retried at a
+// lower level by do().
 func isTransientStatus(code int) bool {
 	switch code {
 	case http.StatusNotFound,
-		http.StatusConflict,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
+		http.StatusConflict:
 		return true
 	default:
 		return false
@@ -649,10 +652,10 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 // the Git Trees/Blobs/Commits API.
 func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
 	// 1. Get current commit SHA from the branch ref.
-	// Wrapped in retryOnTransient for freshly-created repos/branches where
+	// Wrapped in retryOnRepoRace for freshly-created repos/branches where
 	// the ref may not be materialized yet (async auto_init).
 	var commitSHA string
-	if err := c.retryOnTransient(ctx, "get branch ref", func() error {
+	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
 		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
 		if refErr != nil {
 			return fmt.Errorf("get branch ref: %w", refErr)
@@ -820,7 +823,7 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	var commitSHA string
-	if err := c.retryOnTransient(ctx, "get branch ref", func() error {
+	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
 		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
 		if refErr != nil {
 			return fmt.Errorf("get branch ref: %w", refErr)
@@ -928,7 +931,7 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	refPayload := map[string]string{"sha": newCommit.SHA}
-	if err := c.retryOnTransient(ctx, "update ref", func() error {
+	if err := c.retryOnRepoRace(ctx, "update ref", func() error {
 		refUpdateResp, patchErr := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, repoInfo.DefaultBranch), refPayload)
 		if patchErr != nil {
 			return fmt.Errorf("update ref: %w", patchErr)
@@ -1136,7 +1139,7 @@ func (c *LiveClient) listDirContents(ctx context.Context, owner, repo, path, ref
 func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message string) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		// GET the file to obtain its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
 		if err != nil {

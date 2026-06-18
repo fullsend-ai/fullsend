@@ -1312,27 +1312,24 @@ func TestListOrgRepos_Pagination(t *testing.T) {
 }
 
 func TestCreateOrUpdateFile_RetriesOn504(t *testing.T) {
+	// 5xx is now retried at the do() level, so the PUT is retried
+	// internally without re-running the GET.
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callNum++
 		switch {
 		case callNum == 1:
-			// First GET for existing file — return 404 (file doesn't exist)
+			// GET for existing file — return 404 (file doesn't exist)
 			assert.Equal(t, "GET", r.Method)
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
 		case callNum == 2:
-			// First PUT — return 504 Gateway Timeout
+			// PUT — return 504 Gateway Timeout (do() will retry)
 			assert.Equal(t, "PUT", r.Method)
 			w.WriteHeader(http.StatusGatewayTimeout)
 			json.NewEncoder(w).Encode(map[string]any{"message": "Gateway Timeout"})
 		case callNum == 3:
-			// Retry: GET for existing file — return 404
-			assert.Equal(t, "GET", r.Method)
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-		case callNum == 4:
-			// Retry: PUT — succeeds
+			// do() retry: PUT — succeeds
 			assert.Equal(t, "PUT", r.Method)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{})
@@ -1345,10 +1342,12 @@ func TestCreateOrUpdateFile_RetriesOn504(t *testing.T) {
 	client := newTestClient(t, srv)
 	err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add file", []byte("content"))
 	require.NoError(t, err)
-	assert.Equal(t, 4, callNum, "expected exactly 4 calls (GET+PUT fail, GET+PUT succeed)")
+	assert.Equal(t, 3, callNum, "expected exactly 3 calls (GET, PUT fail, PUT retry succeed)")
 }
 
 func TestCreateOrUpdateFile_RetriesOnAll5xxCodes(t *testing.T) {
+	// 5xx is retried at the do() level. The PUT fails once, do() retries,
+	// and succeeds — without re-running the GET.
 	for _, statusCode := range []int{
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
@@ -1364,15 +1363,11 @@ func TestCreateOrUpdateFile_RetriesOnAll5xxCodes(t *testing.T) {
 					w.WriteHeader(http.StatusNotFound)
 					json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
 				case callNum == 2:
-					// PUT — return 5xx
+					// PUT — return 5xx (do() will retry)
 					w.WriteHeader(statusCode)
 					json.NewEncoder(w).Encode(map[string]any{"message": http.StatusText(statusCode)})
 				case callNum == 3:
-					// Retry GET — 404
-					w.WriteHeader(http.StatusNotFound)
-					json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-				case callNum == 4:
-					// Retry PUT — succeeds
+					// do() retry: PUT — succeeds
 					w.WriteHeader(http.StatusCreated)
 					json.NewEncoder(w).Encode(map[string]any{})
 				}
@@ -1382,7 +1377,7 @@ func TestCreateOrUpdateFile_RetriesOnAll5xxCodes(t *testing.T) {
 			client := newTestClient(t, srv)
 			err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add", []byte("data"))
 			require.NoError(t, err)
-			assert.GreaterOrEqual(t, callNum, 4, "should have retried after %d", statusCode)
+			assert.Equal(t, 3, callNum, "expected 3 calls (GET, PUT fail, PUT retry succeed) for %d", statusCode)
 		})
 	}
 }
@@ -1413,6 +1408,9 @@ func TestCreateOrUpdateFile_NoRetryOnNon5xx(t *testing.T) {
 }
 
 func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
+	// 5xx errors are retried at the do() level, not retryOnRepoRace.
+	// With a persistent 504 on PUT, do() exhausts its 3 attempts and
+	// returns immediately — retryOnRepoRace does not retry 5xx.
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callNum++
@@ -1431,19 +1429,53 @@ func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
 	client := newTestClient(t, srv)
 	err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add", []byte("data"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "after 5 attempts")
+	assert.Contains(t, err.Error(), "retryable error after 3 attempts")
 }
 
 func TestIsTransientStatus(t *testing.T) {
-	transient := []int{404, 409, 500, 502, 503, 504}
+	// After moving 5xx retry to isRetryable in do(), isTransientStatus
+	// only covers race-condition statuses (404 async repo init, 409 ref conflict).
+	transient := []int{404, 409}
 	for _, code := range transient {
 		assert.True(t, isTransientStatus(code), "expected %d to be transient", code)
 	}
 
-	nonTransient := []int{200, 201, 400, 401, 403, 422}
+	nonTransient := []int{200, 201, 400, 401, 403, 422, 500, 502, 503, 504}
 	for _, code := range nonTransient {
 		assert.False(t, isTransientStatus(code), "expected %d to not be transient", code)
 	}
+}
+
+func TestIsRetryable_ServerErrors(t *testing.T) {
+	for _, code := range []int{500, 502, 503, 504} {
+		resp := &http.Response{
+			StatusCode: code,
+			Body:       http.NoBody,
+		}
+		retryable, _ := isRetryable(resp)
+		assert.True(t, retryable, "expected %d to be retryable", code)
+	}
+}
+
+func TestDo_RetriesOnServerError(t *testing.T) {
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintln(w, `{"message":"Bad Gateway"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.get(context.Background(), "/test")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, 2, attempt, "expected exactly 2 attempts (1 retry)")
 }
 
 func TestBlobSHA(t *testing.T) {
