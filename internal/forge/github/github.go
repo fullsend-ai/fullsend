@@ -823,7 +823,7 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	var commitSHA string
-	if err := c.retryOnTransient(ctx, "get branch ref", func() error {
+	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
 		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
 		if refErr != nil {
 			return fmt.Errorf("get branch ref: %w", refErr)
@@ -931,7 +931,7 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 	}
 
 	refPayload := map[string]string{"sha": newCommit.SHA}
-	if err := c.retryOnTransient(ctx, "update ref", func() error {
+	if err := c.retryOnRepoRace(ctx, "update ref", func() error {
 		refUpdateResp, patchErr := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, repoInfo.DefaultBranch), refPayload)
 		if patchErr != nil {
 			return fmt.Errorf("update ref: %w", patchErr)
