@@ -1192,8 +1192,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		return err
 	}
 
-	// Build config with empty agents for analysis.
-	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, nil, inferenceProviderName, org)
+	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1504,13 +1503,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	// Collect IDs for repos that will be enrolled.
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
 
-	// Build agent entries for config.
-	agents := make([]config.AgentEntry, len(agentCreds))
-	for i, ac := range agentCreds {
-		agents[i] = ac.AgentEntry
-	}
-
-	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
+	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1656,7 +1649,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 	// Build a minimal stack for uninstall.
 	// Only ConfigRepoLayer matters for uninstall since other layers are no-ops.
-	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "", "")
+	emptyCfg := config.NewOrgConfig(nil, nil, nil, "", "")
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
 		layers.NewWorkflowsLayer(org, client, printer, "", version, false),
@@ -1797,7 +1790,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		})
 	}
 
-	cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, nil, "", org)
+	cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, "", org)
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {

@@ -114,7 +114,7 @@ func PerRepoDefaultRoles() []string {
 }
 
 // NewOrgConfig creates a new OrgConfig with sensible defaults.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider, org string) *OrgConfig {
+func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) *OrgConfig {
 	repos := make(map[string]RepoConfig, len(allRepos))
 	for _, r := range allRepos {
 		repos[r] = RepoConfig{
@@ -132,8 +132,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 			MaxImplementationRetries: 2,
 			AutoMerge:                false,
 		},
-		Agents: agents,
-		Repos:  repos,
+		Repos: repos,
 		// Default allowlist for base: composition in harness wrappers (ADR-0045 Phase 2).
 		AllowedRemoteResources: []string{
 			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",

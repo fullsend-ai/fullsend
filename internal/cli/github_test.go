@@ -405,7 +405,7 @@ func TestRunGitHubStatus_BasicReport(t *testing.T) {
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, nil, "", "")
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, "", "")
 	cfgData, _ := cfg.Marshal()
 	client.FileContents["acme/.fullsend/config.yaml"] = cfgData
 	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}

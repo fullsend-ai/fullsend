@@ -430,11 +430,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		})
 	}
 
-	dummyAgents := make([]config.AgentEntry, len(agentCreds))
-	for i, ac := range agentCreds {
-		dummyAgents[i] = ac.AgentEntry
-	}
-	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, dummyAgents, inferenceProviderName, org)
+	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 	orgCfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -480,11 +476,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 
 		// Rebuild with real credentials.
 		agentCreds = creds
-		agents := make([]config.AgentEntry, len(agentCreds))
-		for i, ac := range agentCreds {
-			agents[i] = ac.AgentEntry
-		}
-		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
+		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 		orgCfg.Dispatch.Mode = "oidc-mint"
 
 		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)

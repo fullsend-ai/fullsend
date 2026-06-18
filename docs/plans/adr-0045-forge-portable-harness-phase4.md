@@ -8,7 +8,7 @@ Phase 4 completes the "Remove" milestone from the ADR migration path. Specifical
 
 1. **Require `role` in `Validate()`** -- move from `Lint()` warning to hard error. Harnesses without `role` will fail to load.
 
-2. **Stop writing the `agents:` block during install** -- remove the dual-write. `NewOrgConfig()` will no longer accept an agents parameter. The `ConfigRepoLayer` will write a config.yaml that omits `agents:` entirely.
+2. **Stop writing the `agents:` block during install** -- ✅ Shipped (#2447). Removed the `agents` parameter from `NewOrgConfig()`. The `ConfigRepoLayer` writes config.yaml without an `agents:` block.
 
 3. **Remove `OrgConfig.Agents` field and `AgentSlugs()` method** -- the field and its accessor are dead code after the dual-write stops and all consumers migrate.
 
@@ -34,7 +34,7 @@ Phase 3 plan: `docs/plans/adr-0045-forge-portable-harness-phase3.md`
 | `AgentSlugs()` method | Remove method |
 | `HasAgentsBlock()` method | Remove method |
 | Deprecation notice in `runOrgInstall` | Remove notice code |
-| Dual-write in `runInstall` / `runGitHubSetup` | Stop passing agents to `NewOrgConfig` |
+| Dual-write in `runInstall` / `runGitHubSetup` | ✅ Stop passing agents to `NewOrgConfig` (#2447) |
 | `HarnessWrappersLayer` generating role/slug | Unchanged -- remains the sole source of agent identity |
 
 ### Config schema version: stay on v1
@@ -42,7 +42,7 @@ Phase 3 plan: `docs/plans/adr-0045-forge-portable-harness-phase3.md`
 The ADR asks whether removing `agents:` warrants a v2 schema. The recommendation is to stay on v1 for the following reasons:
 
 - **The change is backward-compatible on the read path.** Phase 3 already made `Agents` use `omitempty`. Existing configs without `agents:` parse successfully today. No consumer requires the field to be present -- all have harness-first fallbacks.
-- **The change is backward-compatible on the write path.** `NewOrgConfig` will simply not populate the field. `Marshal()` with `omitempty` already omits nil/empty slices.
+- **The change is backward-compatible on the write path.** `NewOrgConfig` no longer accepts or populates the field. `Marshal()` with `omitempty` already omits nil/empty slices.
 - **A v2 bump would break all existing installations.** `OrgConfig.Validate()` rejects `Version != "1"`. A v2 would require either accepting both versions or migrating every deployed config.yaml, adding complexity for no user-facing benefit.
 - **The v1 schema contract (ADR-0011) defines minimum required fields, not an exhaustive field list.** Optional fields with `omitempty` can be added or removed without a version bump.
 
@@ -75,13 +75,13 @@ Every consumer of the removed code, and the action taken:
 | `OrgConfig.Agents` field | `internal/config/config.go:86` | `yaml:"agents,omitempty"` | Remove field |
 | `AgentSlugs()` method | `internal/config/config.go:259` | Returns `map[role]slug` from `Agents` | Remove method |
 | `HasAgentsBlock()` method | `internal/config/config.go:270` | Returns `len(c.Agents) > 0` | Remove method |
-| `NewOrgConfig` agents param | `internal/config/config.go:117` | Accepts `[]AgentEntry`, sets `cfg.Agents` | Remove parameter, stop setting field |
-| `NewOrgConfig` caller: `runDryRun` | `internal/cli/admin.go:1196` | Passes `nil` for agents | Remove agents arg |
-| `NewOrgConfig` caller: `runInstall` | `internal/cli/admin.go:1513` | Passes agents built from `agentCreds` | Remove agents arg |
-| `NewOrgConfig` caller: `runUninstall` | `internal/cli/admin.go:1659` | Passes `nil` for agents | Remove agents arg |
-| `NewOrgConfig` caller: `runAnalyze` | `internal/cli/admin.go:1800` | Passes `nil` for agents | Remove agents arg |
-| `NewOrgConfig` caller: `runGitHubSetup` (dry-run) | `internal/cli/github.go:437` | Passes `dummyAgents` | Remove agents arg |
-| `NewOrgConfig` caller: `runGitHubSetup` (real) | `internal/cli/github.go:487` | Passes `agents` from creds | Remove agents arg |
+| `NewOrgConfig` agents param | `internal/config/config.go:117` | Accepts `[]AgentEntry`, sets `cfg.Agents` | ✅ Remove parameter, stop setting field (#2447) |
+| `NewOrgConfig` caller: `runDryRun` | `internal/cli/admin.go:1196` | Passes `nil` for agents | ✅ Remove agents arg (#2447) |
+| `NewOrgConfig` caller: `runInstall` | `internal/cli/admin.go:1513` | Passes agents built from `agentCreds` | ✅ Remove agents arg (#2447) |
+| `NewOrgConfig` caller: `runUninstall` | `internal/cli/admin.go:1659` | Passes `nil` for agents | ✅ Remove agents arg (#2447) |
+| `NewOrgConfig` caller: `runAnalyze` | `internal/cli/admin.go:1800` | Passes `nil` for agents | ✅ Remove agents arg (#2447) |
+| `NewOrgConfig` caller: `runGitHubSetup` (dry-run) | `internal/cli/github.go:437` | Passes `dummyAgents` | ✅ Remove agents arg (#2447) |
+| `NewOrgConfig` caller: `runGitHubSetup` (real) | `internal/cli/github.go:487` | Passes `agents` from creds | ✅ Remove agents arg (#2447) |
 | `loadKnownSlugsLegacy` | `internal/cli/admin.go:2064` | Reads `cfg.AgentSlugs()` from config.yaml | Remove function |
 | `loadKnownSlugs` legacy fallback | `internal/cli/admin.go:2056` | Calls `loadKnownSlugsLegacy` if harness discovery empty | Remove fallback call |
 | `discoverAgentSlugs` tier 2 | `internal/cli/discover_slugs.go:49-66` | Falls back to `cfg.Agents` | Remove fallback block |
@@ -153,53 +153,18 @@ PRs 1, 2, and 3 can all start in parallel. PR 4 depends on PRs 2 and 3 (all call
 
 ---
 
-## PR 2: Stop writing `agents:` block during install
+## PR 2: Stop writing `agents:` block during install — ✅ Shipped (#2447)
 
 **Scope:** Remove the `agents` parameter from `NewOrgConfig()`. All `NewOrgConfig` callers stop building and passing agent entries. The `ConfigRepoLayer` writes config.yaml without an `agents:` block. The `HarnessWrappersLayer` remains unchanged -- it is now the sole source of agent identity.
 
-**Modify `internal/config/config.go` -- `NewOrgConfig`:**
-- Remove the `agents []AgentEntry` parameter from the function signature:
-  ```go
-  func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) *OrgConfig {
-  ```
-- Remove `Agents: agents` from the struct literal inside the function.
-- The `Agents` field still exists on `OrgConfig` at this point (removed in PR 4). With `omitempty`, marshaling produces no `agents:` key.
+All items below were completed in #2447:
 
-**Modify `internal/cli/admin.go` -- all `NewOrgConfig` callers:**
-
-- `runDryRun` (line ~1196): remove the `nil` agents argument:
-  ```go
-  cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-  ```
-- `runInstall` (line ~1508-1513): remove the `agents` slice construction and the agents argument. The lines that build `agents := make([]config.AgentEntry, len(agentCreds))` and populate them are deleted.
-  ```go
-  cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-  ```
-- `runUninstall` (line ~1659): remove the `nil` agents argument:
-  ```go
-  emptyCfg := config.NewOrgConfig(nil, nil, nil, "", "")
-  ```
-- `runAnalyze` (line ~1800): remove the `nil` agents argument:
-  ```go
-  cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, "", org)
-  ```
-
-**Modify `internal/cli/github.go` -- `runGitHubSetup`:**
-
-- Dry-run path (line ~433-437): remove `dummyAgents` construction and the agents argument:
-  ```go
-  orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-  ```
-- Real path (line ~483-487): remove `agents` construction and the agents argument:
-  ```go
-  orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-  ```
-
-**Modify `internal/config/config_test.go`:**
-- Update all `NewOrgConfig` calls in tests to match the new signature (remove agents argument).
-- Verify that `Marshal()` output does not contain `agents:`.
-
-**After merge:** `fullsend install` writes config.yaml without an `agents:` block. Agent identity lives exclusively in harness wrapper files. The `HarnessWrappersLayer` (unchanged) continues to write `role:` and `slug:` into harness wrappers.
+- ✅ Removed `agents []AgentEntry` parameter from `NewOrgConfig` signature
+- ✅ Removed `Agents: agents` from struct literal
+- ✅ Updated all `NewOrgConfig` callers in `admin.go` (`runDryRun`, `runInstall`, `runUninstall`, `runAnalyze`)
+- ✅ Updated all `NewOrgConfig` callers in `github.go` (`runGitHubSetup` dry-run and real paths)
+- ✅ Removed agent entry construction code (`dummyAgents`, `agents` slices built from `agentCreds`)
+- ✅ Updated all test files (`config_test.go`, `admin_test.go`, `github_test.go`, `configrepo_test.go`)
 
 ---
 
