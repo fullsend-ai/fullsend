@@ -43,7 +43,7 @@ if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
   if [[ "$JIRA_VIS" != "public" ]]; then
     CONFIG_REPO="${GITHUB_REPOSITORY:-}"
     if [[ -n "$CONFIG_REPO" ]]; then
-      REPO_VISIBILITY=$(gh api "repos/${CONFIG_REPO}" --jq '.visibility' 2>/dev/null || echo "unknown")
+      REPO_VISIBILITY=$(gh api "repos/${CONFIG_REPO}" --jq '.visibility' 2>/dev/null || echo "public")
       if [[ "$REPO_VISIBILITY" == "public" ]]; then
         echo "::error::SECURITY: Private Jira source blocked — this repo (${CONFIG_REPO}) is public."
         echo "::error::Private Jira data would leak into public workflow artifacts and logs."
@@ -59,23 +59,23 @@ fi
 
 # Validate inputs to prevent injection
 if [[ "${ISSUE_SOURCE}" != "jira" && "${ISSUE_SOURCE}" != "github" ]]; then
-  echo "ERROR: ISSUE_SOURCE must be 'jira' or 'github', got: ${ISSUE_SOURCE}"
+  echo "::error::ISSUE_SOURCE must be 'jira' or 'github', got: ${ISSUE_SOURCE}"
   exit 1
 fi
 
 if [[ "${ISSUE_SOURCE}" == "jira" && ! "${ISSUE_KEY}" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
-  echo "ERROR: ISSUE_KEY does not match Jira key pattern (e.g., PROJECT-123): ${ISSUE_KEY}"
+  echo "::error::ISSUE_KEY does not match Jira key pattern (e.g., PROJECT-123): ${ISSUE_KEY}"
   exit 1
 fi
 
 if [[ "${ISSUE_SOURCE}" == "github" && ! "${ISSUE_KEY}" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: ISSUE_KEY must be a numeric GitHub issue number, got: ${ISSUE_KEY}"
+  echo "::error::ISSUE_KEY must be a numeric GitHub issue number, got: ${ISSUE_KEY}"
   exit 1
 fi
 
 if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
   if [[ -z "${JIRA_HOST:-}" || -z "${JIRA_EMAIL:-}" || -z "${JIRA_API_TOKEN:-}" ]]; then
-    echo "ERROR: Jira credentials not set (JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN)"
+    echo "::error::Jira credentials not set (JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN)"
     exit 1
   fi
 
@@ -237,7 +237,7 @@ if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
 
 elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
   if [[ -z "${REPO_FULL_NAME:-}" ]]; then
-    echo "ERROR: REPO_FULL_NAME not set for GitHub source"
+    echo "::error::REPO_FULL_NAME not set for GitHub source"
     exit 1
   fi
 
@@ -312,7 +312,7 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
     }' > "$WORKSPACE/issue-context.json"
 
 else
-  echo "ERROR: Unknown ISSUE_SOURCE: ${ISSUE_SOURCE}"
+  echo "::error::Unknown ISSUE_SOURCE: ${ISSUE_SOURCE}"
   exit 1
 fi
 

@@ -129,12 +129,15 @@ jobs:
             CONTEXT_REF=$(printf '%s\n' "${COMMENT_BODY}" | grep -oP '(?<=--context\s)\S+' || true)
           fi
 
+          STOP_TOKEN=$(uuidgen)
+          echo "::stop-commands::${STOP_TOKEN}"
           echo "Dispatching GitHub issue refinement:"
           echo "  Issue: #${ISSUE_NUMBER}"
           echo "  Skip explore: ${SKIP_EXPLORE}"
           echo "  Context ref: ${CONTEXT_REF:-none}"
           echo "  Auto-create: ${AUTO_CREATE}"
           echo "  Follow-up: ${IS_FOLLOWUP}"
+          echo "::${STOP_TOKEN}::"
 
           if [[ "$IS_FOLLOWUP" == "true" ]]; then
             EXPLORE_RUN_ID=$(gh run list --repo "$REPO" --workflow "fullsend-explore" \
