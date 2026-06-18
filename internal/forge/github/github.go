@@ -2635,13 +2635,41 @@ func (c *LiveClient) DismissPullRequestReview(ctx context.Context, owner, repo s
 }
 
 // MergeChangeProposal squash-merges a pull request by number.
+// If the merge fails with a 409 (head branch out of date), it updates the PR
+// branch and retries up to 3 times with a short delay between attempts.
 func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
-	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})
-	if err != nil {
-		return fmt.Errorf("merge pull request #%d: %w", number, err)
+	const maxAttempts = 3
+	mergePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
+	updatePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/update-branch", owner, repo, number)
+
+	for attempt := range maxAttempts {
+		resp, err := c.put(ctx, mergePath, map[string]string{"merge_method": "squash"})
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			return fmt.Errorf("merge pull request #%d: %w", number, err)
+		}
+
+		// Update the PR branch to incorporate base branch changes.
+		updateResp, updateErr := c.do(ctx, http.MethodPut, updatePath, map[string]string{})
+		if updateErr == nil {
+			updateResp.Body.Close()
+		}
+
+		if attempt < maxAttempts-1 {
+			select {
+			case <-time.After(3 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
-	resp.Body.Close()
-	return nil
+
+	return fmt.Errorf("merge pull request #%d: branch remained out of date after %d update-and-retry attempts", number, maxAttempts)
 }
 
 // UpdatePullRequestBranch updates a PR's head branch by merging the base
