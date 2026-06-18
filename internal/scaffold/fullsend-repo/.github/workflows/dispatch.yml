@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=392
+# lint-workflow-size: max-lines=414
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -194,8 +194,29 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
+      - name: Check for existing PRs
+        id: pr-check
+        if: steps.route.outputs.stage == 'code'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BOT_LOGIN="fullsend-ai[bot]"
+          CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+          MENTIONING_PRS="$(gh pr list --repo "${SOURCE_REPO}" --state open \
+            --search "${ISSUE_NUMBER} in:title,body" \
+            --json number,author \
+            --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[].number" \
+            2>/dev/null || true)"
+          if [[ -n "${MENTIONING_PRS}" ]]; then
+            echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Mint dispatch token via OIDC
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         id: oidc-mint
         env:
           MINT_URL: ${{ vars.FULLSEND_MINT_URL }}
@@ -227,14 +248,14 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         uses: actions/checkout@v6
         with:
           repository: ${{ job.workflow_repository }}
           token: ${{ steps.oidc-mint.outputs.token }}
 
       - name: Validate routed stage
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         env:
           STAGE: ${{ steps.route.outputs.stage }}
           TRIGGER_SOURCE: ${{ steps.route.outputs.trigger_source }}
@@ -254,7 +275,7 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           KILL_SWITCH=$(yq '.kill_switch // false' config.yaml)
@@ -266,7 +287,7 @@ jobs:
 
       - name: Check role is enabled
         id: role-check
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
@@ -305,7 +326,7 @@ jobs:
           fi
 
       - name: Find and trigger agent workflows for stage
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true'
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
           STAGE: ${{ steps.route.outputs.stage }}

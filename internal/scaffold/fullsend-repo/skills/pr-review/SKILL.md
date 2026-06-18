@@ -95,11 +95,13 @@ Fetch the PR head SHA:
 ```bash
 PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
+IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
 ```
 
-Record the **PR head SHA**. You will include it in the review comment
-and in the result JSON. This SHA pins the review to the exact commit
-evaluated.
+Record the **PR head SHA** and **draft status**. You will include the
+head SHA in the review comment and in the result JSON. This SHA pins
+the review to the exact commit evaluated. The draft status is used to
+verify any claims about whether the PR is a draft (see step 6e).
 
 If no PR can be identified, stop and report the failure rather than
 guessing.
@@ -300,7 +302,7 @@ For each selected sub-agent, assemble a context package containing:
 - `prior_findings`: prior findings for this dimension only (from 3a)
 - `prior_review_sha`: the SHA of the prior review (from 2a)
 - `changed_since_prior`: file set that changed since prior review
-- `pr_metadata`: title, body, author, labels
+- `pr_metadata`: title, body, author, labels, draft status
 - `issue_context`: linked issue title, body, comments (for
   `intent-coherence`)
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
@@ -345,7 +347,7 @@ For each selected sub-agent:
    <file list or "all" or "none — first review">
 
    ### PR metadata
-   <title, body, author, labels>
+   <title, body, author, labels, is_draft>
 
    ### Issue context
    <linked issue content or "no linked issue">
@@ -483,7 +485,7 @@ isolation.
    <file list>
 
    ### PR metadata
-   <title, body, author, labels>
+   <title, body, author, labels, is_draft>
    ```
 
    **Part 4 — Dispatch guard flag:**
@@ -561,6 +563,27 @@ unicode hook at runtime — every Read, Bash, and WebFetch result is
 sanitized before it enters your context (tag characters, zero-width,
 bidi overrides, ANSI/OSC escapes, NFKC normalization). No manual
 scanning step is required.
+
+##### PR metadata verification
+
+Before including any finding that makes a claim about PR state —
+draft status, label presence, merge state, or review status — verify
+the claim against the PR metadata fetched via the GitHub API in step 1
+(`PR_DATA`). Specifically:
+
+- **Draft status:** Use the `draft` field from `PR_DATA` (extracted as
+  `IS_DRAFT` in step 1). Do not infer draft status from the PR title
+  alone (e.g., a "do not merge" or "DNM" prefix does not mean the PR
+  is or is not a draft). If a sub-agent finding claims the PR "is not
+  a Draft PR" or "is a Draft PR," cross-check against `IS_DRAFT`
+  before including the finding. Remove or correct any finding whose
+  claim contradicts the API data.
+- **Labels:** Verify against the `labels` array from `PR_DATA`. Do not
+  assume a label is present or absent without checking.
+
+Do not generate findings about PR metadata properties that were not
+fetched from the API. If a claim cannot be verified, omit it rather
+than risk a false statement.
 
 ##### Scope authorization
 

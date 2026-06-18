@@ -115,14 +115,49 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Redact known credential values from error output.
 		outStr := string(out)
+		// openshell emits: code: 'Some entity that we attempted to create already exists', message: "provider already exists"
+		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
+			// Provider exists from a prior run — update it with current credentials.
+			return updateProvider(name, credentials, config, extraEnv, secrets)
+		}
+		// Redact known credential values from error output.
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
 		return fmt.Errorf("provider create %q failed: %s", name, outStr)
 	}
 	return nil
+}
+
+// updateProvider runs openshell provider update for an already-existing provider.
+func updateProvider(name string, credentials, config map[string]string, extraEnv, secrets []string) error {
+	args := buildProviderUpdateArgs(name, credentials, config)
+	cmd := exec.Command("openshell", args...)
+	cmd.Env = append(os.Environ(), extraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := string(out)
+		for _, s := range secrets {
+			outStr = strings.ReplaceAll(outStr, s, "***")
+		}
+		return fmt.Errorf("provider update %q failed: %s", name, outStr)
+	}
+	return nil
+}
+
+// buildProviderUpdateArgs constructs CLI args for openshell provider update.
+// The update subcommand takes a positional name (not --name/--type).
+func buildProviderUpdateArgs(name string, credentials, config map[string]string) []string {
+	args := []string{"provider", "update", name}
+	for k := range credentials {
+		args = append(args, "--credential", k)
+	}
+	for k, v := range config {
+		expanded := os.ExpandEnv(v)
+		args = append(args, "--config", k+"="+expanded)
+	}
+	return args
 }
 
 // buildProviderArgs constructs the CLI args and child environment entries for

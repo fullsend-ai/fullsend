@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,7 +109,7 @@ var githubHTTPClient = &http.Client{Timeout: 30 * time.Second}
 // lookupAppID fetches the numeric app ID for a public GitHub App by slug.
 // It makes an unauthenticated GET request to the GitHub API.
 func lookupAppID(ctx context.Context, slug string) (int, error) {
-	url := githubAPIBaseURL + "/apps/" + slug
+	url := githubAPIBaseURL + "/apps/" + url.PathEscape(slug)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, fmt.Errorf("creating request for app %s: %w", slug, err)
@@ -316,13 +317,15 @@ func newMintCmd() *cobra.Command {
 		Long: `Manage the GCP Cloud Function that mints GitHub App installation tokens,
 and mint short-lived tokens via OIDC.
 
-Infrastructure subcommands (deploy, enroll, unenroll, status) require GCP
+Infrastructure subcommands (deploy, enroll, unenroll, status, add-role, remove-role) require GCP
 project access. The 'token' subcommand requires only GitHub Actions OIDC.`,
 	}
 	cmd.AddCommand(newMintDeployCmd())
 	cmd.AddCommand(newMintEnrollCmd())
 	cmd.AddCommand(newMintUnenrollCmd())
 	cmd.AddCommand(newMintStatusCmd())
+	cmd.AddCommand(newMintAddRoleCmd())
+	cmd.AddCommand(newMintRemoveRoleCmd())
 	cmd.AddCommand(newMintTokenCmd())
 	return cmd
 }
@@ -833,10 +836,16 @@ Required IAM roles on the mint project:
 }
 
 // confirmUnenroll prompts the user to type the target name to confirm.
+// abortLabel names the operation in mismatch errors (default: "unenroll").
 // reader is the input source (os.Stdin in production, a buffer in tests).
-func confirmUnenroll(printer *ui.Printer, target string, reader *bufio.Reader, isTerminal bool) error {
+func confirmUnenroll(printer *ui.Printer, target string, reader *bufio.Reader, isTerminal bool, abortLabel ...string) error {
 	if !isTerminal {
 		return fmt.Errorf("stdin is not a terminal; use --yolo to skip confirmation")
+	}
+
+	label := "unenroll"
+	if len(abortLabel) > 0 && abortLabel[0] != "" {
+		label = abortLabel[0]
 	}
 
 	printer.StepWarn(fmt.Sprintf("This will remove %s from the mint.", target))
@@ -847,7 +856,7 @@ func confirmUnenroll(printer *ui.Printer, target string, reader *bufio.Reader, i
 		return fmt.Errorf("reading confirmation: %w", err)
 	}
 	if strings.TrimSpace(line) != target {
-		return fmt.Errorf("confirmation did not match; aborting unenroll")
+		return fmt.Errorf("confirmation did not match; aborting %s", label)
 	}
 	return nil
 }

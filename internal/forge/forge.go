@@ -116,9 +116,15 @@ type PullRequestReview struct {
 // ReviewComment represents an inline comment on a specific line of a
 // pull request diff. These are submitted as part of a formal PR review
 // via the GitHub "Create a review" API.
+//
+// When Line is 0, the comment is attached to the file as a whole rather
+// than a specific line. This is used for findings that reference a file
+// in the diff but a line outside any diff hunk. Forge implementations
+// translate Line==0 into the appropriate API representation (e.g.,
+// GitHub's subject_type: "file").
 type ReviewComment struct {
 	Path string // relative file path in the repository
-	Line int    // line number in the diff (right side)
+	Line int    // line number in the diff (right side); 0 for file-level comments
 	Body string // comment body (Markdown)
 }
 

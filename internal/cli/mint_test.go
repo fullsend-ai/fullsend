@@ -21,6 +21,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -48,6 +50,22 @@ func TestMintCommand_HasSubcommands(t *testing.T) {
 	assert.True(t, names["unenroll <org|owner/repo>"], "expected unenroll subcommand")
 	assert.True(t, names["status [org]"], "expected status subcommand")
 	assert.True(t, names["token"], "expected token subcommand")
+	assert.True(t, names["add-role <role>"], "expected add-role subcommand")
+	assert.True(t, names["remove-role <role>"], "expected remove-role subcommand")
+}
+
+func TestMintAddRoleCmd_Flags(t *testing.T) {
+	cmd := newMintAddRoleCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("slug"))
+	assert.NotNil(t, cmd.Flags().Lookup("pem"))
+	assert.NotNil(t, cmd.Flags().Lookup("use-existing-pem-secret"))
+}
+
+func TestMintRemoveRoleCmd_Flags(t *testing.T) {
+	cmd := newMintRemoveRoleCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("keep-pem"))
 }
 
 func TestMintCommand_RegisteredInRoot(t *testing.T) {
@@ -192,6 +210,23 @@ func TestLookupAppID_Success(t *testing.T) {
 	appID, err := lookupAppID(context.Background(), "fullsend-ai-coder")
 	require.NoError(t, err)
 	assert.Equal(t, 12345, appID)
+}
+
+func TestLookupAppID_EscapesSlug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/apps/my%2Fapp", r.URL.EscapedPath())
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 42}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	id, err := lookupAppID(context.Background(), "my/app")
+	require.NoError(t, err)
+	assert.Equal(t, 42, id)
 }
 
 func TestLookupAppID_NotFound(t *testing.T) {
@@ -938,4 +973,848 @@ func TestConfirmUnenroll_NonTerminal(t *testing.T) {
 	err := confirmUnenroll(printer, "acme-org", reader, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stdin is not a terminal")
+}
+
+// --- mint add-role / remove-role tests ---
+
+func TestValidateMintSetupRole(t *testing.T) {
+	t.Parallel()
+	role, err := validateMintSetupRole("coder")
+	require.NoError(t, err)
+	assert.Equal(t, "coder", role)
+
+	_, err = validateMintSetupRole("fix")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "coder")
+	assert.NotContains(t, err.Error(), "add role")
+
+	_, err = validateMintSetupRole("unknown")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported role")
+}
+
+func TestValidateAppSlug(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateAppSlug("fullsend-ai-review"))
+	require.NoError(t, validateAppSlug("my-app"))
+	err := validateAppSlug("Bad_Slug")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid app slug")
+}
+
+func TestParseMintAddRoleMode(t *testing.T) {
+	t.Parallel()
+	mode, err := parseMintAddRoleMode("my-app", "/tmp/pem", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, addRoleModeSlugPEM, mode)
+
+	mode, err = parseMintAddRoleMode("my-app", "", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, addRoleModeExistingSecret, mode)
+
+	mode, err = parseMintAddRoleMode("", "", "acme", false)
+	require.NoError(t, err)
+	assert.Equal(t, addRoleModeBrowser, mode)
+
+	_, err = parseMintAddRoleMode("my-app", "/tmp/pem", "", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+
+	_, err = parseMintAddRoleMode("my-app", "", "acme", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be combined")
+
+	_, err = parseMintAddRoleMode("", "", "", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "specify one input mode")
+}
+
+func TestMintSetupAddRoleCmd_RequiresProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "add-role", "coder", "--slug=app", "--pem=/tmp/x.pem"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintSetupAddRoleCmd_PemAndUseExistingMutuallyExclusive(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-coder",
+		"--pem=/tmp/coder.pem",
+		"--use-existing-pem-secret",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestMintSetupAddRoleCmd_NoInputMode(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "add-role", "coder", "--project=my-project-id"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "specify one input mode")
+}
+
+func TestMintSetupAddRoleCmd_InvalidProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=BAD",
+		"--slug=app",
+		"--pem=/tmp/x.pem",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+func TestMintSetupAddRoleCmd_InvalidRegion(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=my-project-id",
+		"--region=invalid",
+		"--slug=app",
+		"--pem=/tmp/x.pem",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP region")
+}
+
+func TestMintSetupRemoveRoleCmd_InvalidProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "remove-role", "coder", "--project=BAD"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+func TestMintSetupAddRoleCmd_ForceOverwrite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-coder-app-pem": true,
+		}),
+	))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-coder",
+		"--use-existing-pem-secret",
+		"--force",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintSetupAddRoleCmd_ExistingSecretDryRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": true,
+		}),
+	))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-review",
+		"--use-existing-pem-secret",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintSetupAddRoleCmd_AlreadyRegistered(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "coder",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-coder",
+		"--use-existing-pem-secret",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already registered")
+}
+
+func TestMintSetupRemoveRoleCmd_DryRun(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "remove-role", "coder",
+		"--project=my-project-id",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintSetupRemoveRoleCmd_NotRegistered(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "remove-role", "review",
+		"--project=my-project-id",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not registered")
+}
+
+func TestMintAddRoleCmd_BrowserDryRun(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+	))
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--org=acme-corp",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintTrafficRoleAppIDs_PrefersTrafficRevision(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100","review":"200"}`,
+		}),
+	))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
+	discovery := &gcf.MintDiscovery{
+		URL:        "https://mint.example.com",
+		RoleAppIDs: map[string]string{"coder": "100"},
+	}
+	roles, err := mintTrafficRoleAppIDs(context.Background(), nil, provisioner, discovery)
+	require.NoError(t, err)
+	assert.Equal(t, "200", roles["review"])
+}
+
+func TestConfirmUnenroll_CustomAbortLabel(t *testing.T) {
+	printer := ui.New(&strings.Builder{})
+	reader := bufio.NewReader(strings.NewReader("wrong\n"))
+	err := confirmUnenroll(printer, "retro", reader, true, "remove-role")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aborting remove-role")
+}
+
+func TestMintAddRoleCmd_ExistingSecretRegisters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/apps/fullsend-ai-review", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": true,
+		}),
+	))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-review",
+		"--use-existing-pem-secret",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintAddRoleCmd_SlugPEMRegisters(t *testing.T) {
+	testPEM := generateTestPEM(t)
+	pemPath := filepath.Join(t.TempDir(), "review.pem")
+	require.NoError(t, os.WriteFile(pemPath, testPEM, 0o600))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/apps/fullsend-ai-review":
+			fmt.Fprintln(w, `{"id": 88888}`)
+		case "/app":
+			fmt.Fprintln(w, `{"id": 88888}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeErrors(map[string]error{"GetSecret": gcf.ErrSecretNotFound}),
+	))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-review",
+		"--pem=" + pemPath,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintRemoveRoleCmd_YoloSuccess(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "remove-role", "triage",
+		"--project=my-project-id",
+		"--yolo",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintTrafficRoleAppIDs_InvalidJSON(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `not-json`,
+		}),
+	))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
+	_, err := mintTrafficRoleAppIDs(context.Background(), nil, provisioner, &gcf.MintDiscovery{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing traffic ROLE_APP_IDS")
+}
+
+func TestMintTrafficRoleAppIDs_FallbackWhenTrafficEmpty(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeTrafficEnvVars(map[string]string{}),
+	))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
+	discovery := &gcf.MintDiscovery{RoleAppIDs: map[string]string{"coder": "100"}}
+	roles, err := mintTrafficRoleAppIDs(context.Background(), nil, provisioner, discovery)
+	require.NoError(t, err)
+	assert.Equal(t, "100", roles["coder"])
+}
+
+func TestMintAddRoleCmd_ExistingSecretMissingPEM(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": false,
+		}),
+	))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--slug=fullsend-ai-review",
+		"--use-existing-pem-secret",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not exist")
+}
+
+func TestMintRemoveRoleCmd_KeepPEMDryRun(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "remove-role", "coder",
+		"--project=my-project-id",
+		"--keep-pem",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestResolveAddRoleFromSlugPEM_InvalidPEM(t *testing.T) {
+	printer := ui.New(&strings.Builder{})
+	pemPath := filepath.Join(t.TempDir(), "bad.pem")
+	require.NoError(t, os.WriteFile(pemPath, []byte("not-a-pem"), 0o600))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromSlugPEM(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role:    "review",
+		slug:    "fullsend-ai-review",
+		pemPath: pemPath,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid PEM")
+}
+
+func TestResolveAddRoleFromBrowser_InvalidOrg(t *testing.T) {
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromBrowser(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role: "review",
+		org:  "-invalid-",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "organization name")
+}
+
+func TestResolveAddRoleFromSlugPEM_MissingFile(t *testing.T) {
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromSlugPEM(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role:    "review",
+		slug:    "fullsend-ai-review",
+		pemPath: filepath.Join(t.TempDir(), "missing.pem"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading PEM file")
+}
+
+func TestMintTrafficRoleAppIDs_FallbackOnTrafficError(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeErrors(map[string]error{
+			"GetServiceTrafficEnvVars": fmt.Errorf("unavailable"),
+		}),
+	))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-project-id", Region: "us-central1"}, mintGCFClientFactory("my-project-id"))
+	discovery := &gcf.MintDiscovery{RoleAppIDs: map[string]string{"coder": "100"}}
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	roles, err := mintTrafficRoleAppIDs(context.Background(), printer, provisioner, discovery)
+	require.NoError(t, err)
+	assert.Equal(t, "100", roles["coder"])
+	assert.Contains(t, out.String(), "traffic-serving env vars")
+}
+
+func withMintAddRoleHooks(t *testing.T, resolveToken func() (string, error), appSetup func(context.Context, forge.Client, *ui.Printer, string, []string, string, string, bool, map[string]string, string, map[string]string) ([]layers.AgentCredentials, error)) {
+	t.Helper()
+	oldToken := mintAddRoleResolveToken
+	oldSetup := mintAddRoleAppSetup
+	if resolveToken != nil {
+		mintAddRoleResolveToken = resolveToken
+	}
+	if appSetup != nil {
+		mintAddRoleAppSetup = appSetup
+	}
+	t.Cleanup(func() {
+		mintAddRoleResolveToken = oldToken
+		mintAddRoleAppSetup = oldSetup
+	})
+}
+
+func TestResolveAddRoleFromBrowser_NoToken(t *testing.T) {
+	withMintAddRoleHooks(t, func() (string, error) {
+		return "", fmt.Errorf("no GitHub token found")
+	}, nil)
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromBrowser(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role: "review",
+		org:  "acme-corp",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token")
+}
+
+func TestResolveAddRoleFromBrowser_Success(t *testing.T) {
+	withMintAddRoleHooks(t,
+		func() (string, error) { return "test-token", nil },
+		func(_ context.Context, _ forge.Client, _ *ui.Printer, org string, roles []string, _ string, _ string, _ bool, _ map[string]string, _ string, _ map[string]string) ([]layers.AgentCredentials, error) {
+			assert.Equal(t, "acme-corp", org)
+			assert.Equal(t, []string{"review"}, roles)
+			return []layers.AgentCredentials{{AgentEntry: config.AgentEntry{Slug: "fullsend-ai-review"}, AppID: 424242}}, nil
+		},
+	)
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	appID, err := resolveAddRoleFromBrowser(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role: "review",
+		org:  "Acme-Corp",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 424242, appID)
+}
+
+func TestResolveAddRoleFromBrowser_AppSetupFails(t *testing.T) {
+	withMintAddRoleHooks(t,
+		func() (string, error) { return "test-token", nil },
+		func(context.Context, forge.Client, *ui.Printer, string, []string, string, string, bool, map[string]string, string, map[string]string) ([]layers.AgentCredentials, error) {
+			return nil, fmt.Errorf("manifest flow failed")
+		},
+	)
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromBrowser(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role: "review",
+		org:  "acme-corp",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest flow failed")
+}
+
+func TestResolveAddRoleFromBrowser_WrongCredCount(t *testing.T) {
+	withMintAddRoleHooks(t,
+		func() (string, error) { return "test-token", nil },
+		func(context.Context, forge.Client, *ui.Printer, string, []string, string, string, bool, map[string]string, string, map[string]string) ([]layers.AgentCredentials, error) {
+			return []layers.AgentCredentials{{AppID: 1}, {AppID: 2}}, nil
+		},
+	)
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromBrowser(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role: "review",
+		org:  "acme-corp",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected one app credential")
+}
+
+func TestMintAddRoleCmd_BrowserRegisters(t *testing.T) {
+	withMintAddRoleHooks(t,
+		func() (string, error) { return "test-token", nil },
+		func(context.Context, forge.Client, *ui.Printer, string, []string, string, string, bool, map[string]string, string, map[string]string) ([]layers.AgentCredentials, error) {
+			return []layers.AgentCredentials{{AgentEntry: config.AgentEntry{Slug: "fullsend-ai-review"}, AppID: 55555}}, nil
+		},
+	)
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+	))
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "add-role", "review",
+		"--project=my-project-id",
+		"--org=acme-corp",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestRunMintSetupAddRole_DiscoveryFails(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient())
+	printer := ui.New(&strings.Builder{})
+	err := runMintSetupAddRole(context.Background(), printer, mintSetupAddRoleConfig{
+		role:    "review",
+		project: "my-project-id",
+		region:  "us-central1",
+		slug:    "fullsend-ai-review",
+		pemPath: "/tmp/missing.pem",
+		mode:    addRoleModeSlugPEM,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint not found")
+}
+
+func TestRunMintSetupAddRole_AddRoleFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": true,
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"UpdateServiceEnvVars": fmt.Errorf("permission denied"),
+		}),
+	))
+
+	printer := ui.New(&strings.Builder{})
+	err := runMintSetupAddRole(context.Background(), printer, mintSetupAddRoleConfig{
+		role:                 "review",
+		project:              "my-project-id",
+		region:               "us-central1",
+		slug:                 "fullsend-ai-review",
+		mode:                 addRoleModeExistingSecret,
+		useExistingPEMSecret: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registering role on mint")
+	assert.NotContains(t, err.Error(), "use-existing-pem-secret")
+}
+
+func TestRunMintSetupAddRole_AddRoleFailsAfterPEMStored(t *testing.T) {
+	testPEM := generateTestPEM(t)
+	pemPath := filepath.Join(t.TempDir(), "review.pem")
+	require.NoError(t, os.WriteFile(pemPath, testPEM, 0o600))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/apps/fullsend-ai-review":
+			fmt.Fprintln(w, `{"id": 88888}`)
+		case "/app":
+			fmt.Fprintln(w, `{"id": 88888}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": false,
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"UpdateServiceEnvVars": fmt.Errorf("permission denied"),
+		}),
+	))
+
+	printer := ui.New(&strings.Builder{})
+	err := runMintSetupAddRole(context.Background(), printer, mintSetupAddRoleConfig{
+		role:    "review",
+		project: "my-project-id",
+		region:  "us-central1",
+		slug:    "fullsend-ai-review",
+		pemPath: pemPath,
+		mode:    addRoleModeSlugPEM,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registering role on mint")
+	assert.Contains(t, err.Error(), "use-existing-pem-secret")
+	assert.Contains(t, err.Error(), "gcloud secrets delete")
+}
+
+func TestRunMintSetupRemoveRole_RemoveFails(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"UpdateServiceEnvVars": fmt.Errorf("permission denied"),
+		}),
+	))
+	printer := ui.New(&strings.Builder{})
+	err := runMintSetupRemoveRole(context.Background(), printer, "triage", "my-project-id", "us-central1", false, false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "removing role from mint")
+}
+
+func TestRunMintSetupRemoveRole_DeletePEMFails(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"DeleteSecret": fmt.Errorf("permission denied"),
+		}),
+	))
+	printer := ui.New(&strings.Builder{})
+	err := runMintSetupRemoveRole(context.Background(), printer, "triage", "my-project-id", "us-central1", false, false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting PEM secret")
+	assert.Contains(t, err.Error(), "gcloud secrets delete")
+}
+
+func TestResolveAddRoleFromSlugPEM_LookupFails(t *testing.T) {
+	testPEM := generateTestPEM(t)
+	pemPath := filepath.Join(t.TempDir(), "review.pem")
+	require.NoError(t, os.WriteFile(pemPath, testPEM, 0o600))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, gcf.NewFakeGCFClient())
+	_, err := resolveAddRoleFromSlugPEM(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role:    "review",
+		slug:    "missing-app",
+		pemPath: pemPath,
+	})
+	require.Error(t, err)
+}
+
+func TestResolveAddRoleFromSlugPEM_StoreFails(t *testing.T) {
+	testPEM := generateTestPEM(t)
+	pemPath := filepath.Join(t.TempDir(), "review.pem")
+	require.NoError(t, os.WriteFile(pemPath, testPEM, 0o600))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/apps/fullsend-ai-review":
+			fmt.Fprintln(w, `{"id": 88888}`)
+		case "/app":
+			fmt.Fprintln(w, `{"id": 88888}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-review-app-pem": false,
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"CreateSecret": fmt.Errorf("permission denied"),
+		}),
+	))
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, mintGCFClientFactory("p"))
+	_, err := resolveAddRoleFromSlugPEM(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role:    "review",
+		slug:    "fullsend-ai-review",
+		pemPath: pemPath,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storing PEM")
+}
+
+func TestResolveAddRoleFromExistingSecret_CheckFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99999}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeErrors(map[string]error{
+			"GetSecret": fmt.Errorf("api unavailable"),
+		}),
+	))
+	printer := ui.New(&strings.Builder{})
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, mintGCFClientFactory("p"))
+	_, err := resolveAddRoleFromExistingSecret(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
+		role: "review",
+		slug: "fullsend-ai-review",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking PEM secret")
 }

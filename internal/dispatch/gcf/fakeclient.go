@@ -31,6 +31,7 @@ type fakeGCFClient struct {
 
 	// Track secret names written via AddSecretVersion.
 	secretVersionNames []string
+	deletedSecretIDs   []string
 
 	// Per-secret state for CopyAgentPEM tests.
 	secretData map[string][]byte // secretID → payload
@@ -146,6 +147,7 @@ func (f *fakeGCFClient) EnableSecretVersion(_ context.Context, _ string, sid str
 }
 func (f *fakeGCFClient) DeleteSecret(_ context.Context, _ string, sid string) error {
 	f.calls = append(f.calls, "DeleteSecret")
+	f.deletedSecretIDs = append(f.deletedSecretIDs, sid)
 	if f.secrets != nil {
 		delete(f.secrets, sid)
 	}

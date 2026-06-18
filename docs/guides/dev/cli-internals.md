@@ -16,6 +16,8 @@ fullsend
 │       └── repos    <org> [repo...]         # Disable agent on repos
 ├── mint                                     # Token mint management
 │   ├── deploy                               # Deploy/update mint Cloud Function
+│   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
+│   ├── remove-role    <role>                # Remove role from mint
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health

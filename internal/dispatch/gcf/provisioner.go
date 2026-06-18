@@ -223,6 +223,98 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 	return nil
 }
 
+// DeleteAgentPEM permanently deletes the Secret Manager secret for the given role.
+func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
+	if p.cfg.ProjectID == "" {
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+	sid := secretID(role)
+	if err := p.gcpAPI.DeleteSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+		return fmt.Errorf("deleting secret %s: %w", sid, err)
+	}
+	return nil
+}
+
+// AddRoleToMint registers a role's app ID in ROLE_APP_IDS and updates ALLOWED_ROLES
+// on the traffic-serving Cloud Run revision.
+func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) error {
+	if p.cfg.ProjectID == "" {
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+	if appID == "" {
+		return fmt.Errorf("app ID is required for role %q", role)
+	}
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+
+	merged, err := mergeRoleAppIDsJSON(updated["ROLE_APP_IDS"], map[string]string{role: appID})
+	if err != nil {
+		return fmt.Errorf("merging ROLE_APP_IDS: %w", err)
+	}
+	updated["ROLE_APP_IDS"] = merged
+	updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("updating mint env vars: %w", err)
+	}
+	return nil
+}
+
+// RemoveRoleFromMint removes a role-only entry from ROLE_APP_IDS and updates
+// ALLOWED_ROLES on the traffic-serving Cloud Run revision.
+func (p *Provisioner) RemoveRoleFromMint(ctx context.Context, role string) error {
+	if p.cfg.ProjectID == "" {
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+
+	pruned, err := removeRoleFromAppIDsJSON(updated["ROLE_APP_IDS"], role)
+	if err != nil {
+		return fmt.Errorf("pruning ROLE_APP_IDS: %w", err)
+	}
+	updated["ROLE_APP_IDS"] = pruned
+	updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("updating mint env vars: %w", err)
+	}
+	return nil
+}
+
 // MintDiscovery holds the results of a single GetFunction call, providing
 // the URL, existing role-to-app-ID mappings, and per-repo WIF repos.
 type MintDiscovery struct {
@@ -838,6 +930,23 @@ func mergeAllowedOrgs(existing, desired map[string]string) {
 	}
 	sort.Strings(merged)
 	desired["ALLOWED_ORGS"] = strings.Join(merged, ",")
+}
+
+// removeRoleFromAppIDsJSON removes a role-only key from ROLE_APP_IDS JSON.
+// Legacy org/role keys are preserved.
+func removeRoleFromAppIDsJSON(existingJSON, role string) (string, error) {
+	prevMap := make(map[string]string)
+	if existingJSON != "" {
+		if err := json.Unmarshal([]byte(existingJSON), &prevMap); err != nil {
+			return "", err
+		}
+	}
+	delete(prevMap, role)
+	merged, err := json.Marshal(prevMap)
+	if err != nil {
+		return "", err
+	}
+	return string(merged), nil
 }
 
 // mergeRoleAppIDsJSON merges role-only app IDs into existing ROLE_APP_IDS JSON.

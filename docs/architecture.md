@@ -91,6 +91,11 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   runner_env) from platform-neutral fields. Forge blocks inherit from
   top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
+- Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
+  naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via existing env var
+  mechanisms (`.env` files, `runner_env`). Each agent documents its config
+  vars in `docs/agents/<agent>.md`
+  ([ADR 0049](ADRs/0049-agent-configuration-env-var-convention.md)).
 
 **Open questions:**
 
@@ -279,7 +284,7 @@ ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-age
 Aggregates review verdicts and applies labels:
 
 - unanimous approve-merge → `ready-for-merge` (for the **current** PR head at the end of that round only)
-- unanimous rework → `ready-to-code`
+- unanimous rework → triggers [fix agent](agents/fix.md)
 - split/conflicting (including conflicting security severities) → `requires-manual-review`
 - each **review run start** (including push-triggered re-review) clears **`ready-for-merge`** together with **`ready-for-review`** so merge approval is never stale after new commits
 ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinator-merge-algorithm).

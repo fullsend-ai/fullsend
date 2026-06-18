@@ -64,7 +64,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -233,6 +233,27 @@ jobs:
           echo "Routed to stage: ${STAGE}"
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check for existing PRs
+        id: pr-check
+        if: steps.route.outputs.stage == 'code'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BOT_LOGIN="fullsend-ai[bot]"
+          CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+          MENTIONING_PRS="$(gh pr list --repo "${SOURCE_REPO}" --state open \
+            --search "${ISSUE_NUMBER} in:title,body" \
+            --json number,author \
+            --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[].number" \
+            2>/dev/null || true)"
+          if [[ -n "${MENTIONING_PRS}" ]]; then
+            echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
