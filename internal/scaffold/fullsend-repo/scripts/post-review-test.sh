@@ -99,6 +99,300 @@ run_test "failure-action-no-label" \
 run_test "unknown-action-no-label" \
   "banana" "false" "none"
 
+# ---------------------------------------------------------------------------
+# Control-label guard tests
+# ---------------------------------------------------------------------------
+
+REVIEW_CONTROL_LABELS=(
+  "ready-for-merge" "requires-manual-review" "rejected"
+  "ready-for-review" "fullsend-no-fix" "fullsend-fix"
+)
+
+is_control_label() {
+  local label="$1"
+  for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
+    if [[ "${cl}" == "${label}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_control_label_test() {
+  local test_name="$1"
+  local label="$2"
+  local expected_control="$3"
+
+  if is_control_label "${label}"; then
+    local actual="true"
+  else
+    local actual="false"
+  fi
+
+  if [ "${actual}" != "${expected_control}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  label:    '${label}'"
+    echo "  expected: '${expected_control}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Control labels should be recognized
+run_control_label_test "ready-for-merge-is-control" "ready-for-merge" "true"
+run_control_label_test "requires-manual-review-is-control" "requires-manual-review" "true"
+run_control_label_test "rejected-is-control" "rejected" "true"
+run_control_label_test "ready-for-review-is-control" "ready-for-review" "true"
+run_control_label_test "fullsend-no-fix-is-control" "fullsend-no-fix" "true"
+run_control_label_test "fullsend-fix-is-control" "fullsend-fix" "true"
+
+# Non-control labels should NOT be recognized
+run_control_label_test "area-api-not-control" "area/api" "false"
+run_control_label_test "priority-high-not-control" "priority/high" "false"
+run_control_label_test "bug-not-control" "bug" "false"
+run_control_label_test "empty-not-control" "" "false"
+
+# ---------------------------------------------------------------------------
+# Integration tests for label_actions processing
+# ---------------------------------------------------------------------------
+# These tests run the full post-review.sh with mock gh/fullsend binaries
+# to verify label_actions validation, body modification, and API calls.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+POST_SCRIPT="${SCRIPT_DIR}/post-review.sh"
+
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "${TMPDIR}"' EXIT
+
+GH_LOG="${TMPDIR}/gh-calls.log"
+MOCK_BIN="${TMPDIR}/bin"
+mkdir -p "${MOCK_BIN}"
+
+cat > "${MOCK_BIN}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+# Mock gh: handle specific subcommands, log everything else.
+
+# gh pr view ... --json state ... → OPEN
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
+  echo "OPEN"
+  exit 0
+fi
+
+# gh pr view ... --json files ... → no protected files
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
+  echo "src/main.go"
+  exit 0
+fi
+
+# gh api repos/.../labels --paginate (list repo labels)
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  exit 0
+fi
+
+# Log all other calls
+echo "gh \$*" >> "${GH_LOG}"
+MOCKEOF
+chmod +x "${MOCK_BIN}/gh"
+
+cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+# Mock fullsend: log the call, consume stdin if --result - is used.
+BODY=""
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${arg}" == "-" ]] && [[ "\${PREV}" == "--result" ]]; then
+    BODY=\$(cat)
+  fi
+  PREV="\${arg}"
+done
+echo "fullsend \$*" >> "${GH_LOG}"
+MOCKEOF
+chmod +x "${MOCK_BIN}/fullsend"
+
+run_label_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_label_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_label_test_no_pattern() {
+  local test_name="$1"
+  local json_content="$2"
+  local forbidden_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "${forbidden_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Label actions integration tests ---
+
+# Approve with label_actions — label should be added via API
+run_label_test "label-actions-applied" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"PR modifies API surface.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
+
+# Control label refused — should NOT call the labels API for it
+run_label_test_stdout "label-actions-control-label-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
+  "::warning::Refused to add control label 'ready-for-merge'"
+
+# Non-existent label skipped — label "bug" is not in mock label list
+run_label_test_stdout "label-actions-nonexistent-label-skipped" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"bug"}]}}' \
+  "::warning::Skipping label 'bug'"
+
+# Invalid characters refused
+run_label_test_stdout "label-actions-invalid-characters-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Injection attempt.","actions":[{"action":"add","label":"label;injection"}]}}' \
+  "::warning::Refused label 'label;injection'"
+
+# Remove label — should call DELETE
+run_label_test "label-actions-remove" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Stale area label removed.","actions":[{"action":"remove","label":"area/cli"}]}}' \
+  "gh api repos/test-org/test-repo/issues/99/labels/area%2Fcli -X DELETE --silent"
+
+# Multiple adds — both should be applied
+run_label_test "label-actions-multiple-add" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
+
+run_label_test "label-actions-multiple-second-label" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=priority/high --silent"
+
+# When all label actions are refused, reason should NOT appear in the review body
+run_label_test_no_pattern "label-actions-all-refused-no-body-append" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
+  "labels[]=ready-for-merge"
+
+# No label_actions field — should still post review without errors
+run_label_test "label-actions-absent-still-posts" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "fullsend post-review"
+
+# request-changes with label_actions — labels should still be applied
+run_label_test "label-actions-with-request-changes" \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches CI config.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
+
+# Label with embedded newline (GHA command injection attempt) — should be refused
+run_label_test_stdout "label-actions-newline-injection-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"ok\n::set-output name=x::pwned"}]}}' \
+  "::warning::Refused label"
+
+# Label with :: delimiter (GHA command injection attempt) — :: is sanitized to :,
+# so the label becomes ":warning:injected" which passes the character regex but
+# does not exist in the repo. The important thing is the :: is stripped.
+run_label_test_stdout "label-actions-gha-delimiter-sanitized" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"::warning::injected"}]}}' \
+  "::warning::Skipping label ':warning:injected'"
+
 # --- Summary ---
 
 echo ""

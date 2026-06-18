@@ -21,7 +21,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 TIRITH_FAIL_ON = os.environ.get("TIRITH_FAIL_ON", "high")
 # When tirith is baked into the sandbox image, set TIRITH_REQUIRED=1 so that
 # a missing binary is treated as a security failure (fail-closed) rather than
@@ -52,8 +52,8 @@ def log_finding(name: str, severity: str, detail: str, action: str):
 
 
 def severity_meets_threshold(severity: str, threshold: str) -> bool:
-    sev_level = SEVERITY_LEVELS.get(severity.lower(), 0)
     thresh_level = SEVERITY_LEVELS.get(threshold.lower(), 3)
+    sev_level = SEVERITY_LEVELS.get(severity.lower(), thresh_level)
     return sev_level >= thresh_level
 
 
@@ -89,35 +89,61 @@ def check_command(command: str) -> tuple[bool, str]:
     if result.returncode == 0:
         return False, ""
 
-    # Parse tirith JSON output
+    # Parse tirith JSON output.
+    # v0.3.x returns {"action": "block", "findings": [...], ...}
+    # v0.2.x returned a flat list of findings.
     try:
-        findings = json.loads(result.stdout)
-    except (json.JSONDecodeError, Exception):
-        # Can't parse output — treat any non-zero exit as a block.
-        if result.returncode != 0:
-            reason = (
-                f"Tirith blocked command (exit code {result.returncode}): {result.stderr.strip()}"
-            )
-            log_finding("tirith_block", "high", reason, "block")
-            return True, reason
+        raw = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        stderr_snippet = result.stderr.strip()[:500]
+        reason = f"Tirith blocked command (exit code {result.returncode}): {stderr_snippet}"
+        log_finding("tirith_block", "high", reason, "block")
+        return True, reason
+
+    if isinstance(raw, dict):
+        findings = raw.get("findings", [])
+        action = raw.get("action", "").lower().strip()
+    elif isinstance(raw, list):
+        findings = raw
+        action = ""
+    else:
+        reason = f"Tirith blocked command (exit code {result.returncode}): unexpected output format"
+        log_finding("tirith_block", "high", reason, "block")
+        return True, reason
+
+    block_reason = ""
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        severity = finding.get("severity", "medium")
+        rule = finding.get("rule_id", finding.get("rule", "unknown"))
+        detail = finding.get("title", finding.get("message", finding.get("detail", "")))
+        msg = f"Tirith [{severity}] {rule}: {detail}"
+        if severity_meets_threshold(severity, TIRITH_FAIL_ON):
+            log_finding(rule, severity, msg, "block")
+            if not block_reason:
+                block_reason = msg
+        else:
+            log_finding(rule, severity, msg, "warn")
+
+    if block_reason:
+        return True, block_reason
+
+    # v0.3.x: honour the top-level action field even when no individual
+    # finding met the severity threshold.
+    if action == "block":
+        reason = "Tirith action=block (no individual finding met threshold)"
+        log_finding("tirith_action_block", "high", reason, "block")
+        return True, reason
+
+    if action in ("allow", "warn"):
         return False, ""
 
-    # Check findings against threshold
-    if isinstance(findings, list):
-        for finding in findings:
-            severity = finding.get("severity", "medium")
-            if severity_meets_threshold(severity, TIRITH_FAIL_ON):
-                rule = finding.get("rule", "unknown")
-                detail = finding.get("message", finding.get("detail", ""))
-                reason = f"Tirith [{severity}] {rule}: {detail}"
-                log_finding(rule, severity, reason, "block")
-                return True, reason
-            else:
-                rule = finding.get("rule", "unknown")
-                detail = finding.get("message", finding.get("detail", ""))
-                log_finding(rule, severity, f"Tirith [{severity}] {rule}: {detail}", "warn")
-
-    return False, ""
+    # Fall back to non-zero exit code: tirith signalled a problem but output
+    # didn't contain a parseable block reason — block anyway.
+    reason = f"Tirith blocked command (exit code {result.returncode})"
+    log_finding("tirith_block", "high", reason, "block")
+    return True, reason
 
 
 MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB

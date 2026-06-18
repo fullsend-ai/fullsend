@@ -64,8 +64,9 @@ Use `AskUserQuestion` to ask:
 > Any special title for this release? (e.g. "MVP Release Candidate 1")
 > Leave blank to use just the version tag.
 
-The answer becomes the tag subject line. If blank, leave the subject empty
-so GoReleaser's `name_template` renders just the tag without duplication.
+The answer becomes the tag subject line. If blank, use the tag name itself as
+the subject so that GoReleaser's `name_template` guard (`ne .TagSubject .Tag`)
+suppresses it, producing a clean release title without duplication.
 
 ### 5. Gather changes since last tag
 
@@ -81,9 +82,12 @@ Summarize changes into categories (features, fixes, refactors). Exclude
 Build the tag message:
 
 - **Line 1 (subject):** The custom title from step 4, if one was given.
-  If no custom title, **omit the subject line** — start the annotation
-  body directly with the highlights. This avoids duplicating the version
-  in the release title.
+  If no custom title, **use the tag name itself** (e.g. `v0.9.0`) — git's
+  `%(contents:subject)` skips leading blank lines, so a blank first line
+  still picks up the first category header as `.TagSubject`. Using the tag
+  name as subject ensures `.TagSubject == .Tag`, which the goreleaser guard
+  suppresses, producing a clean release title with no suffix.
+- **Line 2:** Blank.
 - **Lines 3+:** Summary of highlights organized by category.
 
 ```

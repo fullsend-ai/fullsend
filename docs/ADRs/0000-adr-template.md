@@ -15,10 +15,12 @@ Date: YYYY-MM-DD
 
 {Accepted | Deprecated | Superseded}
 
-<!-- Once this ADR is Accepted, its content is frozen. Do not edit the Context,
-     Decision, or Consequences sections. If circumstances change, write a new
-     ADR that supersedes this one. Only status changes and links to superseding
-     ADRs should be added after acceptance. -->
+<!-- ADRs are point-in-time records, but not fully frozen after acceptance.
+     Minor annotations are welcome: cross-references to related ADRs, short
+     notes linking to newer decisions, or clarifying remarks. However, do not
+     substantially rewrite the Context, Decision, or Consequences sections. If
+     the decision itself needs to change, write a new ADR that supersedes this
+     one. For evolving design narrative, use docs/architecture.md. -->
 
 ## Context
 

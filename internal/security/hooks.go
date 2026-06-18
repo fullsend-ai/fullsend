@@ -3,6 +3,8 @@ package security
 import (
 	_ "embed"
 	"encoding/json"
+
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
 //go:embed hooks/ssrf_pretool.py
@@ -48,7 +50,7 @@ type claudeSettings struct {
 
 // SandboxHooksDir is the path where hook scripts are installed inside the
 // sandbox. Must match sandbox.SandboxWorkspace + "/.claude/hooks".
-const SandboxHooksDir = "/tmp/workspace/.claude/hooks"
+const SandboxHooksDir = sandbox.SandboxWorkspace + "/.claude/hooks"
 
 // GenerateClaudeSettings produces a .claude/settings.json with security hooks
 // configured according to hooks. Returns the JSON bytes.

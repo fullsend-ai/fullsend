@@ -48,21 +48,22 @@ func parseTarget(target string) (string, string, bool) {
 
 // githubSetupConfig holds configuration for the github setup command.
 type githubSetupConfig struct {
-	target              string
-	mintURL             string
-	agents              string
-	inferenceProject    string
-	inferenceRegion     string
+	target               string
+	mintURL              string
+	agents               string
+	inferenceProject     string
+	inferenceRegion      string
 	inferenceWIFProvider string
-	skipAppSetup        bool
-	publicApps          bool
-	appSet              string
-	enrollAll           bool
-	enrollNone          bool
-	vendorBinary        bool
-	dryRun              bool
+	skipAppSetup         bool
+	publicApps           bool
+	appSet               string
+	enrollAll            bool
+	enrollNone           bool
+	vendor               bool
+	fullsendBinary       string
+	fullsendSource       string
+	dryRun               bool
 }
-
 
 func newGitHubSetupCmd() *cobra.Command {
 	var cfg githubSetupConfig
@@ -90,10 +91,11 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 			if err := appsetup.ValidateAppSet(cfg.appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
-
-			if cfg.mintURL == "" {
-				return fmt.Errorf("--mint-url is required for github setup")
+			applyDeprecatedVendorBinaryFlag(cmd, &cfg.vendor)
+			if err := validateVendorFlags(cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource); err != nil {
+				return err
 			}
+
 			if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
 				return err
 			}
@@ -126,7 +128,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint URL (required)")
+	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", DefaultMintURL, "token mint URL (default: hosted public mint)")
 	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "global", "GCP region for inference")
@@ -136,8 +138,8 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
 	cmd.Flags().BoolVar(&cfg.enrollAll, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
-	cmd.Flags().BoolVar(&cfg.vendorBinary, "vendor-fullsend-binary", false, "cross-compile and upload the fullsend binary")
-	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "preview changes without making them")
+	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
+	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 
 	return cmd
 }
@@ -206,14 +208,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Reusing existing FULLSEND_GCP_WIF_PROVIDER from " + cfg.target)
 	}
 
-	perRepoCfg := config.NewPerRepoConfig(roles)
+	perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
 	if err := perRepoCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	shimContent, err := scaffold.PerRepoShimTemplate()
-	if err != nil {
-		return fmt.Errorf("loading per-repo shim template: %w", err)
 	}
 
 	cfgYAML, err := perRepoCfg.Marshal()
@@ -221,24 +218,24 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor)
+	if err != nil {
+		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
+	}
+
 	var files []forge.TreeFile
-	files = append(files, forge.TreeFile{
-		Path:    ".github/workflows/fullsend.yaml",
-		Content: shimContent,
-		Mode:    "100644",
-	})
+	for _, f := range installFiles {
+		files = append(files, forge.TreeFile{
+			Path:    f.Path,
+			Content: f.Content,
+			Mode:    f.Mode,
+		})
+	}
 	files = append(files, forge.TreeFile{
 		Path:    ".fullsend/config.yaml",
 		Content: cfgYAML,
 		Mode:    "100644",
 	})
-	for _, dir := range scaffold.PerRepoCustomizedDirs() {
-		files = append(files, forge.TreeFile{
-			Path:    dir + "/.gitkeep",
-			Content: []byte(""),
-			Mode:    "100644",
-		})
-	}
 
 	repoVars := map[string]string{
 		"FULLSEND_MINT_URL":   cfg.mintURL,
@@ -258,7 +255,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
-			printer.StepDone(fmt.Sprintf("Would write: %s (%d bytes)", f.Path, len(f.Content)))
+			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
 		}
 		printer.Blank()
 		printer.StepInfo("Would set repository variables:")
@@ -270,6 +267,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		for _, name := range secretNames {
 			printer.StepInfo(fmt.Sprintf("  %s", name))
 		}
+		if cfg.vendor {
+			printer.Blank()
+			printer.StepInfo(vendorDryRunMessage(cfg.fullsendBinary, cfg.fullsendSource, layers.VendoredBinaryPathPerRepo))
+		} else {
+			printer.Blank()
+			printer.StepInfo(fmt.Sprintf("Would remove stale vendored assets at %s (if present)", layers.VendoredBinaryPathPerRepo))
+		}
 		return nil
 	}
 
@@ -278,36 +282,23 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 	printer.Blank()
 
-	printer.StepStart("Writing per-repo scaffold files")
-	committed, err := client.CommitFiles(ctx, owner, repo,
-		fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version), files)
-	if err != nil {
-		printer.StepFail("Failed to write scaffold files")
-		return fmt.Errorf("committing scaffold files: %w", err)
-	}
-	if committed {
-		printer.StepDone(fmt.Sprintf("Wrote %d files", len(files)))
-	} else {
-		printer.StepDone("Scaffold up to date")
-	}
-
-	printer.StepStart("Configuring repository variables")
-	for _, name := range sortedStringMapKeys(repoVars) {
-		if err := client.CreateOrUpdateRepoVariable(ctx, owner, repo, name, repoVars[name]); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to set variable %s", name))
-			return fmt.Errorf("setting repo variable %s: %w", name, err)
+	if cfg.vendor {
+		var vendorErr error
+		files, _, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
+		if vendorErr != nil {
+			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
 	}
-	printer.StepDone(fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
-	printer.StepStart("Configuring repository secrets")
-	for _, name := range sortedStringMapKeys(repoSecrets) {
-		if err := client.CreateRepoSecret(ctx, owner, repo, name, repoSecrets[name]); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to set secret %s", name))
-			return fmt.Errorf("setting repo secret %s: %w", name, err)
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets); err != nil {
+		return err
+	}
+
+	if !cfg.vendor {
+		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo, true); err != nil {
+			return err
 		}
 	}
-	printer.StepDone(fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
 
 	printer.Blank()
 	printer.StepDone(fmt.Sprintf("Per-repo setup complete for %s/%s", owner, repo))
@@ -443,7 +434,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	for i, ac := range agentCreds {
 		dummyAgents[i] = ac.AgentEntry
 	}
-	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, dummyAgents, inferenceProviderName)
+	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, dummyAgents, inferenceProviderName, org)
 	orgCfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -455,11 +446,12 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	dispatcher := &skipMintDispatcher{mintURL: cfg.mintURL}
 
 	var vendorFn layers.VendorFunc
-	if cfg.vendorBinary {
-		vendorFn = vendorFullsendBinary
+	var vendorCollect layers.VendorCollectFunc
+	if cfg.vendor {
+		vendorFn, vendorCollect = vendorStackArgs(true, cfg.fullsendBinary, cfg.fullsendSource)
 	}
 
-	stack := buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendorBinary, vendorFn, dispatcher)
+	stack := buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
 
 	if cfg.dryRun {
 		printer.Header("Dry run — analyzing what setup would do")
@@ -481,7 +473,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 			return err
 		}
 
-		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", cfg.publicApps, nil, cfg.appSet, nil)
+		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", cfg.mintURL, cfg.publicApps, nil, cfg.appSet, nil)
 		if credErr != nil {
 			return credErr
 		}
@@ -492,10 +484,10 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		for i, ac := range agentCreds {
 			agents[i] = ac.AgentEntry
 		}
-		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName)
+		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
 		orgCfg.Dispatch.Mode = "oidc-mint"
 
-		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendorBinary, vendorFn, dispatcher)
+		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
 	}
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
@@ -828,20 +820,19 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 	printer.Header("Uninstalling fullsend from " + org)
 	printer.Blank()
 
-	// Read config before deleting repo to discover actual installed app slugs.
+	// Discover agent slugs: harness files first, then config.yaml agents:
+	// block, then default naming convention.
 	var agentSlugs []string
+	var parsedCfg *config.OrgConfig
 	cfgData, cfgErr := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if cfgErr == nil {
 		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			for _, agent := range parsed.Agents {
-				if agent.Slug != "" {
-					agentSlugs = append(agentSlugs, agent.Slug)
-				} else {
-					agentSlugs = append(agentSlugs, appsetup.AppSlug(appSet, agent.Role))
-				}
-			}
+			parsedCfg = parsed
 		}
 	}
+
+	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, parsedCfg, printer)
+
 	if len(agentSlugs) == 0 {
 		for _, role := range config.DefaultAgentRoles() {
 			agentSlugs = append(agentSlugs, appsetup.AppSlug(appSet, role))
@@ -989,7 +980,22 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("getting authenticated user: %w", err)
 	}
 
-	workflowsLayer := layers.NewWorkflowsLayer(org, client, printer, user, version)
+	vendored := false
+	if _, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, scaffold.VendoredMarkerPath()); err == nil {
+		vendored = true
+	} else if !forge.IsNotFound(err) {
+		return fmt.Errorf("checking vendored marker: %w", err)
+	}
+
+	if cfgData, cfgErr := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml"); cfgErr == nil {
+		if _, parseErr := config.ParseOrgConfig(cfgData); parseErr != nil {
+			return fmt.Errorf("parsing config.yaml: %w", parseErr)
+		}
+	} else if !forge.IsNotFound(cfgErr) {
+		return fmt.Errorf("reading config.yaml: %w", cfgErr)
+	}
+
+	workflowsLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored)
 
 	if err := workflowsLayer.Install(ctx); err != nil {
 		return fmt.Errorf("syncing scaffold: %w", err)

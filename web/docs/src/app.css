@@ -70,6 +70,7 @@ body {
   font-weight: 600;
   font-size: 0.95rem;
   color: var(--docs-text);
+  text-decoration: none;
 }
 
 .docs-icon-btn {
@@ -414,6 +415,7 @@ body {
   border-radius: 0.25rem;
   background: transparent;
   color: inherit;
+  text-decoration: none;
   cursor: pointer;
 }
 

@@ -73,6 +73,41 @@ func TestFakeClient_CreateFileOnBranch(t *testing.T) {
 	assert.Equal(t, "feature", fc.CreatedFiles[0].Branch)
 }
 
+func TestFakeClient_DeleteFiles(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		FileContents: map[string][]byte{
+			"owner/repo/a.txt": []byte("a"),
+			"owner/repo/b.txt": []byte("b"),
+		},
+	}
+
+	deleted, err := fc.DeleteFiles(ctx, "owner", "repo", "cleanup", []string{"a.txt", "missing.txt", "b.txt"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, deleted)
+	assert.Len(t, fc.DeletedFiles, 2)
+	_, ok := fc.FileContents["owner/repo/a.txt"]
+	assert.False(t, ok)
+}
+
+func TestFakeClient_GetWorkflow(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Workflows: map[string]*Workflow{
+			"owner/repo/ci.yml": {Name: "CI", Path: ".github/workflows/ci.yml", State: "active"},
+		},
+	}
+
+	wf, err := fc.GetWorkflow(ctx, "owner", "repo", "ci.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "CI", wf.Name)
+
+	wf, err = fc.GetWorkflow(ctx, "owner", "repo", "other.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "other.yml", wf.Name)
+	assert.Equal(t, "active", wf.State)
+}
+
 func TestFakeClient_GetFileContent(t *testing.T) {
 	ctx := context.Background()
 
@@ -464,6 +499,17 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
 			return err
 		}},
+		{"DeleteIssueComment", func(fc *FakeClient) error {
+			return fc.DeleteIssueComment(ctx, "o", "r", 1)
+		}},
+		{"ListDirectoryContents", func(fc *FakeClient) error {
+			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			return err
+		}},
+		{"GetFileContentAtRef", func(fc *FakeClient) error {
+			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			return err
+		}},
 	}
 
 	for _, m := range methods {
@@ -531,6 +577,9 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
 			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
 			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
+			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
+			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 		}(i)
 	}
 

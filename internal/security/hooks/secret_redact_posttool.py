@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import UTC, datetime
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 # --- Known secret prefix patterns ---
 

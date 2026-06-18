@@ -260,19 +260,19 @@ func buildCLIBinary(t *testing.T) string {
 }
 
 // runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
-// The working directory is set to the module root so that --vendor-fullsend-binary
-// can find ./cmd/fullsend/ (same as a user running from the repo root).
+// By default the working directory is the module root. Use runCLIFromDir to
+// run from a subdirectory (GOMOD discovery makes this work for vendoring).
 func runCLI(t *testing.T, binary, token string, args ...string) string {
-	t.Helper()
-	t.Logf("[cli] fullsend %s", strings.Join(args, " "))
+	return runCLIFromDir(t, binary, token, moduleRoot(t), args...)
+}
 
-	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
-	if err != nil {
-		t.Fatalf("finding module root for runCLI: %v", err)
-	}
+// runCLIFromDir runs the CLI with cwd set to dir.
+func runCLIFromDir(t *testing.T, binary, token, dir string, args ...string) string {
+	t.Helper()
+	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
 
 	cmd := exec.Command(binary, args...)
-	cmd.Dir = strings.TrimSpace(string(modRoot))
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
 	out, runErr := cmd.CombinedOutput()
 	output := string(out)
@@ -281,6 +281,15 @@ func runCLI(t *testing.T, binary, token string, args ...string) string {
 		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), runErr, output)
 	}
 	return output
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root: %v", err)
+	}
+	return strings.TrimSpace(string(modRoot))
 }
 
 // retryOnNotFound retries an operation up to maxAttempts times with linear

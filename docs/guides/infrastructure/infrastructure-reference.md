@@ -1,10 +1,10 @@
 # Infrastructure Reference
 
-This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Installation Guide](../getting-started/installation.md).
+This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Installation Guide](../../reference/installation.md).
 
 ## Token Mint (OIDC) — GCF Cloud Function
 
-> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`
+> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint token`
 
 The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system.
 
@@ -48,7 +48,7 @@ The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped Gi
 │  │     └─ Returns GCP federated access token         │           │
 │  │                                                   │           │
 │  │  3. Lookup PEM from Secret Manager                │           │
-│  │     ├─ Secret name: fullsend-{org}--{role}-app-pem│           │
+│  │     ├─ Secret name: fullsend-{role}-app-pem       │           │
 │  │     └─ Returns PEM private key bytes              │           │
 │  │                                                   │           │
 │  │  4. Generate GitHub App JWT                       │           │
@@ -99,8 +99,8 @@ The mint enforces minimum permission sets per role. Tokens cannot exceed these s
 
 A single mint instance can serve multiple orgs:
 - `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS` env var
-- `ROLE_APP_IDS` maps `{org}/{role}` to GitHub App IDs
-- Updates are applied atomically by redeploying the function with updated env vars
+- `ROLE_APP_IDS` maps `{role}` to GitHub App IDs (shared across all enrolled orgs)
+- Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification — not per-org app ID entries
 
 ### Status Endpoint
 
@@ -185,7 +185,7 @@ During installation, the GCF provisioner creates:
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) for the full GitHub management guide.
+> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) for the full GitHub management guide.
 
 Secrets and variables are deployed at different scopes depending on the installation mode.
 
@@ -269,8 +269,8 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
-│  │ Store PEMs in     │ fullsend-{org}--{role}-app-pem           │
-│  │ Secret Manager    │ for each agent role                      │
+│  │ Store PEMs in     │ fullsend-{role}-app-pem                  │
+│  │ Secret Manager    │ once per agent role (shared)           │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
@@ -303,7 +303,7 @@ The GCF provisioner avoids redundant Cloud Function deployments by computing a S
 
 ## See Also
 
-- [Installation Guide](../getting-started/installation.md) — Setup instructions (end-user and all-in-one)
+- [Installation Guide](../../reference/installation.md) — Setup instructions (end-user and all-in-one)
 - [Mint service administration](mint-administration.md) — Deploying and managing the token mint
-- [Setting up with pre-provisioned infrastructure](../getting-started/github-setup.md) — GitHub-only setup guide
-- [Local Development](../dev/local-dev.md) — Developer setup
+- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
+- [Running agents locally](../user/running-agents-locally.md) — Run agents locally (binary download, GCP credentials, per-agent env vars)

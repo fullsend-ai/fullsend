@@ -1,17 +1,21 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 type bootstrapInput struct {
@@ -50,69 +54,69 @@ func testRunCommand(agentName, model, repoDir string, pluginDirs []string, debug
 }
 
 func TestBuildRunCommand_Basic(t *testing.T) {
-	cmd := testRunCommand("hello-world", "", "/tmp/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "cd /tmp/workspace/repo")
+	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
+	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 	assert.NotContains(t, cmd, "--model")
 	assert.NotContains(t, cmd, "--plugin-dir")
 }
 
 func TestBuildRunCommand_WithModel(t *testing.T) {
-	cmd := testRunCommand("hello-world", "sonnet", "/tmp/workspace/repo", nil, "")
+	cmd := testRunCommand("hello-world", "sonnet", "/sandbox/workspace/repo", nil, "")
 	assert.Contains(t, cmd, "--model 'sonnet'")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 }
 
 func TestBuildRunCommand_EscapesQuotes(t *testing.T) {
-	cmd := testRunCommand("test'name", "", "/tmp/workspace/repo", nil, "")
+	cmd := testRunCommand("test'name", "", "/sandbox/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "'test'name'")
 	assert.Contains(t, cmd, "'test'\\''name'")
 }
 
 func TestBuildRunCommand_WithPluginDirs(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/claude-config/plugins/gopls-lsp"}, "")
-	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", []string{"/sandbox/claude-config/plugins/gopls-lsp"}, "")
+	assert.Contains(t, cmd, "--plugin-dir '/sandbox/claude-config/plugins/gopls-lsp'")
 }
 
 func TestBuildRunCommand_DebugAll(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", nil, "*")
-	assert.Contains(t, cmd, "--debug-file '/tmp/workspace/claude-debug.log'")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "*")
+	assert.Contains(t, cmd, "--debug-file '/sandbox/workspace/claude-debug.log'")
 	assert.NotContains(t, cmd, "--debug '")
 }
 
 func TestBuildRunCommand_DebugFiltered(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", nil, "api,hooks")
-	assert.Contains(t, cmd, "--debug-file '/tmp/workspace/claude-debug.log'")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "api,hooks")
+	assert.Contains(t, cmd, "--debug-file '/sandbox/workspace/claude-debug.log'")
 	assert.Contains(t, cmd, "--debug 'api,hooks'")
 }
 
 func TestBuildRunCommand_MultiplePluginDirs(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", []string{
-		"/tmp/claude-config/plugins/gopls-lsp",
-		"/tmp/claude-config/plugins/other-lsp",
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", []string{
+		"/sandbox/claude-config/plugins/gopls-lsp",
+		"/sandbox/claude-config/plugins/other-lsp",
 	}, "")
-	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/gopls-lsp'")
-	assert.Contains(t, cmd, "--plugin-dir '/tmp/claude-config/plugins/other-lsp'")
+	assert.Contains(t, cmd, "--plugin-dir '/sandbox/claude-config/plugins/gopls-lsp'")
+	assert.Contains(t, cmd, "--plugin-dir '/sandbox/claude-config/plugins/other-lsp'")
 }
 
 func TestBuildRunCommand_PluginDirEscapesQuotes(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", []string{"/tmp/path'with'quotes"}, "")
-	assert.Contains(t, cmd, "--plugin-dir '/tmp/path'\\''with'\\''quotes'")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", []string{"/sandbox/path'with'quotes"}, "")
+	assert.Contains(t, cmd, "--plugin-dir '/sandbox/path'\\''with'\\''quotes'")
 }
 
 func TestBuildRunCommand_NoPlugins(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", nil, "")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "--plugin-dir")
 }
 
 func TestBuildRunCommand_DebugDisabled(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", nil, "")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "--debug-file")
 	assert.NotContains(t, cmd, "--debug")
 }
 
 func TestBuildRunCommand_DebugEscapesQuotes(t *testing.T) {
-	cmd := testRunCommand("agent", "", "/tmp/workspace/repo", nil, "api'hooks")
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "api'hooks")
 	assert.Contains(t, cmd, "--debug 'api'\\''hooks'")
 }
 
@@ -126,14 +130,14 @@ func TestBuildRunCommand_NoDoubleSpaces(t *testing.T) {
 	}{
 		{"no optional flags", "agent", "", nil, ""},
 		{"model only", "agent", "sonnet", nil, ""},
-		{"plugins only", "agent", "", []string{"/tmp/plugins/gopls"}, ""},
+		{"plugins only", "agent", "", []string{"/sandbox/plugins/gopls"}, ""},
 		{"debug only", "agent", "", nil, "*"},
 		{"debug filtered", "agent", "", nil, "api,hooks"},
-		{"all flags", "agent", "sonnet", []string{"/tmp/plugins/gopls", "/tmp/plugins/other"}, "api,hooks"},
+		{"all flags", "agent", "sonnet", []string{"/sandbox/plugins/gopls", "/sandbox/plugins/other"}, "api,hooks"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := testRunCommand(tc.agentName, tc.model, "/tmp/workspace/repo", tc.pluginDirs, tc.debug)
+			cmd := testRunCommand(tc.agentName, tc.model, "/sandbox/workspace/repo", tc.pluginDirs, tc.debug)
 			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
 		})
 	}
@@ -149,8 +153,8 @@ func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
 		[]byte(`{"go":{"command":"gopls","args":["serve"]}}`), 0o644))
 
 	entries, err := buildPluginConfigs(
-		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		[]string{pluginDir}, "/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 	require.Len(t, entries, 4)
@@ -175,8 +179,8 @@ func TestBuildPluginConfigs_MultiplePlugins(t *testing.T) {
 
 	entries, err := buildPluginConfigs(
 		[]string{filepath.Join(dir, "plugin-a"), filepath.Join(dir, "plugin-b")},
-		"/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		"/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 	require.Len(t, entries, 4)
@@ -195,8 +199,8 @@ func TestBuildPluginConfigs_NoLspJSON(t *testing.T) {
 		[]byte(`{"name":"simple-plugin"}`), 0o644))
 
 	entries, err := buildPluginConfigs(
-		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		[]string{pluginDir}, "/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 
@@ -217,8 +221,8 @@ func TestBuildPluginConfigs_InvalidLspJSON(t *testing.T) {
 		[]byte(`{broken`), 0o644))
 
 	entries, err := buildPluginConfigs(
-		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		[]string{pluginDir}, "/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 
@@ -238,8 +242,8 @@ func TestBuildPluginConfigs_EmptyLspJSON(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, ".lsp.json"), []byte(``), 0o644))
 
 	entries, err := buildPluginConfigs(
-		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		[]string{pluginDir}, "/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 
@@ -258,8 +262,8 @@ func TestBuildPluginConfigs_ConfigStructure(t *testing.T) {
 		[]byte(`{"name":"test-plugin"}`), 0o644))
 
 	entries, err := buildPluginConfigs(
-		[]string{pluginDir}, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		[]string{pluginDir}, "/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 	require.Len(t, entries, 4)
@@ -272,8 +276,8 @@ func TestBuildPluginConfigs_ConfigStructure(t *testing.T) {
 
 func TestBuildPluginConfigs_EmptyPluginList(t *testing.T) {
 	entries, err := buildPluginConfigs(
-		nil, "/tmp/plugins", "/tmp/plugins/marketplaces/claude-plugins-official",
-		"claude-plugins-official", "1.0.0", "/tmp/claude-config",
+		nil, "/sandbox/plugins", "/sandbox/plugins/marketplaces/claude-plugins-official",
+		"claude-plugins-official", "1.0.0", "/sandbox/claude-config",
 	)
 	require.NoError(t, err)
 	require.Len(t, entries, 4)
@@ -282,4 +286,51 @@ func TestBuildPluginConfigs_EmptyPluginList(t *testing.T) {
 	require.NoError(t, json.Unmarshal(entries[3].data, &settings))
 	enabled := settings["enabledPlugins"].(map[string]any)
 	assert.Len(t, enabled, 0)
+}
+
+func TestClaudeRuntime_Run_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	var metrics RunMetrics
+	printer := ui.New(io.Discard)
+
+	exitCode, err := ClaudeRuntime{}.Run(context.Background(), RunParams{
+		SandboxName:   "test-sandbox",
+		AgentBaseName: "test-agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Timeout:       10 * time.Second,
+	}, printer, time.Now(), &metrics)
+
+	assert.Error(t, err)
+	assert.Equal(t, -1, exitCode)
+}
+
+func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	agentDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "agent.md"), []byte("test"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentDir,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "creating runtime config dirs")
+}
+
+func TestClaudeRuntime_ClearIterationArtifacts_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	err := ClaudeRuntime{}.ClearIterationArtifacts("test-sandbox")
+	assert.Error(t, err)
+}
+
+func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	outputDir := t.TempDir()
+	err := ClaudeRuntime{}.ExtractTranscripts("test-sandbox", "test-agent", outputDir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "finding transcripts")
 }

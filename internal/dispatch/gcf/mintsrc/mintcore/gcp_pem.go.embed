@@ -11,7 +11,7 @@ import (
 
 // GCPSecretPEMAccessor reads agent PEMs from GCP Secret Manager via REST API,
 // authenticating with the GCE metadata server token.
-// Secret naming convention: projects/{num}/secrets/fullsend-{org}--{role}-app-pem/versions/latest
+// Secret naming convention: projects/{num}/secrets/fullsend-{role}-app-pem/versions/latest
 type GCPSecretPEMAccessor struct {
 	httpClient    HTTPDoer
 	gcpProjectNum string
@@ -25,15 +25,22 @@ func NewGCPSecretPEMAccessor(httpClient HTTPDoer, gcpProjectNum string) *GCPSecr
 	}
 }
 
-func (s *GCPSecretPEMAccessor) AccessPEM(ctx context.Context, org, role string) ([]byte, error) {
-	if err := ValidateOrgName(org); err != nil {
+// PemSecretRole returns the Secret Manager role key for a mint request role.
+// The fix stage uses the coder PEM.
+func PemSecretRole(role string) string {
+	if role == "fix" {
+		return "coder"
+	}
+	return role
+}
+
+func (s *GCPSecretPEMAccessor) AccessPEM(ctx context.Context, role string) ([]byte, error) {
+	secretRole := PemSecretRole(role)
+	if err := ValidateRoleName(secretRole); err != nil {
 		return nil, err
 	}
-	if err := ValidateRoleName(role); err != nil {
-		return nil, err
-	}
-	name := fmt.Sprintf("projects/%s/secrets/fullsend-%s--%s-app-pem/versions/latest",
-		s.gcpProjectNum, org, role)
+	name := fmt.Sprintf("projects/%s/secrets/fullsend-%s-app-pem/versions/latest",
+		s.gcpProjectNum, secretRole)
 	token, err := s.metadataToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting metadata token: %w", err)

@@ -922,7 +922,7 @@ spec:
 - [ADR-0036: Agent Execution Sandbox Architecture](../ADRs/0036-agent-execution-sandbox.md)
 - [ADR-0017: Credential Isolation for Sandboxed Agents](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)
 - [ADR-0025: Provider Credential Delivery](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)
-- [ADR-0028: GitLab Support Architecture](../ADRs/0028-gitlab-support.md)
+- [ADR-0028: GitLab Support Architecture](../ADRs/0028-gitlab-support.md) (deprecated; harness portability superseded by ADR-0045)
 - [agent-infrastructure.md](../problems/agent-infrastructure.md): Infrastructure layer exploration
 - [OpenShell Documentation](https://docs.nvidia.com/openshell/)
 - [Sigstore Cosign](https://docs.sigstore.dev/cosign/overview/)

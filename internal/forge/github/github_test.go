@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,6 +312,68 @@ func TestGetAuthenticatedUser(t *testing.T) {
 	assert.Equal(t, "test-bot", user)
 }
 
+func TestGetAuthenticatedUser_FallbackToApp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			// Simulate GitHub App installation token: /user returns 403.
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Resource not accessible by integration",
+			})
+		case "/app":
+			json.NewEncoder(w).Encode(map[string]any{
+				"slug": "fullsend-ai-review",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	user, err := client.GetAuthenticatedUser(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai-review[bot]", user)
+}
+
+func TestGetAuthenticatedUser_BothFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "forbidden",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUser(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get authenticated user")
+}
+
+func TestGetAuthenticatedUser_AppEmptySlug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "forbidden",
+			})
+		case "/app":
+			json.NewEncoder(w).Encode(map[string]any{
+				"slug": "",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUser(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty slug")
+}
+
 func TestCreateRepoSecret(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -424,6 +487,29 @@ func TestCreateOrUpdateRepoVariable_FallbackToPost(t *testing.T) {
 	client := newTestClient(t, srv)
 	err := client.CreateOrUpdateRepoVariable(context.Background(), "owner", "repo", "MY_VAR", "new-value")
 	require.NoError(t, err)
+}
+
+func TestGetWorkflow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/actions/workflows/repo-maintenance.yml", r.URL.Path)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":    42,
+			"name":  "Repo Maintenance",
+			"path":  ".github/workflows/repo-maintenance.yml",
+			"state": "active",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	wf, err := client.GetWorkflow(context.Background(), "owner", "repo", "repo-maintenance.yml")
+	require.NoError(t, err)
+	assert.Equal(t, 42, wf.ID)
+	assert.Equal(t, "Repo Maintenance", wf.Name)
+	assert.Equal(t, ".github/workflows/repo-maintenance.yml", wf.Path)
+	assert.Equal(t, "active", wf.State)
 }
 
 func TestGetLatestWorkflowRun(t *testing.T) {
@@ -566,6 +652,203 @@ func TestAPIError_ErrorStringWithDetails(t *testing.T) {
 	assert.Contains(t, err.Error(), "422")
 	assert.Contains(t, err.Error(), "Validation Failed")
 	assert.Contains(t, err.Error(), "name already exists on this account")
+}
+
+func TestIsBranchProtectionError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name: "protected branch push rejected",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors: []APIErrorDetail{
+					{Message: "Protected branch update failed for refs/heads/main."},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "required status check failing",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors: []APIErrorDetail{
+					{Message: "Required status check 'ci-build' is failing"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "required review",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Message: "Required review from a code owner is not satisfied"},
+				},
+			},
+			want: true,
+		},
+		{
+			name:   "protection in top-level message",
+			apiErr: &APIError{StatusCode: 422, Message: "Protected branch 'main' does not allow direct pushes"},
+			want:   true,
+		},
+		{
+			name:   "non-fast-forward without protection",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   false,
+		},
+		{
+			name:   "reference already exists",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name: "repository ruleset violation",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors: []APIErrorDetail{
+					{Message: "Repository rule violations found for refs/heads/main."},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "validation failed for unrelated reason",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "PullRequest", Code: "custom", Message: "No commits between main and main"},
+				},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isBranchProtectionError(tt.apiErr))
+		})
+	}
+}
+
+func TestIsAlreadyExistsError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "reference already exists",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   true,
+		},
+		{
+			name: "PR already exists via custom code",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "PullRequest", Code: "custom", Message: "A pull request already exists for user:branch."},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "repo name already exists on account",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "Repository", Field: "name", Code: "custom", Message: "name already exists on this account"},
+				},
+			},
+			want: true,
+		},
+		{
+			name:   "non-fast-forward",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   false,
+		},
+		{
+			name: "branch protection",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors: []APIErrorDetail{
+					{Message: "Protected branch update failed for refs/heads/main."},
+				},
+			},
+			want: false,
+		},
+		{
+			name:   "not found",
+			apiErr: &APIError{StatusCode: 404, Message: "Not Found"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isAlreadyExistsError(tt.apiErr))
+		})
+	}
+}
+
+func TestAPIError_Unwrap(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiErr  *APIError
+		wantErr error
+		wantNil bool
+	}{
+		{
+			name:    "404 unwraps to ErrNotFound",
+			apiErr:  &APIError{StatusCode: 404, Message: "Not Found"},
+			wantErr: forge.ErrNotFound,
+		},
+		{
+			name:    "422 reference already exists unwraps to ErrAlreadyExists",
+			apiErr:  &APIError{StatusCode: 422, Message: "Reference already exists"},
+			wantErr: forge.ErrAlreadyExists,
+		},
+		{
+			name: "422 PR already exists unwraps to ErrAlreadyExists",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "PullRequest", Code: "custom", Message: "A pull request already exists for user:branch."},
+				},
+			},
+			wantErr: forge.ErrAlreadyExists,
+		},
+		{
+			name:    "422 non-fast-forward does not unwrap",
+			apiErr:  &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			wantNil: true,
+		},
+		{
+			name:    "403 does not unwrap",
+			apiErr:  &APIError{StatusCode: 403, Message: "Resource not accessible by integration"},
+			wantNil: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.apiErr.Unwrap()
+			if tt.wantNil {
+				assert.Nil(t, got)
+			} else {
+				assert.ErrorIs(t, got, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
@@ -1204,6 +1487,11 @@ func TestCommitFiles_AllNew(t *testing.T) {
 			assert.Equal(t, "tree000", body["base_tree"])
 			entries := body["tree"].([]any)
 			assert.Len(t, entries, 2)
+			for _, raw := range entries {
+				entry := raw.(map[string]any)
+				assert.NotContains(t, entry, "encoding")
+				assert.IsType(t, "", entry["content"])
+			}
 
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
@@ -1236,6 +1524,60 @@ func TestCommitFiles_AllNew(t *testing.T) {
 		{Path: "scripts/run.sh", Content: []byte("#!/bin/bash"), Mode: "100755"},
 	}
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "test commit", files)
+	require.NoError(t, err)
+	assert.True(t, committed)
+}
+
+func TestCommitFiles_BinaryUsesBlobAPI(t *testing.T) {
+	binaryContent := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff, 0xfe, 0x00}
+	blobSHAValue := blobSHA(binaryContent)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "base64", body["encoding"])
+			decoded, err := base64.StdEncoding.DecodeString(body["content"])
+			require.NoError(t, err)
+			assert.Equal(t, binaryContent, decoded)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": blobSHAValue})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			entries := body["tree"].([]any)
+			require.Len(t, entries, 1)
+			entry := entries[0].(map[string]any)
+			assert.Equal(t, blobSHAValue, entry["sha"])
+			assert.NotContains(t, entry, "content")
+			assert.NotContains(t, entry, "encoding")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", Content: binaryContent, Mode: "100755"},
+	})
 	require.NoError(t, err)
 	assert.True(t, committed)
 }
@@ -1352,4 +1694,79 @@ func TestCommitFiles_Empty(t *testing.T) {
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", nil)
 	require.NoError(t, err)
 	assert.False(t, committed)
+}
+
+func TestDeleteFiles_Empty(t *testing.T) {
+	client := New("token")
+	deleted, err := client.DeleteFiles(context.Background(), "org", "repo", "msg", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, deleted)
+}
+
+func TestDeleteFiles_Atomic(t *testing.T) {
+	var treeCreated bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": []map[string]string{
+					{"path": "bin/fullsend", "sha": "abc", "mode": "100755"},
+					{"path": ".defaults/action.yml", "sha": "def", "mode": "100644"},
+				},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			treeCreated = true
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			entries := body["tree"].([]any)
+			require.Len(t, entries, 2)
+			for _, raw := range entries {
+				entry := raw.(map[string]any)
+				assert.Equal(t, "blob", entry["type"])
+				assert.NotEmpty(t, entry["mode"])
+				assert.Nil(t, entry["sha"])
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	deleted, err := client.DeleteFiles(context.Background(), "org", "repo", "remove stale", []string{
+		"bin/fullsend",
+		".defaults/action.yml",
+		"missing.yml",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, deleted)
+	assert.True(t, treeCreated)
+}
+
+func TestDeleteIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
 }

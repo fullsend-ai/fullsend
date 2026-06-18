@@ -12,29 +12,38 @@ description: >-
 
 An ADR records exactly **one** decision. Problem docs explore; ADRs decide.
 `docs/architecture.md` and problem docs are the current state (mutable). ADRs
-are point-in-time records (immutable once accepted).
+are point-in-time records that can receive minor annotations but should not be
+substantially rewritten.
 
-### ADRs are immutable records
+### ADRs are point-in-time records, not evolving documents
 
-Once an ADR is accepted, its content is frozen. It captures the decision, the
-context that existed at that time, and the consequences as understood then. When
-new information arrives or circumstances change, write a **new** ADR that
-supersedes the old one -- do not edit the original's Context, Decision, or
-Consequences sections.
+An ADR captures a decision and the context that existed when it was made. It is
+not a living design document -- that role belongs to `docs/architecture.md`.
+
+That said, accepted ADRs are **not 100% frozen**. Minor annotations after the
+fact are welcome and encouraged:
 
 **Acceptable modifications to an accepted ADR:**
 
 - Changing its `status` (e.g., from Accepted to Deprecated or Superseded)
-- Adding a link or note pointing to a newer ADR that supersedes it
+- Adding cross-reference links to related or superseding ADRs
+- Adding short notes that connect the ADR to newer decisions or clarifications
+- Fixing typos, broken links, or formatting
 
-**Not acceptable:**
+These annotations keep ADRs useful as navigational aids rather than dead-end
+documents. When a reader lands on an older ADR, links to subsequent decisions
+help them find the current state of thinking.
 
-- Rewriting the Context to reflect updated understanding
+**Not acceptable -- write a new ADR instead:**
+
+- Substantially rewriting Context to reflect updated understanding
 - Editing the Decision to match a revised approach
 - Modifying Consequences based on what actually happened
+- Turning the ADR into a running log of how the decision evolved
 
-If a decision turned out to be wrong, that is exactly what supersession is for.
-The original ADR remains as a historical record of what was decided and why.
+If a decision turned out to be wrong, that is what supersession is for. The
+original ADR remains as a historical record of what was decided and why. For
+ongoing design narrative, use `docs/architecture.md`.
 
 ### docs/architecture.md is always current
 
@@ -191,8 +200,10 @@ If the ADR partially answers a question, add a parenthetical:
 - You're rewriting a section of architecture.md -- make a surgical edit instead
 - `relates_to` lists more than 3 problem docs -- the decision may be too broad
 - You didn't run `make lint` -- stop and run it
-- You're editing the Context, Decision, or Consequences of an accepted ADR --
-  write a new superseding ADR instead
+- You're substantially rewriting the Context, Decision, or Consequences of an
+  accepted ADR -- write a new superseding ADR instead
+- You're turning an old ADR into a running changelog -- use
+  `docs/architecture.md` for evolving design narrative
 
 ## Common Mistakes
 
@@ -205,6 +216,8 @@ If the ADR partially answers a question, add a parenthetical:
 | Rewriting existing doc sections | Make surgical additions only |
 | Skipping linters | Run `make lint` before committing |
 | Wrong ADR number | Check existing files in `docs/ADRs/` first |
-| Editing an accepted ADR's content | Write a new ADR that supersedes it |
+| Substantially rewriting an accepted ADR | Write a new ADR that supersedes it |
+| Omitting cross-references to related ADRs | Link older ADRs to newer related decisions |
+| Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |

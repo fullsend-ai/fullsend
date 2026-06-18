@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# lint-mint-embed-sync - Verify that the mint Cloud Function source files
+# (main.go, go.mod, go.sum) match their embedded copies used for deployment.
+# See CLAUDE.md for details on the mint/embed sync requirement.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+rc=0
+
+SRC="$REPO_ROOT/internal/mint"
+DST="$REPO_ROOT/internal/dispatch/gcf/mintsrc"
+
+for f in "$SRC"/*; do
+    name="$(basename "$f")"
+    if [[ "$name" == *_test.go ]]; then
+        continue
+    fi
+
+    # "go.mod" special case since commit eecac658c
+    if [[ "$name" == "go.mod" ]]; then
+        ff="$( mktemp )"
+        sed 's| => ../mintcore$| => ./mintcore|' "$f" >"$ff"
+        f="$ff"
+    fi
+
+    if ! cmp -s "$f" "$DST/$name.embed"; then
+        echo "DESYNC: internal/mint/$name != internal/dispatch/gcf/mintsrc/$name.embed" >&2
+        rc=1
+    fi
+
+    # "go.mod" special case cleanup
+    [[ "$name" == "go.mod" ]] && rm "$f"
+done
+
+SRC="$REPO_ROOT/internal/mintcore"
+DST="$REPO_ROOT/internal/dispatch/gcf/mintsrc/mintcore"
+
+for f in "$SRC"/*; do
+    name="$(basename "$f")"
+    if [[ "$name" == *_test.go ]]; then
+        continue
+    fi
+
+    if ! cmp -s "$f" "$DST/$name.embed"; then
+        echo "DESYNC: internal/mintcore/$name != internal/dispatch/gcf/mintsrc/mintcore/$name.embed" >&2
+        rc=1
+    fi
+done
+
+if [[ $rc -eq 0 ]]; then
+    echo "OK: mint embed files in sync"
+fi
+exit $rc

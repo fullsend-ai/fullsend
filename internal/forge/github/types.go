@@ -61,7 +61,7 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 
 	base.Name = fmt.Sprintf("%s-%s", appSet, role)
 
-	switch role{
+	switch role {
 	case "fullsend":
 		base.Description = fmt.Sprintf("Fullsend orchestrator for %s", org)
 		base.Permissions = AppPermissions{

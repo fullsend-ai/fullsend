@@ -539,6 +539,161 @@ run_error_comment_test "error-comment-non-org-mode-fallback" \
   "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
   ""
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the agent artifact stripping logic from
+# post-code.sh section 2b. Given a list of changed files, returns which
+# files would be stripped as agent artifacts.
+# ---------------------------------------------------------------------------
+strip_agent_artifacts() {
+  local changed_files="$1"
+  local agent_artifact_patterns=".agentready/ .fullsend-workspace/"
+  local stripped=""
+
+  for file in ${changed_files}; do
+    local is_artifact=false
+    for pattern in ${agent_artifact_patterns}; do
+      local dir="${pattern%/}"
+      case "${file}" in
+        "${dir}"/*|"${dir}") is_artifact=true; break ;;
+        */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
+      esac
+    done
+    if [ "${is_artifact}" = "true" ]; then
+      stripped="${stripped} ${file}"
+    fi
+  done
+
+  echo "${stripped}" | xargs
+}
+
+run_artifact_test() {
+  local test_name="$1"
+  local changed_files="$2"
+  local expected_stripped="$3"
+
+  local actual
+  actual="$(strip_agent_artifacts "${changed_files}")"
+
+  if [ "${actual}" != "${expected_stripped}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  changed_files:     '${changed_files}'"
+    echo "  expected stripped: '${expected_stripped}'"
+    echo "  actual stripped:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Agent artifact stripping test cases ---
+
+# .agentready/ files should be stripped
+run_artifact_test "strip-agentready-file" \
+  ".agentready/assessment.json src/main.go" \
+  ".agentready/assessment.json"
+
+# .fullsend-workspace/ files should be stripped
+run_artifact_test "strip-fullsend-workspace-file" \
+  ".fullsend-workspace/scratch.txt src/main.go" \
+  ".fullsend-workspace/scratch.txt"
+
+# Nested paths should also be stripped
+run_artifact_test "strip-nested-agentready" \
+  "subdir/.agentready/data.json src/main.go" \
+  "subdir/.agentready/data.json"
+
+# Normal files should not be stripped
+run_artifact_test "keep-normal-files" \
+  "src/main.go internal/handler.go" \
+  ""
+
+# Multiple artifacts stripped together
+run_artifact_test "strip-multiple-artifacts" \
+  ".agentready/a.json .fullsend-workspace/b.txt src/main.go" \
+  ".agentready/a.json .fullsend-workspace/b.txt"
+
+# Empty input should produce no stripping
+run_artifact_test "strip-empty-input" \
+  "" \
+  ""
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the Signed-off-by trailer detection logic from
+# post-code.sh section 3b. Given commit body text, returns whether the
+# trailer was detected.
+# ---------------------------------------------------------------------------
+detect_signed_off_by() {
+  local commit_body="$1"
+
+  if echo "${commit_body}" | grep -q '^Signed-off-by:'; then
+    echo "blocked:signed-off-by"
+  else
+    echo "pass"
+  fi
+}
+
+run_signoff_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(detect_signed_off_by "${commit_body}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  commit_body:  '${commit_body}'"
+    echo "  expected:     '${expected}'"
+    echo "  actual:       '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Signed-off-by detection test cases ---
+
+# Commit with Signed-off-by trailer should be blocked
+run_signoff_test "signoff-present-blocked" \
+  "Fix widget rendering.
+
+Signed-off-by: fullsend-ai-coder[bot] <123456+fullsend-ai-coder[bot]@users.noreply.github.com>" \
+  "blocked:signed-off-by"
+
+# Commit without Signed-off-by trailer should pass
+run_signoff_test "signoff-absent-passes" \
+  "Fix widget rendering.
+
+Closes #42" \
+  "pass"
+
+# Empty commit body should pass
+run_signoff_test "signoff-empty-body-passes" \
+  "" \
+  "pass"
+
+# Signed-off-by mentioned mid-line (not a trailer) should pass
+run_signoff_test "signoff-mid-line-passes" \
+  "Removed the Signed-off-by: trailer from commits." \
+  "pass"
+
+# Multiple trailers including Signed-off-by should be blocked
+run_signoff_test "signoff-among-other-trailers-blocked" \
+  "Fix rendering bug.
+
+Co-authored-by: someone <someone@example.com>
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "blocked:signed-off-by"
+
+# Variant casing should pass (detection is intentionally case-sensitive)
+run_signoff_test "signoff-variant-casing-passes" \
+  "Fix rendering bug.
+
+signed-off-by: bot <bot@noreply.github.com>" \
+  "pass"
+
 # --- Summary ---
 
 echo ""

@@ -16,8 +16,8 @@ type Dispatcher interface {
 	Provision(ctx context.Context) (variables map[string]string, err error)
 
 	// StoreAgentPEM persists a role's PEM key in the mint's secret store.
-	// Called once per org/role during App setup so partial failures are survivable.
-	StoreAgentPEM(ctx context.Context, org, role string, pem []byte) error
+	// Called once per role during App setup so partial failures are survivable.
+	StoreAgentPEM(ctx context.Context, role string, pem []byte) error
 
 	// OrgSecretNames returns the names of org-level secrets this
 	// dispatcher manages.

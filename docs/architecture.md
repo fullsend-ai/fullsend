@@ -4,8 +4,8 @@ What are the components of the agent execution stack?
 
 > **This is a living document.** It must always reflect the current state of
 > architectural decisions. When an ADR is accepted (or superseded), this
-> document is updated to match. ADRs are point-in-time records and are not
-> modified after acceptance; this document is where the *current* truth lives.
+> document is updated to match. ADRs are point-in-time records that may receive minor annotations
+> but are not substantially rewritten; this document is where the *current* truth lives.
 > A reader should be able to understand the system's architecture from this
 > document alone, without tracing a chain of ADRs.
 
@@ -38,12 +38,12 @@ Infrastructure platform choice and configuration are specified in the adopting o
 **Decided:**
 
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
-- Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → secrets → inference → dispatch → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
+- Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → harness-wrappers → vendor-binary → secrets → inference → dispatch → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Cross-repo dispatch: enrolled repos call `.fullsend` via `workflow_call`; a dispatch workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager, not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Repo maintenance: a workflow in `.fullsend` (`.github/workflows/repo-maintenance.yml`) reconciles enrollment shims in target repos when `config.yaml` changes or on manual dispatch. The CLI's `EnrollmentLayer.Install()` dispatches this workflow via `workflow_dispatch` and monitors it for completion, then reports any enrollment PRs created in target repos.
 - Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
-- Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)).
+- Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **`--vendor`** ([ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 
 **Open questions:**
@@ -85,6 +85,17 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   triggers a retry (capped); exhaustion is a hard failure — no unvalidated
   output is emitted
   ([ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md)).
+- Forge-portable harness schema: `role` and `slug` move into the harness
+  YAML (eliminating the config.yaml `agents:` block dependency), and a
+  `forge:` section separates platform-specific config (scripts, skills,
+  runner_env) from platform-neutral fields. Forge blocks inherit from
+  top-level defaults and override only deltas
+  ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
+- Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
+  naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via existing env var
+  mechanisms (`.env` files, `runner_env`). Each agent documents its config
+  vars in `docs/agents/<agent>.md`
+  ([ADR 0049](ADRs/0049-agent-configuration-env-var-convention.md)).
 
 **Open questions:**
 
@@ -117,8 +128,9 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 
 **Decided:**
 
-- Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for request-body credential injection or response transformation, (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
-- Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{org}--{role}-app-pem` — org-scoped naming so each org's PEMs are isolated within the shared GCP project ([ADR 0007](ADRs/0007-per-role-github-apps.md)).
+- Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
+- Host-side API server design: Tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
+- Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -229,7 +241,7 @@ ADR 0002: [Building block 3](ADRs/0002-initial-fullsend-design.md#3-label-state-
 
 ### 4. triage agent runtime
 
-Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, blocking dependency detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, or label **`blocked`** when progress depends on another open issue or PR.
+Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, prerequisite detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, label **`blocked`** when progress depends on another open issue or PR, or create upstream prerequisite issues when no tracking issue exists (controlled by `create_issues.allow_targets` config).
 ADR 0002: [Building block 4](ADRs/0002-initial-fullsend-design.md#4-triage-agent-runtime).
 
 ### 5. Duplicate / similarity search
@@ -272,7 +284,7 @@ ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-age
 Aggregates review verdicts and applies labels:
 
 - unanimous approve-merge → `ready-for-merge` (for the **current** PR head at the end of that round only)
-- unanimous rework → `ready-to-code`
+- unanimous rework → triggers [fix agent](agents/fix.md)
 - split/conflicting (including conflicting security severities) → `requires-manual-review`
 - each **review run start** (including push-triggered re-review) clears **`ready-for-merge`** together with **`ready-for-review`** so merge approval is never stale after new commits
 ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinator-merge-algorithm).
@@ -338,9 +350,11 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 **Decided:**
 
 - Layered content resolution: upstream defaults (agents, skills, schemas,
-  harness, policies, scripts) are provided at runtime via a full checkout of
-  `fullsend-ai/fullsend` at the ref passed via `fullsend_ai_ref`. The scaffold
-  installs only org-specific files and a `customized/` directory for org
+  harness, policies, scripts) are provided at runtime via sparse checkout of
+  `fullsend-ai/fullsend@v0`, or from vendored files when `--vendor` was used at
+  install (detected via `.defaults/action.yml` — see
+  [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)). The
+  scaffold installs only org-specific files and a `customized/` directory for org
   overrides. Org files in `customized/` overwrite upstream defaults at runtime
   ([ADR 0035](ADRs/0035-layered-content-resolution.md)).
 
@@ -556,10 +570,10 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ │                                                       │ │ ║
                  ║ │ │ Created with --from image, --policy code.yaml.        │ │ ║
                  ║ │ │ Bootstrapped via openshell upload/exec:               │ │ ║
-                 ║ │ │   agent def    → /tmp/claude-config/agents/           │ │ ║
-                 ║ │ │   skills       → /tmp/claude-config/skills/           │ │ ║
+                 ║ │ │   agent def    → /sandbox/claude-config/agents/       │ │ ║
+                 ║ │ │   skills       → /sandbox/claude-config/skills/       │ │ ║
                  ║ │ │   .env, host files (GCP creds), security hooks        │ │ ║
-                 ║ │ │   target repo  → /tmp/workspace/target-repo/          │ │ ║
+                 ║ │ │   target repo  → /sandbox/workspace/target-repo/      │ │ ║
                  ║ │ │                                                       │ │ ║
                  ║ │ │ Network policy enforced (L7, per-binary):             │ │ ║
                  ║ │ │   Vertex AI     → claude, node only                   │ │ ║
@@ -585,8 +599,8 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ └───────────────────────────────────────────────────────┘ │ ║
                  ║ │                                                           │ ║
                  ║ │ Extracts from destroyed sandbox:                          │ ║
-                 ║ │   /tmp/workspace/output/, JSONL transcripts,              │ ║
-                 ║ │   rsync repo back (--no-links, exclude .git/hooks/)       │ ║
+                 ║ │   /sandbox/workspace/output/, JSONL transcripts,          │ ║
+                 ║ │   SafeDownload repo (sanitize symlinks, strip hooks)      │ ║
                  ║ │                                                           │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
                  ║ │                                                           │ ║
@@ -624,4 +638,4 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 
 ## Repository layout (design workspace vs. web delivery)
 
-The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source and future bundled UI live under **`web/`** (the interactive document graph is `web/public/index.html` at `/`). Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source and future bundled UI live under **`web/`** (the landing page is `web/public/index.html` at `/` and the interactive document graph is `web/public/graph.html` at `/graph.html`). Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).

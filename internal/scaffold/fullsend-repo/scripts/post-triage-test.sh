@@ -27,6 +27,12 @@ if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate
   printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
   exit 0
 fi
+# For issue create, return a fake URL on stdout so callers can capture it.
+if [[ "\$1" == "issue" ]] && [[ "\$2" == "create" ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  echo "https://github.com/mock-org/mock-repo/issues/999"
+  exit 0
+fi
 echo "gh \$*" >> "${GH_LOG}"
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
@@ -52,6 +58,22 @@ chmod +x "${MOCK_BIN}/fullsend"
 export PATH="${MOCK_BIN}:${PATH}"
 export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
+
+# prerequisites handler reads config.yaml from GITHUB_WORKSPACE.
+# Create a minimal workspace with an allowlist so the test can exercise
+# both the allowed and disallowed paths.
+WORKSPACE="${TMPDIR}/workspace"
+mkdir -p "${WORKSPACE}"
+cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - test-org
+    repos:
+      - allowed-org/allowed-repo
+CFGEOF
+export GITHUB_WORKSPACE="${WORKSPACE}"
 
 run_test() {
   local test_name="$1"
@@ -206,23 +228,26 @@ run_test "duplicate-self-reference-fails" \
   "" \
   "true"
 
-run_test "blocked-posts-comment-and-labels" \
-  '{"action":"blocked","reasoning":"needs upstream fix","blocked_by":"https://github.com/other-org/other-repo/issues/99","comment":"This issue is blocked on an upstream dependency."}' \
+run_test "prerequisites-posts-comment-and-labels" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
 
-run_test "blocked-applies-blocked-label" \
-  '{"action":"blocked","reasoning":"needs upstream fix","blocked_by":"https://github.com/other-org/other-repo/issues/99","comment":"This issue is blocked on an upstream dependency."}' \
+run_test "prerequisites-applies-blocked-label" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=blocked --silent"
 
-run_test "blocked-missing-blocked-by-fails" \
-  '{"action":"blocked","reasoning":"needs upstream fix","comment":"Blocked on upstream."}' \
+run_test "prerequisites-missing-comment-fails" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]}}' \
   "" \
   "true"
 
-run_test "blocked-missing-comment-fails" \
-  '{"action":"blocked","reasoning":"needs upstream fix","blocked_by":"https://github.com/other-org/other-repo/issues/99"}' \
-  "" \
-  "true"
+run_test "prerequisites-creates-allowed-issue" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"allowed-org/allowed-repo","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "gh issue create --repo allowed-org/allowed-repo --title Need X --body We need X for downstream."
+
+run_test_stdout "prerequisites-skips-disallowed-target" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
 
 run_test "question-posts-comment" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported.\n\nDid this answer your question, or would you like to open a feature request for Python 4 support?"}' \

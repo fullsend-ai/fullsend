@@ -40,8 +40,9 @@ GCP_PROJECT="<your-gcp-project-id>"
 MINT_REGION="us-central1"   # default; change if deployed elsewhere
 ```
 
-Verify the operator has the required IAM roles: Secret Manager Admin,
-Workload Identity Pool Admin, Cloud Functions Viewer, Cloud Run Admin.
+Verify the operator has the required IAM roles: Workload Identity Pool Admin,
+Cloud Functions Viewer, Cloud Run Admin. Secret Manager Admin is only needed
+for initial PEM bootstrap (`mint deploy --pem-dir`), not for enrollment.
 Per-repo enrollment additionally requires Project IAM Admin (to grant
 `roles/aiplatform.user` to the repo WIF principal).
 
@@ -77,8 +78,12 @@ The fullsend-ai org maintains public GitHub Apps shared across orgs.
 | retro | fullsend-ai-retro | |
 | prioritize | fullsend-ai-prioritize | |
 
-PEM keys are tied to the app, not the org. Enrolling a new org copies PEMs
-from the app set (default: `fullsend-ai`).
+PEM keys and app IDs are tied to the role, not the org. Secrets use role-only naming
+(`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the
+mint. `ROLE_APP_IDS` uses the same model: one GitHub App ID per role (e.g.,
+`coder` → `123456`), shared by all enrolled orgs. PEMs and app IDs must already
+exist (from `mint deploy --pem-dir` or `fullsend admin install`); enrollment
+does not create, copy, or modify PEM secrets or app ID mappings.
 
 Apps must be installed on the target org before the mint can produce tokens.
 An org admin installs via `https://github.com/apps/{slug}/installations/new`
@@ -160,20 +165,10 @@ fullsend mint enroll "$TARGET" \
 
 The CLI performs the following automatically:
 
-1. Discovers the existing mint infrastructure and resolves role→app-id mappings
-2. Copies PEM secrets from the app set to the new org's scoped keys
-3. Updates Cloud Run service env vars (ALLOWED_ORGS, ROLE_APP_IDS) using
-   REVISION-pinned traffic routing
-4. Runs post-enrollment verification
-5. Configures WIF provider (shared for per-org, dedicated for per-repo)
-
-**Optional flags:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--app-set` | `fullsend-ai` | App set to copy PEMs and app IDs from |
-| `--role-app-ids` | | Explicit JSON map of role→app-id (overrides `--app-set`) |
-| `--roles` | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated roles to enroll |
+1. Discovers the existing mint infrastructure and verifies shared role→app-id mappings exist
+2. Updates Cloud Run service env var `ALLOWED_ORGS` using REVISION-pinned traffic routing
+3. Runs post-enrollment verification
+4. Configures WIF provider (shared for per-org, dedicated for per-repo)
 
 ### 4. Verify
 
@@ -183,7 +178,7 @@ The CLI runs post-enrollment verification automatically. Check its output for:
   and whether it matches the latest template
 - **ALLOWED_ORGS**: confirms the enrolled org is present in the
   traffic-serving revision's env vars
-- **ROLE_APP_IDS**: confirms all expected role keys are present
+- **ROLE_APP_IDS**: confirms shared role keys (e.g., `coder`, `review`) are configured on the mint
 
 If the CLI reports "Post-write verification FAILED", run `mint status` to
 diagnose:
@@ -196,8 +191,8 @@ Common causes of verification failure:
 
 - **Template/traffic divergence** — traffic routing step didn't complete.
   Re-run enrollment to trigger a new revision cycle.
-- **Missing role keys** — the app set doesn't have all roles. Use
-  `--role-app-ids` to provide explicitly.
+- **Missing shared app IDs** — the mint has no role-keyed `ROLE_APP_IDS` entries.
+  Run `mint deploy --pem-dir` or `fullsend admin install` on the mint project first.
 
 ### 5. Handoff to repo admin
 
@@ -241,25 +236,15 @@ fullsend mint unenroll "$TARGET" \
 Unenroll is interactive — it requires typing the target name to confirm.
 Use `--yolo` to skip confirmation in automated contexts.
 
-By default, org-scoped unenroll disables (not deletes) PEM secrets and
-removes the org from the shared WIF provider's attribute condition.
-Repo-scoped unenroll disables the repo-specific WIF provider — it does
-not touch PEM secrets. Both are reversible — re-enrollment will re-enable
-disabled resources and re-add the org to the WIF condition.
+Org-scoped unenroll removes the org from mint env vars and the shared WIF
+provider's attribute condition. Role PEM secrets are shared across orgs and
+are not modified. Repo-scoped unenroll disables the repo-specific WIF
+provider — it does not touch PEM secrets.
 
-To permanently delete instead of disable, add `--delete-secrets` (org only)
-or `--delete-provider` (repo only) to the same unenroll command. These are
-flags on a single invocation, not separate follow-up commands:
+To permanently delete a repo-scoped WIF provider instead of disabling it,
+add `--delete-provider` to the unenroll command:
 
 ```bash
-# Preview permanent secret deletion first
-fullsend mint unenroll "$TARGET" \
-  --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-secrets --dry-run
-
-# Permanently delete PEM secrets (org-scoped only, after dry-run confirms)
-fullsend mint unenroll "$TARGET" \
-  --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-secrets
-
 # Preview permanent WIF provider deletion first (repo-scoped only)
 fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider --dry-run
@@ -269,8 +254,8 @@ fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider
 ```
 
-Only use `--delete-secrets` or `--delete-provider` after confirming no
-workflows depend on the resources.
+Only use `--delete-provider` after confirming no workflows depend on the
+provider.
 
 ## Troubleshooting
 
@@ -340,14 +325,14 @@ gcloud run revisions list \
 ### Check PEM secrets
 
 ```bash
-# List all PEM secrets for the org
+# List role PEM secrets (shared across orgs on the mint)
 gcloud secrets list --project="$GCP_PROJECT" \
-  --filter="name:fullsend-${ORG}--" \
+  --filter="name:fullsend- AND name:-app-pem" \
   --format="table(name,createTime)"
 
-# Check if a specific secret has an enabled version
+# Check if a specific role secret has an enabled version
 gcloud secrets versions describe latest \
-  --secret="fullsend-${ORG}--coder-app-pem" \
+  --secret="fullsend-coder-app-pem" \
   --project="$GCP_PROJECT" --format="value(state)"
 ```
 
@@ -379,5 +364,5 @@ gcloud functions logs read fullsend-mint \
 ```
 
 For more troubleshooting scenarios, see the
-[Troubleshooting section](../../docs/guides/infrastructure/mint-administration.md#troubleshooting)
+[mint administration guide](../../docs/guides/infrastructure/mint-administration.md)
 in the mint administration guide.
