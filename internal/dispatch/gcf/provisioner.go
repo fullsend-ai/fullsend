@@ -410,6 +410,26 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 	}
 
 	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
+
+	// Defense-in-depth: if ALLOWED_ORGS is empty but ROLE_APP_IDS has
+	// role-only entries, the mint has been bootstrapped and should have
+	// enrolled orgs. Empty ALLOWED_ORGS in this state indicates env var
+	// data loss (e.g., stale read from a diverged revision), not a first
+	// enrollment. Abort to prevent silently unenrolling all existing orgs.
+	if allowedOrgs == "" {
+		var roleAppIDMap map[string]string
+		if raw := trafficEnvVars["ROLE_APP_IDS"]; raw != "" {
+			_ = json.Unmarshal([]byte(raw), &roleAppIDMap)
+		}
+		roleOnly := mintcore.RoleOnlyAppIDs(roleAppIDMap)
+		if len(roleOnly) > 0 {
+			return fmt.Errorf(
+				"data inconsistency: ALLOWED_ORGS is empty but ROLE_APP_IDS has %d configured roles; "+
+					"this suggests env var data loss — run 'fullsend mint status --project=%s' to investigate",
+				len(roleOnly), p.cfg.ProjectID)
+		}
+	}
+
 	orgPresent := false
 	for _, o := range strings.Split(allowedOrgs, ",") {
 		if strings.EqualFold(strings.TrimSpace(o), org) {
