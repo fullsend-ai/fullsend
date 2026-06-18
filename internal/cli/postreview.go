@@ -326,13 +326,24 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// accept review comments on lines outside the PR diff. The
 	// findings themselves remain in the sticky comment body and
 	// continue to influence the review verdict.
-	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+	//
+	// Medium+ findings whose line is outside a diff hunk but whose
+	// file is in the diff fall back to file-level comments so they
+	// remain visible on the PR code. Info-severity findings are
+	// suppressed from inline comments entirely (#2287).
+	inlineComments, fileFiltered, lineFiltered, infoFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
 
 	if fileFiltered > 0 {
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
 	}
 	if lineFiltered > 0 {
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict", lineFiltered))
+	}
+	if infoFiltered > 0 {
+		printer.StepInfo(fmt.Sprintf("%d info-severity finding(s) suppressed from inline comments", infoFiltered))
+	}
+	if fileLevelFallback > 0 {
+		printer.StepInfo(fmt.Sprintf("%d medium+ finding(s) posted as file-level comment(s) (line outside diff hunk)", fileLevelFallback))
 	}
 
 	// COMMENT verdicts skip the formal review unless there are inline-
@@ -363,20 +374,49 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	return nil
 }
 
+// isMediumPlusSeverity returns true for severity levels at Medium or
+// above: critical, high, medium (case-insensitive).
+func isMediumPlusSeverity(severity string) bool {
+	switch strings.ToLower(severity) {
+	case "critical", "high", "medium":
+		return true
+	default:
+		return false
+	}
+}
+
 // findingsToReviewComments converts review findings with file and line
 // locations into inline review comments. Findings without a file path
 // or line number are omitted — they remain in the sticky comment body.
+//
+// Severity-based filtering:
+//   - Info-severity findings are never posted inline (they add noise
+//     without actionable value; see #2287).
+//   - Medium+ findings (critical, high, medium) whose file is in the
+//     PR diff but whose line falls outside any diff hunk are posted as
+//     file-level comments instead of being dropped. This ensures the
+//     most important findings remain visible on the code, even when the
+//     exact line is outside the changed region.
+//   - Low-severity findings outside diff hunks are dropped as before.
+//
 // When diffHunks is non-nil, findings referencing files outside the PR
-// diff or lines outside any diff hunk are omitted to avoid GitHub 422
-// errors. Files with empty hunk lists (binary files, truncated patches)
-// skip line-level filtering — the file is known to be in the diff but
-// hunk coverage is unavailable. Returns the comments and counts of
-// findings dropped for each reason (file not in diff, line not in hunk).
-func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
+// diff are omitted to avoid GitHub 422 errors. Files with empty hunk
+// lists (binary files, truncated patches) skip line-level filtering —
+// the file is known to be in the diff but hunk coverage is unavailable.
+//
+// Returns the comments and counts of findings dropped for each reason
+// (file not in diff, line not in hunk, info-severity filtered), plus
+// the count of Medium+ findings that fell back to file-level comments.
+func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int, int, int) {
 	var comments []forge.ReviewComment
-	var fileFiltered, lineFiltered int
+	var fileFiltered, lineFiltered, infoFiltered, fileLevelFallback int
 	for _, f := range findings {
 		if f.File == "" || f.Line <= 0 {
+			continue
+		}
+		// Info-severity findings are suppressed from inline comments (#2287).
+		if strings.EqualFold(f.Severity, "info") {
+			infoFiltered++
 			continue
 		}
 		if diffHunks != nil {
@@ -386,6 +426,17 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 				continue
 			}
 			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
+				// Medium+ findings fall back to file-level comments
+				// so they remain visible on the PR.
+				if isMediumPlusSeverity(f.Severity) {
+					comments = append(comments, forge.ReviewComment{
+						Path:        f.File,
+						Body:        formatFindingComment(f),
+						SubjectType: "file",
+					})
+					fileLevelFallback++
+					continue
+				}
 				lineFiltered++
 				continue
 			}
@@ -396,7 +447,7 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 			Body: formatFindingComment(f),
 		})
 	}
-	return comments, fileFiltered, lineFiltered
+	return comments, fileFiltered, lineFiltered, infoFiltered, fileLevelFallback
 }
 
 // formatFindingComment renders a single review finding as a Markdown

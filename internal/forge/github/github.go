@@ -1957,9 +1957,10 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 	}
 
 	type reviewComment struct {
-		Path string `json:"path"`
-		Line int    `json:"line,omitempty"`
-		Body string `json:"body"`
+		Path        string `json:"path"`
+		Line        int    `json:"line,omitempty"`
+		Body        string `json:"body"`
+		SubjectType string `json:"subject_type,omitempty"`
 	}
 
 	type reviewPayload struct {
@@ -1976,9 +1977,10 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 	}
 	for _, rc := range comments {
 		payload.Comments = append(payload.Comments, reviewComment{
-			Path: rc.Path,
-			Line: rc.Line,
-			Body: rc.Body,
+			Path:        rc.Path,
+			Line:        rc.Line,
+			Body:        rc.Body,
+			SubjectType: rc.SubjectType,
 		})
 	}
 
