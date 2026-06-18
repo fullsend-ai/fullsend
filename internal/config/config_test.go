@@ -10,7 +10,7 @@ import (
 
 func TestValidRoles(t *testing.T) {
 	roles := ValidRoles()
-	assert.Len(t, roles, 7)
+	assert.Len(t, roles, 10)
 	assert.Contains(t, roles, "fullsend")
 	assert.Contains(t, roles, "triage")
 	assert.Contains(t, roles, "coder")
@@ -18,17 +18,23 @@ func TestValidRoles(t *testing.T) {
 	assert.Contains(t, roles, "fix")
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
+	assert.Contains(t, roles, "explore")
+	assert.Contains(t, roles, "refine")
+	assert.Contains(t, roles, "critique")
 }
 
 func TestPerRepoDefaultRoles(t *testing.T) {
 	roles := PerRepoDefaultRoles()
-	assert.Len(t, roles, 6)
+	assert.Len(t, roles, 9)
 	assert.Contains(t, roles, "triage")
 	assert.Contains(t, roles, "coder")
 	assert.Contains(t, roles, "review")
 	assert.Contains(t, roles, "fix")
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
+	assert.Contains(t, roles, "explore")
+	assert.Contains(t, roles, "refine")
+	assert.Contains(t, roles, "critique")
 	// "fullsend" dispatch role must be excluded in per-repo mode.
 	assert.NotContains(t, roles, "fullsend")
 }

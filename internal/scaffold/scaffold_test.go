@@ -94,6 +94,39 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/post-prioritize-test.sh",
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
+		// Refinement pipeline
+		"agents/explore.md",
+		"agents/refine.md",
+		"agents/critique.md",
+		"harness/explore.yaml",
+		"harness/refine.yaml",
+		"harness/critique.yaml",
+		"policies/explore.yaml",
+		"policies/refine.yaml",
+		"policies/critique.yaml",
+		"schemas/explore-result.schema.json",
+		"schemas/refine-result.schema.json",
+		"schemas/critique-result.schema.json",
+		"scripts/pre-explore.sh",
+		"scripts/post-explore.sh",
+		"scripts/pre-refine.sh",
+		"scripts/post-refine.sh",
+		"scripts/pre-critique.sh",
+		"scripts/post-critique.sh",
+		"scripts/create-children.sh",
+		"scripts/pipeline-events.sh",
+		"scripts/pipeline-helpers.sh",
+		"scripts/markdown-to-adf.py",
+		"scripts/sanitize-artifacts.sh",
+		"skills/jira-read/SKILL.md",
+		"skills/public-research/SKILL.md",
+		".github/workflows/explore.yml",
+		".github/workflows/refine.yml",
+		".github/workflows/critique.yml",
+		".github/workflows/create-children.yml",
+		".github/workflows/refine-dispatch.yml",
+		".github/workflows/jira-dispatch.yml",
+		".github/workflows/jira-comment-poller.yml",
 	}
 
 	for _, path := range expected {
@@ -880,6 +913,336 @@ func TestPrioritizeHarnessContent(t *testing.T) {
 	assert.Contains(t, s, "post_script")
 	assert.Contains(t, s, "runner_env")
 	assert.Contains(t, s, "PROJECT_NUMBER")
+}
+
+// --- Refinement pipeline content tests ---
+
+func TestExploreWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/explore.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: explore")
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "issue_key")
+	assert.Contains(t, s, "issue_source")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.Contains(t, s, "FULLSEND_MINT_URL")
+	assert.NotContains(t, s, "secrets: inherit")
+	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
+	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-explore-")
+	assert.Contains(t, s, "cancel-in-progress: true")
+	assert.Contains(t, s, "permissions:")
+	assert.Contains(t, s, "actions: write")
+	assert.Contains(t, s, "id-token: write")
+	assert.Contains(t, s, "issues: write")
+	assert.Contains(t, s, "contents: read")
+	assert.Contains(t, s, "JIRA_HOST")
+	assert.Contains(t, s, "JIRA_EMAIL")
+	assert.Contains(t, s, "JIRA_API_TOKEN")
+	assert.Contains(t, s, "jira_project_visibility")
+}
+
+func TestRefineWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/refine.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: refine")
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "issue_key")
+	assert.Contains(t, s, "explore_run_id")
+	assert.Contains(t, s, "review_round")
+	assert.Contains(t, s, "max_review_rounds")
+	assert.Contains(t, s, "auto_create")
+	assert.Contains(t, s, "critique_run_id")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.Contains(t, s, "FULLSEND_MINT_URL")
+	assert.NotContains(t, s, "secrets: inherit")
+	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
+	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-refine-")
+	assert.Contains(t, s, "cancel-in-progress: false")
+	assert.Contains(t, s, "permissions:")
+	assert.Contains(t, s, "actions: write")
+	assert.Contains(t, s, "id-token: write")
+	assert.Contains(t, s, "issues: write")
+	assert.Contains(t, s, "contents: read")
+}
+
+func TestCritiqueWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/critique.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: critique")
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "issue_key")
+	assert.Contains(t, s, "refine_run_id")
+	assert.Contains(t, s, "review_round")
+	assert.Contains(t, s, "max_review_rounds")
+	assert.Contains(t, s, "auto_create")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.Contains(t, s, "FULLSEND_MINT_URL")
+	assert.NotContains(t, s, "secrets: inherit")
+	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
+	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-critique-")
+	assert.Contains(t, s, "cancel-in-progress: false")
+	assert.Contains(t, s, "permissions:")
+	assert.Contains(t, s, "actions: write")
+	assert.Contains(t, s, "id-token: write")
+	assert.Contains(t, s, "issues: write")
+	assert.Contains(t, s, "contents: read")
+}
+
+func TestCreateChildrenWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/create-children.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "# fullsend-stage: create-children")
+	assert.Contains(t, s, "workflow_dispatch")
+	assert.Contains(t, s, "issue_key")
+	assert.Contains(t, s, "refine_run_id")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.Contains(t, s, "FULLSEND_MINT_URL")
+	assert.NotContains(t, s, "secrets: inherit")
+	assert.Contains(t, s, "concurrency:")
+	assert.Contains(t, s, "fullsend-create-children-")
+	assert.Contains(t, s, "cancel-in-progress: false")
+}
+
+func TestRefineDispatchWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/refine-dispatch.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "/fs-refine")
+	assert.Contains(t, s, "/fs-create")
+	assert.Contains(t, s, "author_association == 'OWNER'")
+	assert.Contains(t, s, "author_association == 'MEMBER'")
+	assert.Contains(t, s, "author_association == 'COLLABORATOR'")
+	assert.Contains(t, s, "refine-approved")
+	assert.Contains(t, s, "explore.yml")
+	assert.Contains(t, s, "refine.yml")
+}
+
+func TestJiraDispatchWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/jira-dispatch.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "/fs-refine")
+	assert.Contains(t, s, "jira_key")
+	assert.Contains(t, s, "JIRA_PROJECT_VISIBILITY")
+	assert.Contains(t, s, "explore.yml")
+}
+
+func TestJiraCommentPollerWorkflowContent(t *testing.T) {
+	content, err := FullsendRepoFile(".github/workflows/jira-comment-poller.yml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "schedule")
+	assert.Contains(t, s, "cron")
+	assert.Contains(t, s, "labels = fullsend")
+	assert.Contains(t, s, "jira-dispatch.yml")
+}
+
+func TestExploreAgentPromptContent(t *testing.T) {
+	content, err := FullsendRepoFile("agents/explore.md")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "agent-result.json")
+	assert.Contains(t, s, "confidence")
+	assert.Contains(t, s, "technical_landscape")
+	assert.Contains(t, s, "related_work")
+	assert.Contains(t, s, "disallowedTools")
+}
+
+func TestRefineAgentPromptContent(t *testing.T) {
+	content, err := FullsendRepoFile("agents/refine.md")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "agent-result.json")
+	assert.Contains(t, s, "children")
+	assert.Contains(t, s, "acceptance_criteria")
+	assert.Contains(t, s, "parent_title")
+	assert.Contains(t, s, "disallowedTools")
+}
+
+func TestCritiqueAgentPromptContent(t *testing.T) {
+	content, err := FullsendRepoFile("agents/critique.md")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "agent-result.json")
+	assert.Contains(t, s, "verdict")
+	assert.Contains(t, s, "approved")
+	assert.Contains(t, s, "revise")
+	assert.Contains(t, s, "needs_input")
+	assert.Contains(t, s, "disallowedTools")
+}
+
+func TestExploreSchemaContent(t *testing.T) {
+	content, err := FullsendRepoFile("schemas/explore-result.schema.json")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "$schema")
+	assert.Contains(t, s, "technical_landscape")
+	assert.Contains(t, s, "related_work")
+	assert.Contains(t, s, "confidence")
+	assert.Contains(t, s, "summary")
+}
+
+func TestRefineSchemaContent(t *testing.T) {
+	content, err := FullsendRepoFile("schemas/refine-result.schema.json")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "$schema")
+	assert.Contains(t, s, "children")
+	assert.Contains(t, s, "acceptance_criteria")
+	assert.Contains(t, s, "parent_title")
+	assert.Contains(t, s, "complete")
+}
+
+func TestCritiqueSchemaContent(t *testing.T) {
+	content, err := FullsendRepoFile("schemas/critique-result.schema.json")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "$schema")
+	assert.Contains(t, s, "verdict")
+	assert.Contains(t, s, "approved")
+	assert.Contains(t, s, "revise")
+	assert.Contains(t, s, "needs_input")
+	assert.Contains(t, s, "assessment")
+}
+
+func TestExploreHarnessContent(t *testing.T) {
+	content, err := FullsendRepoFile("harness/explore.yaml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "agents/explore.md")
+	assert.Contains(t, s, "pre_script")
+	assert.Contains(t, s, "post_script")
+	assert.Contains(t, s, "runner_env")
+	assert.Contains(t, s, "ISSUE_KEY")
+}
+
+func TestRefineHarnessContent(t *testing.T) {
+	content, err := FullsendRepoFile("harness/refine.yaml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "agents/refine.md")
+	assert.Contains(t, s, "pre_script")
+	assert.Contains(t, s, "post_script")
+	assert.Contains(t, s, "runner_env")
+	assert.Contains(t, s, "EXPLORE_RUN_ID")
+}
+
+func TestCritiqueHarnessContent(t *testing.T) {
+	content, err := FullsendRepoFile("harness/critique.yaml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "agents/critique.md")
+	assert.Contains(t, s, "pre_script")
+	assert.Contains(t, s, "post_script")
+	assert.Contains(t, s, "runner_env")
+	assert.Contains(t, s, "REFINE_RUN_ID")
+}
+
+func TestHarnessForgeRunnerEnvMergeRefinementPipeline(t *testing.T) {
+	dir := t.TempDir()
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
+		dest := filepath.Join(dir, path)
+		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(dest, content, 0o644)
+	})
+	require.NoError(t, err, "extracting scaffold")
+
+	tests := []struct {
+		file            string
+		topLevelKeys    []string
+		forgeGithubKeys []string
+	}{
+		{
+			file:            "explore.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY"},
+			forgeGithubKeys: []string{"GH_TOKEN"},
+		},
+		{
+			file:            "refine.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY", "EXPLORE_RUN_ID"},
+			forgeGithubKeys: []string{"GH_TOKEN"},
+		},
+		{
+			file:            "critique.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY", "REFINE_RUN_ID"},
+			forgeGithubKeys: []string{"GH_TOKEN"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			harnessPath := filepath.Join(dir, "harness", tt.file)
+			h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
+			require.NoError(t, loadErr)
+
+			for _, key := range tt.topLevelKeys {
+				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain top-level key %s", key)
+			}
+			for _, key := range tt.forgeGithubKeys {
+				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain forge.github key %s", key)
+			}
+		})
+	}
+}
+
+func TestPipelineHelpersContent(t *testing.T) {
+	content, err := FullsendRepoFile("scripts/pipeline-helpers.sh")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "find_agent_result")
+	assert.Contains(t, s, "determine_reply_target")
+	assert.Contains(t, s, "post_comment")
+	assert.Contains(t, s, "build_run_link")
+	assert.Contains(t, s, "add_label")
+	assert.Contains(t, s, "remove_label")
+	assert.Contains(t, s, "jira_comment")
+}
+
+func TestPipelineEventsContent(t *testing.T) {
+	content, err := FullsendRepoFile("scripts/pipeline-events.sh")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "pe_start")
+	assert.Contains(t, s, "pe_end")
+	assert.Contains(t, s, "pe_error")
+	assert.Contains(t, s, "pe_copy_to_output")
+	assert.Contains(t, s, "pipeline-events.jsonl")
+}
+
+func TestSanitizeArtifactsContent(t *testing.T) {
+	content, err := FullsendRepoFile("scripts/sanitize-artifacts.sh")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "redact")
+	assert.Contains(t, s, "atlassian.net")
+	assert.Contains(t, s, "redacted-email")
+	assert.Contains(t, s, "redacted-host")
+	assert.Contains(t, s, "agent-result.json")
+}
+
+func TestCreateChildrenScriptContent(t *testing.T) {
+	content, err := FullsendRepoFile("scripts/create-children.sh")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "RESULT_FILE")
+	assert.Contains(t, s, "github_create_issue")
+	assert.Contains(t, s, "jira_create_issue")
+	assert.Contains(t, s, "resolve_jira_type")
+	assert.Contains(t, s, "TITLE_TO_KEY")
+	assert.Contains(t, s, "MAX_PASSES=5")
+	assert.Contains(t, s, "CREATED_CHILD_COUNT")
 }
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {

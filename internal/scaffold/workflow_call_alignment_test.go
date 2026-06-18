@@ -47,7 +47,7 @@ type callerJob struct {
 // reusableWorkflowRef extracts the reusable workflow filename from a uses: reference.
 // Handles both "fullsend-ai/fullsend/.github/workflows/reusable-foo.yml@v0"
 // and "./.github/workflows/reusable-foo.yml".
-var reusableWorkflowRef = regexp.MustCompile(`reusable-[a-z]+\.yml`)
+var reusableWorkflowRef = regexp.MustCompile(`reusable-[a-z][-a-z]*\.yml`)
 
 // callerPair defines a caller → reusable workflow relationship to validate.
 type callerPair struct {
@@ -97,6 +97,10 @@ func TestWorkflowCallInputAlignment(t *testing.T) {
 		{"scaffold/fix.yml", loadRenderedScaffoldCaller(".github/workflows/fix.yml"), "fix"},
 		{"scaffold/retro.yml", loadRenderedScaffoldCaller(".github/workflows/retro.yml"), "retro"},
 		{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
+		{"scaffold/explore.yml", loadRenderedScaffoldCaller(".github/workflows/explore.yml"), "explore"},
+		{"scaffold/refine.yml", loadRenderedScaffoldCaller(".github/workflows/refine.yml"), "refine"},
+		{"scaffold/critique.yml", loadRenderedScaffoldCaller(".github/workflows/critique.yml"), "critique"},
+		{"scaffold/create-children.yml", loadRenderedScaffoldCaller(".github/workflows/create-children.yml"), "create-children"},
 	}
 
 	// Also validate reusable-dispatch.yml's stage jobs.
@@ -184,7 +188,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 		"FULLSEND_GCP_PROJECT_ID",
 	}
 
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize", "explore", "refine", "critique", "create-children"}
 
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {

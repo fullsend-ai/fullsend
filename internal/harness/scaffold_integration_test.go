@@ -177,8 +177,8 @@ func TestDiscoverAgents_ScaffoldDirectory(t *testing.T) {
 	agents, err := DiscoverAgents(harnessDir)
 	require.NoError(t, err)
 
-	// Expect all 6 scaffold harnesses discovered.
-	require.Len(t, agents, 6, "should discover all 6 scaffold harnesses")
+	// Expect all 9 scaffold harnesses discovered.
+	require.Len(t, agents, 9, "should discover all 9 scaffold harnesses")
 
 	// Build a map of filename -> AgentInfo for easier assertion.
 	byFilename := make(map[string]AgentInfo, len(agents))
@@ -193,6 +193,9 @@ func TestDiscoverAgents_ScaffoldDirectory(t *testing.T) {
 		"retro.yaml":      {"retro", "fullsend-ai-retro"},
 		"review.yaml":     {"review", "fullsend-ai-review"},
 		"triage.yaml":     {"triage", "fullsend-ai-triage"},
+		"explore.yaml":    {"explore", "fullsend-ai-explore"},
+		"refine.yaml":     {"refine", "fullsend-ai-refine"},
+		"critique.yaml":   {"critique", "fullsend-ai-critique"},
 	}
 
 	for filename, want := range expected {

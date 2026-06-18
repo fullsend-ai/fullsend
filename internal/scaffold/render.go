@@ -31,6 +31,10 @@ var thinStageWorkflows = []struct {
 	{"fix", ".github/workflows/fix.yml"},
 	{"retro", ".github/workflows/retro.yml"},
 	{"prioritize", ".github/workflows/prioritize.yml"},
+	{"explore", ".github/workflows/explore.yml"},
+	{"refine", ".github/workflows/refine.yml"},
+	{"critique", ".github/workflows/critique.yml"},
+	{"create-children", ".github/workflows/create-children.yml"},
 }
 
 // RenderTemplate applies vendoring-aware substitutions to scaffold templates.

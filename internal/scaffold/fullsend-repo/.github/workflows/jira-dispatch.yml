@@ -1,0 +1,185 @@
+---
+# fullsend-stage: jira-dispatch
+name: jira-dispatch
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      jira_key:
+        description: 'Jira issue key (e.g., SECURESIGN-1251)'
+        required: true
+        type: string
+      command:
+        description: 'Slash command to execute (e.g., /fs-refine, /fs-create)'
+        required: true
+        type: string
+        default: '/fs-refine'
+  repository_dispatch:
+    types: [jira-command, jira-refine]
+
+concurrency:
+  group: jira-dispatch-${{ inputs.jira_key || github.event.client_payload.jira_key || 'unknown' }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse command and dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JIRA_KEY: ${{ inputs.jira_key || github.event.client_payload.jira_key }}
+          RAW_COMMAND: ${{ inputs.command || github.event.client_payload.command || '' }}
+          EVENT_TYPE: ${{ github.event.action || 'workflow_dispatch' }}
+          REPO: ${{ github.repository }}
+          JIRA_PROJECT_VISIBILITY: ${{ vars.JIRA_PROJECT_VISIBILITY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$JIRA_KEY" ]]; then
+            echo "::error::jira_key is required"
+            exit 1
+          fi
+
+          if [[ ! "$JIRA_KEY" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+            echo "::error::jira_key must match PROJECT-123 pattern, got: $JIRA_KEY"
+            exit 1
+          fi
+
+          # Block private Jira on public repos to prevent data leakage.
+          # Public Jira projects on public repos are fine — set JIRA_PROJECT_VISIBILITY=public.
+          JIRA_VIS="${JIRA_PROJECT_VISIBILITY:-private}"
+          if [[ "$JIRA_VIS" != "public" ]]; then
+            REPO_VISIBILITY=$(gh api "repos/${REPO}" --jq '.visibility' 2>/dev/null || echo "unknown")
+            if [[ "$REPO_VISIBILITY" == "public" ]]; then
+              echo "::error::SECURITY: Private Jira dispatch blocked — repo ${REPO} is public."
+              echo "::error::Private Jira data would leak into public artifacts/logs."
+              echo "::error::Use a private config repo, or set JIRA_PROJECT_VISIBILITY=public for public Jira projects."
+              exit 1
+            fi
+          fi
+
+          if [[ "$EVENT_TYPE" == "jira-refine" && -z "$RAW_COMMAND" ]]; then
+            RAW_COMMAND="/fs-refine"
+          fi
+
+          COMMAND="$(printf '%s\n' "$RAW_COMMAND" | head -1 | awk '{print $1}')"
+
+          if [[ -z "$COMMAND" ]]; then
+            echo "::error::No command found in payload"
+            exit 1
+          fi
+
+          echo "Jira dispatch:"
+          echo "  Jira key: ${JIRA_KEY}"
+          echo "  Command: ${COMMAND}"
+          echo "  Full command: ${RAW_COMMAND}"
+          echo "  Event type: ${EVENT_TYPE}"
+
+          case "$COMMAND" in
+
+            /fs-refine)
+              SKIP_EXPLORE=false
+              CONTEXT_REF=""
+              AUTO_CREATE="false"
+              TARGET_REPO=""
+
+              if printf '%s\n' "$RAW_COMMAND" | grep -qw -- '--skip-explore'; then
+                SKIP_EXPLORE=true
+              fi
+              if printf '%s\n' "$RAW_COMMAND" | grep -qw -- '--auto-create'; then
+                AUTO_CREATE="true"
+              fi
+              CONTEXT_REF=$(printf '%s\n' "$RAW_COMMAND" | grep -oP '(?<=--context\s)\S+' || true)
+              TARGET_REPO=$(printf '%s\n' "$RAW_COMMAND" | grep -oP '(?<=--repo\s)\S+' || true)
+
+              echo "  Skip explore: ${SKIP_EXPLORE}"
+              echo "  Auto-create: ${AUTO_CREATE}"
+              echo "  Context ref: ${CONTEXT_REF:-none}"
+              echo "  Target repo: ${TARGET_REPO:-none (web research only)}"
+
+              DISPATCH_ARGS=(
+                -f issue_key="$JIRA_KEY"
+                -f issue_source="jira"
+                -f auto_create="$AUTO_CREATE"
+              )
+
+              if [[ -n "$TARGET_REPO" ]]; then
+                DISPATCH_ARGS+=(-f repo_full_name="$TARGET_REPO")
+              fi
+
+              if [[ "$SKIP_EXPLORE" == "true" || -n "$CONTEXT_REF" ]]; then
+                if [[ -n "$CONTEXT_REF" ]]; then
+                  DISPATCH_ARGS+=(-f explore_context_ref="$CONTEXT_REF")
+                fi
+                gh workflow run refine.yml \
+                  --repo "$REPO" \
+                  "${DISPATCH_ARGS[@]}"
+
+                echo "::notice::Refine dispatched directly for ${JIRA_KEY} (skip explore)"
+              else
+                gh workflow run explore.yml \
+                  --repo "$REPO" \
+                  "${DISPATCH_ARGS[@]}"
+
+                echo "::notice::Explore dispatched for ${JIRA_KEY}${TARGET_REPO:+ (target: $TARGET_REPO)}"
+              fi
+              ;;
+
+            /fs-create)
+              echo "Dispatching child issue creation for ${JIRA_KEY}"
+
+              EXISTING_CREATE=$(gh run list --repo "$REPO" --workflow "create-children" \
+                --limit 10 --json databaseId,status,conclusion,displayTitle \
+                --jq "[.[] | select(.status == \"completed\" and .conclusion == \"success\" and (.displayTitle | contains(\"$JIRA_KEY\")))] | .[0].databaseId // empty" \
+                2>/dev/null || true)
+
+              if [[ -n "$EXISTING_CREATE" ]]; then
+                echo "::error::Child issues were already created for ${JIRA_KEY} (run: ${EXISTING_CREATE}). To recreate, run /fs-refine first."
+                exit 1
+              fi
+
+              REFINE_RUN_ID=$(gh run list --repo "$REPO" --workflow "fullsend-refine" \
+                --limit 20 --json databaseId,status,conclusion,displayTitle \
+                --jq "[.[] | select(.status == \"completed\" and .conclusion == \"success\" and (.displayTitle | contains(\"$JIRA_KEY\")))] | .[0].databaseId // empty" \
+                2>/dev/null || true)
+
+              if [[ -z "$REFINE_RUN_ID" ]]; then
+                echo "::error::No successful refine run found to create issues from"
+                exit 1
+              fi
+
+              CRITIQUE_RUN_ID=$(gh run list --repo "$REPO" --workflow "fullsend-critique" \
+                --limit 10 --json databaseId,displayTitle \
+                --jq "[.[] | select(.displayTitle | contains(\"$JIRA_KEY\"))] | .[0].databaseId // empty" \
+                2>/dev/null || true)
+
+              DISPATCH_ARGS=(
+                --repo "$REPO"
+                -f issue_key="$JIRA_KEY"
+                -f issue_source="jira"
+                -f repo_full_name="$REPO"
+                -f refine_run_id="$REFINE_RUN_ID"
+              )
+
+              if [[ -n "$CRITIQUE_RUN_ID" ]]; then
+                DISPATCH_ARGS+=(-f critique_run_id="$CRITIQUE_RUN_ID")
+                echo "Found critique run for ${JIRA_KEY}: $CRITIQUE_RUN_ID"
+              fi
+
+              gh workflow run create-children.yml "${DISPATCH_ARGS[@]}"
+
+              echo "::notice::Child issue creation dispatched for ${JIRA_KEY} (refine run: ${REFINE_RUN_ID}${CRITIQUE_RUN_ID:+, critique run: $CRITIQUE_RUN_ID})"
+              ;;
+
+            *)
+              echo "::error::Unknown command '${COMMAND}'. Supported: /fs-refine, /fs-create"
+              exit 1
+              ;;
+          esac

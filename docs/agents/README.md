@@ -12,6 +12,9 @@ the YAML files in [`internal/scaffold/fullsend-repo/harness/`](../../internal/sc
 | [Review](review.md) | Reviews pull requests for correctness, security, and intent alignment |
 | [Fix](fix.md) | Addresses review feedback on open PRs |
 | [Retro](retro.md) | Analyzes completed workflows and proposes system improvements |
+| [Explore](explore.md) | Investigates issues and gathers context for refinement |
+| [Refine](refine.md) | Decomposes issues into structured implementation plans |
+| [Critique](critique.md) | Reviews refinement plans and controls quality gates |
 
 ## Customization
 

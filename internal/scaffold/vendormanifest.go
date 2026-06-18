@@ -136,9 +136,13 @@ func (m *VendorManifest) CleanupPaths(workflowPrefix string) []string {
 
 var vendoredReusableWorkflows = []string{
 	"reusable-code.yml",
+	"reusable-create-children.yml",
+	"reusable-critique.yml",
 	"reusable-dispatch.yml",
+	"reusable-explore.yml",
 	"reusable-fix.yml",
 	"reusable-prioritize.yml",
+	"reusable-refine.yml",
 	"reusable-retro.yml",
 	"reusable-review.yml",
 	"reusable-triage.yml",

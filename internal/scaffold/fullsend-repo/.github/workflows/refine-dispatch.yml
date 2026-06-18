@@ -1,0 +1,200 @@
+---
+# fullsend-stage: refine-dispatch
+name: refine-dispatch
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.comment.user.type != 'Bot'
+      && (
+        github.event.comment.author_association == 'OWNER'
+        || github.event.comment.author_association == 'MEMBER'
+        || github.event.comment.author_association == 'COLLABORATOR'
+        || github.event.comment.user.login == github.event.issue.user.login
+      )
+      && (
+        startsWith(github.event.comment.body, '/fs-refine')
+        || startsWith(github.event.comment.body, '/fs-create')
+        || (
+          contains(join(github.event.issue.labels.*.name, ','), 'refine-needs-input')
+        )
+        || (
+          contains(join(github.event.issue.labels.*.name, ','), 'human-refinement')
+        )
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse command and dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | awk '{print $1}')"
+          IS_REFINE_CMD=false
+          IS_CREATE_CMD=false
+          IS_FOLLOWUP=false
+
+          if [[ "$COMMAND" == "/fs-refine" ]]; then
+            IS_REFINE_CMD=true
+          elif [[ "$COMMAND" == "/fs-create" ]]; then
+            IS_CREATE_CMD=true
+          elif echo "$LABELS" | grep -qF "refine-needs-input" || echo "$LABELS" | grep -qF "human-refinement"; then
+            IS_FOLLOWUP=true
+          fi
+
+          if [[ "$IS_REFINE_CMD" == "false" && "$IS_CREATE_CMD" == "false" && "$IS_FOLLOWUP" == "false" ]]; then
+            echo "Not a refine/create trigger — skipping"
+            exit 0
+          fi
+
+          if [[ "$IS_CREATE_CMD" == "true" ]]; then
+            echo "Dispatching child issue creation for #${ISSUE_NUMBER}"
+
+            if ! echo "$LABELS" | grep -qF "refine-approved"; then
+              gh api "repos/${REPO}/issues/comments/${{ github.event.comment.id }}/reactions" \
+                -f content="confused" --silent 2>/dev/null || true
+              echo "::error::Cannot create children — the plan has not been approved by the critique agent (missing 'refine-approved' label)"
+              exit 1
+            fi
+
+            REFINE_RUN_ID=$(gh run list --repo "$REPO" --workflow "fullsend-refine" \
+              --limit 20 --json databaseId,status,conclusion,displayTitle \
+              --jq "[.[] | select(.status == \"completed\" and .conclusion == \"success\" and (.displayTitle | endswith(\" · ${ISSUE_NUMBER}\")))] | .[0].databaseId // empty" \
+              2>/dev/null || true)
+
+            if [[ -z "$REFINE_RUN_ID" ]]; then
+              gh api "repos/${REPO}/issues/comments/${{ github.event.comment.id }}/reactions" \
+                -f content="confused" --silent 2>/dev/null || true
+              echo "::error::No successful refine run found for issue #${ISSUE_NUMBER}"
+              exit 1
+            fi
+
+            CRITIQUE_RUN_ID=$(gh run list --repo "$REPO" --workflow "fullsend-critique" \
+              --limit 10 --json databaseId,displayTitle \
+              --jq "[.[] | select(.displayTitle | endswith(\" · ${ISSUE_NUMBER}\"))] | .[0].databaseId // empty" \
+              2>/dev/null || true)
+
+            DISPATCH_ARGS=(
+              --repo "$REPO"
+              -f issue_key="$ISSUE_NUMBER"
+              -f issue_source="github"
+              -f repo_full_name="$REPO"
+              -f refine_run_id="$REFINE_RUN_ID"
+              -f github_issue_number="$ISSUE_NUMBER"
+            )
+
+            if [[ -n "$CRITIQUE_RUN_ID" ]]; then
+              DISPATCH_ARGS+=(-f critique_run_id="$CRITIQUE_RUN_ID")
+              echo "Found critique run for issue #${ISSUE_NUMBER}: $CRITIQUE_RUN_ID"
+            fi
+
+            gh workflow run create-children.yml "${DISPATCH_ARGS[@]}"
+
+            ENCODED=$(printf '%s' "refine-approved" | jq -sRr @uri)
+            gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${ENCODED}" \
+              -X DELETE --silent 2>/dev/null || true
+
+            gh api "repos/${REPO}/issues/comments/${{ github.event.comment.id }}/reactions" \
+              -f content="rocket" --silent 2>/dev/null || true
+
+            echo "::notice::Child issue creation dispatched from approved plan"
+            exit 0
+          fi
+
+          SKIP_EXPLORE=false
+          CONTEXT_REF=""
+          AUTO_CREATE="false"
+
+          if [[ "$IS_REFINE_CMD" == "true" ]]; then
+            if printf '%s\n' "${COMMENT_BODY}" | grep -qw -- '--skip-explore'; then
+              SKIP_EXPLORE=true
+            fi
+            if printf '%s\n' "${COMMENT_BODY}" | grep -qw -- '--auto-create'; then
+              AUTO_CREATE="true"
+            fi
+            CONTEXT_REF=$(printf '%s\n' "${COMMENT_BODY}" | grep -oP '(?<=--context\s)\S+' || true)
+          fi
+
+          echo "Dispatching GitHub issue refinement:"
+          echo "  Issue: #${ISSUE_NUMBER}"
+          echo "  Skip explore: ${SKIP_EXPLORE}"
+          echo "  Context ref: ${CONTEXT_REF:-none}"
+          echo "  Auto-create: ${AUTO_CREATE}"
+          echo "  Follow-up: ${IS_FOLLOWUP}"
+
+          if [[ "$IS_FOLLOWUP" == "true" ]]; then
+            EXPLORE_RUN_ID=$(gh run list --repo "$REPO" --workflow "fullsend-explore" \
+              --limit 10 --json databaseId,status,conclusion \
+              --jq '[.[] | select(.status == "completed" and .conclusion == "success")] | .[0].databaseId // empty' \
+              2>/dev/null || true)
+
+            FOLLOWUP_ARGS=(
+              --repo "$REPO"
+              -f issue_key="$ISSUE_NUMBER"
+              -f issue_source="github"
+              -f repo_full_name="$REPO"
+              -f github_issue_number="$ISSUE_NUMBER"
+            )
+            if [[ -n "$EXPLORE_RUN_ID" ]]; then
+              FOLLOWUP_ARGS+=(-f explore_run_id="$EXPLORE_RUN_ID")
+            fi
+
+            gh workflow run refine.yml "${FOLLOWUP_ARGS[@]}"
+
+            gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/refine-needs-input" \
+              -X DELETE --silent 2>/dev/null || true
+            ENCODED_HR=$(printf '%s' "human-refinement" | jq -sRr @uri)
+            gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${ENCODED_HR}" \
+              -X DELETE --silent 2>/dev/null || true
+
+            echo "::notice::Refine re-triggered (follow-up response, explore_run_id=${EXPLORE_RUN_ID:-none})"
+
+          elif [[ "$SKIP_EXPLORE" == "true" || -n "$CONTEXT_REF" ]]; then
+            REFINE_ARGS=(
+              --repo "$REPO"
+              -f issue_key="$ISSUE_NUMBER"
+              -f issue_source="github"
+              -f repo_full_name="$REPO"
+              -f github_issue_number="$ISSUE_NUMBER"
+              -f explore_context_ref="$CONTEXT_REF"
+              -f auto_create="$AUTO_CREATE"
+            )
+
+            gh workflow run refine.yml "${REFINE_ARGS[@]}"
+
+            echo "::notice::Refine dispatched directly (skip explore)"
+
+            gh api "repos/${REPO}/issues/comments/${{ github.event.comment.id }}/reactions" \
+              -f content="rocket" --silent 2>/dev/null || true
+
+          else
+            EXPLORE_ARGS=(
+              --repo "$REPO"
+              -f issue_key="$ISSUE_NUMBER"
+              -f issue_source="github"
+              -f repo_full_name="$REPO"
+              -f github_issue_number="$ISSUE_NUMBER"
+              -f auto_create="$AUTO_CREATE"
+            )
+
+            gh workflow run explore.yml "${EXPLORE_ARGS[@]}"
+
+            echo "::notice::Explore stage dispatched for GitHub issue #${ISSUE_NUMBER}"
+
+            gh api "repos/${REPO}/issues/comments/${{ github.event.comment.id }}/reactions" \
+              -f content="rocket" --silent 2>/dev/null || true
+          fi

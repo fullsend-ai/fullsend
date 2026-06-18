@@ -1,0 +1,64 @@
+---
+# fullsend-stage: critique
+name: Critique
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        required: true
+        type: string
+      issue_source:
+        required: false
+        type: string
+        default: "github"
+      refine_run_id:
+        required: true
+        type: string
+      review_round:
+        required: false
+        type: string
+        default: "1"
+      max_review_rounds:
+        required: false
+        type: string
+        default: "3"
+      auto_create:
+        required: false
+        type: string
+        default: "false"
+
+concurrency:
+  group: fullsend-critique-${{ inputs.issue_key || 'unknown' }}
+  cancel-in-progress: false
+
+jobs:
+  critique:
+    uses: __REUSABLE_WORKFLOW__
+    with:
+      event_type: workflow_dispatch
+      source_repo: ${{ github.repository }}
+      event_payload: "{}"
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      install_mode: per-org
+      fullsend_ai_ref: v0
+      issue_key: ${{ inputs.issue_key }}
+      issue_source: ${{ inputs.issue_source }}
+      refine_run_id: ${{ inputs.refine_run_id }}
+      review_round: ${{ inputs.review_round }}
+      max_review_rounds: ${{ inputs.max_review_rounds }}
+      auto_create: ${{ inputs.auto_create }}
+      jira_project_visibility: ${{ vars.JIRA_PROJECT_VISIBILITY || 'private' }}
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}

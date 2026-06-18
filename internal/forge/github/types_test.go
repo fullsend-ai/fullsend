@@ -10,8 +10,8 @@ import (
 
 func TestDefaultAgentRoles(t *testing.T) {
 	roles := DefaultAgentRoles()
-	require.Len(t, roles, 6)
-	assert.Equal(t, []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}, roles)
+	require.Len(t, roles, 9)
+	assert.Equal(t, []string{"fullsend", "triage", "coder", "review", "retro", "prioritize", "explore", "refine", "critique"}, roles)
 }
 
 func TestAgentAppConfig_Fullsend(t *testing.T) {
@@ -99,6 +99,42 @@ func TestAgentAppConfig_Retro(t *testing.T) {
 	assert.Empty(t, cfg.Permissions.OrganizationProjects)
 
 	// Retro is triggered via workflow_dispatch, no webhook events.
+	assert.Empty(t, cfg.Events)
+}
+
+func TestAgentAppConfig_Explore(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "explore", "fullsend")
+
+	assert.Equal(t, "fullsend-explore", cfg.Name)
+	assert.Equal(t, "write", cfg.Permissions.Actions)
+	assert.Equal(t, "read", cfg.Permissions.Contents)
+	assert.Equal(t, "write", cfg.Permissions.Issues)
+	assert.Empty(t, cfg.Permissions.PullRequests)
+
+	assert.Empty(t, cfg.Events)
+}
+
+func TestAgentAppConfig_Refine(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "refine", "fullsend")
+
+	assert.Equal(t, "fullsend-refine", cfg.Name)
+	assert.Equal(t, "write", cfg.Permissions.Actions)
+	assert.Equal(t, "read", cfg.Permissions.Contents)
+	assert.Equal(t, "write", cfg.Permissions.Issues)
+	assert.Empty(t, cfg.Permissions.PullRequests)
+
+	assert.Empty(t, cfg.Events)
+}
+
+func TestAgentAppConfig_Critique(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "critique", "fullsend")
+
+	assert.Equal(t, "fullsend-critique", cfg.Name)
+	assert.Equal(t, "write", cfg.Permissions.Actions)
+	assert.Equal(t, "read", cfg.Permissions.Contents)
+	assert.Equal(t, "write", cfg.Permissions.Issues)
+	assert.Empty(t, cfg.Permissions.PullRequests)
+
 	assert.Empty(t, cfg.Events)
 }
 

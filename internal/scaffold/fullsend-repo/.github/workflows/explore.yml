@@ -1,0 +1,65 @@
+---
+# fullsend-stage: explore
+name: Explore
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        required: true
+        type: string
+      issue_source:
+        required: false
+        type: string
+        default: "github"
+      event_type:
+        required: false
+        type: string
+        default: "workflow_dispatch"
+      source_repo:
+        required: false
+        type: string
+        default: ""
+      event_payload:
+        required: false
+        type: string
+        default: "{}"
+      auto_create:
+        required: false
+        type: string
+        default: "false"
+      repo_full_name:
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: fullsend-explore-${{ inputs.issue_key || 'unknown' }}
+  cancel-in-progress: true
+
+jobs:
+  explore:
+    uses: __REUSABLE_WORKFLOW__
+    with:
+      event_type: ${{ inputs.event_type || 'workflow_dispatch' }}
+      source_repo: ${{ inputs.source_repo || github.repository }}
+      event_payload: ${{ inputs.event_payload || '{}' }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      install_mode: per-org
+      fullsend_ai_ref: v0
+      issue_key: ${{ inputs.issue_key }}
+      issue_source: ${{ inputs.issue_source }}
+      jira_project_visibility: ${{ vars.JIRA_PROJECT_VISIBILITY || 'private' }}
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}

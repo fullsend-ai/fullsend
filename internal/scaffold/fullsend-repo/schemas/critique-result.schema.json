@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Critique Result",
+  "description": "Output schema for the critique agent — either an approval or revision request for a refinement plan.",
+  "type": "object",
+  "required": ["input", "verdict", "refinement_plan_summary", "review_round"],
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["source", "key", "level", "summary"],
+      "properties": {
+        "source": { "type": "string", "enum": ["jira", "github", "text"] },
+        "key": { "type": "string" },
+        "level": { "type": "string", "enum": ["outcome", "feature", "epic", "story", "task", "issue"] },
+        "summary": { "type": "string" }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "revise", "needs_input"]
+    },
+    "question": {
+      "type": "object",
+      "description": "Required when verdict is needs_input. The ONE question that a human must answer.",
+      "properties": {
+        "dimension": { "type": "string" },
+        "text": { "type": "string" },
+        "impact": { "type": "string" },
+        "what_refine_assumed": { "type": "string" }
+      },
+      "required": ["dimension", "text", "impact"]
+    },
+    "review_round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "refinement_plan_summary": {
+      "type": "object",
+      "required": ["epic_count", "story_count", "task_count", "total_children"],
+      "properties": {
+        "epic_count": { "type": "integer", "minimum": 0 },
+        "story_count": { "type": "integer", "minimum": 0 },
+        "task_count": { "type": "integer", "minimum": 0 },
+        "total_children": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "properties": {
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "granularity": {
+          "type": "object",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "dependency_coherence": {
+          "type": "object",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "implementability": {
+          "type": "object",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "scope_accuracy": {
+          "type": "object",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "assumption_grounding": {
+          "type": "object",
+          "description": "Are the plan's architectural decisions backed by exploration context or unverified guesses?",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reasoning": { "type": "string" }
+          }
+        },
+        "overall": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "revisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "target", "reasoning"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["remove", "merge", "split", "revise", "add"]
+          },
+          "target": {
+            "type": "string",
+            "description": "Title of the child item this revision targets, or 'plan' for plan-level feedback"
+          },
+          "reasoning": { "type": "string" },
+          "suggestion": { "type": "string" }
+        }
+      }
+    },
+    "comment": { "type": "string", "maxLength": 4000 },
+    "summary": { "type": "string", "maxLength": 2000 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "verdict": { "const": "revise" } } },
+      "then": {
+        "required": ["input", "verdict", "refinement_plan_summary", "review_round", "revisions", "comment", "summary"],
+        "properties": { "revisions": { "minItems": 1 } }
+      }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "needs_input" } } },
+      "then": { "required": ["input", "verdict", "refinement_plan_summary", "review_round", "question", "comment", "summary"] }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "approved" } } },
+      "then": { "required": ["input", "verdict", "refinement_plan_summary", "review_round", "assessment", "comment", "summary"] }
+    }
+  ]
+}

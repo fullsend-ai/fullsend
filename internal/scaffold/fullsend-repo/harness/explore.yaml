@@ -1,0 +1,55 @@
+---
+agent: agents/explore.md
+doc: docs/agents/explore.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+policy: policies/explore.yaml
+
+role: explore
+slug: fullsend-ai-explore
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/explore.env
+    dest: /sandbox/workspace/.env.d/explore.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  - src: /tmp/workspace/issue-context.json
+    dest: /tmp/workspace/issue-context.json
+    optional: true
+
+skills:
+  - skills/public-research
+  - skills/jira-read
+
+pre_script: scripts/pre-explore.sh
+post_script: scripts/post-explore.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
+runner_env:
+  ISSUE_KEY: "${ISSUE_KEY}"
+  ISSUE_SOURCE: "${ISSUE_SOURCE}"
+  REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  GITHUB_ISSUE_NUMBER: "${GITHUB_ISSUE_NUMBER}"
+  GH_TOKEN: "${GH_TOKEN}"
+  AUTO_CREATE: "${AUTO_CREATE}"
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/explore-result.schema.json
+
+timeout_minutes: 20
+
+forge:
+  github:
+    pre_script: scripts/pre-explore.sh
+    post_script: scripts/post-explore.sh
+    runner_env:
+      GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+      GH_TOKEN: ${GH_TOKEN}

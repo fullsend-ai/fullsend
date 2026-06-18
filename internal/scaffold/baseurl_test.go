@@ -157,7 +157,7 @@ func TestHarnessNames(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("returns expected harnesses", func(t *testing.T) {
-		expected := []string{"code", "fix", "prioritize", "retro", "review", "triage"}
+		expected := []string{"code", "critique", "explore", "fix", "prioritize", "refine", "retro", "review", "triage"}
 		assert.Equal(t, expected, names)
 	})
 

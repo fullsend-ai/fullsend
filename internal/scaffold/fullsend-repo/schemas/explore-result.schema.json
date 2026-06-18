@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Exploration Result",
+  "description": "Output schema for the explore agent — public research context for a work item.",
+  "type": "object",
+  "required": ["input", "technical_landscape", "related_work", "confidence", "summary"],
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["source", "key", "level", "summary"],
+      "properties": {
+        "source": { "type": "string", "enum": ["jira", "github", "text", "web"] },
+        "key": { "type": "string" },
+        "level": { "type": "string", "enum": ["outcome", "feature", "epic", "story", "task", "issue"] },
+        "summary": { "type": "string" }
+      }
+    },
+    "technical_landscape": {
+      "type": "object",
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "frameworks": { "type": "array", "items": { "type": "string" } },
+        "build_system": { "type": "string" },
+        "deployment_targets": { "type": "array", "items": { "type": "string" } },
+        "key_dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": "string" },
+              "role": { "type": "string" }
+            }
+          }
+        },
+        "existing_patterns": { "type": "array", "items": { "type": "string" } },
+        "api_surface": { "type": "array", "items": { "type": "string" } },
+        "test_infrastructure": { "type": "string" }
+      }
+    },
+    "related_work": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "source", "key", "title", "relevance"],
+        "properties": {
+          "type": { "type": "string", "enum": ["issue", "pr", "discussion", "adr", "documentation", "test", "rfc", "blog", "commit", "release", "other"] },
+          "source": { "type": "string" },
+          "key": { "type": "string" },
+          "title": { "type": "string" },
+          "state": { "type": "string" },
+          "relevance": { "type": "string" }
+        }
+      }
+    },
+    "architectural_constraints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "competitive_context": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "alternative": { "type": "string" },
+          "approach": { "type": "string" },
+          "source_url": { "type": "string" }
+        }
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["dimension", "description"],
+        "properties": {
+          "dimension": { "type": "string" },
+          "description": { "type": "string" },
+          "impact": { "type": "string" }
+        }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "required": ["overall"],
+      "properties": {
+        "technical_landscape": { "type": "number", "minimum": 0, "maximum": 100 },
+        "related_work": { "type": "number", "minimum": 0, "maximum": 100 },
+        "architectural_constraints": { "type": "number", "minimum": 0, "maximum": 100 },
+        "competitive_context": { "type": "number", "minimum": 0, "maximum": 100 },
+        "requirements_clarity": { "type": "number", "minimum": 0, "maximum": 100 },
+        "overall": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "summary": { "type": "string", "maxLength": 1000 }
+  }
+}

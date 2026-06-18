@@ -1,0 +1,191 @@
+name: Critique Agent
+
+on:
+  workflow_call:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+      mint_url:
+        required: true
+        type: string
+      gcp_region:
+        required: true
+        type: string
+      fullsend_version:
+        required: false
+        type: string
+        default: "latest"
+      install_mode:
+        required: false
+        type: string
+        default: "per-org"
+      fullsend_ai_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+        default: v0
+      issue_key:
+        required: true
+        type: string
+      issue_source:
+        required: false
+        type: string
+        default: "github"
+      refine_run_id:
+        required: true
+        type: string
+      review_round:
+        required: false
+        type: string
+        default: "1"
+      max_review_rounds:
+        required: false
+        type: string
+        default: "3"
+      auto_create:
+        required: false
+        type: string
+        default: "false"
+      jira_project_visibility:
+        required: false
+        type: string
+        default: "private"
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER:
+        required: true
+      FULLSEND_GCP_PROJECT_ID:
+        required: true
+      JIRA_HOST:
+        required: false
+      JIRA_EMAIL:
+        required: false
+      JIRA_API_TOKEN:
+        required: false
+
+jobs:
+  critique:
+    name: Critique
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@v6
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace (upstream defaults + org/repo overrides)
+        env:
+          INSTALL_MODE: ${{ inputs.install_mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+            echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+            exit 1
+          fi
+          SRC=".defaults/internal/scaffold/fullsend-repo"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${SRC}/${dir}" ]]; then
+              mkdir -p "${dir}"
+              cp -r "${SRC}/${dir}/." "${dir}/"
+            fi
+          done
+          CUSTOM_BASE="customized"
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            CUSTOM_BASE=".fullsend/customized"
+          fi
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
+              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
+                | while IFS= read -r -d '' f; do
+                    rel="${f#"${CUSTOM_BASE}"/}"
+                    mkdir -p "$(dirname "${rel}")"
+                    cp "${f}" "${rel}"
+                  done
+            fi
+          done
+          mkdir -p .github/scripts
+          cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
+
+      - name: Validate enrollment and extract repo metadata
+        id: repo-parts
+        uses: ./.defaults/.github/actions/validate-enrollment
+        with:
+          source_repo: ${{ inputs.source_repo }}
+          install_mode: ${{ inputs.install_mode }}
+
+      - name: Mint critique token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: critique
+          repos: ${{ steps.repo-parts.outputs.name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: CRITIQUE_
+          CRITIQUE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CRITIQUE_TARGET_REPO_DIR: target-repo
+          CRITIQUE_ISSUE_KEY: ${{ inputs.issue_key }}
+          CRITIQUE_ISSUE_SOURCE: ${{ inputs.issue_source }}
+          CRITIQUE_REFINE_RUN_ID: ${{ inputs.refine_run_id }}
+          CRITIQUE_REVIEW_ROUND: ${{ inputs.review_round }}
+          CRITIQUE_MAX_REVIEW_ROUNDS: ${{ inputs.max_review_rounds }}
+          CRITIQUE_AUTO_CREATE: ${{ inputs.auto_create }}
+          CRITIQUE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          CRITIQUE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          JIRA_HOST: ${{ secrets.JIRA_HOST }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_VISIBILITY: ${{ inputs.jira_project_visibility }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run critique agent
+        uses: ./.defaults/
+        with:
+          agent: critique
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          mint-url: ${{ inputs.mint_url }}

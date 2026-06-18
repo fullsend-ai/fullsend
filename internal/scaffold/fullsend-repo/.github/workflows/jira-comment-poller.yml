@@ -1,0 +1,149 @@
+---
+# fullsend-stage: jira-comment-poller
+name: jira-comment-poller
+
+permissions:
+  actions: write
+  contents: read
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: jira-comment-poller
+  cancel-in-progress: true
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll Jira for /fs-* commands
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JIRA_HOST: ${{ secrets.JIRA_HOST }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          REPO: ${{ github.repository }}
+          JIRA_PROJECT_VISIBILITY: ${{ vars.JIRA_PROJECT_VISIBILITY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${JIRA_HOST:-}" || -z "${JIRA_EMAIL:-}" || -z "${JIRA_API_TOKEN:-}" ]]; then
+            echo "::error::JIRA_HOST, JIRA_EMAIL, and JIRA_API_TOKEN secrets are required"
+            exit 1
+          fi
+
+          # Block private Jira on public repos to prevent data leakage.
+          # Public Jira projects on public repos are fine — set JIRA_PROJECT_VISIBILITY=public.
+          JIRA_VIS="${JIRA_PROJECT_VISIBILITY:-private}"
+          if [[ "$JIRA_VIS" != "public" ]]; then
+            REPO_VISIBILITY=$(gh api "repos/${REPO}" --jq '.visibility' 2>/dev/null || echo "unknown")
+            if [[ "$REPO_VISIBILITY" == "public" ]]; then
+              echo "::error::SECURITY: Private Jira poller blocked — repo ${REPO} is public."
+              echo "::error::Private Jira data would leak into public artifacts/logs."
+              echo "::error::Use a private config repo, or set JIRA_PROJECT_VISIBILITY=public for public Jira projects."
+              exit 1
+            fi
+          fi
+
+          AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+          ACK_MARKER="⚡ fullsend"
+
+          jira_api() {
+            local method="$1" endpoint="$2"
+            shift 2
+            curl -sSf -X "$method" \
+              -H "Authorization: Basic $AUTH" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "https://${JIRA_HOST}${endpoint}" "$@"
+          }
+
+          echo "Searching for fullsend-labeled issues..."
+          ISSUES=$(jira_api POST '/rest/api/3/search/jql' \
+            -d '{"jql":"labels = fullsend AND updated >= -1d","fields":["key","summary"],"maxResults":50}')
+          ISSUE_COUNT=$(echo "$ISSUES" | jq '.issues | length')
+          echo "Found $ISSUE_COUNT issue(s)"
+
+          if [[ "$ISSUE_COUNT" == "0" ]]; then
+            echo "No issues to process"
+            exit 0
+          fi
+
+          DISPATCHED=0
+
+          echo "$ISSUES" | jq -r '.issues[].key' | while read -r ISSUE_KEY; do
+            echo ""
+            echo "--- Checking $ISSUE_KEY ---"
+
+            COMMENTS=$(jira_api GET "/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=20")
+
+            echo "$COMMENTS" | jq -r '.comments[] | @base64' | while read -r COMMENT_B64; do
+              COMMENT_ID=$(echo "$COMMENT_B64" | base64 -d | jq -r '.id')
+              AUTHOR=$(echo "$COMMENT_B64" | base64 -d | jq -r '.author.displayName // .author.emailAddress // "unknown"')
+              CREATED=$(echo "$COMMENT_B64" | base64 -d | jq -r '.created')
+
+              BODY=$(echo "$COMMENT_B64" | base64 -d | jq -r '
+                [.body.content[]? | .. | .text? // empty] | join(" ")
+              ')
+
+              if printf '%s' "$BODY" | grep -qF "$ACK_MARKER"; then
+                continue
+              fi
+
+              if [[ "$AUTHOR" == "Fullsend Refinement Squad" ]]; then
+                continue
+              fi
+
+              if ! printf '%s' "$BODY" | grep -qP '(?:^|\s)/fs-\S+'; then
+                continue
+              fi
+
+              echo "  Comment $COMMENT_ID by $AUTHOR at $CREATED"
+              echo "  Body: $BODY"
+
+              ALREADY_ACKED=$(echo "$COMMENTS" | jq -r --arg cid "$COMMENT_ID" --arg marker "$ACK_MARKER" '
+                [.comments[] |
+                  select(.id != $cid) |
+                  select(
+                    [.body.content[]? | .. | .text? // empty] | join(" ") |
+                    contains($marker) and contains($cid)
+                  )
+                ] | length
+              ')
+
+              if [[ "$ALREADY_ACKED" != "0" ]]; then
+                echo "  → Already processed (ack found), skipping"
+                continue
+              fi
+
+              COMMAND_LINE=$(printf '%s' "$BODY" | grep -oP '(?:^|\s)\K/fs-\w+(?:\s+--\w[\w-]*(?:\s+\S+))*' | head -1)
+              echo "  → Dispatching: $COMMAND_LINE"
+
+              gh workflow run jira-dispatch.yml \
+                --repo "$REPO" \
+                -f jira_key="$ISSUE_KEY" \
+                -f command="$COMMAND_LINE" || {
+                echo "  → ERROR: dispatch failed"
+                continue
+              }
+
+              ACK_TEXT="${ACK_MARKER} dispatched ${COMMAND_LINE} → GitHub Actions (comment:${COMMENT_ID})"
+              ACK_BODY=$(jq -n --arg text "$ACK_TEXT" '{
+                body: {type:"doc",version:1,content:[{
+                  type:"paragraph",
+                  content:[{type:"text",text:$text,marks:[{type:"strong"}]}]
+                }]}
+              }')
+
+              jira_api POST "/rest/api/3/issue/${ISSUE_KEY}/comment" -d "$ACK_BODY" > /dev/null
+
+              echo "  → Dispatched and acknowledged"
+              DISPATCHED=$((DISPATCHED + 1))
+            done
+          done
+
+          echo ""
+          echo "=== Polling complete ==="

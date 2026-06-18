@@ -42,6 +42,22 @@ var executableFiles = map[string]struct{}{
 	"scripts/fullsend-check-output":          {},
 	"scripts/validate-output-schema-test.sh": {},
 	"scripts/validate-source-repo.sh":        {},
+	"scripts/pre-explore.sh":                 {},
+	"scripts/post-explore.sh":                {},
+	"scripts/pre-refine.sh":                  {},
+	"scripts/post-refine.sh":                 {},
+	"scripts/pre-critique.sh":                {},
+	"scripts/post-critique.sh":               {},
+	"scripts/create-children.sh":             {},
+	"scripts/pipeline-events.sh":             {},
+	"scripts/markdown-to-adf.py":             {},
+	"scripts/pipeline-helpers.sh":            {},
+	"scripts/sanitize-artifacts.sh":          {},
+	"scripts/post-explore-test.sh":           {},
+	"scripts/post-refine-test.sh":            {},
+	"scripts/post-critique-test.sh":          {},
+	"scripts/create-children-test.sh":        {},
+	"scripts/sanitize-artifacts-test.sh":     {},
 }
 
 // FileMode returns the Git tree mode for a scaffold file.

@@ -38,7 +38,7 @@ type AppConfig struct {
 
 // DefaultAgentRoles returns the standard set of agent roles.
 func DefaultAgentRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "coder", "review", "retro", "prioritize", "explore", "refine", "critique"}
 }
 
 // AgentAppConfig returns the GitHub App configuration for a given agent role.
@@ -137,6 +137,33 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 			Issues:       "write",
 		}
 		// No webhook events — triggered via workflow_dispatch from other agents.
+		base.Events = []string{}
+
+	case "explore":
+		base.Description = fmt.Sprintf("Fullsend explore agent for %s", org)
+		base.Permissions = AppPermissions{
+			Actions:  "write",
+			Contents: "read",
+			Issues:   "write",
+		}
+		base.Events = []string{}
+
+	case "refine":
+		base.Description = fmt.Sprintf("Fullsend refine agent for %s", org)
+		base.Permissions = AppPermissions{
+			Actions:  "write",
+			Contents: "read",
+			Issues:   "write",
+		}
+		base.Events = []string{}
+
+	case "critique":
+		base.Description = fmt.Sprintf("Fullsend critique agent for %s", org)
+		base.Permissions = AppPermissions{
+			Actions:  "write",
+			Contents: "read",
+			Issues:   "write",
+		}
 		base.Events = []string{}
 
 	default:

@@ -1,0 +1,65 @@
+---
+agent: agents/critique.md
+doc: docs/agents/critique.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+policy: policies/critique.yaml
+
+role: critique
+slug: fullsend-ai-critique
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/critique.env
+    dest: /sandbox/workspace/.env.d/critique.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  - src: /tmp/workspace/issue-context.json
+    dest: /tmp/workspace/issue-context.json
+    optional: true
+  - src: /tmp/workspace/exploration_context.json
+    dest: /tmp/workspace/exploration_context.json
+    optional: true
+  - src: /tmp/workspace/refine-result.json
+    dest: /tmp/workspace/refine-result.json
+    optional: true
+  - src: /tmp/workspace/critique-history.json
+    dest: /tmp/workspace/critique-history.json
+    optional: true
+
+skills: []
+
+pre_script: scripts/pre-critique.sh
+post_script: scripts/post-critique.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
+runner_env:
+  ISSUE_KEY: "${ISSUE_KEY}"
+  ISSUE_SOURCE: "${ISSUE_SOURCE}"
+  REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  REFINE_RUN_ID: "${REFINE_RUN_ID}"
+  GITHUB_ISSUE_NUMBER: "${GITHUB_ISSUE_NUMBER}"
+  GH_TOKEN: "${GH_TOKEN}"
+  REVIEW_ROUND: "${REVIEW_ROUND}"
+  MAX_REVIEW_ROUNDS: "${MAX_REVIEW_ROUNDS}"
+  AUTO_CREATE: "${AUTO_CREATE}"
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/critique-result.schema.json
+
+timeout_minutes: 15
+
+forge:
+  github:
+    pre_script: scripts/pre-critique.sh
+    post_script: scripts/post-critique.sh
+    runner_env:
+      GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+      GH_TOKEN: ${GH_TOKEN}
