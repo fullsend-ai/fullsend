@@ -31,6 +31,18 @@ For Jira issues, the pipeline can also be triggered by:
 - A Jira Automation webhook sending a `repository_dispatch` event
 - The Jira comment poller (cron job, every 5 minutes) detecting `/fs-refine` comments
 
+## Control labels
+
+| Label | Meaning |
+|-------|---------|
+| `fullsend:exploring` | Applied by the explore pre-script while exploration is in progress. Removed on completion. |
+| `fullsend:explored` | Applied by the explore post-script when exploration completes successfully. Signals that refine can proceed. |
+
+## Configuration and extension
+
+See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Customizing with Skills](../guides/user/customizing-with-skills.md).
+
 ## Pipeline flow
 
 ```

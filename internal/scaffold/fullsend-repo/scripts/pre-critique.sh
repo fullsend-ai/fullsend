@@ -131,12 +131,14 @@ if [[ ! -f "$WORKSPACE/exploration_context.json" ]]; then
 fi
 
 # --- Export paths ---
-echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json" >> "${GITHUB_ENV:-/dev/null}"
-echo "EXPLORE_CONTEXT=$WORKSPACE/exploration_context.json" >> "${GITHUB_ENV:-/dev/null}"
-echo "REFINE_RESULT=$WORKSPACE/refine-result.json" >> "${GITHUB_ENV:-/dev/null}"
-echo "CRITIQUE_HISTORY=$WORKSPACE/critique-history.json" >> "${GITHUB_ENV:-/dev/null}"
-echo "REVIEW_ROUND=$REVIEW_ROUND" >> "${GITHUB_ENV:-/dev/null}"
-echo "MAX_REVIEW_ROUNDS=$MAX_REVIEW_ROUNDS" >> "${GITHUB_ENV:-/dev/null}"
+{
+  echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json"
+  echo "EXPLORE_CONTEXT=$WORKSPACE/exploration_context.json"
+  echo "REFINE_RESULT=$WORKSPACE/refine-result.json"
+  echo "CRITIQUE_HISTORY=$WORKSPACE/critique-history.json"
+  echo "REVIEW_ROUND=$REVIEW_ROUND"
+  echo "MAX_REVIEW_ROUNDS=$MAX_REVIEW_ROUNDS"
+} >> "${GITHUB_ENV:-/dev/null}"
 
 pe_end "pre-critique" "pre-critique" "$(jq -nc --arg source "$ISSUE_SOURCE" --arg key "$ISSUE_KEY" --argjson round "$REVIEW_ROUND" '{source:$source, key:$key, review_round:$round}')"
 

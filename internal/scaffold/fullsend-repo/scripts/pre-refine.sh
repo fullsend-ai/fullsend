@@ -175,9 +175,11 @@ elif [[ -f "$WORKSPACE/critique-feedback.json" ]]; then
   echo "Critique feedback already present from artifact download."
 fi
 
-echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json" >> "${GITHUB_ENV:-/dev/null}"
-echo "EXPLORE_CONTEXT=$WORKSPACE/exploration_context.json" >> "${GITHUB_ENV:-/dev/null}"
-echo "REVIEW_ROUND=$REVIEW_ROUND" >> "${GITHUB_ENV:-/dev/null}"
+{
+  echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json"
+  echo "EXPLORE_CONTEXT=$WORKSPACE/exploration_context.json"
+  echo "REVIEW_ROUND=$REVIEW_ROUND"
+} >> "${GITHUB_ENV:-/dev/null}"
 
 if [[ -f "$WORKSPACE/critique-feedback.json" ]]; then
   echo "CRITIQUE_FEEDBACK=$WORKSPACE/critique-feedback.json" >> "${GITHUB_ENV:-/dev/null}"

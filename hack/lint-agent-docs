@@ -62,7 +62,9 @@ echo "Checking agent doc structure..."
 echo "================================================"
 
 REQUIRED_SECTIONS="How the agent works|How it helps|Commands|Control labels|Configuration and extension|Source"
+OPTIONAL_SECTIONS="Pipeline flow|Exploration dimensions|Revision loop|Output structure|Verdicts|Auto-create vs. human gate|Review rounds|Assessment dimensions"
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
+IFS='|' read -ra OPTIONAL_LIST <<< "$OPTIONAL_SECTIONS"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
     doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
@@ -103,6 +105,14 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
             fi
         done
         if [[ "$found" == "false" ]]; then
+            for optional in "${OPTIONAL_LIST[@]}"; do
+                if [[ "$section" == "$optional" ]]; then
+                    found=true
+                    break
+                fi
+            done
+        fi
+        if [[ "$found" == "false" ]]; then
             extra+=("$section")
         fi
     done <<< "$actual_sections"
@@ -114,7 +124,7 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
             errors=$((errors + 1))
         done
         for s in "${extra[@]+"${extra[@]}"}"; do
-            echo "    unexpected: \"## $s\" — adding new sections is fine, but please add them to the REQUIRED_SECTIONS list in hack/lint-agent-docs so all agent docs stay consistent"
+            echo "    unexpected: \"## $s\" — adding new sections is fine, but please add them to the REQUIRED_SECTIONS or OPTIONAL_SECTIONS list in hack/lint-agent-docs so all agent docs stay consistent"
             errors=$((errors + 1))
         done
     else

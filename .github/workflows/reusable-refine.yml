@@ -1,3 +1,5 @@
+# Reusable refine agent workflow. Called by thin callers in .fullsend repos
+# via workflow_call. Runs in the caller's repo context (secrets, checkout).
 name: Refine Agent
 
 on:

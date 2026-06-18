@@ -3,7 +3,7 @@
 name: Create Children
 
 permissions:
-  actions: write
+  actions: read
   contents: read
   id-token: write
   issues: write

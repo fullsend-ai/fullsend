@@ -8,6 +8,7 @@ Usage:
 Outputs a JSON object suitable for the Jira REST API comment body field.
 Handles: headings, bold, code, links, bullet lists, horizontal rules, paragraphs.
 """
+
 import json
 import re
 import sys
@@ -26,36 +27,42 @@ def parse_inline(text: str) -> list:
     nodes = []
     pos = 0
     pattern = re.compile(
-        r'(?P<bold>\*\*(.+?)\*\*)'
-        r'|(?P<code>`([^`]+)`)'
-        r'|(?P<link>\[([^\]]+)\]\(([^)]+)\))'
+        r"(?P<bold>\*\*(.+?)\*\*)"
+        r"|(?P<code>`([^`]+)`)"
+        r"|(?P<link>\[([^\]]+)\]\(([^)]+)\))"
     )
     for m in pattern.finditer(text):
         if m.start() > pos:
-            plain = text[pos:m.start()]
+            plain = text[pos : m.start()]
             if plain:
                 nodes.append({"type": "text", "text": plain})
         if m.group("bold"):
-            nodes.append({
-                "type": "text",
-                "text": m.group(2),
-                "marks": [{"type": "strong"}],
-            })
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": m.group(2),
+                    "marks": [{"type": "strong"}],
+                }
+            )
         elif m.group("code"):
-            nodes.append({
-                "type": "text",
-                "text": m.group(4),
-                "marks": [{"type": "code"}],
-            })
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": m.group(4),
+                    "marks": [{"type": "code"}],
+                }
+            )
         elif m.group("link"):
             href = m.group(7)
             scheme = urlparse(href).scheme.lower()
             if scheme in ALLOWED_SCHEMES:
-                nodes.append({
-                    "type": "text",
-                    "text": m.group(6),
-                    "marks": [{"type": "link", "attrs": {"href": href}}],
-                })
+                nodes.append(
+                    {
+                        "type": "text",
+                        "text": m.group(6),
+                        "marks": [{"type": "link", "attrs": {"href": href}}],
+                    }
+                )
             else:
                 nodes.append({"type": "text", "text": f"{m.group(6)} ({href})"})
         pos = m.end()
@@ -91,7 +98,7 @@ def parse_inline_multiline(text: str) -> list:
 def text_to_adf(text: str) -> dict:
     """Convert markdown-style text to an ADF document."""
     doc = {"type": "doc", "version": 1, "content": []}
-    blocks = re.split(r'\n{2,}', text.strip())
+    blocks = re.split(r"\n{2,}", text.strip())
 
     for block in blocks:
         block = block.strip()
@@ -102,58 +109,68 @@ def text_to_adf(text: str) -> dict:
             doc["content"].append({"type": "rule"})
             continue
 
-        heading_match = re.match(r'^(#{1,6})\s+(.+)$', block)
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", block)
         if heading_match:
             level = len(heading_match.group(1))
-            doc["content"].append({
-                "type": "heading",
-                "attrs": {"level": level},
-                "content": parse_inline(heading_match.group(2)),
-            })
+            doc["content"].append(
+                {
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": parse_inline(heading_match.group(2)),
+                }
+            )
             continue
 
         lines = block.split("\n")
 
-        if all(re.match(r'^\s*[-*]\s+', line) for line in lines if line.strip()):
+        if all(re.match(r"^\s*[-*]\s+", line) for line in lines if line.strip()):
             list_node = {"type": "bulletList", "content": []}
             for line in lines:
-                item_text = re.sub(r'^\s*[-*]\s+', '', line).strip()
+                item_text = re.sub(r"^\s*[-*]\s+", "", line).strip()
                 if item_text:
-                    list_node["content"].append({
-                        "type": "listItem",
-                        "content": [{"type": "paragraph", "content": parse_inline(item_text)}],
-                    })
+                    list_node["content"].append(
+                        {
+                            "type": "listItem",
+                            "content": [{"type": "paragraph", "content": parse_inline(item_text)}],
+                        }
+                    )
             if list_node["content"]:
                 doc["content"].append(list_node)
             continue
 
-        if all(re.match(r'^\s*\d+[.)]\s+', line) for line in lines if line.strip()):
+        if all(re.match(r"^\s*\d+[.)]\s+", line) for line in lines if line.strip()):
             list_node = {"type": "orderedList", "content": []}
             for line in lines:
-                item_text = re.sub(r'^\s*\d+[.)]\s+', '', line).strip()
+                item_text = re.sub(r"^\s*\d+[.)]\s+", "", line).strip()
                 if item_text:
-                    list_node["content"].append({
-                        "type": "listItem",
-                        "content": [{"type": "paragraph", "content": parse_inline(item_text)}],
-                    })
+                    list_node["content"].append(
+                        {
+                            "type": "listItem",
+                            "content": [{"type": "paragraph", "content": parse_inline(item_text)}],
+                        }
+                    )
             if list_node["content"]:
                 doc["content"].append(list_node)
             continue
 
-        table_match = re.match(r'^\|', block)
+        table_match = re.match(r"^\|", block)
         if table_match:
-            table_lines = [l for l in lines if l.strip() and not re.match(r'^\|[-\s|]+\|$', l)]
+            table_lines = [
+                row for row in lines if row.strip() and not re.match(r"^\|[-\s|]+\|$", row)
+            ]
             if len(table_lines) >= 1:
                 table_node = {"type": "table", "attrs": {"layout": "default"}, "content": []}
                 for i, tl in enumerate(table_lines):
-                    cells = [c.strip() for c in tl.strip('|').split('|')]
+                    cells = [c.strip() for c in tl.strip("|").split("|")]
                     cell_type = "tableHeader" if i == 0 else "tableCell"
                     row = {"type": "tableRow", "content": []}
                     for cell in cells:
-                        row["content"].append({
-                            "type": cell_type,
-                            "content": [{"type": "paragraph", "content": parse_inline(cell)}],
-                        })
+                        row["content"].append(
+                            {
+                                "type": cell_type,
+                                "content": [{"type": "paragraph", "content": parse_inline(cell)}],
+                            }
+                        )
                     table_node["content"].append(row)
                 doc["content"].append(table_node)
                 continue
@@ -168,17 +185,22 @@ def text_to_adf(text: str) -> dict:
             if list_items:
                 ln = {"type": list_type, "content": []}
                 for it in list_items:
-                    ln["content"].append({"type": "listItem", "content": [{"type": "paragraph", "content": parse_inline(it)}]})
+                    ln["content"].append(
+                        {
+                            "type": "listItem",
+                            "content": [{"type": "paragraph", "content": parse_inline(it)}],
+                        }
+                    )
                 doc["content"].append(ln)
             list_items = []
             in_list = False
             list_type = "bulletList"
 
         for line in lines:
-            is_bullet = bool(re.match(r'^\s*[-*]\s+', line))
-            is_ordered = bool(re.match(r'^\s*\d+[.)]\s+', line))
+            is_bullet = bool(re.match(r"^\s*[-*]\s+", line))
+            is_ordered = bool(re.match(r"^\s*\d+[.)]\s+", line))
             is_list_item = is_bullet or is_ordered
-            is_heading = bool(re.match(r'^#{1,6}\s+', line))
+            is_heading = bool(re.match(r"^#{1,6}\s+", line))
 
             if is_list_item:
                 new_type = "orderedList" if is_ordered else "bulletList"
@@ -187,35 +209,52 @@ def text_to_adf(text: str) -> dict:
                 if not in_list and mixed_content:
                     para_text = "\n".join(mixed_content).strip()
                     if para_text:
-                        doc["content"].append({"type": "paragraph", "content": parse_inline_multiline(para_text)})
+                        doc["content"].append(
+                            {
+                                "type": "paragraph",
+                                "content": parse_inline_multiline(para_text),
+                            }
+                        )
                     mixed_content = []
                 in_list = True
                 list_type = new_type
                 if is_ordered:
-                    item_text = re.sub(r'^\s*\d+[.)]\s+', '', line).strip()
+                    item_text = re.sub(r"^\s*\d+[.)]\s+", "", line).strip()
                 else:
-                    item_text = re.sub(r'^\s*[-*]\s+', '', line).strip()
+                    item_text = re.sub(r"^\s*[-*]\s+", "", line).strip()
                 list_items.append(item_text)
             elif is_heading:
                 _flush_list()
                 if mixed_content:
                     para_text = "\n".join(mixed_content).strip()
                     if para_text:
-                        doc["content"].append({"type": "paragraph", "content": parse_inline_multiline(para_text)})
+                        doc["content"].append(
+                            {
+                                "type": "paragraph",
+                                "content": parse_inline_multiline(para_text),
+                            }
+                        )
                     mixed_content = []
-                hm = re.match(r'^(#{1,6})\s+(.+)$', line)
-                doc["content"].append({
-                    "type": "heading",
-                    "attrs": {"level": len(hm.group(1))},
-                    "content": parse_inline(hm.group(2)),
-                })
+                hm = re.match(r"^(#{1,6})\s+(.+)$", line)
+                doc["content"].append(
+                    {
+                        "type": "heading",
+                        "attrs": {"level": len(hm.group(1))},
+                        "content": parse_inline(hm.group(2)),
+                    }
+                )
             else:
                 _flush_list()
                 if line.strip() == "---":
                     if mixed_content:
                         para_text = "\n".join(mixed_content).strip()
                         if para_text:
-                            doc["content"].append({"type": "paragraph", "content": parse_inline_multiline(para_text)})
+                            doc["content"].append(
+                                {
+                                    "type": "paragraph",
+                                    "content": parse_inline_multiline(para_text),
+                                }
+                            )
                         mixed_content = []
                     doc["content"].append({"type": "rule"})
                 else:
@@ -225,10 +264,20 @@ def text_to_adf(text: str) -> dict:
         if mixed_content:
             para_text = "\n".join(mixed_content).strip()
             if para_text:
-                doc["content"].append({"type": "paragraph", "content": parse_inline_multiline(para_text)})
+                doc["content"].append(
+                    {
+                        "type": "paragraph",
+                        "content": parse_inline_multiline(para_text),
+                    }
+                )
 
     if not doc["content"]:
-        doc["content"].append({"type": "paragraph", "content": [{"type": "text", "text": text or " "}]})
+        doc["content"].append(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text or " "}],
+            }
+        )
 
     return doc
 

@@ -27,8 +27,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/pipeline-events.sh" ]]; then
   source "${SCRIPT_DIR}/pipeline-events.sh"
+  # shellcheck disable=SC2034  # HAS_PE used by callers that source this script
   HAS_PE=true
 else
+  # shellcheck disable=SC2034
   HAS_PE=false
   pe_start() { :; }
   pe_end() { :; }

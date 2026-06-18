@@ -1,4 +1,15 @@
-# ADR 0049: Refinement Pipeline Architecture
+---
+title: "51. Refinement Pipeline Architecture"
+status: Accepted
+relates_to: []
+topics:
+  - agents
+  - refinement
+  - pipeline
+  - multi-agent orchestration
+---
+
+# ADR 0051: Refinement Pipeline Architecture
 
 ## Status
 
@@ -83,4 +94,4 @@ This is a **Phase 1 implementation** focused on getting the pipeline functional 
 
 - The revision loop could produce unnecessary iterations on simple issues (mitigated by confidence scoring and max rounds)
 - Artifact downloads between workflow runs add latency (~30s per stage transition)
-- Private Jira data could leak via public repo artifacts/logs (mitigated by a safety check that blocks Jira sources on public repos — see ADR 0050)
+- Private Jira data could leak via public repo artifacts/logs (mitigated by a safety check that blocks Jira sources on public repos — see ADR 0052)

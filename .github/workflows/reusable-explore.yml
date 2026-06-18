@@ -1,3 +1,5 @@
+# Reusable explore agent workflow. Called by thin callers in .fullsend repos
+# via workflow_call. Runs in the caller's repo context (secrets, checkout).
 name: Explore Agent
 
 on:

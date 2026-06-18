@@ -1,3 +1,5 @@
+# Reusable create-children workflow. Called after critique approves a refinement.
+# Creates child issues in GitHub and/or Jira from the refine agent's output.
 name: Create Children
 
 on:
@@ -58,7 +60,7 @@ jobs:
     name: Create Children
     runs-on: ubuntu-latest
     permissions:
-      actions: write
+      actions: read
       contents: read
       id-token: write
       issues: write

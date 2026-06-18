@@ -1,4 +1,15 @@
-# ADR 0050: Jira Integration Model
+---
+title: "52. Jira Integration Model"
+status: Accepted
+relates_to: []
+topics:
+  - jira
+  - integration
+  - issue tracking
+  - credentials
+---
+
+# ADR 0052: Jira Integration Model
 
 ## Status
 

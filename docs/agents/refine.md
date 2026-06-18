@@ -28,6 +28,18 @@ The refine agent always produces a plan — it never halts to ask questions. Whe
 
 There is no separate command to invoke refine alone. It runs as the second stage of the refinement pipeline after explore completes.
 
+## Control labels
+
+| Label | Meaning |
+|-------|---------|
+| `fullsend:refining` | Applied by the refine pre-script while refinement is in progress. Removed on completion. |
+| `fullsend:refined` | Applied by the refine post-script when a plan is produced. Signals that critique can proceed. |
+
+## Configuration and extension
+
+See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Customizing with Skills](../guides/user/customizing-with-skills.md).
+
 ## Pipeline flow
 
 ```

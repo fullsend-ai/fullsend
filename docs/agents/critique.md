@@ -21,6 +21,19 @@ Nothing gets created until this agent approves.
 - Guards against scope creep — children that exceed what the parent asked for.
 - Catches "assumption laundering" — plans that look implementable but are built on unverified guesses.
 
+## Control labels
+
+| Label | Meaning |
+|-------|---------|
+| `fullsend:critiquing` | Applied by the critique pre-script while evaluation is in progress. Removed on completion. |
+| `fullsend:approved` | Applied by the critique post-script when the plan receives an `approved` verdict. |
+| `fullsend:needs-input` | Applied by the critique post-script when human input is required before the pipeline can proceed. |
+
+## Configuration and extension
+
+See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Customizing with Skills](../guides/user/customizing-with-skills.md).
+
 ## Verdicts
 
 | Verdict | Meaning | What happens next |

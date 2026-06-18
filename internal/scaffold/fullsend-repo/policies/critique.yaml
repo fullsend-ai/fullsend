@@ -51,4 +51,3 @@ network_policies:
       - path: "**/gh"
       - path: "**/git"
       - path: "**/node"
-
