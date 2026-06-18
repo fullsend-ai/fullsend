@@ -51,6 +51,47 @@ if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
   exit 1
 fi
 
+# Dry-run validation: verify children structure before touching external APIs
+VALIDATION_ERRORS=$(jq -r '
+  if (.children | type) != "array" then "RESULT_FILE has no .children array"
+  elif (.children | length) == 0 then ".children array is empty — nothing to create"
+  else
+    [.children | to_entries[] |
+      (if (.value.title // "" | length) == 0 then "child[\(.key)]: missing title" else empty end),
+      (if (.value.type // "" | length) == 0 then "child[\(.key)]: missing type" else empty end),
+      (if (.value.description // "" | length) == 0 then "child[\(.key)]: missing description" else empty end)
+    ] |
+    if length > 0 then join("\n") else empty end
+  end // empty
+' "${RESULT_FILE}" 2>/dev/null)
+
+if [[ -n "${VALIDATION_ERRORS}" ]]; then
+  echo "::error::Dry-run validation failed — child issue structure is invalid:"
+  echo "${VALIDATION_ERRORS}" | while IFS= read -r line; do
+    echo "::error::  ${line}"
+  done
+  echo "::error::Fix the refine agent output and retry. No issues were created."
+  exit 1
+fi
+
+# Validate parent_title references resolve within the tree
+ORPHAN_REFS=$(jq -r '
+  [.children[].title] as $titles |
+  [.children[] | select(.parent_title != null and .parent_title != "") |
+    select([.parent_title] | inside($titles) | not) |
+    "parent_title \"\(.parent_title)\" (in child \"\(.title)\") not found in children list"
+  ] | if length > 0 then join("\n") else empty end
+' "${RESULT_FILE}" 2>/dev/null)
+
+if [[ -n "${ORPHAN_REFS}" ]]; then
+  echo "::warning::Some parent_title references don't match any child title (will fall back to root):"
+  echo "${ORPHAN_REFS}" | while IFS= read -r line; do
+    echo "::warning::  ${line}"
+  done
+fi
+
+echo "Dry-run validation passed: $(jq '.children | length' "${RESULT_FILE}") children, structure OK"
+
 USE_GITHUB=false
 if [[ -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "" && "${GITHUB_ISSUE_NUMBER}" != "N/A" ]]; then
   USE_GITHUB=true

@@ -145,12 +145,32 @@ elif [[ "${VERDICT}" == "revise" ]]; then
 
     PLAN_CHILD_COUNT=$(jq '.children | length' "/tmp/workspace/refine-result.json" 2>/dev/null || echo "0")
 
+    # Synthesize review history for human handoff
+    ROUND_SUMMARY=""
+    if [[ -f "$CRITIQUE_HISTORY_FILE" ]]; then
+      ROUND_SUMMARY=$(jq -r '
+        "| Round | Score | Verdict | Revisions |\n|-------|-------|---------|-----------|",
+        (.rounds[] |
+          "| \(.round) | \(.overall_score)/100 | \(.verdict) | \(.revisions | length) revision(s): \(.revisions | map(.type + ": " + (.target // .description // "—")[0:40]) | join(", ")) |"
+        )
+      ' "$CRITIQUE_HISTORY_FILE" 2>/dev/null || echo "")
+    fi
+
+    HISTORY_SECTION=""
+    if [[ -n "$ROUND_SUMMARY" ]]; then
+      HISTORY_SECTION="
+### Review History
+
+${ROUND_SUMMARY}
+"
+    fi
+
     ESCALATION_COMMENT="${AGENT_HEADER}
 
 **Verdict: ⚠️ Max review rounds reached** (${MAX_REVIEW_ROUNDS} rounds, score: ${OVERALL_SCORE}/100)
 
 ${COMMENT}
-
+${HISTORY_SECTION}
 ---
 **Human decision needed.** The critique agent still has concerns after ${MAX_REVIEW_ROUNDS} rounds of review.
 
@@ -163,6 +183,7 @@ The current plan proposes ${PLAN_CHILD_COUNT} child issue(s). Options:
 
     if $USE_GITHUB; then
       add_label "${REPO_FULL_NAME}" "$GITHUB_ISSUE_NUMBER" "refine-needs-human"
+      add_label "${REPO_FULL_NAME}" "$GITHUB_ISSUE_NUMBER" "refine-stalled"
       add_label "${REPO_FULL_NAME}" "$GITHUB_ISSUE_NUMBER" "refine-approved"
     fi
 

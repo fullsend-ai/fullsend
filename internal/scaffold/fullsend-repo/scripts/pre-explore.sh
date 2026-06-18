@@ -82,6 +82,20 @@ if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
   JIRA_BASE="https://${JIRA_HOST}/rest/api/3"
   AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
 
+  # Preflight: verify Jira token is valid before doing any real work
+  PREFLIGHT_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Basic $AUTH" \
+    "${JIRA_BASE}/myself" 2>/dev/null || echo "000")
+
+  if [[ "$PREFLIGHT_HTTP" == "401" || "$PREFLIGHT_HTTP" == "403" ]]; then
+    echo "::error::Jira API token is invalid or expired (HTTP ${PREFLIGHT_HTTP})."
+    echo "::error::Update JIRA_API_TOKEN in your .fullsend config repo secrets."
+    echo "::error::Pipeline halted — no Jira API calls will be attempted."
+    exit 1
+  elif [[ "$PREFLIGHT_HTTP" == "000" ]]; then
+    echo "::warning::Could not reach Jira at ${JIRA_HOST} — continuing (may fail later)"
+  fi
+
   jira_get() {
     curl -sSf -H "Authorization: Basic $AUTH" \
       -H "Accept: application/json" "$1"

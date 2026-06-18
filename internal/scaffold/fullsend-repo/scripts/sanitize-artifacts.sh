@@ -43,6 +43,16 @@ REDACTED_HOST = '[redacted-host]'
 REDACTED_BODY = '[redacted — private issue content]'
 REDACTED_URL = '[redacted-internal-url]'
 
+redaction_counts = {
+    'emails': 0,
+    'hosts': 0,
+    'internal_urls': 0,
+    'gdocs_urls': 0,
+    'issue_descriptions': 0,
+    'issue_comments': 0,
+    'issue_reporters': 0,
+}
+
 def looks_like_issue_context(obj):
     if not isinstance(obj, dict):
         return False
@@ -51,14 +61,17 @@ def looks_like_issue_context(obj):
             and obj.get('source') in ('jira', 'github'))
 
 def redact_issue_context(obj):
+    global redaction_counts
     obj = dict(obj)
 
     for field in ('description', 'body'):
         if field in obj and obj[field]:
             obj[field] = REDACTED_BODY
+            redaction_counts['issue_descriptions'] += 1
 
     if 'reporter' in obj:
         obj['reporter'] = REDACTED_EMAIL
+        redaction_counts['issue_reporters'] += 1
 
     if 'host' in obj:
         obj['host'] = REDACTED_HOST
@@ -68,9 +81,13 @@ def redact_issue_context(obj):
         for field in ('description', 'body'):
             if field in parent:
                 parent[field] = REDACTED_BODY
+                redaction_counts['issue_descriptions'] += 1
         obj['parent'] = parent
 
     if 'comments' in obj and isinstance(obj['comments'], list):
+        for c in obj['comments']:
+            if isinstance(c, dict):
+                redaction_counts['issue_comments'] += 1
         obj['comments'] = [
             {**c, 'body': REDACTED_BODY, 'author': REDACTED_EMAIL}
             if isinstance(c, dict) else c
@@ -84,12 +101,18 @@ def redact_issue_context(obj):
                 li = {**li}
                 if 'description' in li:
                     li['description'] = REDACTED_BODY
+                    redaction_counts['issue_descriptions'] += 1
             redacted.append(li)
         obj['linked_issues'] = redacted
 
     return obj
 
 def scrub_text(text):
+    global redaction_counts
+    redaction_counts['emails'] += len(EMAIL_RE.findall(text))
+    redaction_counts['hosts'] += len(ATLASSIAN_HOST_RE.findall(text))
+    redaction_counts['internal_urls'] += len(INTERNAL_URL_RE.findall(text))
+    redaction_counts['gdocs_urls'] += len(GDOCS_URL_RE.findall(text))
     text = EMAIL_RE.sub(REDACTED_EMAIL, text)
     text = ATLASSIAN_HOST_RE.sub(REDACTED_HOST, text)
     text = INTERNAL_URL_RE.sub(REDACTED_URL, text)
@@ -230,7 +253,35 @@ for root, dirs, files in os.walk(output_dir):
 
 print(f'Sanitized {transcript_count} transcript(s), {result_count} result(s)')
 print(f'Skipped sandbox logs (gateway/sandbox .log files)')
+
+# Write redaction summary
+total = sum(redaction_counts.values())
+summary = {
+    'total_redactions': total,
+    'categories': {k: v for k, v in redaction_counts.items() if v > 0},
+    'files_processed': {'transcripts': transcript_count, 'results': result_count},
+}
+
+summary_path = os.path.join(sanitized_dir, 'redaction-summary.json')
+with open(summary_path, 'w') as f:
+    json.dump(summary, f, indent=2)
+
+if total > 0:
+    print(f'⚠️  PII redaction summary: {total} redaction(s) applied')
+    for cat, count in sorted(redaction_counts.items()):
+        if count > 0:
+            print(f'  - {cat}: {count}')
+    print(f'Details written to: redaction-summary.json')
+else:
+    print('No PII redactions needed.')
 PYTHON_SCRIPT
+
+if [[ -f "$SANITIZED_DIR/redaction-summary.json" ]]; then
+  TOTAL=$(jq -r '.total_redactions' "$SANITIZED_DIR/redaction-summary.json")
+  if [[ "$TOTAL" -gt 0 ]]; then
+    echo "::warning::PII sanitization applied ${TOTAL} redaction(s). See redaction-summary.json in artifacts for details."
+  fi
+fi
 
 echo "Sanitize complete. Contents:"
 find "$SANITIZED_DIR" -type f | sort
