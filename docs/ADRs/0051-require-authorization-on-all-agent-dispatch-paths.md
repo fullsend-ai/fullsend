@@ -94,23 +94,25 @@ read the actor's association from the appropriate event field (e.g.,
 
 | Event | Actor checked | Gated? |
 |-------|---------------|--------|
-| `issues.opened` / `issues.edited` | Issue opener | Yes |
+| `issues.opened` / `issues.edited` | Issue opener | No (ungated — see below) |
 | `pull_request_target.opened` / `synchronize` | PR author | Yes |
 | `issues.labeled` | Label applier | Already implicit (requires write access) |
 | `pull_request_target.ready_for_review` | PR author | Yes (same branch as opened/synchronize) |
 | `pull_request_target.closed` | Closer | Already implicit (requires write access) |
 | `pull_request_review.submitted` | Reviewer | Already gated (requires review-bot authorship) |
 
-For external contributors (issues opened or PRs submitted by
-non-members), the agent does not fire automatically. A maintainer can
-still trigger the agent explicitly by:
+**Exception: `issues.opened/edited` remains ungated.** Auto-triage on
+issue creation is a key value proposition — external contributors and
+drive-by bug reporters should receive triage without needing org
+membership. Abuse mitigation for this path is deferred to per-user rate
+limiting ([#1687](https://github.com/fullsend-ai/fullsend/issues/1687)).
 
-- Applying a label (`ready-to-code`, `ready-for-review`) — label
-  application requires write access, which is an implicit auth gate.
-- Posting a slash command (`/fs-triage`, `/fs-code`, `/fs-review`).
+For PRs submitted by non-members, the review agent does not fire
+automatically. A maintainer can trigger it explicitly by:
 
-This does not prevent external contributions — it prevents spending
-inference compute on them automatically.
+- Applying a label (`ready-for-review`) — label application requires
+  write access, which is an implicit auth gate.
+- Posting a slash command (`/fs-review`).
 
 ### Bot-to-bot workflows are preserved
 
@@ -157,26 +159,26 @@ to OWNER/MEMBER/COLLABORATOR), it should do so by extending the
 
 ## Consequences
 
-- All dispatch paths require OWNER, MEMBER, or COLLABORATOR association,
-  closing the cost-exposure and abuse-surface gaps for both slash
-  commands and automatic triggers.
-- External users can no longer trigger agent runs by opening issues, PRs,
-  or posting slash commands on public repos.
+- Slash commands and PR-triggered dispatch paths require OWNER, MEMBER,
+  or COLLABORATOR association, closing the cost-exposure and
+  abuse-surface gaps for command-driven and PR-driven triggers.
+- Auto-triage on `issues.opened/edited` remains ungated to preserve the
+  drive-by bug reporter workflow — abuse mitigation is deferred to
+  per-user rate limiting (#1687).
+- External users can no longer trigger agent runs by posting slash
+  commands or opening PRs on public repos.
 - Maintainers retain full control: labels and slash commands let them
   trigger agents on external contributions when appropriate.
 - Bot-to-bot orchestration (e.g., triage → code handoff) is unaffected
   because it uses label-based triggers, which require write access and
   do not pass through the slash command authorization gate.
-- The dispatch routing logic becomes consistent: every dispatch path
-  checks authorization of the acting user, reducing cognitive load.
+- The dispatch routing logic becomes consistent: slash commands and PR
+  events check authorization of the acting user, reducing cognitive load.
 - Unauthorized slash command attempts get visible feedback (reaction +
   comment), improving UX for legitimate contributors who don't yet have
   the required association.
-- External contributors who don't want to become members will depend on
-  maintainers to trigger agents on their behalf — an acceptable
-  trade-off to keep the abuse surface minimal.
-- Future work: rate-limited auto-triage for external issue reporters
+- Future work: per-user rate limiting for auto-triage
   ([#1687](https://github.com/fullsend-ai/fullsend/issues/1687),
   [vouch](https://github.com/mitchellh/vouch), or per-org trust
-  policies) could relax this boundary for drive-by bug reports without
-  re-opening the abuse surface for slash commands.
+  policies) will provide abuse protection for the ungated
+  `issues.opened` path without requiring org membership.
