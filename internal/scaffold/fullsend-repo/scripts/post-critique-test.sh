@@ -10,7 +10,7 @@ POST_SCRIPT="${SCRIPT_DIR}/post-critique.sh"
 FAILURES=0
 
 TEST_TMPDIR="$(mktemp -d)"
-trap 'rm -rf "${TEST_TMPDIR}"' EXIT
+trap 'rm -rf "${TEST_TMPDIR}" /tmp/workspace/critique-history.json /tmp/workspace/critique-feedback.json /tmp/workspace/refine-result.json' EXIT
 
 GH_LOG="${TEST_TMPDIR}/gh-calls.log"
 MOCK_BIN="${TEST_TMPDIR}/bin"

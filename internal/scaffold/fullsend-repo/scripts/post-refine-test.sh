@@ -124,6 +124,15 @@ assert_stdout_contains() {
   fi
 }
 
+assert_gh_not_called() {
+  local test_name="$1" pattern="$2"
+  if grep -qF "${pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected gh call matching '${pattern}'"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
 # --- Tests ---
 
 # Happy path: refine completes and chains critique
@@ -161,6 +170,9 @@ else
   echo "FAIL: ${test_name} — expected failure but got success"
   FAILURES=$((FAILURES + 1))
 fi
+
+# Invalid JSON result
+run_test "invalid-json" "not valid json" "true"
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo ""

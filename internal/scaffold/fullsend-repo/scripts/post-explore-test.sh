@@ -114,10 +114,11 @@ assert_gh_called() {
   fi
 }
 
-assert_file_exists() {
-  local test_name="$1" path="$2"
-  if [[ ! -f "${path}" ]]; then
-    echo "FAIL: ${test_name} — expected file at ${path}"
+assert_gh_not_called() {
+  local test_name="$1" pattern="$2"
+  if grep -qF "${pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected gh call matching '${pattern}'"
+    cat "${GH_LOG}"
     FAILURES=$((FAILURES + 1))
   fi
 }
@@ -129,12 +130,12 @@ run_test "happy-path"
 assert_gh_called "happy-path" "workflow run refine.yml"
 assert_gh_called "happy-path" "issue_key=42"
 assert_gh_called "happy-path" "explore_run_id=12345"
-assert_file_exists "happy-path" "${TEST_TMPDIR}/run-happy-path/../../workspace/exploration_context.json" && true
-# Check /tmp/workspace/ was created (the script writes there)
 if [[ -f "/tmp/workspace/exploration_context.json" ]]; then
   echo "PASS: happy-path exploration_context.json saved"
+  rm -f "/tmp/workspace/exploration_context.json"
 else
-  echo "INFO: happy-path — /tmp/workspace not checked (may require cleanup)"
+  echo "FAIL: happy-path — exploration_context.json not saved to /tmp/workspace/"
+  FAILURES=$((FAILURES + 1))
 fi
 
 # Auto-create propagation

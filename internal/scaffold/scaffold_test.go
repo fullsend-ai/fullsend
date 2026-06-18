@@ -706,6 +706,21 @@ func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
 			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
 			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN", "ORG", "PROJECT_NUMBER"},
 		},
+		{
+			file:            "explore.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY"},
+			forgeGithubKeys: []string{"GH_TOKEN"},
+		},
+		{
+			file:            "refine.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY", "EXPLORE_RUN_ID"},
+			forgeGithubKeys: []string{"GH_TOKEN"},
+		},
+		{
+			file:            "critique.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY", "REFINE_RUN_ID"},
+			forgeGithubKeys: []string{"GH_TOKEN"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -969,6 +984,10 @@ func TestRefineWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "issues: write")
 	assert.Contains(t, s, "contents: read")
+	assert.Contains(t, s, "JIRA_HOST")
+	assert.Contains(t, s, "JIRA_EMAIL")
+	assert.Contains(t, s, "JIRA_API_TOKEN")
+	assert.Contains(t, s, "jira_project_visibility")
 }
 
 func TestCritiqueWorkflowContent(t *testing.T) {
@@ -995,6 +1014,10 @@ func TestCritiqueWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "issues: write")
 	assert.Contains(t, s, "contents: read")
+	assert.Contains(t, s, "JIRA_HOST")
+	assert.Contains(t, s, "JIRA_EMAIL")
+	assert.Contains(t, s, "JIRA_API_TOKEN")
+	assert.Contains(t, s, "jira_project_visibility")
 }
 
 func TestCreateChildrenWorkflowContent(t *testing.T) {
@@ -1146,55 +1169,6 @@ func TestCritiqueHarnessContent(t *testing.T) {
 	assert.Contains(t, s, "post_script")
 	assert.Contains(t, s, "runner_env")
 	assert.Contains(t, s, "REFINE_RUN_ID")
-}
-
-func TestHarnessForgeRunnerEnvMergeRefinementPipeline(t *testing.T) {
-	dir := t.TempDir()
-	err := WalkFullsendRepoAll(func(path string, content []byte) error {
-		dest := filepath.Join(dir, path)
-		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
-			return mkErr
-		}
-		return os.WriteFile(dest, content, 0o644)
-	})
-	require.NoError(t, err, "extracting scaffold")
-
-	tests := []struct {
-		file            string
-		topLevelKeys    []string
-		forgeGithubKeys []string
-	}{
-		{
-			file:            "explore.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY"},
-			forgeGithubKeys: []string{"GH_TOKEN"},
-		},
-		{
-			file:            "refine.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY", "EXPLORE_RUN_ID"},
-			forgeGithubKeys: []string{"GH_TOKEN"},
-		},
-		{
-			file:            "critique.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA", "ISSUE_KEY", "REFINE_RUN_ID"},
-			forgeGithubKeys: []string{"GH_TOKEN"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.file, func(t *testing.T) {
-			harnessPath := filepath.Join(dir, "harness", tt.file)
-			h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
-			require.NoError(t, loadErr)
-
-			for _, key := range tt.topLevelKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain top-level key %s", key)
-			}
-			for _, key := range tt.forgeGithubKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain forge.github key %s", key)
-			}
-		})
-	}
 }
 
 func TestPipelineHelpersContent(t *testing.T) {
