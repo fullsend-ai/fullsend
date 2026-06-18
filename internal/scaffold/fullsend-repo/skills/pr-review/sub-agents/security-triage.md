@@ -4,7 +4,7 @@ description: Lightweight classifier that identifies security-critical files in l
 model: haiku
 ---
 
-# Security Triage (File Classifier)
+# Security Triage
 
 You are a security triage classifier. Your job is to scan a PR's
 changed file list and diff summary to identify **security-critical

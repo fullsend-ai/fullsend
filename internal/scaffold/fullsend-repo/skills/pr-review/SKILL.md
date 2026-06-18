@@ -45,12 +45,19 @@ and `description`.
 | `style-conventions`    | sonnet | parallel   | Naming, error handling idioms, API shape, code organization                    |
 | `docs-currency`        | sonnet | parallel   | Documentation staleness (follows docs-review skill inline)                     |
 | `cross-repo-contracts` | sonnet | parallel   | API contract breakage affecting other repos (conditional)                      |
-| `security-triage`      | haiku  | pre-pass   | Classifies files by security relevance for large PRs (≥ 30 files)             |
+| `security-triage`      | haiku  | pre-pass   | Classifies files by security relevance for large PRs (≥ 50 files)             |
 | `challenger`           | opus   | sequential | Adversarial challenge of findings, false-positive removal, deduplication       |
 
 The Model column reflects each sub-agent's current frontmatter. Any
 value accepted by the Agent tool's `model` parameter is valid in
 sub-agent frontmatter.
+
+**Non-standard dispatch types:** `security-triage` (pre-pass) and
+`challenger` (sequential) are not dimension sub-agents and are NOT
+dispatched in step 4's parallel loop. `security-triage` runs as a
+preprocessing classifier in step 3c-1; `challenger` runs as a
+post-processing adversarial pass in step 6d. Both produce different
+output formats from the standard findings array.
 
 ## Findings vs inline comments
 
@@ -290,17 +297,20 @@ complex PR that triggers all conditions legitimately needs all 6.
 
 #### 3c-1. Security-critical file triage (large PRs)
 
-When `FILE_COUNT` (from step 2) is **≥ 30**, run a lightweight triage
+When `FILE_COUNT` (from step 2) is **≥ 50**, run a lightweight triage
 pass to identify security-critical files before preparing context
-packages. For PRs under 30 files, skip this step — all files receive
+packages. For PRs under 50 files, skip this step — all files receive
 uniform attention.
 
-**Why:** On large PRs, security-critical files compete with
-boilerplate for the review agent's context window and reasoning
-budget. A triage pass ensures files touching auth, permissions,
-token handling, trust boundaries, and similar concerns receive
-dedicated review context rather than being diluted across dozens of
-routine changes. See #2096 for the motivating incident.
+**Why:** On large PRs (≥ 50 files, where step 2 already produces
+per-file diffs), security-critical files compete with boilerplate for
+the review agent's context window and reasoning budget. A triage pass
+ensures files touching auth, permissions, token handling, trust
+boundaries, and similar concerns receive dedicated review context
+rather than being diluted across dozens of routine changes. The
+threshold aligns with step 2's per-file diff boundary so that
+per-file diff summaries are always available for the triage prompt.
+See #2096 for the motivating incident.
 
 **Procedure:**
 
@@ -383,7 +393,7 @@ For each selected sub-agent, assemble a context package containing:
 **Security-prioritized context (large PRs with triage results):**
 
 When step 3c-1 produced a security triage classification (i.e., the PR
-has ≥ 30 files and the triage pass succeeded), modify the context
+has ≥ 50 files and the triage pass succeeded), modify the context
 packages for the `security` and `correctness` sub-agents as follows:
 
 1. **Security sub-agent:** Provide the full per-file diffs for all
@@ -415,13 +425,15 @@ packages for the `security` and `correctness` sub-agents as follows:
    Security-critical files: <list with reasons>
    ```
 
-If step 3c-1 was skipped (PR under 30 files) or the triage sub-agent
+If step 3c-1 was skipped (PR under 50 files) or the triage sub-agent
 failed (fallback to uniform attention), prepare all context packages
 using the standard format described above — no prioritization.
 
 ### 4. Dispatch sub-agents
 
-For each selected sub-agent:
+For each selected **dimension** sub-agent (from step 3c — excludes
+`security-triage` which runs in step 3c-1, and `challenger` which
+runs in step 6d):
 
 1. Read the sub-agent definition from `sub-agents/{name}.md`
 2. Extract the `model` from frontmatter
