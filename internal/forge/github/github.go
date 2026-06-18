@@ -1957,10 +1957,14 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 	}
 
 	type reviewComment struct {
-		Path string `json:"path"`
-		Line int    `json:"line,omitempty"`
-		Body string `json:"body"`
+		Path        string `json:"path"`
+		Line        int    `json:"line,omitempty"`
+		Body        string `json:"body"`
+		SubjectType string `json:"subject_type,omitempty"`
 	}
+
+	// GitHub's subject_type: "file" is inferred from Line==0 so forge
+	// callers don't need to know about this GitHub-specific field.
 
 	type reviewPayload struct {
 		Event    string          `json:"event"`
@@ -1975,11 +1979,15 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 		CommitID: commitSHA,
 	}
 	for _, rc := range comments {
-		payload.Comments = append(payload.Comments, reviewComment{
+		c := reviewComment{
 			Path: rc.Path,
 			Line: rc.Line,
 			Body: rc.Body,
-		})
+		}
+		if rc.Line == 0 {
+			c.SubjectType = "file"
+		}
+		payload.Comments = append(payload.Comments, c)
 	}
 
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number), payload)
