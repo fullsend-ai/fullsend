@@ -118,15 +118,16 @@ fullsend github setup acme-corp \
 | `--app-set` | No | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--enroll-all` | No | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | No | `false` | Skip enrollment without prompting (per-org only) |
-| `--vendor-fullsend-binary` | No | `false` | Resolve and upload a linux/amd64 fullsend binary for CI (see [Vendoring the CLI binary](#vendoring-the-cli-binary)) |
+| `--vendor` | No | `false` | Vendor binary, reusable workflows, actions, and agent content (see [Vendored vs layered installs](#vendored-vs-layered-installs)) |
+| `--fullsend-source` | No | | Fullsend source checkout for content and cross-compile (requires `--vendor`) |
 | `--fullsend-binary` | No | | Path to a Linux fullsend binary when vendoring (skips auto-resolution) |
 | `--dry-run` | No | `false` | Preview changes without making them |
 
-### Vendoring the CLI binary
+### Vendored vs layered installs
 
-Same policy as [admin install](installation.md#vendoring-the-cli-binary): `--fullsend-binary` → checkout cross-compile → matching release (released CLI only) → fail. Per-repo setup now wires vendoring and stale-binary cleanup when the flag is off.
+Same behavior as [admin install](installation.md#vendored-vs-layered-installs): layered (default) fetches upstream at runtime; `--vendor` installs binary plus workflow/action/agent content and runtime detects vendored installs via `action.yml` presence.
 
-`fullsend admin analyze <org>` reports when a stale vendored binary is present (no install-intent flags on analyze).
+`fullsend admin analyze <org>` reports when stale vendored assets are present (analyze has no install flags).
 
 ## Per-repo setup
 

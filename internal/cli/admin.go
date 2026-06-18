@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
@@ -149,8 +150,9 @@ type perRepoInstallConfig struct {
 	MintSkipDeploy       bool
 	SkipMintCheck        bool
 	AppSet               string
-	VendorBinary         bool
+	Vendor               bool
 	FullsendBinary       string
+	FullsendSource       string
 }
 
 // wifProviderPattern validates the full WIF provider resource name format
@@ -226,8 +228,9 @@ func newInstallCmd() *cobra.Command {
 	var agents string
 	var dryRun bool
 	var skipAppSetup bool
-	var vendorBinary bool
+	var vendor bool
 	var fullsendBinary string
+	var fullsendSource string
 	var enrollAllFlag bool
 	var enrollNoneFlag bool
 	var inferenceProject string
@@ -272,7 +275,8 @@ Inference authentication:
 			if err := appsetup.ValidateAppSet(appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
-			if err := validateVendorBinaryFlags(vendorBinary, fullsendBinary); err != nil {
+			applyDeprecatedVendorBinaryFlag(cmd, &vendor)
+			if err := validateVendorFlags(vendor, fullsendBinary, fullsendSource); err != nil {
 				return err
 			}
 
@@ -308,8 +312,9 @@ Inference authentication:
 					MintSkipDeploy:       mintSkipDeploy,
 					SkipMintCheck:        skipMintCheck,
 					AppSet:               appSet,
-					VendorBinary:         vendorBinary,
+					Vendor:               vendor,
 					FullsendBinary:       fullsendBinary,
+					FullsendSource:       fullsendSource,
 				})
 			}
 
@@ -496,7 +501,7 @@ Inference authentication:
 			printer.Blank()
 
 			if dryRun {
-				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos, vendorBinary, fullsendBinary)
+				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos, vendor, fullsendBinary, fullsendSource)
 			}
 
 			if err := checkInstallScopes(ctx, client, printer); err != nil {
@@ -539,15 +544,14 @@ Inference authentication:
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendorBinary, fullsendBinary, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendor, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
 		},
 	}
 
 	cmd.Flags().StringVar(&agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
-	cmd.Flags().BoolVar(&vendorBinary, "vendor-fullsend-binary", false, "resolve and upload a linux/amd64 fullsend binary for CI")
-	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload when vendoring (default: auto-resolve)")
+	addVendorFlags(cmd, &vendor, &fullsendBinary, &fullsendSource)
 	cmd.Flags().BoolVar(&enrollAllFlag, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&enrollNoneFlag, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().StringVar(&inferenceProject, "inference-project", "", "GCP project ID for inference (Agent Platform)")
@@ -583,8 +587,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	mintSourceDir := c.MintSourceDir
 	mintSkipDeploy := c.MintSkipDeploy
 	skipMintCheck := c.SkipMintCheck
-	vendorBinary := c.VendorBinary
+	vendor := c.Vendor
 	fullsendBinary := c.FullsendBinary
+	fullsendSource := c.FullsendSource
 
 	if strings.Contains(repoFullName, "://") || strings.HasPrefix(repoFullName, "www.") {
 		return fmt.Errorf("expected owner/repo format, got a URL — use just the owner/repo portion (e.g. acme/widget)")
@@ -644,14 +649,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.StepWarn("Using provided WIF provider value — skipping inference provider auto-provisioning")
 	}
 
-	cfg := config.NewPerRepoConfig(roles)
+	cfg := config.NewPerRepoConfig(roles, repoFullName)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	shimContent, err := scaffold.PerRepoShimTemplate()
-	if err != nil {
-		return fmt.Errorf("loading per-repo shim template: %w", err)
 	}
 
 	cfgYAML, err := cfg.Marshal()
@@ -659,25 +659,24 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(vendor)
+	if err != nil {
+		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
+	}
+
 	var files []forge.TreeFile
-	files = append(files, forge.TreeFile{
-		Path:    ".github/workflows/fullsend.yaml",
-		Content: shimContent,
-		Mode:    "100644",
-	})
+	for _, f := range installFiles {
+		files = append(files, forge.TreeFile{
+			Path:    f.Path,
+			Content: f.Content,
+			Mode:    f.Mode,
+		})
+	}
 	files = append(files, forge.TreeFile{
 		Path:    ".fullsend/config.yaml",
 		Content: cfgYAML,
 		Mode:    "100644",
 	})
-
-	for _, dir := range scaffold.PerRepoCustomizedDirs() {
-		files = append(files, forge.TreeFile{
-			Path:    dir + "/.gitkeep",
-			Content: []byte(""),
-			Mode:    "100644",
-		})
-	}
 
 	needsWIFProvision := inferenceWIFProvider == ""
 
@@ -760,7 +759,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			agentAppIDs = make(map[string]string, len(roles))
 			appsFound = true
 			for _, role := range roles {
-				appID, ok := roleAppIDs[owner+"/"+role]
+				appID, ok := roleAppIDs[role]
 				if !ok {
 					appsFound = false
 					break
@@ -805,7 +804,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.StepInfo(fmt.Sprintf("  Mint project: %s, region: %s", mintProject, mintRegion))
 			if mintFound {
 				printer.StepInfo(fmt.Sprintf("  Would register %s in ALLOWED_ORGS", owner))
-				printer.StepInfo(fmt.Sprintf("  Would set ROLE_APP_IDS entries for %s/{%s}", owner, strings.Join(roles, ",")))
+				printer.StepInfo(fmt.Sprintf("  Would use shared ROLE_APP_IDS for roles: %s", strings.Join(roles, ",")))
 			}
 		}
 		printer.Blank()
@@ -835,12 +834,12 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		for _, name := range secretNames {
 			printer.StepInfo(fmt.Sprintf("  %s", name))
 		}
-		if vendorBinary {
+		if vendor {
 			printer.Blank()
-			printer.StepInfo(vendorDryRunMessage(fullsendBinary, layers.VendoredBinaryPathPerRepo))
+			printer.StepInfo(vendorDryRunMessage(fullsendBinary, fullsendSource, layers.VendoredBinaryPathPerRepo))
 		} else {
 			printer.Blank()
-			printer.StepInfo(fmt.Sprintf("Would remove stale vendored binary at %s (if present)", layers.VendoredBinaryPathPerRepo))
+			printer.StepInfo(fmt.Sprintf("Would remove stale vendored assets at %s (if present)", layers.VendoredBinaryPathPerRepo))
 		}
 		return nil
 	}
@@ -994,16 +993,20 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
 	}
 
+	if vendor {
+		var vendorErr error
+		files, _, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, vendor, fullsendBinary, fullsendSource)
+		if vendorErr != nil {
+			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
+		}
+	}
+
 	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets); err != nil {
 		return err
 	}
 
-	if vendorBinary {
-		if err := acquireAndVendorFullsendBinary(ctx, client, printer, owner, repo, fullsendBinary); err != nil {
-			return fmt.Errorf("vendoring binary: %w", err)
-		}
-	} else {
-		if err := removeStaleVendoredBinary(ctx, client, printer, owner, repo, layers.VendoredBinaryPathPerRepo); err != nil {
+	if !vendor {
+		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo, true); err != nil {
 			return err
 		}
 	}
@@ -1030,7 +1033,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		"The default branch (%s) has branch protection rules that prevent direct pushes, "+
 		"so these files are delivered via PR instead.\n\n"+
 		"Merge this PR to activate fullsend workflows.", targetRepo.DefaultBranch)
-	if err := layers.CommitScaffoldFiles(ctx, client, printer,
+	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
 		commitMsg, "chore: initialize fullsend per-repo installation", prBody, files); err != nil {
 		return err
@@ -1116,6 +1119,7 @@ func newUninstallCmd() *cobra.Command {
 }
 
 func newAnalyzeCmd() *cobra.Command {
+	var analyzeFullsendSource string
 	cmd := &cobra.Command{
 		Use:   "analyze <org>",
 		Short: "Analyze fullsend installation status",
@@ -1141,16 +1145,17 @@ func newAnalyzeCmd() *cobra.Command {
 			printer.Header("Analyzing fullsend installation for " + org)
 			printer.Blank()
 
-			return runAnalyze(ctx, client, printer, org)
+			return runAnalyze(ctx, client, printer, org, analyzeFullsendSource)
 		},
 	}
+	cmd.Flags().StringVar(&analyzeFullsendSource, "fullsend-source", "", "fullsend source checkout for vendored alignment reporting (default: auto-detect or GitHub fetch)")
 
 	return cmd
 }
 
 // runDryRun builds a layer stack with empty credentials and analyzes.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository, vendorBinary bool, fullsendBinary string) error {
+func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository, vendor bool, fullsendBinary, fullsendSource string) error {
 	printer.Header("Dry run - analyzing what install would do")
 	printer.Blank()
 
@@ -1188,7 +1193,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	// Build config with empty agents for analysis.
-	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, nil, inferenceProviderName)
+	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, nil, inferenceProviderName, org)
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1211,7 +1216,8 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	} else {
 		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
 	}
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), dispatcher, commitSHA)
+	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1222,9 +1228,10 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 }
 
 // resolveSharedRoleAppIDs discovers app IDs for the given org by matching
-// installed apps against existing ROLE_APP_IDS entries from other orgs.
+// installed apps against shared role-only ROLE_APP_IDS entries.
 func resolveSharedRoleAppIDs(ctx context.Context, client forge.Client, existingIDs map[string]string, owner string, roles []string) (map[string]string, error) {
-	if len(existingIDs) == 0 {
+	roleOnly := mintcore.RoleOnlyAppIDs(existingIDs)
+	if len(roleOnly) == 0 {
 		return nil, fmt.Errorf("mint has no existing ROLE_APP_IDS — cannot determine app IDs for %s", owner)
 	}
 
@@ -1240,48 +1247,35 @@ func resolveSharedRoleAppIDs(ctx context.Context, client forge.Client, existingI
 
 	result := make(map[string]string, len(roles))
 	for _, role := range roles {
-		// If the owner already has an entry, use it directly.
-		if appID, ok := existingIDs[owner+"/"+role]; ok && installedAppIDs[appID] {
-			result[owner+"/"+role] = appID
-			continue
+		appID, ok := roleOnly[role]
+		if !ok {
+			return nil, fmt.Errorf("no app ID configured for role %q on mint", role)
 		}
-		// Otherwise, find a shared app from another org.
-		// Sort keys for deterministic selection when multiple orgs share the role.
-		sortedExisting := make([]string, 0, len(existingIDs))
-		for k := range existingIDs {
-			sortedExisting = append(sortedExisting, k)
-		}
-		sort.Strings(sortedExisting)
-		for _, key := range sortedExisting {
-			appID := existingIDs[key]
-			parts := strings.SplitN(key, "/", 2)
-			if len(parts) != 2 || parts[1] != role || parts[0] == owner {
-				continue
-			}
-			if installedAppIDs[appID] {
-				result[owner+"/"+role] = appID
-				break
-			}
-		}
-		if _, ok := result[owner+"/"+role]; !ok {
+		if !installedAppIDs[appID] {
 			return nil, fmt.Errorf("no shared app for role %q is installed in %s — install the app first", role, owner)
 		}
+		result[role] = appID
 	}
 
 	return result, nil
 }
 
+// detectSharedAppsGCFClientFactory creates GCF clients for detectSharedApps. Overridden in tests.
+var detectSharedAppsGCFClientFactory = func(projectID string) gcf.GCFClient {
+	return gcf.NewLiveGCFClient(projectID)
+}
+
 // detectSharedApps finds public GitHub Apps shared across orgs so app setup
 // can reuse existing app registrations without generating new keys.
 // Returns a role → app-slug mapping for detected shared apps and the full
-// ROLE_APP_IDS map (org/role → app_id) so callers can pass it to app setup
+// ROLE_APP_IDS map (role → app_id) so callers can pass it to app setup
 // without a redundant GCP API call.
 func detectSharedApps(ctx context.Context, client forge.Client, printer *ui.Printer, org string, roles []string, mintProject, mintRegion string) (map[string]string, map[string]string, error) {
 	prov := gcf.NewProvisioner(gcf.Config{
 		ProjectID:  mintProject,
 		Region:     mintRegion,
 		GitHubOrgs: []string{org},
-	}, gcf.NewLiveGCFClient(mintProject))
+	}, detectSharedAppsGCFClientFactory(mintProject))
 
 	existingIDs, err := prov.GetExistingRoleAppIDs(ctx)
 	if err != nil {
@@ -1291,10 +1285,11 @@ func detectSharedApps(ctx context.Context, client forge.Client, printer *ui.Prin
 	if len(existingIDs) == 0 {
 		return nil, nil, nil
 	}
+	roleOnly := mintcore.RoleOnlyAppIDs(existingIDs)
 
 	installations, err := client.ListOrgInstallations(ctx, org)
 	if err != nil {
-		return nil, existingIDs, nil
+		return nil, roleOnly, nil
 	}
 
 	roleSet := make(map[string]bool, len(roles))
@@ -1305,24 +1300,15 @@ func detectSharedApps(ctx context.Context, client forge.Client, printer *ui.Prin
 	sharedSlugs := make(map[string]string)
 	for _, inst := range installations {
 		appIDStr := strconv.Itoa(inst.AppID)
-		for key, existingAppID := range existingIDs {
-			if existingAppID != appIDStr {
+		for role, existingAppID := range roleOnly {
+			if existingAppID != appIDStr || !roleSet[role] {
 				continue
 			}
-			parts := strings.SplitN(key, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			srcOrg, role := parts[0], parts[1]
-			if srcOrg == org || !roleSet[role] {
-				continue
-			}
-
 			sharedSlugs[role] = inst.AppSlug
 			break
 		}
 	}
-	return sharedSlugs, existingIDs, nil
+	return sharedSlugs, roleOnly, nil
 }
 
 // runAppSetup creates or reuses GitHub Apps for each role. When mintProject is
@@ -1346,7 +1332,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 	// of app-set B. Without this, nonflux-triage (app-set "nonflux") would
 	// prevent fullsend-ai-triage (app-set "fullsend-ai") from being detected
 	// and installed.
-	knownSlugs := filterSlugsByAppSet(loadKnownSlugs(ctx, client, org), appSet)
+	knownSlugs := filterSlugsByAppSet(loadKnownSlugs(ctx, client, org, forge.ConfigRepoName, "HEAD", printer), appSet)
 	for role, slug := range filterSlugsByAppSet(sharedSlugs, appSet) {
 		knownSlugs[role] = slug
 	}
@@ -1480,7 +1466,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendorBinary bool, fullsendBinary, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendor bool, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -1524,7 +1510,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		agents[i] = ac.AgentEntry
 	}
 
-	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName)
+	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1572,7 +1558,8 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		}, gcf.NewLiveGCFClient(mintProject))
 	}
 
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendorBinary, makeVendorFunc(fullsendBinary), disp, commitSHA)
+	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, commitSHA)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1598,30 +1585,35 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 // runUninstall tears down the fullsend installation.
 func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string, browser appsetup.BrowserOpener, stdin io.Reader) error {
-	// Try to load agent slugs from existing config. If the .fullsend repo
-	// is already gone (e.g., previous partial uninstall), fall back to the
-	// default naming convention so we can still guide the user to delete
-	// the apps. Without this fallback, a partial uninstall leaves orphaned
-	// apps that block reinstallation (PEM keys are one-shot).
+	// Try to discover agent slugs. Prefer harness wrapper files, then
+	// fall back to config.yaml agents: block, then default naming.
+	// If the .fullsend repo is already gone (e.g., previous partial
+	// uninstall), fall back to the default naming convention so we can
+	// still guide the user to delete the apps. Without this fallback,
+	// a partial uninstall leaves orphaned apps that block reinstallation
+	// (PEM keys are one-shot).
 	var agentSlugs []string
 	var configMode string
 	var enrolledRepos []string
+	var parsedCfg *config.OrgConfig
 	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
-		if parsedCfg, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			for _, agent := range parsedCfg.Agents {
-				agentSlugs = append(agentSlugs, agent.Slug)
-			}
-			configMode = parsedCfg.Dispatch.Mode
-			enrolledRepos = parsedCfg.EnabledRepos()
+		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
+			parsedCfg = parsed
+			configMode = parsed.Dispatch.Mode
+			enrolledRepos = parsed.EnabledRepos()
 		} else {
 			printer.StepWarn(fmt.Sprintf("Could not parse existing config: %v; using defaults", parseErr))
 		}
 	}
+
+	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, parsedCfg, printer)
+
 	if len(agentSlugs) == 0 {
-		// Config unavailable — assume default app naming convention and
-		// also include any legacy app-set prefixes so that apps created
-		// under an older version are not silently skipped.
+		// Neither harness files nor config agents found — assume default
+		// app naming convention and also include any legacy app-set
+		// prefixes so that apps created under an older version are not
+		// silently skipped.
 		for _, role := range config.DefaultAgentRoles() {
 			agentSlugs = append(agentSlugs, appsetup.AppSlug(appSet, role))
 		}
@@ -1663,10 +1655,11 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	}
 
 	// Build a minimal stack for uninstall.
-	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "")
+	// Only ConfigRepoLayer matters for uninstall since other layers are no-ops.
+	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "", "")
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
-		layers.NewWorkflowsLayer(org, client, printer, "", version),
+		layers.NewWorkflowsLayer(org, client, printer, "", version, false),
 		layers.NewSecretsLayer(org, client, nil, printer),
 		layers.NewInferenceLayer(org, client, nil, printer),
 		dispatchLayer,
@@ -1782,7 +1775,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 }
 
 // runAnalyze assesses the current installation state.
-func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, org, analyzeFullsendSource string) error {
 	allRepos, err := client.ListOrgRepos(ctx, org)
 	if err != nil {
 		return fmt.Errorf("listing org repos: %w", err)
@@ -1804,7 +1797,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		})
 	}
 
-	cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, nil, "")
+	cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, nil, "", org)
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -1818,7 +1811,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, dispatcher, commitSHA)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, commitSHA)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -1829,6 +1822,12 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 }
 
 // buildLayerStack creates the ordered layer stack.
+func newVendorLayer(org string, client forge.Client, printer *ui.Printer, vendor bool, vendorFn layers.VendorFunc, analyzeFullsendSource string) *layers.VendorBinaryLayer {
+	layer := layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendor, vendorFn)
+	layer.SetAnalyzeOptions(analyzeFullsendSource, version)
+	return layer
+}
+
 func buildLayerStack(
 	org string,
 	client forge.Client,
@@ -1840,8 +1839,10 @@ func buildLayerStack(
 	agentCreds []layers.AgentCredentials,
 	enrolledRepoIDs []int64,
 	inferenceProvider inference.Provider,
-	vendorBinary bool,
+	vendor bool,
 	vendorFn layers.VendorFunc,
+	vendorCollect layers.VendorCollectFunc,
+	analyzeFullsendSource string,
 	dispatcher dispatch.Dispatcher,
 	commitSHA string,
 ) *layers.Stack {
@@ -1859,14 +1860,30 @@ func buildLayerStack(
 
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
-		layers.NewWorkflowsLayer(org, client, printer, user, version),
+		workflowsLayer(org, client, printer, user, version, vendor, vendorCollect),
 		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA),
-		layers.NewVendorBinaryLayer(org, forge.ConfigRepoName, client, printer, vendorBinary, vendorFn),
+		vendorLayer(org, client, printer, vendor, vendorFn, vendorCollect, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		dispatchLayer,
 		layers.NewEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer),
 	)
+}
+
+func workflowsLayer(org string, client forge.Client, printer *ui.Printer, user, version string, vendor bool, vendorCollect layers.VendorCollectFunc) *layers.WorkflowsLayer {
+	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor)
+	if vendorCollect != nil {
+		layer = layer.WithVendorCollect(vendorCollect)
+	}
+	return layer
+}
+
+func vendorLayer(org string, client forge.Client, printer *ui.Printer, vendor bool, vendorFn layers.VendorFunc, vendorCollect layers.VendorCollectFunc, analyzeFullsendSource string) *layers.VendorBinaryLayer {
+	layer := newVendorLayer(org, client, printer, vendor, vendorFn, analyzeFullsendSource)
+	if vendorCollect != nil {
+		layer.SetCombinedWithScaffold(true)
+	}
+	return layer
 }
 
 // installRequiredScopes is the set of OAuth scopes the install command
@@ -2006,8 +2023,45 @@ func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]stri
 	return out
 }
 
-// loadKnownSlugs tries to read agent slugs from an existing config.
-func loadKnownSlugs(ctx context.Context, client forge.Client, org string) map[string]string {
+// loadKnownSlugs discovers agent slugs from harness wrapper files in the
+// config repo, falling back to the config.yaml agents: block.
+func loadKnownSlugs(ctx context.Context, client forge.Client, org, configRepo, ref string, printer *ui.Printer) map[string]string {
+	agents, err := harness.DiscoverRemoteAgents(ctx, client, org, configRepo, ref)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("harness discovery: %v", err))
+	}
+	if len(agents) > 0 {
+		slugs := make(map[string]string, len(agents))
+		seen := make(map[string]bool, len(agents))
+		for _, a := range agents {
+			if a.Role == "" && a.Slug == "" {
+				continue
+			}
+			if a.Role == "" || a.Slug == "" {
+				printer.StepWarn(fmt.Sprintf("harness %s has role=%q slug=%q; both must be set", a.Filename, a.Role, a.Slug))
+				continue
+			}
+			if seen[a.Role] {
+				printer.StepInfo(fmt.Sprintf("duplicate role %q in harness file %s, using first occurrence", a.Role, a.Filename))
+				continue
+			}
+			seen[a.Role] = true
+			slugs[a.Role] = a.Slug
+		}
+		if len(slugs) > 0 {
+			return slugs
+		}
+	}
+
+	slugs := loadKnownSlugsLegacy(ctx, client, org)
+	if len(slugs) > 0 {
+		printer.StepWarn("config.yaml agents: block is deprecated; agent identity should be in harness files with role/slug fields")
+	}
+	return slugs
+}
+
+// loadKnownSlugsLegacy reads agent slugs from the config.yaml agents: block.
+func loadKnownSlugsLegacy(ctx context.Context, client forge.Client, org string) map[string]string {
 	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err != nil {
 		return nil

@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -159,7 +160,8 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -182,7 +184,8 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -193,7 +196,8 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "nonexistent", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
 }
@@ -223,7 +227,8 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -253,7 +258,8 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -278,7 +284,8 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing org config")
 }
@@ -298,7 +305,8 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
 }
@@ -337,7 +345,8 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -361,7 +370,8 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
 }
@@ -388,7 +398,8 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing org config")
 }
@@ -1311,7 +1322,6 @@ func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
 		AllowedRemoteResources: []string{"https://github.com/org/"},
-		AllowRuntimeFetch:      true,
 	}
 
 	tokenResolved := false
@@ -1356,6 +1366,33 @@ func TestSetupFetchService_NoForgeClientNoRemoteResources(t *testing.T) {
 	assert.NotEmpty(t, env.addr)
 }
 
+func TestSetupFetchService_TokenResolutionFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+
+	var warned string
+	env, shutdown, err := setupFetchService(
+		context.Background(),
+		nil,
+		h,
+		func() (string, error) { return "", fmt.Errorf("no token available") },
+		fetchsvc.ServiceConfig{
+			Harness:       h,
+			WorkspaceRoot: tmpDir,
+			MaxFetches:    10,
+		},
+		func(msg string) { warned = msg },
+	)
+	require.NoError(t, err)
+	defer shutdown()
+
+	assert.NotEmpty(t, env.addr)
+	assert.Contains(t, warned, "no token available")
+}
+
 func TestSetupFetchService_CustomMaxFetches(t *testing.T) {
 	tmpDir := t.TempDir()
 	maxFetches := 50
@@ -1387,34 +1424,6 @@ func TestSetupFetchService_CustomMaxFetches(t *testing.T) {
 	assert.NotEmpty(t, env.addr)
 }
 
-func TestSetupFetchService_TokenResolutionFails(t *testing.T) {
-	tmpDir := t.TempDir()
-	h := &harness.Harness{
-		Agent:                  "agents/test.md",
-		AllowedRemoteResources: []string{"https://github.com/org/"},
-		AllowRuntimeFetch:      true,
-	}
-
-	var warned string
-	env, shutdown, err := setupFetchService(
-		context.Background(),
-		nil,
-		h,
-		func() (string, error) { return "", fmt.Errorf("no token available") },
-		fetchsvc.ServiceConfig{
-			Harness:       h,
-			WorkspaceRoot: tmpDir,
-			MaxFetches:    10,
-		},
-		func(msg string) { warned = msg },
-	)
-	require.NoError(t, err)
-	defer shutdown()
-
-	assert.NotEmpty(t, env.addr)
-	assert.Contains(t, warned, "no token available")
-}
-
 func TestEffectiveMaxRuntimeFetches_MatchesFetchsvcDefault(t *testing.T) {
 	h := &harness.Harness{}
 	if h.EffectiveMaxRuntimeFetches() != fetchsvc.DefaultMaxFetches {
@@ -1425,4 +1434,339 @@ func TestEffectiveMaxRuntimeFetches_MatchesFetchsvcDefault(t *testing.T) {
 
 type mockForgeClient struct {
 	forge.Client
+}
+
+func TestSetupStatusNotifier_MintURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	assert.True(t, n.HasClientFactory(), "client factory should be set when mint URL provided")
+}
+
+func TestSetupStatusNotifier_MintURLFromEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	assert.True(t, n.HasClientFactory(), "client factory should be set from FULLSEND_MINT_URL env var")
+}
+
+func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no mint URL available")
+}
+
+func TestSetupStatusNotifier_InvalidRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "noslash",
+		statusNum:  7,
+	}
+
+	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-repo must be in owner/repo format")
+}
+
+func TestRunCommand_HasMintURLFlag(t *testing.T) {
+	cmd := newRunCmd()
+
+	f := cmd.Flags().Lookup("mint-url")
+	require.NotNil(t, f, "run command should have --mint-url flag")
+	assert.Equal(t, "", f.DefValue)
+}
+
+func TestSetupStatusNotifier_FactoryMintSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, []string{"repo"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_test_minted"}, nil
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestSetupStatusNotifier_FactoryMintError(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC unavailable")
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OIDC unavailable")
+	assert.Nil(t, client)
+}
+
+func TestRunCommand_StatusTokenFlagRemoved(t *testing.T) {
+	cmd := newRunCmd()
+	f := cmd.Flags().Lookup("status-token")
+	assert.Nil(t, f, "--status-token flag should no longer exist")
+}
+
+func TestTitleCase(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"hello world", "Hello World"},
+		{"code", "Code"},
+		{"", ""},
+		{"already Title", "Already Title"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, titleCase(tt.in))
+	}
+}
+
+func TestSetupStatusNotifier_ConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	configData := `defaults:
+  status_notifications:
+    comment:
+      start: enabled
+      completion: disabled
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configData), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_RunIDFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_PRHeadSHA(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	eventPayload := `{"inputs":{"event_payload":"{\"pull_request\":{\"head\":{\"sha\":\"abc123def456\"}}}"}}`
+	eventFile := filepath.Join(tmpDir, "event.json")
+	require.NoError(t, os.WriteFile(eventFile, []byte(eventPayload), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_EVENT_PATH", eventFile)
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestEmitDiagnostic_Warning(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "role",
+		Message:  "test warning message",
+	}
+	emitDiagnostic(printer, diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "warning")
+	assert.Contains(t, output, "role")
+	assert.Contains(t, output, "test warning message")
+}
+
+func TestEmitDiagnostic_Error(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityError,
+		Field:    "agent",
+		Message:  "test error message",
+	}
+	emitDiagnostic(printer, diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "error")
+	assert.Contains(t, output, "agent")
+	assert.Contains(t, output, "test error message")
+}
+
+func TestEmitDiagnosticWithContext(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "role",
+		Message:  "role is not set",
+	}
+	emitDiagnosticWithContext(printer, "triage", diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "triage")
+	assert.Contains(t, output, "warning")
+	assert.Contains(t, output, "role")
+}
+
+func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
+	// Verifies that runAgent emits a lint warning when harness has no role,
+	// but the command still proceeds (fails later at sandbox availability).
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness without role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	// Command fails later (no openshell), but lint warning should be emitted
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+
+	// Verify lint warning was printed
+	output := buf.String()
+	assert.Contains(t, output, "role")
+	assert.Contains(t, output, "warning")
+}
+
+func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
+	// Verifies that runAgent does NOT emit a lint warning when harness has role set.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness with role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	// Command fails later (no openshell)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+
+	// Verify no lint warning about role
+	output := buf.String()
+	assert.NotContains(t, output, "role is not set")
 }

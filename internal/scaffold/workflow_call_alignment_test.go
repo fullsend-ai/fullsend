@@ -56,6 +56,17 @@ type callerPair struct {
 	jobName      string // job key in the caller workflow
 }
 
+func loadRenderedScaffoldCaller(path string) func(t *testing.T) []byte {
+	return func(t *testing.T) []byte {
+		t.Helper()
+		raw, err := FullsendRepoFile(path)
+		require.NoError(t, err)
+		rendered, err := RenderTemplate(path, raw, RenderOptionsForInstall(false, false))
+		require.NoError(t, err)
+		return rendered
+	}
+}
+
 func loadScaffoldFile(path string) func(t *testing.T) []byte {
 	return func(t *testing.T) []byte {
 		t.Helper()
@@ -80,12 +91,12 @@ func loadRepoFile(relPath string) func(t *testing.T) []byte {
 func TestWorkflowCallInputAlignment(t *testing.T) {
 	// All thin callers in the scaffold that reference reusable workflows.
 	pairs := []callerPair{
-		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml"), "triage"},
-		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml"), "code"},
-		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml"), "review"},
-		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml"), "fix"},
-		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml"), "retro"},
-		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml"), "prioritize"},
+		{"scaffold/triage.yml", loadRenderedScaffoldCaller(".github/workflows/triage.yml"), "triage"},
+		{"scaffold/code.yml", loadRenderedScaffoldCaller(".github/workflows/code.yml"), "code"},
+		{"scaffold/review.yml", loadRenderedScaffoldCaller(".github/workflows/review.yml"), "review"},
+		{"scaffold/fix.yml", loadRenderedScaffoldCaller(".github/workflows/fix.yml"), "fix"},
+		{"scaffold/retro.yml", loadRenderedScaffoldCaller(".github/workflows/retro.yml"), "retro"},
+		{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
 	}
 
 	// Also validate reusable-dispatch.yml's stage jobs.

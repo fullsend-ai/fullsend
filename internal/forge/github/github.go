@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"golang.org/x/crypto/nacl/box"
@@ -612,6 +613,8 @@ func isTransientStatus(code int) bool {
 // CommitFiles atomically commits multiple files to the default branch
 // using the Git Trees/Blobs/Commits API. Returns (false, nil) when
 // all files already match the current tree (idempotent).
+// Text files are embedded as UTF-8 tree content. Binary files (e.g.
+// vendored ELF) are uploaded via the Git Blob API and referenced by SHA.
 //
 // Returns forge.ErrBranchProtected (wrapped) when the ref update fails
 // with a 422, which indicates branch protection rules prevent direct pushes.
@@ -716,18 +719,35 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 4. Compute expected blob SHAs and filter to changed files.
-	var changedEntries []map[string]string
+	var changedEntries []map[string]any
 	for _, f := range files {
 		expectedSHA := blobSHA(f.Content)
-		if info, ok := existing[f.Path]; ok && info.sha == expectedSHA && info.mode == f.Mode {
+		info, exists := existing[f.Path]
+		if exists && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
 		}
-		changedEntries = append(changedEntries, map[string]string{
-			"path":    f.Path,
-			"mode":    f.Mode,
-			"type":    "blob",
-			"content": string(f.Content),
-		})
+
+		entry := map[string]any{
+			"path": f.Path,
+			"mode": f.Mode,
+			"type": "blob",
+		}
+		if utf8.Valid(f.Content) {
+			entry["content"] = string(f.Content)
+		} else {
+			blobSHAValue := expectedSHA
+			if exists && info.sha == expectedSHA {
+				blobSHAValue = info.sha
+			} else {
+				createdSHA, err := c.createBlob(ctx, owner, repo, f.Content)
+				if err != nil {
+					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
+				}
+				blobSHAValue = createdSHA
+			}
+			entry["sha"] = blobSHAValue
+		}
+		changedEntries = append(changedEntries, entry)
 	}
 
 	if len(changedEntries) == 0 {
@@ -785,6 +805,146 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	return true, nil
 }
 
+// DeleteFiles atomically removes paths from the repository default branch.
+func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (int, error) {
+	if len(paths) == 0 {
+		return 0, nil
+	}
+
+	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+	if err != nil {
+		return 0, fmt.Errorf("get repo: %w", err)
+	}
+	var repoInfo struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := decodeJSON(repoResp, &repoInfo); err != nil {
+		return 0, fmt.Errorf("decode repo info: %w", err)
+	}
+
+	var commitSHA string
+	if err := c.retryOnTransient(ctx, "get branch ref", func() error {
+		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
+		if refErr != nil {
+			return fmt.Errorf("get branch ref: %w", refErr)
+		}
+		var ref struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if decErr := decodeJSON(refResp, &ref); decErr != nil {
+			return fmt.Errorf("decode ref: %w", decErr)
+		}
+		commitSHA = ref.Object.SHA
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	if err != nil {
+		return 0, fmt.Errorf("get commit: %w", err)
+	}
+	var commitObj struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := decodeJSON(cResp, &commitObj); err != nil {
+		return 0, fmt.Errorf("decode commit: %w", err)
+	}
+	baseTreeSHA := commitObj.Tree.SHA
+
+	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))
+	if err != nil {
+		return 0, fmt.Errorf("get tree: %w", err)
+	}
+	var existingTree struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Mode string `json:"mode"`
+		} `json:"tree"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := decodeJSON(treeResp, &existingTree); err != nil {
+		return 0, fmt.Errorf("decode tree: %w", err)
+	}
+	if existingTree.Truncated {
+		return 0, fmt.Errorf("tree too large (truncated); cannot delete")
+	}
+
+	existing := make(map[string]string, len(existingTree.Tree))
+	for _, entry := range existingTree.Tree {
+		existing[entry.Path] = entry.Mode
+	}
+
+	var deleteEntries []map[string]any
+	for _, path := range paths {
+		mode, ok := existing[path]
+		if !ok {
+			continue
+		}
+		if mode == "" {
+			mode = "100644"
+		}
+		deleteEntries = append(deleteEntries, map[string]any{
+			"path": path,
+			"mode": mode,
+			"type": "blob",
+			"sha":  nil,
+		})
+	}
+	if len(deleteEntries) == 0 {
+		return 0, nil
+	}
+
+	treePayload := map[string]any{
+		"base_tree": baseTreeSHA,
+		"tree":      deleteEntries,
+	}
+	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
+	if err != nil {
+		return 0, fmt.Errorf("create tree: %w", err)
+	}
+	var newTree struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(newTreeResp, &newTree); err != nil {
+		return 0, fmt.Errorf("decode new tree: %w", err)
+	}
+
+	commitPayload := map[string]any{
+		"message": message,
+		"tree":    newTree.SHA,
+		"parents": []string{commitSHA},
+	}
+	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
+	if err != nil {
+		return 0, fmt.Errorf("create commit: %w", err)
+	}
+	var newCommit struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(newCommitResp, &newCommit); err != nil {
+		return 0, fmt.Errorf("decode new commit: %w", err)
+	}
+
+	refPayload := map[string]string{"sha": newCommit.SHA}
+	if err := c.retryOnTransient(ctx, "update ref", func() error {
+		refUpdateResp, patchErr := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, repoInfo.DefaultBranch), refPayload)
+		if patchErr != nil {
+			return fmt.Errorf("update ref: %w", patchErr)
+		}
+		refUpdateResp.Body.Close()
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	return len(deleteEntries), nil
+}
+
 // isBranchProtectionError checks whether a 422 APIError indicates branch
 // protection rather than another validation failure (e.g. non-fast-forward).
 // It matches both legacy branch protection rules and newer repository rulesets.
@@ -813,6 +973,24 @@ func blobSHA(content []byte) string {
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content []byte) (string, error) {
+	payload := map[string]string{
+		"content":  base64.StdEncoding.EncodeToString(content),
+		"encoding": "base64",
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), payload)
+	if err != nil {
+		return "", fmt.Errorf("create blob: %w", err)
+	}
+	var blob struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(resp, &blob); err != nil {
+		return "", fmt.Errorf("decode blob: %w", err)
+	}
+	return blob.SHA, nil
 }
 
 // GetFileContent retrieves the content of a file from a repository.
@@ -1327,6 +1505,31 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 		return "", false, fmt.Errorf("decode variable %s: %w", name, err)
 	}
 	return result.Value, true, nil
+}
+
+// GetWorkflow returns a workflow definition by filename (e.g. repo-maintenance.yml).
+func (c *LiveClient) GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*forge.Workflow, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s", owner, repo, workflowFile))
+	if err != nil {
+		return nil, fmt.Errorf("get workflow %s: %w", workflowFile, err)
+	}
+
+	var wf struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		State string `json:"state"`
+	}
+	if err := decodeJSON(resp, &wf); err != nil {
+		return nil, fmt.Errorf("decode workflow %s: %w", workflowFile, err)
+	}
+
+	return &forge.Workflow{
+		ID:    wf.ID,
+		Name:  wf.Name,
+		Path:  wf.Path,
+		State: wf.State,
+	}, nil
 }
 
 // GetLatestWorkflowRun returns the most recent workflow run for a workflow file.

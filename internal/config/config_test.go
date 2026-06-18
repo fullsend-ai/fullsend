@@ -41,7 +41,7 @@ func TestNewOrgConfig(t *testing.T) {
 		{Role: "fullsend", Name: "test", Slug: "test-slug"},
 	}
 
-	cfg := NewOrgConfig(allRepos, enabledRepos, roles, agents, "")
+	cfg := NewOrgConfig(allRepos, enabledRepos, roles, agents, "", "")
 
 	assert.Equal(t, "1", cfg.Version)
 	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
@@ -285,12 +285,12 @@ repos:
 }
 
 func TestNewOrgConfig_WithInferenceProvider(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, nil, nil, "vertex")
+	cfg := NewOrgConfig(nil, nil, nil, nil, "vertex", "")
 	assert.Equal(t, "vertex", cfg.Inference.Provider)
 }
 
 func TestNewOrgConfig_WithoutInferenceProvider(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, nil, nil, "")
+	cfg := NewOrgConfig(nil, nil, nil, nil, "", "")
 	assert.Empty(t, cfg.Inference.Provider)
 }
 
@@ -447,7 +447,7 @@ func TestOrgConfigValidate_FixRole(t *testing.T) {
 }
 
 func TestNewOrgConfig_KillSwitchDefaultFalse(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, nil, "")
+	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, nil, "", "")
 	assert.False(t, cfg.KillSwitch)
 }
 
@@ -563,14 +563,14 @@ func TestOrgConfigMarshal_WithDispatchMode(t *testing.T) {
 }
 
 func TestNewPerRepoConfig_DefaultRoles(t *testing.T) {
-	cfg := NewPerRepoConfig(nil)
+	cfg := NewPerRepoConfig(nil, "")
 	assert.Equal(t, "1", cfg.Version)
 	assert.Equal(t, DefaultAgentRoles(), cfg.Roles)
 	assert.False(t, cfg.KillSwitch)
 }
 
 func TestNewPerRepoConfig_CustomRoles(t *testing.T) {
-	cfg := NewPerRepoConfig([]string{"triage", "review"})
+	cfg := NewPerRepoConfig([]string{"triage", "review"}, "")
 	assert.Equal(t, []string{"triage", "review"}, cfg.Roles)
 }
 
@@ -666,7 +666,7 @@ func TestPerRepoConfigMarshal_KillSwitchOmitted(t *testing.T) {
 }
 
 func TestPerRepoConfig_RoundTrip(t *testing.T) {
-	original := NewPerRepoConfig([]string{"fullsend", "triage", "coder", "review", "fix"})
+	original := NewPerRepoConfig([]string{"fullsend", "triage", "coder", "review", "fix"}, "")
 	data, err := original.Marshal()
 	require.NoError(t, err)
 
@@ -880,4 +880,196 @@ func TestOrgConfigMarshal_WithoutStatusNotifications(t *testing.T) {
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "status_notifications")
+}
+
+// --- CreateIssues tests ---
+
+func TestOrgConfig_CreateIssues_ParseYAML(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+agents: []
+repos: {}
+create_issues:
+  allow_targets:
+    orgs:
+      - my-org
+      - other-org
+    repos:
+      - external-org/some-repo
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.CreateIssues)
+	assert.Equal(t, []string{"my-org", "other-org"}, cfg.CreateIssues.AllowTargets.Orgs)
+	assert.Equal(t, []string{"external-org/some-repo"}, cfg.CreateIssues.AllowTargets.Repos)
+}
+
+func TestOrgConfig_CreateIssues_OmittedWhenEmpty(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+		Agents: []AgentEntry{},
+		Repos:  map[string]RepoConfig{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "create_issues")
+}
+
+func TestOrgConfig_CreateIssues_Marshal(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+		Agents: []AgentEntry{},
+		Repos:  map[string]RepoConfig{},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Orgs:  []string{"my-org"},
+				Repos: []string{"other/repo"},
+			},
+		},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "create_issues:")
+	assert.Contains(t, string(data), "allow_targets:")
+	assert.Contains(t, string(data), "my-org")
+	assert.Contains(t, string(data), "other/repo")
+}
+
+func TestOrgConfigValidate_CreateIssues_InvalidRepoFormat(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{"no-slash-here"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no-slash-here")
+}
+
+func TestOrgConfigValidate_CreateIssues_MalformedRepoFormat(t *testing.T) {
+	malformed := []string{"/", "/repo", "owner/", "//"}
+	for _, repo := range malformed {
+		cfg := &OrgConfig{
+			Version:  "1",
+			Dispatch: DispatchConfig{Platform: "github-actions"},
+			Defaults: RepoDefaults{
+				Roles:                    []string{"fullsend"},
+				MaxImplementationRetries: 2,
+			},
+			CreateIssues: &CreateIssuesConfig{
+				AllowTargets: AllowTargets{
+					Repos: []string{repo},
+				},
+			},
+		}
+		err := cfg.Validate()
+		assert.Error(t, err, "expected error for repo %q", repo)
+		assert.Contains(t, err.Error(), "owner/name", "expected owner/name message for repo %q", repo)
+	}
+}
+
+func TestOrgConfigValidate_CreateIssues_EmptyOrg(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Orgs: []string{"valid-org", ""},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty org")
+}
+
+func TestOrgConfigValidate_CreateIssues_Valid(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Orgs:  []string{"my-org"},
+				Repos: []string{"other/repo"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.NoError(t, err)
+}
+
+func TestOrgConfigValidate_CreateIssues_Nil(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+		},
+	}
+	err := cfg.Validate()
+	assert.NoError(t, err)
+}
+
+func TestNewOrgConfig_CreateIssuesDefaults(t *testing.T) {
+	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, nil, "", "my-org")
+	require.NotNil(t, cfg.CreateIssues)
+	assert.Equal(t, []string{"my-org"}, cfg.CreateIssues.AllowTargets.Orgs)
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)
+}
+
+func TestPerRepoConfig_CreateIssues_ParseYAML(t *testing.T) {
+	yamlData := `
+version: "1"
+roles:
+  - fullsend
+  - triage
+create_issues:
+  allow_targets:
+    repos:
+      - my-org/my-repo
+      - fullsend-ai/fullsend
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.CreateIssues)
+	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)
+}
+
+func TestNewPerRepoConfig_CreateIssuesDefaults(t *testing.T) {
+	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
+	require.NotNil(t, cfg.CreateIssues)
+	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)
 }

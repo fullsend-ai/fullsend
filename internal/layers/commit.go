@@ -10,9 +10,11 @@ import (
 
 // CommitScaffoldFiles commits files to a repo's default branch. If the branch
 // is protected, it falls back to creating a PR from a feature branch.
+// The returned bool is true when files were committed directly to the default
+// branch (false when idempotent, on protected-branch PR fallback, or unchanged).
 func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
-	files []forge.TreeFile) error {
+	files []forge.TreeFile) (bool, error) {
 
 	committed, err := client.CommitFiles(ctx, owner, repo, commitMsg, files)
 	if err != nil && forge.IsBranchProtected(err) {
@@ -27,7 +29,7 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 		if branchErr := client.CreateBranch(ctx, owner, repo, scaffoldBranch); branchErr != nil {
 			if !forge.IsAlreadyExists(branchErr) {
 				printer.StepFail("Failed to create scaffold branch")
-				return fmt.Errorf("creating scaffold branch: %w", branchErr)
+				return false, fmt.Errorf("creating scaffold branch: %w", branchErr)
 			}
 		}
 
@@ -35,10 +37,10 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 		if commitErr != nil {
 			if forge.IsBranchProtected(commitErr) {
 				printer.StepFail("Scaffold branch is also protected — cannot commit")
-				return fmt.Errorf("scaffold branch %q is protected; configure branch protection to allow pushes to scaffold branches: %w", scaffoldBranch, commitErr)
+				return false, fmt.Errorf("scaffold branch %q is protected; configure branch protection to allow pushes to scaffold branches: %w", scaffoldBranch, commitErr)
 			}
 			printer.StepFail("Failed to commit scaffold files to branch")
-			return fmt.Errorf("committing scaffold files to branch: %w", commitErr)
+			return false, fmt.Errorf("committing scaffold files to branch: %w", commitErr)
 		}
 
 		// Always attempt PR creation — even when branchCommitted is false.
@@ -49,7 +51,7 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 		if prErr != nil {
 			if !forge.IsAlreadyExists(prErr) {
 				printer.StepFail("Failed to create scaffold PR")
-				return fmt.Errorf("creating scaffold PR: %w", prErr)
+				return false, fmt.Errorf("creating scaffold PR: %w", prErr)
 			}
 			if branchCommitted {
 				printer.StepDone("Scaffold PR already exists — updated with new files")
@@ -60,9 +62,10 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 			printer.StepDone(fmt.Sprintf("Created PR #%d: %s", proposal.Number, proposal.URL))
 		}
 		printer.StepInfo("Merge the PR to activate fullsend workflows")
+		return false, nil
 	} else if err != nil {
 		printer.StepFail("Failed to commit scaffold files")
-		return fmt.Errorf("committing scaffold files: %w", err)
+		return false, fmt.Errorf("committing scaffold files: %w", err)
 	} else if committed {
 		noun := "files"
 		if len(files) == 1 {
@@ -73,5 +76,5 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 		printer.StepDone("Scaffold up to date")
 	}
 
-	return nil
+	return committed, nil
 }

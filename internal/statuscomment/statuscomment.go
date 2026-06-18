@@ -38,15 +38,20 @@ const (
 // now is overridable in tests to fix the current time for ReconcileOrphaned.
 var now = time.Now
 
+// ClientFactory returns a fresh forge.Client. It is called before each
+// API operation so the underlying token is never stale.
+type ClientFactory func(ctx context.Context) (forge.Client, error)
+
 // Notifier manages status comment lifecycle for a single agent run.
 type Notifier struct {
-	client      forge.Client
-	cfg         config.StatusNotificationConfig
-	owner, repo string
-	number      int
-	runURL      string
-	sha         string
-	marker      string
+	client        forge.Client
+	clientFactory ClientFactory
+	cfg           config.StatusNotificationConfig
+	owner, repo   string
+	number        int
+	runURL        string
+	sha           string
+	marker        string
 
 	startCommentID int
 	startTime      time.Time
@@ -79,6 +84,41 @@ func (n *Notifier) SetWarnFunc(f func(string, ...any)) {
 	n.warnf = f
 }
 
+// SetClientFactory sets a factory that mints a fresh forge.Client before
+// each API operation. When set, the static client passed to New is only
+// used if the factory is nil.
+func (n *Notifier) SetClientFactory(f ClientFactory) {
+	n.clientFactory = f
+}
+
+// HasClientFactory reports whether a client factory has been configured.
+func (n *Notifier) HasClientFactory() bool {
+	return n.clientFactory != nil
+}
+
+// InvokeClientFactory calls the configured factory and returns the result.
+// Useful for verifying factory wiring in tests without triggering API calls.
+func (n *Notifier) InvokeClientFactory(ctx context.Context) (forge.Client, error) {
+	if n.clientFactory == nil {
+		return nil, fmt.Errorf("no client factory configured")
+	}
+	return n.clientFactory(ctx)
+}
+
+// refreshClient replaces n.client with a freshly minted client when a
+// factory is configured. Returns an error only if the factory itself fails.
+func (n *Notifier) refreshClient(ctx context.Context) error {
+	if n.clientFactory == nil {
+		return nil
+	}
+	c, err := n.clientFactory(ctx)
+	if err != nil {
+		return fmt.Errorf("minting fresh client: %w", err)
+	}
+	n.client = c
+	return nil
+}
+
 func commentEnabled(val string) bool {
 	return val == "" || val == "enabled"
 }
@@ -88,6 +128,9 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	n.startTime = n.now().UTC()
 
 	if commentEnabled(n.cfg.Comment.Start) {
+		if err := n.refreshClient(ctx); err != nil {
+			return err
+		}
 		body := n.buildStartBody(description)
 		comment, err := n.client.CreateIssueComment(ctx, n.owner, n.repo, n.number, body)
 		if err != nil {
@@ -119,11 +162,17 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 		// Completion comments disabled — clean up the start comment so it
 		// doesn't remain orphaned in its "Started" state.
 		if n.startCommentID != 0 {
-			if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
+			if err := n.refreshClient(ctx); err != nil {
+				n.warnf("failed to mint token for start comment cleanup: %v", err)
+			} else if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
 				n.warnf("failed to delete start comment when completion disabled: %v", err)
 			}
 		}
 		return nil
+	}
+
+	if err := n.refreshClient(ctx); err != nil {
+		return err
 	}
 
 	body := n.buildCompletionBody(description, status, completionTime)

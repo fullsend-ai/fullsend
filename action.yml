@@ -36,8 +36,10 @@ inputs:
   status-number:
     description: Issue/PR number for status comments (optional).
     default: ""
-  status-token:
-    description: Token for status comments (defaults to GH_TOKEN env var).
+  mint-url:
+    description: >-
+      Mint service URL for on-demand status comment tokens. The binary
+      mints a fresh short-lived token before each status API call.
     default: ""
 
 runs:
@@ -73,7 +75,7 @@ runs:
           done
         }
 
-        # Use vendored binary if present (placed by fullsend admin install --vendor-fullsend-binary).
+        # Use vendored binary if present (placed by fullsend admin install --vendor).
         # Per-org mode stores it at bin/fullsend (in .fullsend config repo);
         # per-repo mode stores it at .fullsend/bin/fullsend (in the target repo).
         # GitHub Contents API does not preserve the executable bit, so check -f not -x.
@@ -263,14 +265,7 @@ runs:
         podman info
         systemctl --user start podman.socket
 
-    - name: Set OpenShell version
-      shell: bash
-      run: |
-        echo "OPENSHELL_VERSION=0.0.54" >> "${GITHUB_ENV}"
-        # SHA corresponding to 0.0.54
-        echo "OPENSHELL_SHA=79aa355dd008e496a7d8f97b361a7b2866066fbc" >> "${GITHUB_ENV}"
-
-    - name: Install OpenShell CLI
+    - name: Configure OpenShell gateway
       shell: bash
       run: |
         mkdir -p $HOME/.config/openshell/
@@ -278,8 +273,9 @@ runs:
         OPENSHELL_BIND_ADDRESS=0.0.0.0
         EOF
 
-        curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
-        openshell --version
+    - name: Install OpenShell CLI
+      shell: bash
+      run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
     - name: Restore cached sandbox image
       id: sandbox-cache
@@ -363,7 +359,7 @@ runs:
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
-        STATUS_TOKEN: ${{ inputs.status-token }}
+        MINT_URL: ${{ inputs.mint-url }}
       run: |
         set -euo pipefail
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
@@ -373,17 +369,14 @@ runs:
         # Post-scripts enforce secret scanning, protected-path blocks,
         # and review-downgrade controls. Skipping them in CI bypasses
         # all post-push security gates.
-        if [[ -n "${STATUS_TOKEN}" ]]; then
-          echo "::add-mask::${STATUS_TOKEN}"
-        fi
         STATUS_FLAGS=()
         if [[ -n "${STATUS_REPO}" && -n "${STATUS_NUMBER}" ]]; then
           STATUS_FLAGS+=(--status-repo "${STATUS_REPO}" --status-number "${STATUS_NUMBER}")
           if [[ -n "${STATUS_RUN_URL}" ]]; then
             STATUS_FLAGS+=(--run-url "${STATUS_RUN_URL}")
           fi
-          if [[ -n "${STATUS_TOKEN}" ]]; then
-            STATUS_FLAGS+=(--status-token "${STATUS_TOKEN}")
+          if [[ -n "${MINT_URL}" ]]; then
+            STATUS_FLAGS+=(--mint-url "${MINT_URL}")
           fi
         fi
         fullsend run "${AGENT}" \
@@ -393,10 +386,11 @@ runs:
           "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
 
     - name: Finalize orphaned status comment
-      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != ''
+      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''
       shell: bash
       env:
-        STATUS_TOKEN: ${{ inputs.status-token }}
+        MINT_URL: ${{ inputs.mint-url }}
+        AGENT: ${{ inputs.agent }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
         RUN_ID: ${{ github.run_id }}
@@ -409,13 +403,8 @@ runs:
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
-        TOKEN="${STATUS_TOKEN:-${GITHUB_TOKEN:-}}"
-        if [[ -z "${TOKEN}" ]]; then
-          echo "::warning::No token available for status comment reconciliation"
-          exit 0
-        fi
-        echo "::add-mask::${TOKEN}"
-        RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}" --token "${TOKEN}")
+        RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
+        RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
         if [[ -n "${RUN_URL}" ]]; then
           RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
         fi

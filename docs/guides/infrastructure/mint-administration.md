@@ -2,6 +2,16 @@
 
 This guide covers deploying and managing the fullsend token mint Cloud Function. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories.
 
+| Command | Description |
+|---------|-------------|
+| `mint deploy` | Deploy or update the mint Cloud Function and GCP infrastructure |
+| `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
+| `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
+| `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
+| `mint unenroll` | Remove an org or repo from the mint |
+| `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
+| `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
+
 > **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Installing fullsend](../../reference/installation.md) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
 
 ## Hosted mint
@@ -35,20 +45,26 @@ Pass this URL as `--mint-url` when running `fullsend admin install`, or set the 
 
 - **GCP IAM roles** — the user running mint commands authenticates via ADC (`gcloud auth application-default login`). The required roles depend on the command:
 
-  | IAM Role | `mint deploy` | `mint enroll` | `mint unenroll` | `mint status` |
-  |----------|:---:|:---:|:---:|:---:|
-  | `roles/iam.serviceAccountAdmin` | x | | | |
-  | `roles/iam.workloadIdentityPoolAdmin` | x | x | x | |
-  | `roles/resourcemanager.projectIamAdmin` | \* | \*\* | | |
-  | `roles/secretmanager.admin` | \* | | | |
-  | `roles/cloudfunctions.developer` | x | | | |
-  | `roles/cloudfunctions.viewer` | | x | x | x |
-  | `roles/run.admin` | x | x | x | |
-  | `roles/secretmanager.viewer` | | | | x |
+  | IAM Role | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
+  |----------|:---:|:---:|:---:|:---:|:---:|:---:|
+  | `roles/iam.serviceAccountAdmin` | x | | | | | |
+  | `roles/iam.workloadIdentityPoolAdmin` | x | | | x | x | |
+  | `roles/resourcemanager.projectIamAdmin` | \* | | | \*\* | | |
+  | `roles/secretmanager.admin` | \* | \*\*\* | \*\*\*\* | | | |
+  | `roles/cloudfunctions.developer` | x | | | | | |
+  | `roles/cloudfunctions.viewer` | | x | x | x | x | x |
+  | `roles/run.admin` | x | x | x | x | x | |
+  | `roles/secretmanager.viewer` | | § | | | | x |
 
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
   \*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
+
+  \*\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
+
+  \*\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
+
+  § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
 
   `roles/owner` covers all of the above for users with broad access.
 
@@ -111,9 +127,101 @@ The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g
 
 ### Mint URL stability
 
-The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Adding a new org to an existing mint only updates env vars (`ROLE_APP_IDS`, `ALLOWED_ORGS`) without redeploying the function. Existing enrolled repos continue working with no changes.
+The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Adding a new org to an existing mint only updates `ALLOWED_ORGS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when orgs are added.
 
 Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
+
+## Managing roles
+
+Agent roles on the mint are **global** — each role maps to a GitHub App PEM secret (`fullsend-{role}-app-pem`) and an entry in the shared `ROLE_APP_IDS` environment variable. Use `fullsend mint add-role` and `fullsend mint remove-role` to manage individual roles after the mint is deployed.
+
+| Command | When to use |
+|---------|-------------|
+| `mint deploy --pem-dir` | First-time bootstrap of the default app set (`fullsend-ai`) — seeds all default roles at once |
+| `mint add-role` | Add a single role later, or register a custom app set one role at a time |
+| `mint remove-role` | Remove a role from the mint (updates env vars; deletes PEM secret by default) |
+
+`mint enroll` does **not** create or modify roles — it only authorizes orgs/repos to use roles that already exist on the mint.
+
+### Adding a role
+
+`fullsend mint add-role` requires the mint to already be deployed. Choose one of three mutually exclusive input modes:
+
+**1. Existing app + PEM file** (`--slug` and `--pem`):
+
+```bash
+fullsend mint add-role coder \
+  --project="$GCP_PROJECT" \
+  --slug=fullsend-ai-coder \
+  --pem=/path/to/coder.pem
+```
+
+The CLI looks up the app's numeric ID from the GitHub API, verifies the PEM matches the app, stores the PEM in Secret Manager, and updates `ROLE_APP_IDS` / `ALLOWED_ROLES`.
+
+**2. Existing PEM secret** (`--slug` and `--use-existing-pem-secret`):
+
+```bash
+fullsend mint add-role review \
+  --project="$GCP_PROJECT" \
+  --slug=fullsend-ai-review \
+  --use-existing-pem-secret
+```
+
+Use this when the PEM secret `fullsend-{role}-app-pem` already exists in Secret Manager (for example, copied from another project) and you only need to register the app ID on the mint. `--pem` and `--use-existing-pem-secret` cannot be combined.
+
+**3. Create GitHub App via browser** (`--org`):
+
+```bash
+fullsend mint add-role prioritize \
+  --project="$GCP_PROJECT" \
+  --org=acme-corp \
+  --app-set=acme
+```
+
+Opens the GitHub App manifest flow in your browser, stores the PEM in Secret Manager, and updates the mint. Requires a GitHub token (`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`).
+
+#### add-role flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` | | GCP project ID (required) |
+| `--region` | `us-central1` | Cloud region for the mint service |
+| `--slug` | | GitHub App slug (with `--pem` or `--use-existing-pem-secret`) |
+| `--pem` | | Path to PEM file (with `--slug`; mutually exclusive with `--use-existing-pem-secret`) |
+| `--use-existing-pem-secret` | `false` | Skip PEM upload; require existing Secret Manager secret (with `--slug`) |
+| `--org` | | GitHub org for browser-based app creation |
+| `--app-set` | `fullsend-ai` | App set prefix for browser mode (`{app-set}-{role}`) |
+| `--public` | `false` | Install existing public app without confirm prompt (browser mode) |
+| `--force` | `false` | Overwrite existing `ROLE_APP_IDS` entry for this role |
+| `--dry-run` | `false` | Preview changes without making them |
+
+The `fix` and `code` roles reuse the `coder` app — add role `coder` instead.
+
+### Removing a role
+
+`fullsend mint remove-role` removes a role from `ROLE_APP_IDS` and `ALLOWED_ROLES`. By default it also deletes the PEM secret from Secret Manager. Use `--keep-pem` to retain the secret for later re-registration.
+
+```bash
+# Remove role and delete PEM secret (default)
+fullsend mint remove-role retro --project="$GCP_PROJECT"
+
+# Remove role but keep PEM secret
+fullsend mint remove-role retro --project="$GCP_PROJECT" --keep-pem
+```
+
+Requires typing the role name to confirm (unless `--dry-run` or `--yolo`). Removing `coder` also prevents `fix`/`code` token minting.
+
+#### remove-role flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` | | GCP project ID (required) |
+| `--region` | `us-central1` | Cloud region for the mint service |
+| `--keep-pem` | `false` | Retain PEM secret in Secret Manager (default: delete) |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--yolo` | `false` | Skip interactive confirmation |
+
+This command does not uninstall GitHub Apps from organizations or update org `.fullsend` configuration — use `fullsend github setup` or edit config repos separately.
 
 ## Enrolling organizations and repositories
 
@@ -135,27 +243,28 @@ Enrollment does **not** grant Agent Platform (inference) access — use `fullsen
 |------|---------|-------------|
 | `--project` | | GCP project ID (required) |
 | `--region` | `us-central1` | Cloud region for the mint service |
-| `--app-set` | `fullsend-ai` | App set to resolve role→app-id mappings from |
-| `--role-app-ids` | | Explicit JSON map of role→app-id (overrides `--app-set`) |
-| `--roles` | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated roles to enroll |
 | `--dry-run` | `false` | Preview changes without making them |
+
+### Migration from per-org app ID flags
+
+Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles`, and `--source-org` to copy per-org app ID mappings into `ROLE_APP_IDS`. App IDs are now **shared per role** on the mint (like PEM secrets) and are set at deploy time via `mint deploy --pem-dir`, `fullsend admin install`, or per-role via `mint add-role`. Enrollment only adds the org to `ALLOWED_ORGS` and updates WIF — remove those flags from scripts and ensure the mint already has role-keyed `ROLE_APP_IDS` before enrolling.
 
 ### What enrollment does
 
-1. Discovers the existing mint infrastructure and resolves role→app-id mappings
-2. Updates the mint Cloud Run service environment variables (`ALLOWED_ORGS`, `ROLE_APP_IDS`) using REVISION-pinned traffic routing
+1. Discovers the existing mint infrastructure and verifies shared role→app-id mappings exist
+2. Updates the mint Cloud Run service environment variable `ALLOWED_ORGS` using REVISION-pinned traffic routing
 3. Runs post-enrollment verification (see below)
 4. Configures the mint-side WIF provider to accept OIDC tokens from the organization's repositories
 
-Role PEM secrets must already exist in Secret Manager (`fullsend-{role}-app-pem`), created during `mint deploy --pem-dir` or `fullsend admin install`. Enrollment does not create or copy PEM secrets.
+Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created during `mint deploy --pem-dir`, `fullsend admin install`, or `mint add-role`. Enrollment does not create, copy, or modify PEM secrets or app ID mappings.
 
 ### Post-enrollment verification
 
 After updating the mint, the CLI automatically verifies that the enrollment took effect on the traffic-serving revision:
 
 - **Revision state check** — confirms which Cloud Run revision is serving traffic and whether it matches the latest template
-- **Env var read-back** — reads `ALLOWED_ORGS` and `ROLE_APP_IDS` from the traffic-serving revision (not the template) to confirm the enrolled org is present
-- **Key completeness** — verifies all expected role keys (e.g., `acme-corp/coder`, `acme-corp/review`) are present in `ROLE_APP_IDS`
+- **Env var read-back** — reads `ALLOWED_ORGS` from the traffic-serving revision (not the template) to confirm the enrolled org is present
+- **Shared app IDs** — verifies the mint has role-keyed `ROLE_APP_IDS` entries (e.g., `coder`, `review`) for all configured roles
 
 If verification fails, the CLI prints actionable diagnostics and suggests running `mint status` to investigate. See [Troubleshooting](#troubleshooting) for common failure scenarios.
 
@@ -216,8 +325,8 @@ fullsend mint status acme-corp --project="$GCP_PROJECT"
 
 **Enrollment section:**
 
-- List of enrolled organizations (parsed from `ROLE_APP_IDS`)
-- Role→app-id mappings per org
+- List of enrolled organizations (from `ALLOWED_ORGS`)
+- Shared role→app-id mappings (from role-keyed `ROLE_APP_IDS`)
 - Per-repo WIF repos list
 
 **Per-org drill-down** (when an org argument is provided):
@@ -337,7 +446,7 @@ You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery
 
 ### Post-enrollment verification failure
 
-**Symptom:** After `mint enroll`, the CLI reports "Post-write verification FAILED" — the enrolled org is missing from the traffic-serving revision's `ALLOWED_ORGS` or `ROLE_APP_IDS`.
+**Symptom:** After `mint enroll`, the CLI reports "Post-write verification FAILED" — the enrolled org is missing from the traffic-serving revision's `ALLOWED_ORGS`.
 
 **What it means:** The env var update was applied to the service template, but the traffic-serving revision does not reflect the change. This typically means traffic routing did not complete.
 
@@ -357,7 +466,7 @@ You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery
 
 ### Concurrent enrollment race
 
-**Symptom:** After enrolling two orgs in parallel, one org is missing from `ALLOWED_ORGS` or `ROLE_APP_IDS`.
+**Symptom:** After enrolling two orgs in parallel, one org is missing from `ALLOWED_ORGS`.
 
 **What it means:** Both enrollment commands read the same initial state, merged their org independently, and wrote back. The second write overwrote the first org's entries.
 

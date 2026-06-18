@@ -69,6 +69,14 @@ type WorkflowRun struct {
 	CreatedAt  string
 }
 
+// Workflow represents a workflow definition registered with the forge.
+type Workflow struct {
+	ID    int
+	Name  string
+	Path  string
+	State string // "active", "disabled", etc.
+}
+
 // Annotation represents a check-run annotation (e.g. from ::notice:: or
 // ::warning:: workflow commands).
 type Annotation struct {
@@ -185,6 +193,11 @@ type Client interface {
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 
+	// DeleteFiles atomically removes multiple paths in a single commit via the
+	// Git Trees API. Missing paths are skipped. Returns the number of paths
+	// removed, or (0, nil) when none of the paths exist.
+	DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (deleted int, err error)
+
 	// ListDirectoryContents returns all files and subdirectories at the given
 	// path in a repository at the specified ref (commit SHA, branch, or tag).
 	// When recursive is true, nested subdirectories are flattened into the
@@ -257,6 +270,7 @@ type Client interface {
 	GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 	// CI/Workflow operations
+	GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*Workflow, error)
 	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
 	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error

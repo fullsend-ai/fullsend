@@ -19,6 +19,7 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 ### Opening a PR
 
 - Run `make lint` before pushing and fix any failures.
+- For Go changes, run `make go-test` and add tests for new or modified logic. CI uploads coverage to Codecov and enforces the thresholds in [`.codecov.yml`](.codecov.yml): **80% patch coverage** on changed lines (5% tolerance) and **no more than 1% drop** in overall project coverage relative to the base branch.
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
 

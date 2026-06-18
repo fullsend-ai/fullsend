@@ -119,22 +119,121 @@ case "${ACTION}" in
     add_label "duplicate"
     ;;
 
-  blocked)
-    # NOTE: There is no automatic mechanism to remove the "blocked" label when
-    # the blocking issue is resolved. Currently, editing the issue re-triggers
-    # triage, and the agent checks whether existing blockers are still open
-    # (Step 2c in triage.md). A scheduled workflow to check blocked issues
-    # periodically would be a more complete solution. (See review notes.)
+  prerequisites)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'blocked' but no comment provided"
+      echo "ERROR: action is 'prerequisites' but no comment provided"
       exit 1
     fi
-    BLOCKED_BY=$(jq -r '.blocked_by // empty' "${RESULT_FILE}")
-    if [[ -z "${BLOCKED_BY}" ]]; then
-      echo "ERROR: action is 'blocked' but no blocked_by URL provided"
-      exit 1
+
+    # Read the allowlist from config.yaml. The config repo is checked out
+    # at $GITHUB_WORKSPACE by the reusable workflow.
+    CONFIG_FILE="${GITHUB_WORKSPACE}/config.yaml"
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+      # Per-repo mode: config is under .fullsend/
+      CONFIG_FILE="${GITHUB_WORKSPACE}/.fullsend/config.yaml"
     fi
-    echo "Blocked by: ${BLOCKED_BY}"
+
+    ALLOWED_ORGS=""
+    ALLOWED_REPOS=""
+    if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+      echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+    fi
+    if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
+      ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+      ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+    fi
+
+    # The source repo is always implicitly allowed.
+    is_target_allowed() {
+      local target_repo="$1"
+      local target_org="${target_repo%%/*}"
+
+      # Source repo is always allowed.
+      if [[ "${target_repo}" == "${REPO}" ]]; then
+        return 0
+      fi
+
+      # Check org allowlist.
+      if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
+        return 0
+      fi
+
+      # Check repo allowlist.
+      if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+        return 0
+      fi
+
+      return 1
+    }
+
+    # Process create entries: create issues, collect URLs.
+    CREATE_COUNT=$(jq '.prerequisites.create // [] | length' "${RESULT_FILE}")
+    CREATED_URLS=""
+    FAILED_CREATES=""
+
+    for i in $(seq 0 $((CREATE_COUNT - 1))); do
+      TARGET_REPO=$(jq -r ".prerequisites.create[${i}].repo" "${RESULT_FILE}")
+      ISSUE_TITLE=$(jq -r ".prerequisites.create[${i}].title" "${RESULT_FILE}")
+      ISSUE_BODY=$(jq -r ".prerequisites.create[${i}].body" "${RESULT_FILE}")
+
+      if ! is_target_allowed "${TARGET_REPO}"; then
+        echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
+
+${ISSUE_BODY}
+
+</details>"
+        continue
+      fi
+
+      echo "Creating prerequisite issue in ${TARGET_REPO}..."
+      CREATED_URL=$(gh issue create --repo "${TARGET_REPO}" --title "${ISSUE_TITLE}" --body "${ISSUE_BODY}" 2>&1) || {
+        echo "::warning::Failed to create issue in '${TARGET_REPO}': ${CREATED_URL}"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
+
+${ISSUE_BODY}
+
+</details>"
+        continue
+      }
+      echo "Created: ${CREATED_URL}"
+      CREATED_URLS="${CREATED_URLS} ${CREATED_URL}"
+    done
+
+    # Collect existing URLs.
+    EXISTING_COUNT=$(jq '.prerequisites.existing // [] | length' "${RESULT_FILE}")
+    EXISTING_URLS=""
+    for i in $(seq 0 $((EXISTING_COUNT - 1))); do
+      URL=$(jq -r ".prerequisites.existing[${i}].url" "${RESULT_FILE}")
+      EXISTING_URLS="${EXISTING_URLS} ${URL}"
+    done
+
+    # Merge all blocker URLs for the comment.
+    ALL_URLS="${EXISTING_URLS} ${CREATED_URLS}"
+    ALL_URLS=$(echo "${ALL_URLS}" | xargs)  # trim whitespace
+
+    if [[ -n "${ALL_URLS}" ]]; then
+      BLOCKER_LIST=""
+      for url in ${ALL_URLS}; do
+        BLOCKER_LIST="${BLOCKER_LIST}
+- ${url}"
+      done
+      COMMENT="${COMMENT}
+
+**Blocked by:**${BLOCKER_LIST}"
+    fi
+
+    if [[ -n "${FAILED_CREATES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+${FAILED_CREATES}"
+    fi
+
     remove_label "ready-to-code"
     remove_label "needs-info"
     add_label "blocked"

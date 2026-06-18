@@ -80,8 +80,8 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	enrollNoneFlag := cmd.Flags().Lookup("enroll-none")
 	require.NotNil(t, enrollNoneFlag, "expected --enroll-none flag")
 
-	vendorBinaryFlag := cmd.Flags().Lookup("vendor-fullsend-binary")
-	require.NotNil(t, vendorBinaryFlag, "expected --vendor-fullsend-binary flag")
+	vendorFlag := cmd.Flags().Lookup("vendor")
+	require.NotNil(t, vendorFlag, "expected --vendor flag")
 
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
@@ -152,6 +152,19 @@ func TestGitHubSetupCmd_PerRepoDryRun(t *testing.T) {
 		"--inference-project", "my-project",
 		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
 		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestGitHubSetupCmd_PerRepoDryRun_Vendor(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--dry-run",
+		"--vendor"})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -392,7 +405,7 @@ func TestRunGitHubStatus_BasicReport(t *testing.T) {
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, nil, "")
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, nil, "", "")
 	cfgData, _ := cfg.Marshal()
 	client.FileContents["acme/.fullsend/config.yaml"] = cfgData
 	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
@@ -453,6 +466,63 @@ func TestRunGitHubUninstall_NoConfigRepo(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunGitHubUninstall_UsesHarnessDiscovery(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	// Provide config.yaml with agents: block (should be bypassed).
+	client.FileContents = map[string][]byte{
+		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: old-triage\n"),
+	}
+	// Provide harness directory with wrapper files.
+	client.DirContents = map[string][]forge.DirectoryEntry{
+		"acme/.fullsend/harness@main": {
+			{Path: "harness/triage.yaml", Type: "file"},
+		},
+	}
+	client.FileContentsRef = map[string][]byte{
+		"acme/.fullsend/harness/triage.yaml@main": []byte("role: triage\nslug: harness-triage\n"),
+	}
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "harness-triage"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "harness-triage")
+	assert.NotContains(t, output, "old-triage")
+	assert.NotContains(t, output, "agents: block")
+}
+
+func TestRunGitHubUninstall_FallsBackToAgentsBlock(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.FileContents = map[string][]byte{
+		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: cfg-triage\n"),
+	}
+	client.Installations = []forge.Installation{
+		{ID: 1, AppSlug: "cfg-triage"},
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "cfg-triage")
+	assert.Contains(t, output, "agents: block")
+}
+
 // --- Sync-scaffold command tests ---
 
 func TestGitHubSyncScaffoldCmd_RequiresOrg(t *testing.T) {
@@ -476,6 +546,60 @@ func TestRunGitHubSyncScaffold_CommitsFiles(t *testing.T) {
 
 	// Verify at least one file was committed.
 	require.NotEmpty(t, client.CommittedFiles, "expected scaffold files to be committed")
+}
+
+func TestRunGitHubSyncScaffold_VendoredMarker(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.AuthenticatedUser = "testuser"
+	client.FileContents = map[string][]byte{
+		"acme/.fullsend/.defaults/action.yml": []byte("marker"),
+		"acme/.fullsend/config.yaml":          []byte("repos: {}\n"),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme")
+	require.NoError(t, err)
+	require.NotEmpty(t, client.CommittedFiles)
+}
+
+func TestRunGitHubSyncScaffold_InvalidConfig(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{Name: ".fullsend", FullName: "acme/.fullsend"}}
+	client.AuthenticatedUser = "testuser"
+	client.FileContents = map[string][]byte{
+		"acme/.fullsend/config.yaml": []byte("not: valid: yaml: ["),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config.yaml")
+}
+
+func TestRunGitHubSetupPerOrg_DryRun(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "testuser"
+	client.Repos = []forge.Repository{
+		{Name: forge.ConfigRepoName, FullName: "acme/" + forge.ConfigRepoName},
+		{Name: "widget", FullName: "acme/widget"},
+	}
+	var buf strings.Builder
+	err := runGitHubSetupPerOrg(context.Background(), client, ui.New(&buf), githubSetupConfig{
+		target:               "acme",
+		mintURL:              "https://mint.example.com/v1/token",
+		agents:               strings.Join(config.DefaultAgentRoles(), ","),
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		dryRun:               true,
+		enrollNone:           true,
+		skipAppSetup:         true,
+		vendor:               true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Layer: vendor")
 }
 
 // --- parseTarget tests ---

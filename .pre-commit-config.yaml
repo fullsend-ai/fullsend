@@ -74,6 +74,8 @@ repos:
           - property "workflow_repository" is not defined
           - -ignore
           - SC2016
+          - -ignore
+          - '__REUSABLE_(WORKFLOW|DISPATCH)__'
 
   - repo: local
     hooks:

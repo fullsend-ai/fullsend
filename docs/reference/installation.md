@@ -260,8 +260,9 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--skip-mint-check` | `false` | Skip mint validation, GCP provisioning, and app setup; requires `--mint-url` |
 | `--enroll-all` | `false` | Enroll all repositories without prompting (per-org only) |
 | `--enroll-none` | `false` | Skip repository enrollment without prompting (per-org only) |
-| `--vendor-fullsend-binary` | `false` | Resolve and upload a linux/amd64 fullsend binary for CI (see [Vendoring the CLI binary](#vendoring-the-cli-binary)) |
-| `--fullsend-binary` | | Path to a Linux fullsend binary to upload when `--vendor-fullsend-binary` is set (skips auto-resolution) |
+| `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content (see [Vendored vs layered installs](#vendored-vs-layered-installs)) |
+| `--fullsend-source` | | Fullsend source checkout for content walks and binary cross-compile (requires `--vendor`) |
+| `--fullsend-binary` | | Path to a Linux fullsend binary to upload when `--vendor` is set (skips auto-resolution) |
 
 The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
 
@@ -271,23 +272,32 @@ The installer automatically detects when the deployed mint function is up-to-dat
 
 A single token mint can serve multiple GitHub organizations. See [Mint service administration — Multi-org setup](../guides/infrastructure/mint-administration.md#multi-org-setup) for the complete multi-org workflow.
 
-### Vendoring the CLI binary
+### Vendored vs layered installs
 
-Use `--vendor-fullsend-binary` to upload a linux/amd64 `fullsend` binary into the config repo (`bin/fullsend`) or per-repo path (`.fullsend/bin/fullsend`). CI workflows prefer this file over downloading from GitHub releases.
+**Layered (default):** Thin caller workflows reference upstream reusable workflows at `fullsend-ai/fullsend@v0`. At runtime, reusables sparse-checkout upstream into `.defaults/` and copy agent content to the workspace root. No distribution settings in `config.yaml`.
 
-When the flag is set, the binary is resolved in this order:
+**Vendored (`--vendor`):** Install commits a linux/amd64 binary plus reusable workflows and an upstream mirror under `.defaults/` (same layout as the runtime checkout). Thin callers use local `./...` paths. Runtime skips the upstream fetch when `.defaults/action.yml` is already present.
+
+Source resolution (shared by binary and content):
+
+1. **`--fullsend-source <dir>`** — validated checkout (`go.mod`, `cmd/fullsend/`)
+2. **Module root** — when CWD is inside a fullsend checkout
+3. **GitHub source fetch** — at CLI version (released CLI only)
+4. **Fail** — dev CLI outside a checkout fails with a clear error
+
+Binary resolution:
 
 1. **`--fullsend-binary <path>`** — upload that file (validated as linux/amd64 ELF)
-2. **Checkout build** — cross-compile from the fullsend module root (`go env GOMOD`), stamped `{version}-vendored`
-3. **Release fetch** — only if step 2 is unavailable **and** the running CLI is a released version (e.g. `0.4.0`); downloads the matching GitHub release (no `-vendored` suffix)
-4. **Fail** — dev CLI outside a checkout fails with a clear error (no “latest release” fallback)
+2. Cross-compile from resolved source (stamped `{version}-vendored`)
+3. **Release fetch** — only if cross-compile is unavailable **and** the running CLI is a released version
+4. **Fail** — no “latest release” fallback for dev builds
 
-When the flag is **off**, any existing vendored binary is removed so CI uses released versions.
+When `--vendor` is **off**, stale vendored binary and content paths are removed so CI uses released upstream versions.
 
 **Notes:**
 
-- Vendoring the CLI alone does not air-gap the full pipeline (OpenShell, gateway, sandbox image, upstream scaffold still download at runtime).
-- Release fallback requires network access at install time; CI consumes the uploaded file.
+- Vendoring does not air-gap the full pipeline (OpenShell, gateway, sandbox image still download at runtime).
+- Release fallback requires network access at install time; CI consumes the uploaded files.
 - Works from any directory inside the module checkout (module root discovery via `GOMOD`).
 
 ### Merge enrollment PRs
@@ -580,7 +590,7 @@ fullsend admin uninstall "$ORG_NAME" --app-set "$ORG_NAME"
 ### Constraints
 
 - App set names must be lowercase alphanumeric with optional hyphens (no leading/trailing hyphens, no consecutive hyphens), max 23 characters (GitHub App names are limited to 34 characters, and the role suffix is appended)
-- The app set prefix only affects GitHub App slugs — GCP secret naming (`fullsend-{role}-app-pem`) and mint `ROLE_APP_IDS` keys (`{org}/{role}`) are independent of the app set
+- The app set prefix only affects GitHub App slugs — GCP secret naming (`fullsend-{role}-app-pem`) and mint `ROLE_APP_IDS` keys (`{role}`) are independent of the app set
 
 ---
 
@@ -601,6 +611,8 @@ The `admin install` command performs all setup in a single invocation. For organ
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
 | GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
+| GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
+| GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
 | GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
@@ -611,23 +623,29 @@ See [Setting up with pre-provisioned infrastructure](github-setup.md) for the co
 
 When using the split-responsibility workflow, each standalone command requires a subset of IAM roles. Use this table to request only what you need.
 
-| IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint enroll` | `mint unenroll` | `mint status` |
-|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | x | x | |
-| `roles/resourcemanager.projectIamAdmin` | x | | | \* | \*\* | | |
-| `roles/iam.serviceAccountAdmin` | | | | x | | | |
-| `roles/secretmanager.admin` | | | | \* | | | |
-| `roles/cloudfunctions.developer` | | | | x | | | |
-| `roles/cloudfunctions.viewer` | | | | | x | x | x |
-| `roles/run.admin` | | | | x | x | x | |
-| `roles/iam.workloadIdentityPoolViewer` | | | x\*\*\* | | | | |
-| `roles/secretmanager.viewer` | | | | | | | x |
+| IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | | | x | x | |
+| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | \*\* | | |
+| `roles/iam.serviceAccountAdmin` | | | | x | | | | | |
+| `roles/secretmanager.admin` | | | | \* | \*\*\* | \*\*\*\* | | | |
+| `roles/cloudfunctions.developer` | | | | x | | | | | |
+| `roles/cloudfunctions.viewer` | | | | | x | x | x | x | x |
+| `roles/run.admin` | | | | x | x | x | x | x | |
+| `roles/iam.workloadIdentityPoolViewer` | | | x† | | | | | | |
+| `roles/secretmanager.viewer` | | | | | § | | | | x |
 
 \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
 \*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
 
-\*\*\* All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
+\*\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
+
+\*\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
+
+§ `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
+
+† All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
 
 Required GCP APIs also differ by command group:
 
@@ -732,7 +750,7 @@ The composite action accepts four optional inputs for status notifications:
 | `run-url` | URL of the CI/CD run shown in the status comment |
 | `status-repo` | Repository (`owner/repo`) to post status comments on |
 | `status-number` | Issue or PR number for status comments |
-| `status-token` | Token for posting comments (defaults to `GH_TOKEN`) |
+| `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 
 All reusable workflows pass these inputs automatically.
 

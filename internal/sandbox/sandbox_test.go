@@ -483,3 +483,92 @@ func TestInGitDir(t *testing.T) {
 		assert.Equal(t, tt.want, got, "inGitDir(%q, %q)", tt.path, root)
 	}
 }
+
+func TestBuildProviderUpdateArgs(t *testing.T) {
+	t.Setenv("MY_TOKEN", "tok123")
+
+	credentials := map[string]string{"TOKEN": "${MY_TOKEN}"}
+	config := map[string]string{"BASE_URL": "https://example.com"}
+
+	args := buildProviderUpdateArgs("myprovider", credentials, config)
+
+	assert.Equal(t, "provider", args[0])
+	assert.Equal(t, "update", args[1])
+	assert.Equal(t, "myprovider", args[2])
+	assert.Contains(t, args, "--credential")
+	assert.Contains(t, args, "TOKEN")
+	assert.Contains(t, args, "--config")
+	assert.Contains(t, args, "BASE_URL=https://example.com")
+
+	// Secret value must not appear in args.
+	for _, arg := range args {
+		assert.NotContains(t, arg, "tok123", "secret must not appear in update args")
+	}
+}
+
+// TestEnsureProvider_AlreadyExists_FallsBackToUpdate uses a fake openshell
+// script: first invocation exits 1 with AlreadyExists, second exits 0.
+func TestEnsureProvider_AlreadyExists_FallsBackToUpdate(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a fake openshell that prints AlreadyExists on create, succeeds on update.
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  exit 0
+else
+  echo "unexpected subcommand: $2" >&2
+  exit 1
+fi
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "tok"}, nil)
+	assert.NoError(t, err)
+}
+
+// TestEnsureProvider_OtherError propagates non-AlreadyExists failures.
+func TestEnsureProvider_OtherError(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+echo "status: PermissionDenied" >&2
+exit 1
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider("github", "github", nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "provider create")
+}
+
+// TestEnsureProvider_AlreadyExists_UpdateAlsoFails verifies error propagation
+// and secret redaction when create returns AlreadyExists and update also fails.
+func TestEnsureProvider_AlreadyExists_UpdateAlsoFails(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo "gateway unavailable supersecret" >&2
+  exit 1
+fi
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "supersecret"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider update")
+	assert.NotContains(t, err.Error(), "supersecret", "secret must be redacted in update error")
+	assert.Contains(t, err.Error(), "***")
+}

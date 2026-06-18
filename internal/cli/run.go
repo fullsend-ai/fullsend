@@ -26,6 +26,7 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -45,6 +46,8 @@ const (
 // agentWorkingDirExcludes lists directory patterns that agents may create
 // during execution but must never commit. These are added to
 // .git/info/exclude before the agent runs so git ignores them entirely.
+var statusMintToken = mintclient.MintToken
+
 var agentWorkingDirExcludes = []string{
 	".agentready/",
 	".fullsend-workspace/",
@@ -60,10 +63,10 @@ type resolveFlags struct {
 
 // statusOpts holds the optional status notification parameters for a run.
 type statusOpts struct {
-	runURL      string
-	statusRepo  string
-	statusNum   int
-	statusToken string
+	runURL     string
+	statusRepo string
+	statusNum  int
+	mintURL    string
 }
 
 func newRunCmd() *cobra.Command {
@@ -107,7 +110,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.runURL, "run-url", "", "URL of the CI/CD run for status comments")
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
-	cmd.Flags().StringVar(&sOpts.statusToken, "status-token", "", "token for status comments (defaults to GH_TOKEN)")
+	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
@@ -336,6 +339,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
 
+	// Run lint checks and report any diagnostics (non-fatal).
+	for _, diag := range h.Lint() {
+		emitDiagnostic(printer, diag)
+	}
+
 	// Print plan.
 	printer.KeyValue("Agent", h.Agent)
 	if h.Role != "" {
@@ -400,7 +408,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script — and can report cancellation/failure even when the
 	// sandbox never starts. See #1859.
 	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
-		notifier, notifyErr := setupStatusNotifier(absFullsendDir, sOpts, printer)
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, agentName, sOpts, printer)
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
@@ -1840,19 +1848,19 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
-func setupStatusNotifier(fullsendDir string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+func setupStatusNotifier(fullsendDir string, agentName string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
 	}
 	owner, repo := parts[0], parts[1]
 
-	token := sOpts.statusToken
-	if token == "" {
-		token = os.Getenv("GH_TOKEN")
+	mintURL := sOpts.mintURL
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
-	if token == "" {
-		return nil, fmt.Errorf("no status token available (set --status-token or GH_TOKEN)")
+	if mintURL == "" {
+		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
 
 	var notifyCfg config.StatusNotificationConfig
@@ -1868,8 +1876,6 @@ func setupStatusNotifier(fullsendDir string, sOpts statusOpts, printer *ui.Print
 		printer.StepWarn("Failed to read config.yaml for status notifications: " + err.Error())
 	}
 
-	client := gh.New(token)
-
 	sha := os.Getenv("GITHUB_SHA")
 	// In cross-repo workflow_dispatch mode, GITHUB_SHA is the dispatching
 	// repo's default branch HEAD — not the PR's head commit. Prefer the
@@ -1882,10 +1888,27 @@ func setupStatusNotifier(fullsendDir string, sOpts statusOpts, printer *ui.Print
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	n := statuscomment.New(client, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	n := statuscomment.New(nil, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
+
+	role := resolveRole(agentName)
+	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+		result, err := statusMintToken(ctx, mintclient.MintRequest{
+			MintURL: mintURL,
+			Role:    role,
+			Repos:   []string{repo},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("minting status token: %w", err)
+		}
+		if os.Getenv("GITHUB_ACTIONS") == "true" && mintTokenPattern.MatchString(result.Token) {
+			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+		}
+		return gh.New(result.Token), nil
+	})
+
 	return n, nil
 }
 
@@ -1921,4 +1944,28 @@ func prHeadSHAFromEventPath(path string) string {
 		return ""
 	}
 	return payload.PullRequest.Head.SHA
+}
+
+// emitDiagnostic prints a harness lint diagnostic with severity-appropriate formatting.
+// Warnings use StepWarn, errors use StepFail. This ensures future SeverityError
+// diagnostics are visually distinct from warnings.
+func emitDiagnostic(printer *ui.Printer, diag harness.Diagnostic) {
+	switch diag.Severity {
+	case harness.SeverityError:
+		printer.StepFail(diag.String())
+	default:
+		printer.StepWarn(diag.String())
+	}
+}
+
+// emitDiagnosticWithContext prints a diagnostic with additional context (e.g., agent name).
+// Used by lock --all where multiple harnesses are processed and context helps identify which.
+func emitDiagnosticWithContext(printer *ui.Printer, context string, diag harness.Diagnostic) {
+	msg := fmt.Sprintf("%s: %s", context, diag.String())
+	switch diag.Severity {
+	case harness.SeverityError:
+		printer.StepFail(msg)
+	default:
+		printer.StepWarn(msg)
+	}
 }

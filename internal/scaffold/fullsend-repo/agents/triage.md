@@ -52,7 +52,10 @@ Also look for **blocking relationships** — open issues or PRs that must be res
 - The issue describes a feature that depends on infrastructure or API changes tracked in another issue
 - The issue references an upstream library, service, or repository that has a known open bug
 - A PR is already in flight that would conflict with or must land before work on this issue
+- An open PR already addresses this issue, even partially — the work is already in progress
 - The issue's fix requires a design decision that is being discussed in another issue
+
+**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue — even partially — treat it as a prerequisite. Use `action: "prerequisites"` with the PR URL in the `existing` array. Do not emit `action: "sufficient"` when an open PR covers the reported problem; dispatching a second implementation would create duplicates. Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
 
 If the issue mentions other repositories, libraries, or upstream projects, search those too:
 
@@ -63,18 +66,18 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 If a cross-repo search fails or returns an error (e.g., due to access restrictions), note this in your reasoning as an information gap rather than concluding no blocking work exists.
 
-### 2c. Check existing blockers
+### 2c. Check existing prerequisites
 
-If the issue already has a `blocked` label, check whether the previously identified blocker (linked in prior triage comments) is still open. Fetch the full context of the blocking issue or PR to understand its current state:
+If the issue already has a `blocked` label, check whether the previously identified prerequisites (linked in prior triage comments) are still open. Fetch the full context of each prerequisite issue or PR to understand its current state:
 
 ```
-# For blocking issues:
-gh issue view BLOCKING_URL --json state,title,body,comments,labels
-# For blocking PRs:
-gh pr view BLOCKING_URL --json state,title,body,comments,labels,mergedAt
+# For prerequisite issues:
+gh issue view PREREQUISITE_URL --json state,title,body,comments,labels
+# For prerequisite PRs:
+gh pr view PREREQUISITE_URL --json state,title,body,comments,labels,mergedAt
 ```
 
-Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Review the blocker's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the blocker has been closed or merged, the block may be resolved — proceed with a fresh assessment.
+Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Review the prerequisite's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the prerequisite has been closed or merged, the dependency may be resolved — proceed with a fresh assessment.
 
 ### 2d. Review prior triage analysis
 
@@ -126,7 +129,7 @@ Before forming any clarifying question, classify it:
 ### Phase 3 — Hypothesis formation and dependency analysis
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
-- **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue is blocked regardless of how clear the problem description is.
+- **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
 
 ### Clarity scoring
 
@@ -144,6 +147,8 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 **Resolution threshold: overall clarity >= 0.80**
 
 **Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open *user-facing* questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with user-facing information gaps. The `sufficient` action means there are zero open user-facing questions that could affect implementation. When in doubt, ask. Implementation-facing questions that cannot be self-resolved from repository context should be noted in `reasoning` but do not require `action: "insufficient"` unless they materially prevent triage — see the question classification rules above.
+
+**Anti-premature-prerequisites rule (HARD CONSTRAINT):** If your assessment identifies unresolved prerequisites — dependencies on work in other repos or unmerged changes that must land first — you MUST use `action: "prerequisites"`. Do NOT emit `action: "sufficient"` when prerequisites exist. The `sufficient` action means there are zero blockers and zero open questions.
 
 ## Step 4: Decide and write result
 
@@ -200,18 +205,36 @@ This issue describes the same problem as an existing open issue.
 }
 ```
 
-### Action: `blocked`
+### Action: `prerequisites`
 
-Progress on this issue is blocked by another issue or PR — either in this repository or a different one. The blocking issue must be resolved before work on this issue can proceed. Do NOT apply `ready-to-code` for blocked issues.
+Progress on this issue depends on work that must happen first — either in this repository or another. Use this action when you identify specific blocking dependencies: existing issues/PRs that must be resolved, or upstream work that needs a tracking issue created.
 
-Only use `blocked` when you can identify a specific open issue or PR that must be resolved first. If you suspect a dependency but cannot find a concrete blocking issue, use `insufficient` to ask the reporter whether there is a blocking dependency and to provide its URL.
+**HARD CONSTRAINT:** Never emit `sufficient` if unresolved prerequisites exist. Use `prerequisites` instead.
+
+The `prerequisites` object contains two arrays:
+
+- `existing` — issues or PRs that already exist and block this work. Include the full HTML URL.
+- `create` — issues that need to be filed in other repos before this work can proceed. Include the target `repo` (owner/name format), a `title`, and a `body`. Write the body for the target repo's audience — include enough technical context for upstream maintainers to understand what is needed. Use your judgment on whether to include a back-reference to the originating issue; sometimes it provides helpful context, sometimes it leaks internal details.
+
+At least one of the two arrays must have entries.
 
 ```json
 {
-  "action": "blocked",
-  "reasoning": "Brief explanation of why this issue is blocked and what the dependency is",
-  "blocked_by": "https://github.com/org/repo/issues/99",
-  "comment": "A professional comment explaining the blocking dependency. Link to the blocking issue or PR and explain why this issue cannot proceed until it is resolved. Be specific about the dependency — what does the blocking issue provide or unblock?"
+  "action": "prerequisites",
+  "reasoning": "Brief explanation of the dependencies and why this issue cannot proceed",
+  "prerequisites": {
+    "existing": [
+      { "url": "https://github.com/org/repo/issues/99" }
+    ],
+    "create": [
+      {
+        "repo": "org/upstream-lib",
+        "title": "Add support for X",
+        "body": "Technical description of what is needed and why, written for the upstream repo's maintainers."
+      }
+    ]
+  },
+  "comment": "A professional comment explaining the blocking dependencies. Link to existing blockers and describe what new issues need to be created upstream. Be specific about why each dependency must be resolved before this issue can proceed."
 }
 ```
 

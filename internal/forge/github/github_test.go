@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -486,6 +487,29 @@ func TestCreateOrUpdateRepoVariable_FallbackToPost(t *testing.T) {
 	client := newTestClient(t, srv)
 	err := client.CreateOrUpdateRepoVariable(context.Background(), "owner", "repo", "MY_VAR", "new-value")
 	require.NoError(t, err)
+}
+
+func TestGetWorkflow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/actions/workflows/repo-maintenance.yml", r.URL.Path)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":    42,
+			"name":  "Repo Maintenance",
+			"path":  ".github/workflows/repo-maintenance.yml",
+			"state": "active",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	wf, err := client.GetWorkflow(context.Background(), "owner", "repo", "repo-maintenance.yml")
+	require.NoError(t, err)
+	assert.Equal(t, 42, wf.ID)
+	assert.Equal(t, "Repo Maintenance", wf.Name)
+	assert.Equal(t, ".github/workflows/repo-maintenance.yml", wf.Path)
+	assert.Equal(t, "active", wf.State)
 }
 
 func TestGetLatestWorkflowRun(t *testing.T) {
@@ -1495,6 +1519,11 @@ func TestCommitFiles_AllNew(t *testing.T) {
 			assert.Equal(t, "tree000", body["base_tree"])
 			entries := body["tree"].([]any)
 			assert.Len(t, entries, 2)
+			for _, raw := range entries {
+				entry := raw.(map[string]any)
+				assert.NotContains(t, entry, "encoding")
+				assert.IsType(t, "", entry["content"])
+			}
 
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
@@ -1527,6 +1556,60 @@ func TestCommitFiles_AllNew(t *testing.T) {
 		{Path: "scripts/run.sh", Content: []byte("#!/bin/bash"), Mode: "100755"},
 	}
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "test commit", files)
+	require.NoError(t, err)
+	assert.True(t, committed)
+}
+
+func TestCommitFiles_BinaryUsesBlobAPI(t *testing.T) {
+	binaryContent := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff, 0xfe, 0x00}
+	blobSHAValue := blobSHA(binaryContent)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "base64", body["encoding"])
+			decoded, err := base64.StdEncoding.DecodeString(body["content"])
+			require.NoError(t, err)
+			assert.Equal(t, binaryContent, decoded)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": blobSHAValue})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			entries := body["tree"].([]any)
+			require.Len(t, entries, 1)
+			entry := entries[0].(map[string]any)
+			assert.Equal(t, blobSHAValue, entry["sha"])
+			assert.NotContains(t, entry, "content")
+			assert.NotContains(t, entry, "encoding")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", Content: binaryContent, Mode: "100755"},
+	})
 	require.NoError(t, err)
 	assert.True(t, committed)
 }
@@ -1643,6 +1726,68 @@ func TestCommitFiles_Empty(t *testing.T) {
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", nil)
 	require.NoError(t, err)
 	assert.False(t, committed)
+}
+
+func TestDeleteFiles_Empty(t *testing.T) {
+	client := New("token")
+	deleted, err := client.DeleteFiles(context.Background(), "org", "repo", "msg", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, deleted)
+}
+
+func TestDeleteFiles_Atomic(t *testing.T) {
+	var treeCreated bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": []map[string]string{
+					{"path": "bin/fullsend", "sha": "abc", "mode": "100755"},
+					{"path": ".defaults/action.yml", "sha": "def", "mode": "100644"},
+				},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			treeCreated = true
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			entries := body["tree"].([]any)
+			require.Len(t, entries, 2)
+			for _, raw := range entries {
+				entry := raw.(map[string]any)
+				assert.Equal(t, "blob", entry["type"])
+				assert.NotEmpty(t, entry["mode"])
+				assert.Nil(t, entry["sha"])
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	deleted, err := client.DeleteFiles(context.Background(), "org", "repo", "remove stale", []string{
+		"bin/fullsend",
+		".defaults/action.yml",
+		"missing.yml",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, deleted)
+	assert.True(t, treeCreated)
 }
 
 func TestDeleteIssueComment(t *testing.T) {

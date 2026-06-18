@@ -406,13 +406,15 @@ Closes #${ISSUE_NUMBER}
 - [x] Pre-commit hooks passed (authoritative run on runner)
 - [x] Tests ran inside sandbox"
 
-PR_URL="$(gh pr create \
+if ! PR_URL=$(gh pr create \
   --repo "${REPO_FULL_NAME}" \
   --head "${BRANCH}" \
   --base "${TARGET_BRANCH}" \
   --title "${PR_TITLE}" \
-  --body "${PR_BODY}" \
-  2>&1)"
+  --body "${PR_BODY}"); then
+  echo "::error::Failed to create PR: see above for details"
+  exit 1
+fi
 
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"

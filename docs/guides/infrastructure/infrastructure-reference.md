@@ -4,7 +4,7 @@ This guide provides implementation details for fullsend's infrastructure compone
 
 ## Token Mint (OIDC) — GCF Cloud Function
 
-> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint token`
+> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint token`
 
 The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system.
 
@@ -99,8 +99,8 @@ The mint enforces minimum permission sets per role. Tokens cannot exceed these s
 
 A single mint instance can serve multiple orgs:
 - `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS` env var
-- `ROLE_APP_IDS` maps `{org}/{role}` to GitHub App IDs
-- Updates are applied atomically by redeploying the function with updated env vars
+- `ROLE_APP_IDS` maps `{role}` to GitHub App IDs (shared across all enrolled orgs)
+- Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification — not per-org app ID entries
 
 ### Status Endpoint
 

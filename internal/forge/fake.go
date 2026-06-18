@@ -111,6 +111,7 @@ type FakeClient struct {
 	Repos             []Repository
 	FileContents      map[string][]byte       // key: "owner/repo/path"
 	WorkflowRuns      map[string]*WorkflowRun // key: "owner/repo/workflow"
+	Workflows         map[string]*Workflow    // key: "owner/repo/workflow"
 	AuthenticatedUser string
 	OrgPlan           string // plan name returned by GetOrgPlan (default: "free")
 	Installations     []Installation
@@ -398,6 +399,32 @@ func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message st
 		Message: message,
 	})
 	return nil
+}
+
+func (f *FakeClient) DeleteFiles(_ context.Context, owner, repo, message string, paths []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteFiles"); e != nil {
+		return 0, e
+	}
+
+	var deleted int
+	for _, path := range paths {
+		key := owner + "/" + repo + "/" + path
+		if _, ok := f.FileContents[key]; !ok {
+			continue
+		}
+		delete(f.FileContents, key)
+		f.DeletedFiles = append(f.DeletedFiles, FileRecord{
+			Owner:   owner,
+			Repo:    repo,
+			Path:    path,
+			Message: message,
+		})
+		deleted++
+	}
+	return deleted, nil
 }
 
 func (f *FakeClient) ListDirectoryContents(_ context.Context, owner, repo, path, ref string, _ bool) ([]DirectoryEntry, error) {
@@ -690,6 +717,28 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 		}
 	}
 	return "", false, nil
+}
+
+func (f *FakeClient) GetWorkflow(_ context.Context, owner, repo, workflowFile string) (*Workflow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetWorkflow"); e != nil {
+		return nil, e
+	}
+
+	key := owner + "/" + repo + "/" + workflowFile
+	if f.Workflows != nil {
+		if wf, ok := f.Workflows[key]; ok {
+			return wf, nil
+		}
+	}
+
+	return &Workflow{
+		Name:  workflowFile,
+		Path:  ".github/workflows/" + workflowFile,
+		State: "active",
+	}, nil
 }
 
 func (f *FakeClient) GetLatestWorkflowRun(_ context.Context, owner, repo, workflowFile string) (*WorkflowRun, error) {

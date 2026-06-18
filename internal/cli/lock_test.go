@@ -1197,3 +1197,61 @@ func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
 	// Should fail with a clear error about missing org config.
 	assert.Contains(t, err.Error(), "config.yaml")
 }
+
+func TestRunLock_LintWarningOnMissingRole(t *testing.T) {
+	// Verifies that runLock emits a lint warning when harness has no role.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness without role field, no URL references (no lock needed)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	// Verify lint warning was printed with agent name context
+	output := buf.String()
+	assert.Contains(t, output, "code")
+	assert.Contains(t, output, "role")
+	assert.Contains(t, output, "warning")
+}
+
+func TestRunLock_NoLintWarningWithRole(t *testing.T) {
+	// Verifies that runLock does NOT emit a lint warning when harness has role set.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness with role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	// Verify no lint warning about role
+	output := buf.String()
+	assert.NotContains(t, output, "role is not set")
+}

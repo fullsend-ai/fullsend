@@ -16,6 +16,8 @@ fullsend
 │       └── repos    <org> [repo...]         # Disable agent on repos
 ├── mint                                     # Token mint management
 │   ├── deploy                               # Deploy/update mint Cloud Function
+│   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
+│   ├── remove-role    <role>                # Remove role from mint
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
@@ -58,7 +60,7 @@ fullsend
 │   ├── --run-url <url>                      #   CI/CD run URL for status comments
 │   ├── --status-repo <owner/repo>           #   Repository for status comments
 │   ├── --status-number <int>                #   Issue/PR number for status comments
-│   └── --status-token <token>               #   Token for status comments (default: GH_TOKEN)
+│   └── --mint-url <url>                     #   Mint service URL for on-demand status tokens
 ├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
@@ -74,7 +76,8 @@ fullsend
     ├── --run-url <url>                      #   Workflow run URL (optional)
     ├── --sha <string>                       #   Commit SHA (optional)
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
-    └── --token <token>                      #   GitHub token (default: $GITHUB_TOKEN)
+    ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
+    └── --role <string>                      #   Agent role for minting (required with --mint-url)
 ```
 
 ### Command Decomposition
@@ -133,7 +136,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  a. Discover mint   --mint-url / --mint-project / default  │ │
 │  │     └─ DiscoverMint() → check if GCF exists, get URL      │ │
 │  │  b. Resolve existing app IDs from mint env vars            │ │
-│  │     └─ ROLE_APP_IDS → skip app creation if all present     │ │
+│  │     └─ ROLE_APP_IDS (role → app ID, shared) → skip app     │ │
+│  │        creation when all roles are present                 │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
@@ -257,7 +261,7 @@ Install:      process 1→8 (forward)
 Uninstall:    process 8→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` and `runGitHubSetupPerRepo()` since there's no need for composable uninstall ordering with a single repo. Binary vendoring (when `--vendor-fullsend-binary` is set) and stale binary cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` and `runGitHubSetupPerRepo()` since there's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -269,7 +273,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin analyze` reports stale vendored binaries at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
+Vendoring commit messages use title + body (upload and stale delete). `admin analyze` reports stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
 
 ---
 
@@ -452,8 +456,10 @@ fullsend-repo/                      (embedded template)
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
 | **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
-| **Layered** | No (runtime) | Upstream reusable workflows | agents/, skills/, harness/, plugins/, policies/, scripts/, schemas/, env/ |
-| **Upstream-only** | No | Referenced directly | .github/actions/, .github/scripts/ |
+| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@v0` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, policies/, scripts/, schemas/, env/ |
+| **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
+
+Runtime skips upstream fetch when `.defaults/action.yml` is present (vendored); layered installs sparse-checkout `fullsend-ai/fullsend@v0` into `.defaults/`.
 
 ### File Mode Tracking
 

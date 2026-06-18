@@ -132,6 +132,46 @@ func PerRepoCustomizedDirs() []string {
 	return dirs
 }
 
+// IsLayeredPath reports whether path is in a layered content directory.
+func IsLayeredPath(path string) bool {
+	for _, prefix := range layeredDirs {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUpstreamOnlyPath reports whether path is upstream-only infrastructure.
+func IsUpstreamOnlyPath(path string) bool {
+	for _, prefix := range upstreamOnlyDirs {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// WalkLayeredContent calls fn for layered directories and .github/scripts from fullsend-repo.
+func WalkLayeredContent(fn func(path string, content []byte) error) error {
+	return WalkFullsendRepoAll(func(path string, data []byte) error {
+		if !IsLayeredPath(path) && path != ".github/scripts/setup-agent-env.sh" {
+			return nil
+		}
+		return fn(path, data)
+	})
+}
+
+// WalkUpstream calls fn for upstream assets from the current module checkout.
+// Used by tests; install-time vendoring reads from ResolveVendorRoot instead.
+func WalkUpstream(fn func(path string, content []byte) error) error {
+	root, err := moduleRootFromScaffold()
+	if err != nil {
+		return err
+	}
+	return walkVendoredUpstreamFromRoot(root, fn)
+}
+
 const upstreamBase = "https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/"
 
 // ManagedHeader returns the managed-by header to prepend to a scaffold file

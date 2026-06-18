@@ -273,6 +273,17 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 	return h, nil
 }
 
+// parseRaw unmarshals raw YAML bytes into a Harness without validation or
+// forge resolution. Use this when you already have the bytes (e.g. from a
+// forge API call); use LoadRaw for filesystem-based loading.
+func parseRaw(data []byte) (*Harness, error) {
+	var h Harness
+	if err := yaml.Unmarshal(data, &h); err != nil {
+		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	}
+	return &h, nil
+}
+
 // LoadRaw reads and unmarshals a harness YAML file without calling Validate
 // or ResolveForge. Used by base composition to load base harnesses without
 // consuming their forge maps before merging, and by the lock command to
@@ -282,13 +293,7 @@ func LoadRaw(path string) (*Harness, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading harness file: %w", err)
 	}
-
-	var h Harness
-	if err := yaml.Unmarshal(data, &h); err != nil {
-		return nil, fmt.Errorf("parsing harness YAML: %w", err)
-	}
-
-	return &h, nil
+	return parseRaw(data)
 }
 
 // Validate checks that required fields are present.

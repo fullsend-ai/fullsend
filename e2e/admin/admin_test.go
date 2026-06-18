@@ -141,7 +141,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 		"--mint-url", env.cfg.mintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-all",
-		"--vendor-fullsend-binary",
+		"--vendor",
 	}
 	if env.cfg.gcpProjectID != "" {
 		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
@@ -159,14 +159,15 @@ func TestAdminInstallUninstall(t *testing.T) {
 	parsedCfg, err := config.ParseOrgConfig(cfgData)
 	require.NoError(t, err, "config.yaml should parse")
 	require.Len(t, parsedCfg.Defaults.Roles, len(defaultRoles), "should have %d roles", len(defaultRoles))
+	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, ".defaults/action.yml")
+	require.NoError(t, err, "vendored marker .defaults/action.yml should exist")
+	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
+	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
 	analyzeOutput := runCLI(t, env.binary, env.token, "admin", "analyze", env.org)
 	t.Logf("Analyze output:\n%s", analyzeOutput)
 
-	// Agent runtime files exist (from scaffold).
-	// ADR 35: only non-layered, non-upstream-only files are installed.
-	// Layered dirs (agents/, skills/, schemas/, harness/, plugins/, policies/,
-	// scripts/, env/) and upstream-only dirs (.github/actions/, .github/scripts/) are
-	// provided at runtime via sparse checkout in reusable workflows.
+	// Standalone install vendors reusable workflows, actions, and agent content
+	// at install time so e2e exercises the commit-built CLI, not upstream @v0.
 	for _, path := range []string{
 		".github/workflows/triage.yml",
 		".github/workflows/code.yml",
@@ -176,6 +177,10 @@ func TestAdminInstallUninstall(t *testing.T) {
 		".github/workflows/repo-maintenance.yml",
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
+		".github/workflows/reusable-triage.yml",
+		".defaults/internal/scaffold/fullsend-repo/agents/triage.md",
+		".defaults/.github/actions/mint-token/action.yml",
+		".defaults/action.yml",
 		"customized/agents/.gitkeep",
 		"customized/skills/.gitkeep",
 		"customized/schemas/.gitkeep",
@@ -653,7 +658,7 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	t.Log("Verified shim is gone")
 }
 
-// TestVendorFromSubdirectory verifies that --vendor-fullsend-binary cross-compiles
+// TestVendorFromSubdirectory verifies that --vendor cross-compiles
 // when the CLI is run from a subdirectory inside the module (GOMOD discovery).
 func TestVendorFromSubdirectory(t *testing.T) {
 	env := setupE2ETest(t)
@@ -667,7 +672,7 @@ func TestVendorFromSubdirectory(t *testing.T) {
 		"--mint-url", env.cfg.mintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-none",
-		"--vendor-fullsend-binary",
+		"--vendor",
 	}
 	runCLIFromDir(t, env.binary, env.token, subdir, installArgs...)
 

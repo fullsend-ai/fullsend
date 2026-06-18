@@ -188,6 +188,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	var allDeps []resolve.Dependency
 	seen := make(map[string]bool)
+	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
 
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
@@ -200,6 +201,15 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
 			return nil, fmt.Errorf("loading harness for forge %q: %w", platform, loadErr)
+		}
+
+		// Run lint diagnostics (non-fatal), deduplicating across forge variants
+		for _, diag := range h.Lint() {
+			key := diag.String()
+			if !linted[key] {
+				linted[key] = true
+				emitDiagnosticWithContext(printer, agentName, diag)
+			}
 		}
 
 		if err := h.ResolveRelativeTo(absFullsendDir); err != nil {

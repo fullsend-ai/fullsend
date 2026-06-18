@@ -9,6 +9,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// DefaultUpstreamRepo is the canonical fullsend repository for layered workflow calls.
+	DefaultUpstreamRepo = "fullsend-ai/fullsend"
+	// DefaultUpstreamRef is the default tag for layered upstream workflow calls.
+	DefaultUpstreamRef = "v0"
+)
+
 // AgentEntry represents a configured agent with its role and app identity.
 type AgentEntry struct {
 	Role string `yaml:"role"`
@@ -58,6 +65,17 @@ type RepoConfig struct {
 	Enabled bool     `yaml:"enabled"`
 }
 
+// AllowTargets defines which orgs and repos agents may create issues in.
+type AllowTargets struct {
+	Orgs  []string `yaml:"orgs,omitempty"`
+	Repos []string `yaml:"repos,omitempty"`
+}
+
+// CreateIssuesConfig controls cross-repo issue creation by agents.
+type CreateIssuesConfig struct {
+	AllowTargets AllowTargets `yaml:"allow_targets"`
+}
+
 // OrgConfig is the top-level configuration for a fullsend organization.
 type OrgConfig struct {
 	Version                string                `yaml:"version"`
@@ -68,6 +86,7 @@ type OrgConfig struct {
 	Agents                 []AgentEntry          `yaml:"agents"`
 	Repos                  map[string]RepoConfig `yaml:"repos"`
 	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
 }
 
 // ValidRoles returns the set of recognized agent roles.
@@ -95,7 +114,7 @@ func PerRepoDefaultRoles() []string {
 }
 
 // NewOrgConfig creates a new OrgConfig with sensible defaults.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider string) *OrgConfig {
+func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider, org string) *OrgConfig {
 	repos := make(map[string]RepoConfig, len(allRepos))
 	for _, r := range allRepos {
 		repos[r] = RepoConfig{
@@ -122,6 +141,14 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 	}
 	if inferenceProvider != "" {
 		cfg.Inference = InferenceConfig{Provider: inferenceProvider}
+	}
+	if org != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Orgs:  []string{org},
+				Repos: []string{"fullsend-ai/fullsend"},
+			},
+		}
 	}
 	return cfg
 }
@@ -184,6 +211,9 @@ func (c *OrgConfig) Validate() error {
 	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
 		return err
 	}
+	if err := validateCreateIssues(c.CreateIssues); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -242,9 +272,10 @@ func (c *OrgConfig) DefaultRoles() []string {
 // PerRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 type PerRepoConfig struct {
-	Version    string   `yaml:"version"`
-	KillSwitch bool     `yaml:"kill_switch,omitempty"`
-	Roles      []string `yaml:"roles,omitempty"`
+	Version      string              `yaml:"version"`
+	KillSwitch   bool                `yaml:"kill_switch,omitempty"`
+	Roles        []string            `yaml:"roles,omitempty"`
+	CreateIssues *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -255,14 +286,22 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 `
 
 // NewPerRepoConfig creates a new PerRepoConfig with the given roles.
-func NewPerRepoConfig(roles []string) *PerRepoConfig {
+func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 	if roles == nil {
 		roles = DefaultAgentRoles()
 	}
-	return &PerRepoConfig{
+	cfg := &PerRepoConfig{
 		Version: "1",
 		Roles:   roles,
 	}
+	if targetRepo != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+			},
+		}
+	}
+	return cfg
 }
 
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
@@ -298,6 +337,27 @@ func (c *PerRepoConfig) Validate() error {
 			return fmt.Errorf("duplicate role %q in roles", role)
 		}
 		seen[role] = true
+	}
+	if err := validateCreateIssues(c.CreateIssues); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCreateIssues(cfg *CreateIssuesConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, org := range cfg.AllowTargets.Orgs {
+		if org == "" {
+			return fmt.Errorf("create_issues: empty org in allow_targets.orgs")
+		}
+	}
+	for _, repo := range cfg.AllowTargets.Repos {
+		parts := strings.SplitN(repo, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("create_issues: repo %q in allow_targets.repos must contain owner/name", repo)
+		}
 	}
 	return nil
 }
