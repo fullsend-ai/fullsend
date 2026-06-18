@@ -162,13 +162,13 @@ run_test_custom_filename "custom-output-file-invalid" \
   "false"
 
 run_test_custom_filename "review-approve-actionable-finding-valid" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"docs","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"docs","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true,"verified_variables":[],"unchecked_variables":[]}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-finding-additional-property-rejected" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true,"verified_variables":[],"unchecked_variables":[]}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
@@ -184,6 +184,12 @@ run_test_custom_filename "review-finding-all-variables-verified-valid" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
+
+run_test_custom_filename "review-finding-missing-required-variables-rejected" \
+  '{"action":"request-changes","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Missing fields.","findings":[{"severity":"high","category":"gha-injection","file":"action.yml","description":"No variable arrays."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
 
 run_test_custom_filename "review-finding-verified-variables-empty-string-rejected" \
   '{"action":"request-changes","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Bad var.","findings":[{"severity":"high","category":"gha-injection","file":"action.yml","description":"Bad.","verified_variables":[""],"unchecked_variables":["source"]}]}' \
@@ -233,7 +239,7 @@ run_test_custom_filename_output() {
 }
 
 run_test_custom_filename_output "nested-additional-property-shows-allowed" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true,"verified_variables":[],"unchecked_variables":[]}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -365,7 +371,7 @@ run_test_custom_filename "path-traversal-stripped" \
 REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "review-reject-valid" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design.","verified_variables":[],"unchecked_variables":[]}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -377,7 +383,7 @@ run_test_custom_filename "review-reject-missing-findings" \
   "false"
 
 run_test_custom_filename "review-reject-missing-body" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design.","verified_variables":[],"unchecked_variables":[]}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"

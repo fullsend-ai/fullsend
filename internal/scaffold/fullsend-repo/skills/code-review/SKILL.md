@@ -126,8 +126,8 @@ dimension carry over to another — each requires its own scrutiny.
   enumerate ALL other variables in the same context and verify each one
   individually. In your findings, populate `verified_variables` with the
   names of inputs you confirmed are protected, and `unchecked_variables`
-  with inputs you could not confirm. Both arrays must be present whenever
-  a sanitization or security control function is identified in a finding.
+  with inputs you could not confirm. Both arrays are required on every
+  finding (use `[]` for non-security findings).
   If any input lacks the control, raise a finding even if the unprotected
   input appears low-risk — the risk assessment belongs in the finding's
   severity, not in a decision to omit the finding.

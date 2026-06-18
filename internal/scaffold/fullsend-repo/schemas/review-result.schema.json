@@ -53,7 +53,7 @@
   "$defs": {
     "finding": {
       "type": "object",
-      "required": ["severity", "category", "file", "description"],
+      "required": ["severity", "category", "file", "description", "verified_variables", "unchecked_variables"],
       "properties": {
         "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
         "category": { "type": "string", "minLength": 1 },

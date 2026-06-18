@@ -296,8 +296,8 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
 | `actionable`  | boolean | no       | When true on low/info findings in an `approve` result, marks the finding for future follow-up issue creation (temporarily disabled; see #1137) |
-| `verified_variables` | array | no | Variables confirmed as having the security control applied. Required in findings that identify a sanitization or security control function. |
-| `unchecked_variables` | array | no | Variables in the same context not confirmed as having the security control. Required in findings that identify a sanitization or security control function. |
+| `verified_variables` | array | yes | Variables confirmed as having the security control applied. Use `[]` for non-security findings. |
+| `unchecked_variables` | array | yes | Variables in the same context not confirmed as having the security control. Use `[]` for non-security findings. |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
@@ -325,7 +325,7 @@ jq -n \
   --arg repo "<owner/repo>" \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
+  --argjson findings '[{"severity":"low","category":"<category>","file":"<path>","description":"<desc>","actionable":true,"verified_variables":[],"unchecked_variables":[]}]' \
   '{action: $action, pr_number: $pr_number, repo: $repo,
     head_sha: $head_sha, body: $body, findings: $findings}' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
@@ -340,7 +340,7 @@ jq -n \
   --arg repo "<owner/repo>" \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
+  --argjson findings '[{"severity":"high","category":"<category>","file":"<path>","description":"<desc>","verified_variables":["<var1>"],"unchecked_variables":["<var2>"]}]' \
   '{action: $action, pr_number: $pr_number, repo: $repo,
     head_sha: $head_sha, body: $body, findings: $findings}' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
