@@ -80,11 +80,6 @@ if [[ -n "$THIS_RUN_ID" ]]; then
     CHAIN_ARGS+=(-f auto_create="true")
   fi
 
-  # Pass through confidence threshold if explicitly set
-  if [[ -n "${REFINE_CONFIDENCE_THRESHOLD:-}" ]]; then
-    CHAIN_ARGS+=(-f confidence_threshold="${REFINE_CONFIDENCE_THRESHOLD}")
-  fi
-
   gh workflow run refine.yml "${CHAIN_ARGS[@]}" \
     2>/dev/null || echo "::warning::Failed to chain refine workflow — trigger manually"
   pe_end "post-explore" "chain-refine" "$(jq -nc --arg run_id "$THIS_RUN_ID" --arg traceparent "$CURRENT_TRACEPARENT" '{explore_run_id:$run_id, traceparent:$traceparent}')"

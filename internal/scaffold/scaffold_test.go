@@ -117,7 +117,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/pipeline-events.sh",
 		"scripts/pipeline-helpers.sh",
 		"scripts/markdown-to-adf.py",
-		"scripts/sanitize-artifacts.sh",
 		"skills/jira-read/SKILL.md",
 		"skills/public-research/SKILL.md",
 		".github/workflows/explore.yml",
@@ -1193,17 +1192,6 @@ func TestPipelineEventsContent(t *testing.T) {
 	assert.Contains(t, s, "pe_error")
 	assert.Contains(t, s, "pe_copy_to_output")
 	assert.Contains(t, s, "pipeline-events.jsonl")
-}
-
-func TestSanitizeArtifactsContent(t *testing.T) {
-	content, err := FullsendRepoFile("scripts/sanitize-artifacts.sh")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "redact")
-	assert.Contains(t, s, "atlassian.net")
-	assert.Contains(t, s, "redacted-email")
-	assert.Contains(t, s, "redacted-host")
-	assert.Contains(t, s, "agent-result.json")
 }
 
 func TestCreateChildrenScriptContent(t *testing.T) {

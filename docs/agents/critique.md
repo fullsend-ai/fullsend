@@ -23,11 +23,14 @@ Nothing gets created until this agent approves.
 
 ## Control labels
 
-| Label | Meaning |
-|-------|---------|
-| `fullsend:critiquing` | Applied by the critique pre-script while evaluation is in progress. Removed on completion. |
-| `fullsend:approved` | Applied by the critique post-script when the plan receives an `approved` verdict. |
-| `fullsend:needs-input` | Applied by the critique post-script when human input is required before the pipeline can proceed. |
+Labels are applied by `post-critique.sh` based on the verdict (GitHub flow only):
+
+| Label | When applied |
+|-------|-------------|
+| `refine-approved` | Plan approved (with `auto_create=false`), or max review rounds reached (escalation). |
+| `refine-needs-input` | Human input is required before the pipeline can proceed (`needs_input` verdict). |
+| `refine-needs-human` | Max review rounds reached — critique still has concerns, human must decide. |
+| `refine-stalled` | Max review rounds reached — added alongside `refine-needs-human` to signal the pipeline has stopped. |
 
 ## Configuration and extension
 
@@ -46,8 +49,8 @@ See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 When the critique agent approves a plan:
 
-- **`auto_create=true`** (default): The post-script automatically creates child issues in the target tracker (GitHub or Jira).
-- **`auto_create=false`**: The post-script posts an approval comment with the proposed plan. A human must comment `/fs-create` to trigger issue creation.
+- **`auto_create=true`**: The post-script automatically creates child issues in the target tracker (GitHub or Jira).
+- **`auto_create=false`** (default): The post-script posts an approval comment with the proposed plan. A human must comment `/fs-create` to trigger issue creation.
 
 This gives teams control over whether refinement is fully automated or requires human sign-off before backlog changes.
 

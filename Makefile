@@ -119,7 +119,6 @@ script-test:
 	bash internal/scaffold/fullsend-repo/scripts/post-refine-test.sh
 	bash internal/scaffold/fullsend-repo/scripts/post-critique-test.sh
 	bash internal/scaffold/fullsend-repo/scripts/create-children-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/sanitize-artifacts-test.sh
 	python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py
 	python3 skills/topissues/scripts/topissues_test.py
 

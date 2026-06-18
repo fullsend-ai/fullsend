@@ -30,10 +30,7 @@ There is no separate command to invoke refine alone. It runs as the second stage
 
 ## Control labels
 
-| Label | Meaning |
-|-------|---------|
-| `fullsend:refining` | Applied by the refine pre-script while refinement is in progress. Removed on completion. |
-| `fullsend:refined` | Applied by the refine post-script when a plan is produced. Signals that critique can proceed. |
+The refine agent does not add labels. On completion, it chains directly to the [critique agent](critique.md) via `workflow_dispatch`. The post-script removes `refine-needs-input` and `human-refinement` labels (if present) as cleanup from prior runs.
 
 ## Configuration and extension
 

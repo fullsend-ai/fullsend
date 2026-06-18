@@ -33,10 +33,7 @@ For Jira issues, the pipeline can also be triggered by:
 
 ## Control labels
 
-| Label | Meaning |
-|-------|---------|
-| `fullsend:exploring` | Applied by the explore pre-script while exploration is in progress. Removed on completion. |
-| `fullsend:explored` | Applied by the explore post-script when exploration completes successfully. Signals that refine can proceed. |
+The explore agent does not manage any labels. On completion, it chains directly to the [refine agent](refine.md) via `workflow_dispatch`.
 
 ## Configuration and extension
 

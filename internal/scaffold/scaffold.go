@@ -52,12 +52,10 @@ var executableFiles = map[string]struct{}{
 	"scripts/pipeline-events.sh":             {},
 	"scripts/markdown-to-adf.py":             {},
 	"scripts/pipeline-helpers.sh":            {},
-	"scripts/sanitize-artifacts.sh":          {},
 	"scripts/post-explore-test.sh":           {},
 	"scripts/post-refine-test.sh":            {},
 	"scripts/post-critique-test.sh":          {},
 	"scripts/create-children-test.sh":        {},
-	"scripts/sanitize-artifacts-test.sh":     {},
 }
 
 // FileMode returns the Git tree mode for a scaffold file.
