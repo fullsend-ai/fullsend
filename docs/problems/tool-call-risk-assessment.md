@@ -110,7 +110,7 @@ tool_policies:
 - Policy maintenance burden (every new legitimate use case may need a policy update)
 - Overlaps significantly with existing `permissions.deny` and `FULLSEND_TOOL_ALLOWLIST`
 
-### Approach 4: Hybrid (recommended for exploration)
+### Approach 4: Hybrid
 
 Combine Approach 3 (fast deterministic policies) as a first pass with Approach 1 (LLM judge) as a second pass for calls that don't match any explicit allow/deny rule. The deterministic layer handles the common cases cheaply; the LLM judge handles the ambiguous cases.
 
@@ -141,3 +141,4 @@ Both layers are needed. Neither subsumes the other.
 - What is the right model for the judge? It needs to be fast and cheap but capable enough to understand security context. Is a small fine-tuned model better than a general-purpose small model?
 - Should risk assessment verdicts feed into a broader risk score that influences approval routing? A run that triggered multiple high-risk tool call blocks is itself a signal, even if the blocks succeeded.
 - How do we measure the effectiveness of risk assessment? What metrics distinguish "caught a real threat" from "blocked legitimate work"?
+- If a blocked tool call returns the block reason to the agent, a compromised agent could use that feedback to reformulate the call and evade the judge on retry. How much information should a block verdict expose to the agent, and is there a way to limit retries or detect reformulation attempts?
