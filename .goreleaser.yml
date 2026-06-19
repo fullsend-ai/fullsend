@@ -27,6 +27,7 @@ changelog:
   sort: asc
   filters:
     exclude:
+      - '^Merge '
       - '^ci(\(.*\))?:'
       - '^docs(\(.*\))?:'
       - '^test(\(.*\))?:'
@@ -34,13 +35,13 @@ changelog:
       - '^build(\(.*\))?:'
   groups:
     - title: Features
-      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      regexp: '^.*?feat(\([^)]+\))??!?:.+$'
       order: 0
     - title: Bug Fixes
-      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      regexp: '^.*?fix(\([^)]+\))??!?:.+$'
       order: 1
     - title: Refactoring
-      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      regexp: '^.*?refactor(\([^)]+\))??!?:.+$'
       order: 2
     - title: Others
       order: 999
