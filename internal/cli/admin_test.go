@@ -1105,6 +1105,7 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		"",    // analyzeFullsendSource
 		nil,   // dispatcher
 		"dev", // commitSHA
+		"dev", // upstreamRef
 	)
 
 	// The enrollment layer (last in the stack) should have no repos to
@@ -1139,7 +1140,7 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 		"test-org", nil, cfg, printer, "user",
 		false,
 		[]string{}, // explicitly empty (not nil)
-		nil, nil, nil, false, nil, nil, "", nil, "dev",
+		nil, nil, nil, false, nil, nil, "", nil, "dev", "dev",
 	)
 
 	// The enrollment layer should have disabled repos to reconcile.
@@ -1216,7 +1217,7 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 	emptyCfg := &config.OrgConfig{}
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
-		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version", false),
+		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version", "dev", false),
 		layers.NewHarnessWrappersLayer("test-org", nil, ui.New(&discardWriter{}), nil, "dev"),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
@@ -1780,6 +1781,7 @@ func TestRunDryRun_WithDiscoveredRepos(t *testing.T) {
 		true,
 		"",
 		"",
+		"dev",
 	)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Layer: vendor")
@@ -1815,6 +1817,7 @@ func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 		"https://mint.example.com/v1/token",
 		false,
 		discovered,
+		"dev",
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OIDC mint requires")
@@ -1841,6 +1844,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 		"https://mint.example.com/v1/token",
 		true,
 		client.Repos,
+		"dev",
 	)
 	require.NoError(t, err)
 }
@@ -1867,6 +1871,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 		"https://mint.example.com/v1/token",
 		true,
 		nil,
+		"dev",
 	)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Discovering repositories")
@@ -1888,6 +1893,7 @@ func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 		"https://mint.example.com/v1/token",
 		true,
 		discovered,
+		"dev",
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing-repo")
@@ -1915,6 +1921,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 		"https://mint.example.com/v1/token",
 		true,
 		client.Repos,
+		"dev",
 	)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "vendored assets")

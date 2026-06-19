@@ -21,7 +21,7 @@ func newWorkflowsLayer(t *testing.T, client *forge.FakeClient, vendored bool) (*
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored)
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", "dev", vendored)
 	return layer, &buf
 }
 
@@ -134,7 +134,7 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 
 	raw, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
-	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false, "dev"))
 	require.NoError(t, err)
 	expected := string(scaffold.PrependManagedHeader(".github/workflows/triage.yml", rendered))
 	assert.Equal(t, expected, triageContent)
@@ -153,7 +153,7 @@ func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 			{Path: ".defaults/action.yml", Content: []byte("marker"), Mode: "100644"},
 		}, 1, nil
 	}
-	layer := NewWorkflowsLayer("test-org", client, ui.New(&bytes.Buffer{}), "admin-user", "test-version", true)
+	layer := NewWorkflowsLayer("test-org", client, ui.New(&bytes.Buffer{}), "admin-user", "test-version", "dev", true)
 	layer = layer.WithVendorCollect(collectFn)
 
 	err := layer.Install(context.Background())
@@ -208,7 +208,7 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 
 	raw, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
-	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false, "dev"))
 	require.NoError(t, err)
 	expected := string(scaffold.PrependManagedHeader(".github/workflows/repo-maintenance.yml", rendered))
 	assert.Equal(t, expected, maintenanceContent)

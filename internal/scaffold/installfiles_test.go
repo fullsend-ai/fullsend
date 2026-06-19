@@ -9,7 +9,7 @@ import (
 
 func TestCollectInstallFiles_PerOrg(t *testing.T) {
 	files, err := CollectInstallFiles(CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(false, false),
+		RenderOptions: RenderOptionsForInstall(false, false, "v0"),
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
@@ -24,7 +24,7 @@ func TestCollectInstallFiles_PerOrg(t *testing.T) {
 
 func TestCollectInstallFiles_PerRepoPrefix(t *testing.T) {
 	files, err := CollectInstallFiles(CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(false, true),
+		RenderOptions: RenderOptionsForInstall(false, true, "v0"),
 		PathPrefix:    ".fullsend/",
 	})
 	require.NoError(t, err)
@@ -41,7 +41,7 @@ func TestCollectInstallFiles_PerRepoPrefix(t *testing.T) {
 }
 
 func TestCollectPerRepoInstallFiles(t *testing.T) {
-	files, err := CollectPerRepoInstallFiles(false)
+	files, err := CollectPerRepoInstallFiles(false, "v0")
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	assert.Equal(t, ".github/workflows/fullsend.yaml", files[0].Path)
@@ -55,7 +55,7 @@ func TestManagedPaths(t *testing.T) {
 
 func TestCollectInstallFiles_Vendored(t *testing.T) {
 	files, err := CollectInstallFiles(CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(true, false),
+		RenderOptions: RenderOptionsForInstall(true, false, "v0"),
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
@@ -72,7 +72,7 @@ func TestCollectInstallFiles_Vendored(t *testing.T) {
 }
 
 func TestCollectPerRepoInstallFiles_Vendored(t *testing.T) {
-	files, err := CollectPerRepoInstallFiles(true)
+	files, err := CollectPerRepoInstallFiles(true, "v0")
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	assert.Contains(t, string(files[0].Content), "reusable-")

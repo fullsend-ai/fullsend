@@ -6,8 +6,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "dev"
-var commitSHA = "dev"
+var version = "main"
+var commitSHA = "main"
 
 // Version returns the CLI version string set at build time.
 func Version() string {

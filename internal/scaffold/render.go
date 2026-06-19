@@ -10,13 +10,14 @@ import (
 
 // RenderOptions controls install-time substitution for shim and thin-caller templates.
 type RenderOptions struct {
-	Vendored bool
-	PerRepo  bool
+	Vendored    bool
+	PerRepo     bool
+	UpstreamRef string
 }
 
-// RenderOptionsForInstall builds render options from the --vendor flag.
-func RenderOptionsForInstall(vendored, perRepo bool) RenderOptions {
-	return RenderOptions{Vendored: vendored, PerRepo: perRepo}
+// RenderOptionsForInstall builds render options from install flags.
+func RenderOptionsForInstall(vendored, perRepo bool, upstreamRef string) RenderOptions {
+	return RenderOptions{Vendored: vendored, PerRepo: perRepo, UpstreamRef: upstreamRef}
 }
 
 // thinStageWorkflows lists thin caller paths and their stage markers. Keep in sync
@@ -50,6 +51,8 @@ func RenderTemplate(path string, content []byte, opts RenderOptions) ([]byte, er
 		out = strings.ReplaceAll(out, "__REUSABLE_DISPATCH__", reusableDispatchUses(opts))
 	}
 
+	out = strings.ReplaceAll(out, "__UPSTREAM_REF__", opts.UpstreamRef)
+
 	return []byte(out), nil
 }
 
@@ -78,14 +81,14 @@ func reusableWorkflowUses(stage string, opts RenderOptions) string {
 		}
 		return "./.github/workflows/reusable-" + stage + ".yml"
 	}
-	return config.DefaultUpstreamRepo + "/.github/workflows/reusable-" + stage + ".yml@" + config.DefaultUpstreamRef
+	return config.DefaultUpstreamRepo + "/.github/workflows/reusable-" + stage + ".yml@" + opts.UpstreamRef
 }
 
 func reusableDispatchUses(opts RenderOptions) string {
 	if opts.Vendored {
 		return "./.fullsend/.github/workflows/reusable-dispatch.yml"
 	}
-	return config.DefaultUpstreamRepo + "/.github/workflows/reusable-dispatch.yml@" + config.DefaultUpstreamRef
+	return config.DefaultUpstreamRepo + "/.github/workflows/reusable-dispatch.yml@" + opts.UpstreamRef
 }
 
 // RenderDispatchPerRepoStagePaths rewrites stage workflow paths for vendored

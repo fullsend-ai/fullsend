@@ -12,11 +12,14 @@ func TestRenderThinCallerNotVendored(t *testing.T) {
 	require.NoError(t, err)
 
 	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
-		Vendored: false,
+		Vendored:    false,
+		UpstreamRef: "v1.2.3",
 	})
 	require.NoError(t, err)
 	out := string(rendered)
-	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
+	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v1.2.3")
+	assert.Contains(t, out, "fullsend_actions_ref: v1.2.3")
+	assert.Contains(t, out, "fullsend_cli_ref: v1.2.3")
 	assertFreeOfRenderPlaceholders(t, out)
 	assert.NotContains(t, out, "distribution_mode")
 	assert.NotContains(t, out, "fullsend_ai_repo:")
@@ -27,7 +30,8 @@ func TestRenderThinCallerVendoredPerOrg(t *testing.T) {
 	require.NoError(t, err)
 
 	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
-		Vendored: true,
+		Vendored:    true,
+		UpstreamRef: "v1.2.3",
 	})
 	require.NoError(t, err)
 	out := string(rendered)
@@ -42,8 +46,9 @@ func TestRenderPerRepoShimVendored(t *testing.T) {
 	require.NoError(t, err)
 
 	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
-		Vendored: true,
-		PerRepo:  true,
+		Vendored:    true,
+		PerRepo:     true,
+		UpstreamRef: "v1.2.3",
 	})
 	require.NoError(t, err)
 	out := string(rendered)
@@ -56,7 +61,8 @@ func TestRenderPrioritizeThinCallerVendored(t *testing.T) {
 	require.NoError(t, err)
 
 	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{
-		Vendored: true,
+		Vendored:    true,
+		UpstreamRef: "v1.2.3",
 	})
 	require.NoError(t, err)
 	out := string(rendered)
@@ -98,7 +104,7 @@ func TestRenderDispatchPerRepoStagePaths(t *testing.T) {
 	rendered := RenderDispatchPerRepoStagePaths(raw)
 	assert.Contains(t, string(rendered), "uses: ./.fullsend/.github/workflows/reusable-triage.yml")
 	assert.Contains(t, string(rendered), "uses: ./.fullsend/.github/workflows/reusable-prioritize.yml")
-	assert.NotContains(t, string(rendered), "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
+	assert.NotContains(t, string(rendered), "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@")
 }
 
 func assertFreeOfRenderPlaceholders(t *testing.T, out string) {
@@ -136,7 +142,7 @@ func TestRenderAllThinCallersFreeOfPlaceholders(t *testing.T) {
 		raw, err := FullsendRepoFile(w.path)
 		require.NoError(t, err, w.path)
 		for _, vendored := range []bool{false, true} {
-			rendered, err := RenderTemplate(w.path, raw, RenderOptions{Vendored: vendored})
+			rendered, err := RenderTemplate(w.path, raw, RenderOptions{Vendored: vendored, UpstreamRef: "v1.2.3"})
 			require.NoError(t, err, w.path)
 			assertFreeOfRenderPlaceholders(t, string(rendered))
 		}

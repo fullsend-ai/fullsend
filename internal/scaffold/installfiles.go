@@ -2,6 +2,8 @@ package scaffold
 
 import (
 	"fmt"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
 )
 
 // InstallFile is a file to commit during install.
@@ -58,8 +60,8 @@ func customizedDirsForPrefix(prefix string) []string {
 }
 
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
-func CollectPerRepoInstallFiles(vendored bool) (InstallFiles, error) {
-	opts := RenderOptionsForInstall(vendored, true)
+func CollectPerRepoInstallFiles(vendored bool, upstreamRef string) (InstallFiles, error) {
+	opts := RenderOptionsForInstall(vendored, true, upstreamRef)
 
 	shimRaw, err := PerRepoShimTemplate()
 	if err != nil {
@@ -91,7 +93,7 @@ func CollectPerRepoInstallFiles(vendored bool) (InstallFiles, error) {
 // Vendored content is reported separately by the vendor layer.
 func ManagedPaths(_ bool, pathPrefix string) ([]string, error) {
 	opts := CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(false, pathPrefix != ""),
+		RenderOptions: RenderOptionsForInstall(false, pathPrefix != "", config.DefaultUpstreamRef),
 		PathPrefix:    pathPrefix,
 	}
 	files, err := CollectInstallFiles(opts)

@@ -35,15 +35,23 @@ on:
         description: "GCP region for Vertex AI"
         required: true
         type: string
-      fullsend_version:
+      fullsend_cli_ref:
         description: "Fullsend CLI version to use"
+        required: false
+        type: string
+      fullsend_actions_ref:
+        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        type: string
+        required: false
+      fullsend_version:
+        description: "Deprecated: use fullsend_cli_ref instead."
         required: false
         type: string
         default: "latest"
       fullsend_ai_ref:
-        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
-        type: string
+        description: "Deprecated: use fullsend_actions_ref instead."
         required: false
+        type: string
         default: v0
       project_number:
         description: "GitHub Projects V2 project number for RICE scoring (prioritize agent)"
@@ -340,8 +348,8 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'triage'
     # @v0 is hardcoded — GHA does not support expressions in uses:.
-    # fullsend_ai_ref controls the ref for composite actions inside stage workflows.
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
+    # fullsend_actions_ref controls the ref for composite actions inside stage workflows.
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@feat/upstream-ref-flag
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -349,8 +357,8 @@ jobs:
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      fullsend_cli_ref: ${{ inputs.fullsend_cli_ref || inputs.fullsend_ai_ref }}
+      fullsend_actions_ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -359,7 +367,7 @@ jobs:
     name: Code
     needs: route
     if: needs.route.outputs.stage == 'code'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@feat/upstream-ref-flag
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -367,8 +375,8 @@ jobs:
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      fullsend_cli_ref: ${{ inputs.fullsend_cli_ref || inputs.fullsend_ai_ref }}
+      fullsend_actions_ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -377,7 +385,7 @@ jobs:
     name: Review
     needs: route
     if: needs.route.outputs.stage == 'review'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@feat/upstream-ref-flag
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -385,8 +393,8 @@ jobs:
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      fullsend_cli_ref: ${{ inputs.fullsend_cli_ref || inputs.fullsend_ai_ref }}
+      fullsend_actions_ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -395,7 +403,7 @@ jobs:
     name: Fix
     needs: route
     if: needs.route.outputs.stage == 'fix'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@feat/upstream-ref-flag
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -404,8 +412,8 @@ jobs:
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      fullsend_cli_ref: ${{ inputs.fullsend_cli_ref || inputs.fullsend_ai_ref }}
+      fullsend_actions_ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -414,7 +422,7 @@ jobs:
     name: Retro
     needs: route
     if: needs.route.outputs.stage == 'retro'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@feat/upstream-ref-flag
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -422,8 +430,8 @@ jobs:
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      fullsend_cli_ref: ${{ inputs.fullsend_cli_ref || inputs.fullsend_ai_ref }}
+      fullsend_actions_ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -432,7 +440,7 @@ jobs:
     name: Prioritize
     needs: route
     if: needs.route.outputs.stage == 'prioritize'
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@feat/upstream-ref-flag
     with:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
@@ -441,8 +449,8 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       project_number: ${{ inputs.project_number }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      fullsend_cli_ref: ${{ inputs.fullsend_cli_ref || inputs.fullsend_ai_ref }}
+      fullsend_actions_ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

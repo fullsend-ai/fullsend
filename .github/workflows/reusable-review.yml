@@ -20,18 +20,26 @@ on:
       gcp_region:
         required: true
         type: string
-      fullsend_version:
+      fullsend_cli_ref:
         required: false
         type: string
-        default: "latest"
       install_mode:
         required: false
         type: string
         default: "per-org"
-      fullsend_ai_ref:
+      fullsend_actions_ref:
         description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
         type: string
         required: false
+      fullsend_version:
+        description: "Deprecated: use fullsend_cli_ref instead."
+        required: false
+        type: string
+        default: "latest"
+      fullsend_ai_ref:
+        description: "Deprecated: use fullsend_actions_ref instead."
+        required: false
+        type: string
         default: v0
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
@@ -59,7 +67,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: fullsend-ai/fullsend
-          ref: ${{ inputs.fullsend_ai_ref }}
+          ref: ${{ inputs.fullsend_actions_ref || inputs.fullsend_ai_ref }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -166,7 +174,7 @@ jobs:
           PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
         with:
           agent: review
-          version: ${{ inputs.fullsend_version }}
+          version: ${{ inputs.fullsend_cli_ref || inputs.fullsend_version }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}
           status-number: ${{ fromJSON(inputs.event_payload).pull_request.number || fromJSON(inputs.event_payload).issue.number }}

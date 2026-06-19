@@ -20,19 +20,21 @@ type WorkflowsLayer struct {
 	authenticatedUser string
 	version           string
 	vendored          bool
+	upstreamRef       string
 	vendorCollect     VendorCollectFunc
 }
 
 var _ Layer = (*WorkflowsLayer)(nil)
 
 // NewWorkflowsLayer creates a new WorkflowsLayer.
-func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, user, version string, vendored bool) *WorkflowsLayer {
+func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, user, version, upstreamRef string, vendored bool) *WorkflowsLayer {
 	return &WorkflowsLayer{
 		org:               org,
 		client:            client,
 		ui:                printer,
 		authenticatedUser: user,
 		version:           version,
+		upstreamRef:       upstreamRef,
 		vendored:          vendored,
 	}
 }
@@ -62,7 +64,7 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	installFiles, err := scaffold.CollectInstallFiles(scaffold.CollectInstallFilesOptions{
-		RenderOptions: scaffold.RenderOptionsForInstall(l.vendored, false),
+		RenderOptions: scaffold.RenderOptionsForInstall(l.vendored, false, l.upstreamRef),
 		PathPrefix:    "",
 	})
 	if err != nil {
