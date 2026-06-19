@@ -65,11 +65,11 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: fullsend-ai/fullsend
           ref: ${{ inputs.fullsend_ai_ref }}
@@ -291,7 +291,7 @@ jobs:
           fi
 
       - name: Checkout target repository at PR HEAD
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.source_repo }}
           token: ${{ steps.app-token.outputs.token }}
