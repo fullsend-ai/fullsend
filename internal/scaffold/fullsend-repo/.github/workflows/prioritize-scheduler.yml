@@ -9,6 +9,11 @@ on:
   # schedule:
   #   - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      wip_limit:
+        description: "Max number of prioritize jobs to dispatch (overrides PRIORITIZE_WIP_LIMIT variable)"
+        required: false
+        type: number
 
 concurrency:
   group: fullsend-prioritize-scheduler
@@ -41,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ORG: ${{ github.repository_owner }}
           PROJECT_NUMBER: ${{ vars.FULLSEND_PROJECT_NUMBER }}
-          WIP_LIMIT: ${{ vars.PRIORITIZE_WIP_LIMIT || '5' }}
+          WIP_LIMIT: ${{ inputs.wip_limit || vars.PRIORITIZE_WIP_LIMIT || '5' }}
           STALE_THRESHOLD: ${{ vars.PRIORITIZE_STALE_THRESHOLD || '7d' }}
         run: |
           set -euo pipefail

@@ -94,6 +94,15 @@ and exit — there is nothing to check.
 
 Write a shell script that takes the identifiers from step 2 and
 greps for each one across the documentation files from step 3.
+
+**Rename/deprecation PRs:** When a PR renames or removes an identifier,
+use a bare-word pattern (`\bOLD_NAME\b`) in addition to any
+syntax-specific pattern (e.g., `OLD_NAME:` for YAML). Documentation
+files often reference field names in prose without syntax suffixes and
+will be missed by syntax-specific patterns alone. See the
+`docs-currency` sub-agent's "Rename/deprecation pattern strategy"
+section for the full approach.
+
 Run the script in a single Bash call:
 
 ```bash

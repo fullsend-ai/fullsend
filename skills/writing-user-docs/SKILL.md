@@ -61,7 +61,7 @@ drafting or editing guides. Key principles:
 - [ ] Planned features use `> **Planned:**` callouts with issue links
 - [ ] All internal links resolve (ADRs, specs, other guides)
 - [ ] `docs/guides/README.md` index is updated
-- [ ] `make lint` passes
+- [ ] Changes staged and `make lint` passes
 
 ## Common Mistakes
 

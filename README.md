@@ -45,8 +45,13 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Universal Harness Access](docs/plans/universal-harness-access.md) — Making harnesses and agents universally accessible via URLs and paths, enabling community sharing and composability
   - [Universal Harness Access — Phase 1 Implementation](docs/plans/universal-harness-access-phase1.md) — Phased PR breakdown for ADR-0038 Phase 1 (MVP)
   - [Universal Harness Access — Phase 2 Implementation](docs/plans/universal-harness-access-phase2.md) — Phased PR breakdown for ADR-0038 Phase 2 (transitive dependency resolution)
+  - [Universal Harness Access — Phase 3 Implementation](docs/plans/universal-harness-access-phase3.md) — Phased PR breakdown for ADR-0038 Phase 3 (lock files and integrity verification)
+  - [Universal Harness Access — Phase 4 Implementation](docs/plans/universal-harness-access-phase4.md) — Phased PR breakdown for ADR-0038 Phase 4 (runtime dependency loading)
   - [Agent Execution Environment](docs/plans/agent-execution-environment.md) — Sandbox and runtime environment for agent execution
   - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
+  - [ADR-0045 Forge-Portable Harness Schema — Phase 1](docs/plans/adr-0045-forge-portable-harness-phase1.md) — Implementation plan for ADR-0045 forge-portable harness schema (Phase 1)
+  - [ADR-0045 Forge-Portable Harness Schema — Phase 2](docs/plans/adr-0045-forge-portable-harness-phase2.md) — Implementation plan for ADR-0045 Phase 2: adopt new schema fields across install, scaffold, and lock flows
+  - [ADR-0045 Forge-Portable Harness Schema — Phase 3](docs/plans/adr-0045-forge-portable-harness-phase3.md) — Implementation plan for ADR-0045 Phase 3: deprecate config.yaml agents block, add Lint() diagnostics, migrate to harness-first discovery
   - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))

@@ -1,6 +1,6 @@
 # GitLab Support Implementation Details
 
-This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md).
+This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md) (status: Deprecated — CI/CD pipeline mapping, PAT-based auth, and webhook bridging sections remain valid reference material; harness-level forge abstraction is now covered by [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)).
 
 ## Table of Contents
 
@@ -594,7 +594,7 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 2. **GitLab serverless functions**: Keeps compute within GitLab infrastructure, but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Works on GitLab Free tier, but reintroduces hosted webhook receiver concern from ADR-0009.
 
-**Status**: For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment. See ADR-0028 "Open Questions" section for full analysis of trade-offs.
+**Status**: For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment. See ADR-0028 (Deprecated — see [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)) "Open Questions" section for full analysis of trade-offs.
 
 ### Forge Interface Design Details
 
@@ -615,7 +615,7 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 
 ## References
 
-- [ADR-0028: GitLab Support Architecture](../ADRs/0028-gitlab-support.md)
+- [ADR-0028: GitLab Support Architecture](../ADRs/0028-gitlab-support.md) (Deprecated — see [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md))
 - [ADR-0005: Forge abstraction layer](../ADRs/0005-forge-abstraction-layer.md)
 - [ADR-0009: pull_request_target security model](../ADRs/0009-pull-request-target-in-shim-workflows.md)
 - GitLab CI/CD documentation: https://docs.gitlab.com/ee/ci/

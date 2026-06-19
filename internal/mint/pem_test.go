@@ -18,22 +18,19 @@ func TestGCPSecretPEMAccessor_InputValidation(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		org     string
 		role    string
 		wantErr string
 	}{
-		{name: "valid org and role", org: "test-org", role: "coder"},
-		{name: "org with double hyphen", org: "test--org", role: "coder", wantErr: "invalid org name"},
-		{name: "role with double hyphen", org: "test-org", role: "co--der", wantErr: "invalid role name"},
-		{name: "org fails pattern", org: "test@org", role: "coder", wantErr: "invalid org name"},
-		{name: "role fails pattern", org: "test-org", role: "code!", wantErr: "invalid role name"},
-		{name: "empty org", org: "", role: "coder", wantErr: "invalid org name"},
-		{name: "empty role", org: "test-org", role: "", wantErr: "invalid role name"},
+		{name: "valid role", role: "coder"},
+		{name: "fix resolves to coder", role: "fix"},
+		{name: "role with double hyphen", role: "co--der", wantErr: "invalid role name"},
+		{name: "role fails pattern", role: "code!", wantErr: "invalid role name"},
+		{name: "empty role", role: "", wantErr: "invalid role name"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := accessor.AccessPEM(context.Background(), tt.org, tt.role)
+			_, err := accessor.AccessPEM(context.Background(), tt.role)
 			if tt.wantErr == "" {
 				// Valid inputs pass validation and proceed to the GCP
 				// metadata token fetch, which fails in unit tests (no
@@ -44,8 +41,7 @@ func TestGCPSecretPEMAccessor_InputValidation(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected non-nil error (metadata fetch should fail in unit tests)")
 				}
-				if strings.Contains(err.Error(), "invalid org name") ||
-					strings.Contains(err.Error(), "invalid role name") {
+				if strings.Contains(err.Error(), "invalid role name") {
 					t.Fatalf("unexpected validation error: %v", err)
 				}
 				return
@@ -57,5 +53,17 @@ func TestGCPSecretPEMAccessor_InputValidation(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestPemSecretRole(t *testing.T) {
+	if got := mintcore.PemSecretRole("fix"); got != "coder" {
+		t.Fatalf("PemSecretRole(fix) = %q, want coder", got)
+	}
+	if got := mintcore.PemSecretRole("coder"); got != "coder" {
+		t.Fatalf("PemSecretRole(coder) = %q, want coder", got)
+	}
+	if got := mintcore.PemSecretRole("triage"); got != "triage" {
+		t.Fatalf("PemSecretRole(triage) = %q, want triage", got)
 	}
 }

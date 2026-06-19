@@ -136,3 +136,26 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=code
           cache-to: type=gha,mode=max,scope=code
+
+      # Load a single-platform image locally so we can smoke-test PATH ordering.
+      # Multi-arch builds cannot --load, so this reuses the GHA cache from above.
+      - name: Build code image for smoke test
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        with:
+          context: images/code
+          file: images/code/Containerfile
+          platforms: linux/amd64
+          load: true
+          tags: fullsend-code:ci-smoke
+          build-args: |
+            BASE_IMAGE=${{ needs.build-base.outputs.image-ref }}
+          cache-from: type=gha,scope=code
+
+      - name: Validate PATH security
+        run: |
+          docker run --rm --entrypoint '' fullsend-code:ci-smoke sh -c '
+            LAST=$(echo "$PATH" | tr ":" "\n" | tail -1)
+            [ "$LAST" = "/sandbox/go/bin" ] || { echo "FAIL: /sandbox/go/bin not last (got $LAST)"; exit 1; }
+            [ "$(command -v git)" = "/usr/bin/git" ] || { echo "FAIL: git shadowed ($(command -v git))"; exit 1; }
+            [ "$(command -v scan-secrets)" = "/usr/local/bin/scan-secrets" ] || { echo "FAIL: scan-secrets shadowed ($(command -v scan-secrets))"; exit 1; }
+          '

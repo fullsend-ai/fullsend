@@ -1977,7 +1977,7 @@ func TestLiveGCFClient_GetServiceRevisionInfo_ShortRevisionName(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"template": map[string]interface{}{
-						"revision":  "my-svc-00042-abc",
+						"revision":   "my-svc-00042-abc",
 						"containers": []interface{}{map[string]interface{}{}},
 					},
 					"trafficStatuses": []interface{}{

@@ -6,23 +6,25 @@
 # security-sensitive component in the fix pipeline.
 #
 # Security layers (defense-in-depth):
-#   - Protected-path check — reject if agent touched forbidden paths
 #   - Authoritative secret scan — final gate before any push
 #   - Authoritative pre-commit — run repo hooks on changed files
 #   - Branch validation — refuse to push main/master
 #   - Token isolation — PUSH_TOKEN never enters the sandbox
 #
+# Protected-path enforcement lives in post-review.sh: the review agent
+# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
+# agents/). The fix agent is free to propose changes to any path.
+#
 # Steps:
 #   0. Check for agent commits
-#   1. Protected-path check
-#   2. Authoritative secret scan
-#   3. Install lychee
-#   4. Install uv and uvx
-#   5. Authoritative pre-commit check
-#   6. Push branch
-#   7. Process structured output
-#   8. Iteration-cap warning label
-#   9. Summary
+#   1. Authoritative secret scan
+#   2. Install lychee
+#   3. Install uv and uvx
+#   4. Authoritative pre-commit check
+#   5. Push branch
+#   6. Process structured output
+#   7. Iteration-cap warning label
+#   8. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -55,19 +57,6 @@ is_bot_user() {
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PROTECTED_PATHS=(
-  ".github/"
-  ".claude/"
-  "agents/"
-  "harness/"
-  "plugins/"
-  "policies/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
-)
-
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 LYCHEE_VERSION="0.24.2"
@@ -84,7 +73,7 @@ RUN_DIR="$(pwd)"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
-    echo "::error::Extracted repo not found at ${REPO_DIR}"
+    echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
     exit 1
   fi
   cd "${REPO_DIR}"
@@ -124,29 +113,34 @@ if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
   NO_PUSH=true
 fi
 
-# ---------------------------------------------------------------------------
-# 1. Protected-path check (only if pushing)
-# ---------------------------------------------------------------------------
+# Compute the branch's net changes relative to the target branch using
+# merge-base. After a rebase, PRE_AGENT_HEAD..HEAD includes upstream
+# changes (the rebase rewrites history so the old SHA is no longer an
+# ancestor). The merge-base diff isolates only what the branch itself
+# contributes — the same diff that will appear in the PR.
+# Fallback chain mirrors post-code.sh: warn, try origin/TARGET..HEAD,
+# then HEAD~1..HEAD. This keeps the two post-scripts aligned.
+MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
+if [ -n "${MERGE_BASE}" ]; then
+  BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+else
+  echo "::warning::Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
+  BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+fi
+
 if [ "${NO_PUSH}" = "false" ]; then
-  echo "Changed files:"
+  echo "Changed files (agent commits):"
   echo "${CHANGED_FILES}" | sed 's/^/  /'
 
-  while IFS= read -r file; do
-    [ -z "${file}" ] && continue
-    for pattern in "${PROTECTED_PATHS[@]}"; do
-      if [[ "${file}" == ${pattern}* ]]; then
-        echo "::error::BLOCKED — agent modified protected path: ${pattern}"
-        echo "::error::  ${file}"
-        exit 1
-      fi
-    done
-  done <<< "${CHANGED_FILES}"
-
-  echo "Protected-path check passed"
+  if [ "${BRANCH_CHANGED_FILES}" != "${CHANGED_FILES}" ]; then
+    echo "Branch-only changed files (merge-base-aware, used for pre-commit):"
+    echo "${BRANCH_CHANGED_FILES}" | sed 's/^/  /'
+  fi
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Authoritative secret scan (only if pushing)
+# 1. Authoritative secret scan (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   echo "Running authoritative secret scan on agent's commit..."
@@ -167,10 +161,27 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
   echo "Secret scan passed — no leaks in agent's commit(s)"
+
+  # -------------------------------------------------------------------------
+  # 1b. Reject Signed-off-by trailers
+  #
+  # Agents must never produce Signed-off-by trailers. DCO is a human
+  # attestation — the DCO app already waives the check for bot authors.
+  # The bot noreply email makes the trailer ~90 characters, which causes
+  # gitlint body-max-line-length failures in repos with a 72-char limit.
+  # -------------------------------------------------------------------------
+  echo "Checking for Signed-off-by trailers in agent's commit(s)..."
+  if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+    echo "::error::BLOCKED — agent commit contains a Signed-off-by trailer" >&2
+    echo "::error::Agents must not use 'git commit -s' or append Signed-off-by trailers." >&2
+    echo "::error::DCO is a human attestation; the DCO app waives the check for bots." >&2
+    exit 1
+  fi
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Install lychee (for pre-commit markdown link checking)
+# 2. Install lychee (for pre-commit markdown link checking)
 # ---------------------------------------------------------------------------
 if ! command -v lychee >/dev/null 2>&1; then
   echo "Installing lychee v${LYCHEE_VERSION}..."
@@ -178,7 +189,7 @@ if ! command -v lychee >/dev/null 2>&1; then
   case "$(uname -m)" in
     x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
     aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
-    *) echo "::error::Unsupported architecture for lychee: $(uname -m)"; exit 1 ;;
+    *) echo "::error::Unsupported architecture for lychee: $(uname -m)" >&2; exit 1 ;;
   esac
   curl -fsSL \
     "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
@@ -191,7 +202,7 @@ if ! command -v lychee >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Install uv and uvx (for pre-commit Python tooling)
+# 3. Install uv and uvx (for pre-commit Python tooling)
 # ---------------------------------------------------------------------------
 if ! command -v uvx >/dev/null 2>&1; then
   echo "Installing uv v${UV_VERSION} (includes uvx)..."
@@ -208,7 +219,7 @@ if ! command -v uvx >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Authoritative pre-commit check (only if pushing)
+# 4. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -221,11 +232,11 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
-    mapfile -t changed_array <<< "${CHANGED_FILES}"
+    mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
     if pre-commit run --files "${changed_array[@]}"; then
       echo "Pre-commit passed — all hooks clean"
     else
-      echo "::error::BLOCKED — pre-commit hooks failed on agent's changes"
+      echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
       exit 1
     fi
   else
@@ -234,7 +245,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Push branch (only if we have commits)
+# 5. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
@@ -249,7 +260,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Process structured output (fix-result.json)
+# 6. Process structured output (fix-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -283,7 +294,7 @@ else
     SCAN_DIR="$(mktemp -d)"
     cp "${RESULT_FILE}" "${SCAN_DIR}/fix-result.json"
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
-      echo "::error::Secret detected in fix-result.json — refusing to post PR comment"
+      echo "::error::Secret detected in fix-result.json — refusing to post PR comment" >&2
       rm -rf "${SCAN_DIR}"
       exit 1
     fi
@@ -294,14 +305,15 @@ else
   PROCESS_EXIT=0
   python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
-    exit 1  # hard failure (bad input)
+    echo "::error::process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
+    exit 1
   elif [ "${PROCESS_EXIT}" -ne 0 ]; then
     echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Iteration-cap warning label
+# 7. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -320,7 +332,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Summary
+# 8. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"

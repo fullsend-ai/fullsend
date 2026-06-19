@@ -33,7 +33,7 @@ if [[ "$CRED_TYPE" == "external_account" ]]; then
   SANDBOX_CREDS="$RUNNER_TEMP/sandbox-gcp-credentials.json"
   jq '{
     type, audience, subject_token_type, token_url,
-    credential_source: { file: "/tmp/workspace/.gcp-oidc-token", format: .credential_source.format }
+    credential_source: { file: "/sandbox/workspace/.gcp-oidc-token", format: .credential_source.format }
   } + (if .service_account_impersonation_url then
     {service_account_impersonation_url}
   else {} end)' "$CRED_CONFIG" > "$SANDBOX_CREDS"

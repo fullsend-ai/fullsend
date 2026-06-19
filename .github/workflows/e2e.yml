@@ -1,12 +1,15 @@
 name: E2E Tests
 
-permissions:
-  contents: read
-  id-token: write
+# PR-triggered e2e uses pull_request_target so fork PRs receive secrets.
+# Authorization runs in a separate gate job (base checkout only) before the e2e
+# job checks out the PR head — see gate/e2e job comments for why this is split.
+
+permissions: {}
 
 on:
   push:
     branches: [main]
+    # SYNC-WITH: grep regex in "Check for e2e-relevant changes" step in the e2e job
     paths:
       - '**/*.go'
       - 'go.mod'
@@ -18,43 +21,108 @@ on:
       - 'internal/sentencetoken/english.json'
       - 'Makefile'
       - '.github/workflows/e2e.yml'
-  pull_request:
-    paths:
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'e2e/**'
-      - 'internal/scaffold/fullsend-repo/**'
-      - 'internal/security/hooks/**'
-      - 'internal/dispatch/gcf/mintsrc/**'
-      - 'internal/sentencetoken/english.json'
-      - 'Makefile'
-      - '.github/workflows/e2e.yml'
+      - '.github/actions/check-e2e-authorization/**'
+      - 'scripts/check-e2e-authorization.sh'
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: >-
+    ${{ github.event_name == 'pull_request_target'
+        && format('e2e-{0}', github.event.pull_request.number)
+        || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request_target'
+        || github.ref != 'refs/heads/main' }}
 
 jobs:
-  e2e:
+  gate:
+    # Separate job (not steps in e2e) so pull-requests: write stays out of the
+    # job that checks out fork head and runs make e2e-test with secrets.
+    # Never checkout github.event.pull_request.head.sha here.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
+
+      - name: Check PR authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          repository: ${{ github.repository }}
+          pr_updated_at: ${{ github.event.pull_request.updated_at }}
+          event_action: ${{ github.event.action }}
+          pr_author_association: ${{ github.event.pull_request.author_association }}
+
+  e2e:
+    # For pull_request_target, runs only when gate sets authorized=true.
+    # Do not treat a skipped gate as authorized (e.g. labeled events for non-ok-to-test labels).
+    # This job checks out untrusted PR head code — no pull-requests: write here.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check for e2e-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        # SYNC-WITH: push.paths filter above
+        run: |
+          FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+            echo "::warning::Failed to fetch PR files — running e2e tests as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No e2e-relevant files changed — skipping tests"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
+        if: steps.changes.outputs.relevant != 'false'
         with:
           go-version-file: go.mod
 
       - name: Install Playwright system dependencies
+        if: steps.changes.outputs.relevant != 'false'
         run: npx playwright install-deps chromium
 
       - name: Check for secrets
+        if: steps.changes.outputs.relevant != 'false'
         id: secrets-check
         run: |
           if [ -z "$E2E_GITHUB_SESSION_B64" ]; then
-            echo "::warning::E2E secrets are not available (expected for fork PRs). Skipping e2e tests."
+            echo "::warning::E2E secrets are not configured. Skipping e2e tests."
             echo "available=false" >> "$GITHUB_OUTPUT"
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -63,7 +131,7 @@ jobs:
           E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
 
       - name: Decode session
-        if: steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         run: |
           SESSION_FILE="${RUNNER_TEMP}/github-session.json"
           printf '%s' "$E2E_GITHUB_SESSION_B64" | base64 -d > "$SESSION_FILE"
@@ -72,14 +140,14 @@ jobs:
           E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
 
       - name: Authenticate to GCP
-        if: steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Run e2e tests
-        if: steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         run: make e2e-test
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
@@ -89,10 +157,10 @@ jobs:
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
 
       - name: Upload debug screenshots
-        if: always() && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-screenshots
+          name: e2e-screenshots-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/e2e-screenshots/
           if-no-files-found: ignore
           retention-days: 5

@@ -47,8 +47,10 @@ func TestFindInstallation(t *testing.T) {
 		assert.Equal(t, "/repos/myorg/my-repo/installation", r.URL.Path)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 		json.NewEncoder(w).Encode(installationResponse{
-			ID:      42,
-			Account: struct{ Login string `json:"login"` }{Login: "myorg"},
+			ID: 42,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "myorg"},
 		})
 	}))
 	defer mockGH.Close()
@@ -61,8 +63,10 @@ func TestFindInstallation(t *testing.T) {
 func TestFindInstallation_OrgMismatch(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(installationResponse{
-			ID:      42,
-			Account: struct{ Login string `json:"login"` }{Login: "other-org"},
+			ID: 42,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "other-org"},
 		})
 	}))
 	defer mockGH.Close()

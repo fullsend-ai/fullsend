@@ -19,6 +19,12 @@ import (
 
 const reviewMarker = "<!-- fullsend:review-agent -->"
 
+// StaleHeadExitCode is the process exit code used when a review is
+// discarded because the PR HEAD moved after the agent reviewed it.
+// post-review.sh uses this to detect stale-head outcomes and
+// re-dispatch a fresh review for the current HEAD.
+const StaleHeadExitCode = 10
+
 var hexSHARe = regexp.MustCompile(`^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$`)
 var reasonRe = regexp.MustCompile(`^[a-zA-Z0-9_-]*$`)
 var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
@@ -202,8 +208,24 @@ func checkStaleHead(ctx context.Context, client forge.Client, owner, repo string
 	return false, currentSHA, nil
 }
 
+// staleHeadError is returned when a review is discarded because the PR
+// HEAD moved after the agent reviewed it. It carries StaleHeadExitCode
+// so the CLI can exit with a distinct code that post-review.sh detects.
+type staleHeadError struct {
+	reviewedSHA string
+	currentSHA  string
+}
+
+func (e *staleHeadError) Error() string {
+	return fmt.Sprintf("review stale: reviewed %s but HEAD is now %s", e.reviewedSHA, e.currentSHA)
+}
+
+// ExitCode returns StaleHeadExitCode.
+func (e *staleHeadError) ExitCode() int { return StaleHeadExitCode }
+
 // postStaleHeadNotice posts a failure comment when the PR HEAD has moved
-// since the review was generated.
+// since the review was generated. Returns a *staleHeadError so the CLI
+// exits with StaleHeadExitCode, enabling post-review.sh to re-dispatch.
 func postStaleHeadNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, reviewedSHA, currentSHA string, cfg sticky.Config, printer *ui.Printer) error {
 	body := fmt.Sprintf(`## Review
 
@@ -214,7 +236,7 @@ The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. T
 	if _, err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
 		return fmt.Errorf("posting stale-head notice: %w", err)
 	}
-	return fmt.Errorf("review stale: reviewed %s but HEAD is now %s", reviewedSHA, currentSHA)
+	return &staleHeadError{reviewedSHA: reviewedSHA, currentSHA: currentSHA}
 }
 
 // postFailureNotice posts a failure comment as a sticky comment.
@@ -262,8 +284,10 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 //   - REQUEST_CHANGES: includes a link to the sticky comment (API
 //     requires a non-empty body for this event); when inline comments
 //     are attached, the body references them instead
-//   - COMMENT: skipped entirely (sticky comment already covers it,
-//     and the API requires a non-empty body)
+//   - COMMENT: skipped when no inline-eligible findings exist (sticky
+//     comment already covers it); when inline comments are present, a
+//     COMMENT review is submitted with a body linking to the sticky
+//     comment so findings appear on the relevant code lines
 func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer) error {
 	event, ok := reviewActionToEvent(action)
 	if !ok {
@@ -286,11 +310,6 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		minimizeStaleReviews(ctx, client, user, reviews, printer)
 	}
 
-	if event == "COMMENT" {
-		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
-		return nil
-	}
-
 	var diffHunks map[string][][2]int
 	if fileDiffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr); err != nil {
 		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", err))
@@ -307,17 +326,30 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// accept review comments on lines outside the PR diff. The
 	// findings themselves remain in the sticky comment body and
 	// continue to influence the review verdict.
-	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+	//
+	// Findings whose file is in the PR diff but whose line falls
+	// outside any diff hunk are posted as file-level comments so
+	// they remain visible on the PR code.
+	inlineComments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
 
 	if fileFiltered > 0 {
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
 	}
-	if lineFiltered > 0 {
-		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict", lineFiltered))
+	if fileLevelFallback > 0 {
+		printer.StepInfo(fmt.Sprintf("%d finding(s) posted as file-level comment(s) (line outside diff hunk)", fileLevelFallback))
+	}
+
+	// COMMENT verdicts skip the formal review unless there are inline-
+	// eligible findings worth attaching. When inline comments exist,
+	// a COMMENT review is submitted so the findings appear on the
+	// relevant code lines.
+	if event == "COMMENT" && len(inlineComments) == 0 {
+		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
+		return nil
 	}
 
 	var reviewBody string
-	if event == "REQUEST_CHANGES" {
+	if event == "REQUEST_CHANGES" || (event == "COMMENT" && len(inlineComments) > 0) {
 		reviewBody = "See the review comment above for full details."
 		if commentURL != "" {
 			reviewBody = fmt.Sprintf("See the [review comment](%s) for full details.", commentURL)
@@ -338,15 +370,22 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // findingsToReviewComments converts review findings with file and line
 // locations into inline review comments. Findings without a file path
 // or line number are omitted — they remain in the sticky comment body.
+//
 // When diffHunks is non-nil, findings referencing files outside the PR
-// diff or lines outside any diff hunk are omitted to avoid GitHub 422
-// errors. Files with empty hunk lists (binary files, truncated patches)
-// skip line-level filtering — the file is known to be in the diff but
-// hunk coverage is unavailable. Returns the comments and counts of
-// findings dropped for each reason (file not in diff, line not in hunk).
+// diff are omitted to avoid GitHub 422 errors. Findings whose file is
+// in the diff but whose line falls outside any diff hunk are posted as
+// file-level comments (Line=0) so they remain visible on the PR code;
+// the original line number is included in the comment body since file-
+// level comments have no line annotation in the UI. Files with empty hunk lists (binary files, truncated
+// patches) skip line-level filtering — the file is known to be in the
+// diff but hunk coverage is unavailable.
+//
+// Returns the comments, count of findings dropped because their file
+// was not in the diff, and count of findings that fell back to
+// file-level comments.
 func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
 	var comments []forge.ReviewComment
-	var fileFiltered, lineFiltered int
+	var fileFiltered, fileLevelFallback int
 	for _, f := range findings {
 		if f.File == "" || f.Line <= 0 {
 			continue
@@ -358,7 +397,17 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 				continue
 			}
 			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
-				lineFiltered++
+				// Fall back to file-level comments so findings
+				// remain visible on the PR even when the exact
+				// line is outside the changed region. Include the
+				// original line number in the body since file-level
+				// comments have no line annotation in the UI.
+				body := fmt.Sprintf("_Line %d_ · %s", f.Line, formatFindingComment(f))
+				comments = append(comments, forge.ReviewComment{
+					Path: f.File,
+					Body: body,
+				})
+				fileLevelFallback++
 				continue
 			}
 		}
@@ -368,7 +417,7 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 			Body: formatFindingComment(f),
 		})
 	}
-	return comments, fileFiltered, lineFiltered
+	return comments, fileFiltered, fileLevelFallback
 }
 
 // formatFindingComment renders a single review finding as a Markdown

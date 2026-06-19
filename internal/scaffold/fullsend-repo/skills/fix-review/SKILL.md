@@ -136,7 +136,7 @@ comment. The workflow pre-fetches this review body before the sandbox starts
 and places it at a known path. Read it:
 
 ```bash
-REVIEW_BODY_FILE="/tmp/workspace/review-body.txt"
+REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
 if [ ! -s "${REVIEW_BODY_FILE}" ]; then
   echo "::error::No review body found at ${REVIEW_BODY_FILE}"
   # Fallback: the file may not exist in local testing; check env.
@@ -346,6 +346,13 @@ Only include files you deliberately modified.
 git diff --cached --stat
 scan-secrets --staged
 ```
+
+**NEVER use `git commit -s` or add `Signed-off-by` trailers.** DCO is a
+human attestation of personhood and legal authority to contribute — agents
+are not people. The DCO app already waives the check for bot authors, so
+the trailer is unnecessary. Including it causes gitlint
+`body-max-line-length` failures because the bot noreply email makes the
+trailer ~90 characters.
 
 **8c. Commit**
 

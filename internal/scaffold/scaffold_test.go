@@ -57,8 +57,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		".github/workflows/review.yml",
 		".github/workflows/fix.yml",
 		".github/workflows/repo-maintenance.yml",
-		".github/actions/setup-gcp/action.yml",
-		".github/actions/validate-enrollment/action.yml",
 		".github/scripts/setup-agent-env.sh",
 		"agents/triage.md",
 		"agents/code.md",
@@ -351,7 +349,8 @@ func TestTriageWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "event_type")
 	assert.Contains(t, s, "source_repo")
 	assert.Contains(t, s, "event_payload")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -390,7 +389,8 @@ func TestCodeWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: code")
 	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -415,7 +415,8 @@ func TestReviewWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: review")
 	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -439,7 +440,8 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "# fullsend-stage: fix")
 	assert.Contains(t, s, "workflow_dispatch")
 	assert.Contains(t, s, "trigger_source")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -463,7 +465,8 @@ func TestRetroWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: retro")
 	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -477,59 +480,6 @@ func TestRetroWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "contents: read")
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "issues: write")
-}
-
-func TestSetupGcpActionContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/actions/setup-gcp/action.yml")
-	require.NoError(t, err)
-	s := string(content)
-	// Verify inputs (composite actions cannot access vars/secrets directly)
-	assert.Contains(t, s, "inputs:")
-	assert.Contains(t, s, "gcp_wif_provider:")
-	assert.Contains(t, s, "gcp_project_id:")
-	assert.NotContains(t, s, "gcp_wif_sa_email:")
-	assert.NotContains(t, s, "gcp_auth_mode:")
-	assert.NotContains(t, s, "gcp_sa_key_json:")
-	assert.NotContains(t, s, "credentials_json:")
-	// Verify pre-mask step
-	assert.Contains(t, s, "Pre-mask GCP credential file path")
-	assert.Contains(t, s, "GITHUB_WORKSPACE}/gha-creds-")
-	// Verify WIF authentication
-	assert.Contains(t, s, "google-github-actions/auth@v3")
-	assert.Contains(t, s, "workload_identity_provider:")
-	assert.Contains(t, s, "project_id:")
-	assert.NotContains(t, s, "service_account:")
-	// Verify credential masking
-	assert.Contains(t, s, "Mask GCP credential file paths")
-	assert.Contains(t, s, "::add-mask::")
-	assert.Contains(t, s, "GOOGLE_GHA_CREDS_PATH")
-	assert.Contains(t, s, "GOOGLE_APPLICATION_CREDENTIALS")
-	assert.Contains(t, s, "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE")
-	// Verify sandbox preparation
-	assert.Contains(t, s, "prepare-sandbox-credentials.sh")
-}
-
-func TestValidateEnrollmentActionContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/actions/validate-enrollment/action.yml")
-	require.NoError(t, err)
-	s := string(content)
-	// Verify inputs declarations
-	assert.Contains(t, s, "inputs:")
-	assert.Contains(t, s, "source_repo:")
-	assert.Contains(t, s, "required: true")
-	// Verify outputs contract
-	assert.Contains(t, s, "outputs:")
-	assert.Contains(t, s, "name:")
-	assert.Contains(t, s, "steps.extract.outputs.name")
-	// Verify step ID matches output reference
-	assert.Contains(t, s, "id: extract")
-	// Verify SOURCE_REPO env var wiring
-	assert.Contains(t, s, "SOURCE_REPO: ${{ inputs.source_repo }}")
-	// Verify enrollment validation is inlined (not a script reference that
-	// could be overwritten by customized/scripts/).
-	assert.NotContains(t, s, "validate-source-repo.sh")
-	assert.Contains(t, s, "config.yaml not found")
-	assert.Contains(t, s, "repo is not enabled in config.yaml")
 }
 
 func TestValidateSourceRepoContent(t *testing.T) {
@@ -637,18 +587,108 @@ func TestHarnessesLoadAndValidate(t *testing.T) {
 		}
 		t.Run(e.Name(), func(t *testing.T) {
 			harnessPath := filepath.Join(dir, "harness", e.Name())
-			h, err := harness.Load(harnessPath)
-			require.NoError(t, err, "Load should succeed")
 
-			err = h.ResolveRelativeTo(dir)
-			require.NoError(t, err, "ResolveRelativeTo should succeed")
+			t.Run("Load", func(t *testing.T) {
+				h, loadErr := harness.Load(harnessPath)
+				require.NoError(t, loadErr, "Load should succeed")
 
-			err = h.ValidateFilesExist()
-			require.NoError(t, err, "ValidateFilesExist should succeed")
+				// Top-level pre/post scripts serve as defaults even
+				// without forge resolution (local dev without --forge).
+				assert.NotEmpty(t, h.PreScript, "PreScript should be set at top level as default")
+				assert.NotEmpty(t, h.PostScript, "PostScript should be set at top level as default")
+				assert.NotNil(t, h.Forge, "Forge map should be present")
+				assert.Contains(t, h.Forge, "github", "Forge should have a github key")
+
+				resolveErr := h.ResolveRelativeTo(dir)
+				require.NoError(t, resolveErr, "ResolveRelativeTo should succeed")
+
+				existErr := h.ValidateFilesExist()
+				require.NoError(t, existErr, "ValidateFilesExist should succeed")
+			})
+
+			t.Run("LoadWithOpts_github", func(t *testing.T) {
+				h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
+				require.NoError(t, loadErr, "LoadWithOpts should succeed")
+
+				assert.Nil(t, h.Forge, "Forge should be nil after resolution")
+				assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
+				assert.NotEmpty(t, h.PostScript, "PostScript should be set after forge resolution")
+				assert.NotEmpty(t, h.RunnerEnv, "RunnerEnv should be non-empty after merge")
+
+				resolveErr := h.ResolveRelativeTo(dir)
+				require.NoError(t, resolveErr, "ResolveRelativeTo should succeed")
+
+				existErr := h.ValidateFilesExist()
+				require.NoError(t, existErr, "ValidateFilesExist should succeed")
+			})
 		})
 		loaded++
 	}
 	assert.True(t, loaded >= 2, "expected at least 2 harnesses, got %d", loaded)
+}
+
+func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
+	dir := t.TempDir()
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
+		dest := filepath.Join(dir, path)
+		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(dest, content, 0o644)
+	})
+	require.NoError(t, err, "extracting scaffold")
+
+	tests := []struct {
+		file            string
+		topLevelKeys    []string
+		forgeGithubKeys []string
+	}{
+		{
+			file:            "triage.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
+			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN"},
+		},
+		{
+			file:            "code.yaml",
+			topLevelKeys:    []string{"TARGET_BRANCH"},
+			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "ISSUE_NUMBER", "REPO_DIR"},
+		},
+		{
+			file:            "review.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
+			forgeGithubKeys: []string{"REVIEW_TOKEN", "REPO_FULL_NAME", "PR_NUMBER", "GITHUB_PR_URL"},
+		},
+		{
+			file:            "fix.yaml",
+			topLevelKeys:    []string{"TARGET_BRANCH", "TRIGGER_SOURCE", "HUMAN_INSTRUCTION", "FIX_ITERATION", "REVIEW_BODY_FILE", "PRE_AGENT_HEAD", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
+			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "PR_NUMBER", "REPO_DIR"},
+		},
+		{
+			file:            "retro.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
+			forgeGithubKeys: []string{"ORIGINATING_URL", "REPO_FULL_NAME", "GH_TOKEN"},
+		},
+		{
+			file:            "prioritize.yaml",
+			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
+			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN", "ORG", "PROJECT_NUMBER"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			harnessPath := filepath.Join(dir, "harness", tt.file)
+			h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
+			require.NoError(t, loadErr)
+
+			for _, key := range tt.topLevelKeys {
+				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain top-level key %s", key)
+			}
+			for _, key := range tt.forgeGithubKeys {
+				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain forge.github key %s", key)
+			}
+		})
+	}
 }
 
 func TestRepoMaintenanceWorkflowContent(t *testing.T) {
@@ -685,22 +725,6 @@ func TestRepoMaintenanceTokenCoversAllRepos(t *testing.T) {
 		"repo-list step must extract both enabled and disabled repos so the minted token covers them for unenrollment")
 }
 
-func TestMintTokenActionContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/actions/mint-token/action.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "Mint Token")
-	assert.Contains(t, s, "OIDC")
-	assert.Contains(t, s, "audience=fullsend-mint")
-	assert.Contains(t, s, "/v1/token")
-	assert.Contains(t, s, "::add-mask::$OIDC_TOKEN")
-	assert.Contains(t, s, "::add-mask::$TOKEN")
-	assert.Contains(t, s, "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-	assert.Contains(t, s, "ACTIONS_ID_TOKEN_REQUEST_URL")
-	assert.Contains(t, s, "jq -nc --arg role")
-	assert.NotContains(t, s, "create-github-app-token")
-}
-
 func TestReconcileReposContent(t *testing.T) {
 	content, err := FullsendRepoFile("scripts/reconcile-repos.sh")
 	require.NoError(t, err)
@@ -723,7 +747,8 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "event_type")
 	assert.Contains(t, s, "source_repo")
 	assert.Contains(t, s, "event_payload")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.Contains(t, s, "FULLSEND_PROJECT_NUMBER")
 	assert.NotContains(t, s, "secrets: inherit")
@@ -732,7 +757,6 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-prioritize-")
 	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
 	assert.Contains(t, s, "permissions:")
 	assert.Contains(t, s, "actions: write")
 	assert.Contains(t, s, "id-token: write")
@@ -762,7 +786,6 @@ func TestPrioritizeSchedulerWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "id-token: write")
 	assert.NotContains(t, s, "create-github-app-token")
 	assert.NotContains(t, s, "FULLSEND_FULLSEND_CLIENT_ID")
-	assert.NotContains(t, s, "./.github/actions/")
 }
 
 func TestPrioritizeSchedulerSkipsWhenProjectNumberUnset(t *testing.T) {
@@ -874,6 +897,56 @@ func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, checked >= 20, "expected at least 20 YAML files, got %d", checked)
+}
+
+func TestManagedHeader(t *testing.T) {
+	tests := []struct {
+		path   string
+		expect string
+	}{
+		// YAML workflow files get a header
+		{
+			path:   ".github/workflows/triage.yml",
+			expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/triage.yml\n",
+		},
+		// YAML template files get a header
+		{
+			path:   "templates/shim-per-repo.yaml",
+			expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml\n",
+		},
+		// Markdown files are skipped (user-readable docs)
+		{path: "AGENTS.md", expect: ""},
+		// .gitkeep files are skipped
+		{path: "customized/agents/.gitkeep", expect: ""},
+		// JSON files are skipped (no comment syntax)
+		{path: "schemas/triage-result.schema.json", expect: ""},
+		// Shell scripts get a header
+		{path: "scripts/pre-triage.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/pre-triage.sh\n"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got := ManagedHeader(tc.path)
+			assert.Equal(t, tc.expect, got)
+		})
+	}
+}
+
+func TestManagedHeaderPreservesShebang(t *testing.T) {
+	// When content starts with #!, the header should go after the shebang line
+	content := []byte("#!/bin/bash\nset -euo pipefail\n")
+	header := ManagedHeader("scripts/pre-triage.sh")
+	result := PrependManagedHeader("scripts/pre-triage.sh", content)
+
+	assert.True(t, strings.HasPrefix(string(result), "#!/bin/bash\n"))
+	assert.Contains(t, string(result), header)
+	assert.Contains(t, string(result), "set -euo pipefail")
+}
+
+func TestPrependManagedHeaderNoHeader(t *testing.T) {
+	content := []byte("# AGENTS.md\nSome content\n")
+	result := PrependManagedHeader("AGENTS.md", content)
+	assert.Equal(t, content, result, "files without headers should be returned unchanged")
 }
 
 func TestValidateTriageDeleted(t *testing.T) {

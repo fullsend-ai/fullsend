@@ -289,3 +289,27 @@ func TestParseFrontmatter_WhitespacePaddedClosingDelimiter(t *testing.T) {
 		t.Errorf("name = %q, want %q", meta.Name, "padded-close")
 	}
 }
+
+func TestParseFrontmatter_WithPolicy(t *testing.T) {
+	content := []byte(`---
+name: rust-conventions
+dependencies:
+  - ../common/cargo-integration/SKILL.md
+policy: policies/rust-sandbox.yaml#sha256=bbb222
+---
+# Rust Conventions
+`)
+	meta, err := ParseFrontmatter(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("expected non-nil meta")
+	}
+	if meta.Policy != "policies/rust-sandbox.yaml#sha256=bbb222" {
+		t.Errorf("policy = %q, want %q", meta.Policy, "policies/rust-sandbox.yaml#sha256=bbb222")
+	}
+	if len(meta.Dependencies) != 1 {
+		t.Fatalf("dependencies length = %d, want 1", len(meta.Dependencies))
+	}
+}

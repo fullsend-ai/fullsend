@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/layers"
 )
 
 // e2eEnv holds the shared state for an e2e test run.
@@ -140,7 +142,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 		"--mint-url", env.cfg.mintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-all",
-		"--vendor-fullsend-binary",
+		"--vendor",
 	}
 	if env.cfg.gcpProjectID != "" {
 		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
@@ -158,14 +160,15 @@ func TestAdminInstallUninstall(t *testing.T) {
 	parsedCfg, err := config.ParseOrgConfig(cfgData)
 	require.NoError(t, err, "config.yaml should parse")
 	require.Len(t, parsedCfg.Defaults.Roles, len(defaultRoles), "should have %d roles", len(defaultRoles))
+	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, ".defaults/action.yml")
+	require.NoError(t, err, "vendored marker .defaults/action.yml should exist")
+	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
+	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
 	analyzeOutput := runCLI(t, env.binary, env.token, "admin", "analyze", env.org)
 	t.Logf("Analyze output:\n%s", analyzeOutput)
 
-	// Agent runtime files exist (from scaffold).
-	// ADR 35: only non-layered, non-upstream-only files are installed.
-	// Layered dirs (agents/, skills/, schemas/, harness/, plugins/, policies/,
-	// scripts/, env/) and upstream-only dirs (.github/actions/, .github/scripts/) are
-	// provided at runtime via sparse checkout in reusable workflows.
+	// Standalone install vendors reusable workflows, actions, and agent content
+	// at install time so e2e exercises the commit-built CLI, not upstream @v0.
 	for _, path := range []string{
 		".github/workflows/triage.yml",
 		".github/workflows/code.yml",
@@ -175,6 +178,10 @@ func TestAdminInstallUninstall(t *testing.T) {
 		".github/workflows/repo-maintenance.yml",
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
+		".github/workflows/reusable-triage.yml",
+		".defaults/internal/scaffold/fullsend-repo/agents/triage.md",
+		".defaults/.github/actions/mint-token/action.yml",
+		".defaults/action.yml",
 		"customized/agents/.gitkeep",
 		"customized/skills/.gitkeep",
 		"customized/schemas/.gitkeep",
@@ -254,8 +261,32 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
-	err := env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
-	require.NoError(t, err, "merging enrollment PR")
+
+	// Retry the merge up to 3 times to handle 409 "Head branch is out of date"
+	// errors that occur when the base branch advances between PR creation and
+	// the merge attempt (e.g., from a reconcile workflow push).
+	const mergeRetries = 3
+	var mergeErr error
+	for attempt := range mergeRetries {
+		mergeErr = env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
+		if mergeErr == nil {
+			break
+		}
+
+		var apiErr *gh.APIError
+		if !errors.As(mergeErr, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			break // not a 409, fail immediately
+		}
+
+		t.Logf("Merge attempt %d: 409 conflict, updating PR branch and retrying", attempt+1)
+		if updateErr := env.client.UpdatePullRequestBranch(ctx, env.org, testRepo, enrollmentPR.Number); updateErr != nil {
+			t.Logf("Warning: could not update PR branch: %v", updateErr)
+		}
+
+		// Wait for GitHub to process the branch update before retrying.
+		time.Sleep(5 * time.Second)
+	}
+	require.NoError(t, mergeErr, "merging enrollment PR")
 
 	time.Sleep(5 * time.Second)
 	t.Log("Enrollment PR merged")
@@ -650,4 +681,34 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	_, err = env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
 	require.True(t, forge.IsNotFound(err), "shim should be removed from %s after unenrollment", testRepo)
 	t.Log("Verified shim is gone")
+}
+
+// TestVendorFromSubdirectory verifies that --vendor cross-compiles
+// when the CLI is run from a subdirectory inside the module (GOMOD discovery).
+func TestVendorFromSubdirectory(t *testing.T) {
+	env := setupE2ETest(t)
+	ctx := context.Background()
+
+	subdir := filepath.Join(moduleRoot(t), "internal", "cli")
+	installArgs := []string{
+		"admin", "install", env.org,
+		"--skip-app-setup",
+		"--skip-mint-check",
+		"--mint-url", env.cfg.mintURL,
+		"--app-set", e2eAppSet,
+		"--enroll-none",
+		"--vendor",
+	}
+	runCLIFromDir(t, env.binary, env.token, subdir, installArgs...)
+
+	_, err := env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
+	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
+
+	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
+
+	runCLI(t, env.binary, env.token,
+		"admin", "uninstall", env.org,
+		"--yolo",
+		"--app-set", e2eAppSet,
+	)
 }

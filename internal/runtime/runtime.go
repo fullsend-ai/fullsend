@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,7 @@ type RunParams struct {
 	PluginDirs    []string
 	Debug         string
 	Timeout       time.Duration
+	OutputPath    string // if set, tee stream-json stdout to this file
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.
@@ -38,7 +40,7 @@ type Runtime interface {
 	WorkspaceDir() string
 	EnvExports() []string
 	Bootstrap(input BootstrapInput) error
-	Run(params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (exitCode int, err error)
+	Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (exitCode int, err error)
 	ClearIterationArtifacts(sandboxName string) error
 }
 

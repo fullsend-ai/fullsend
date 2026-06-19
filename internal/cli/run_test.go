@@ -1,12 +1,8 @@
 package cli
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +19,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/binary"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -87,10 +89,325 @@ func TestRunCommand_HasOfflineFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+func TestRunCommand_HasMaxDepthFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("max-depth")
+	require.NotNil(t, flag)
+	assert.Equal(t, "10", flag.DefValue)
+}
+
+func TestRunCommand_HasMaxResourcesFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("max-resources")
+	require.NotNil(t, flag)
+	assert.Equal(t, "50", flag.DefValue)
+}
+
+func TestRunCommand_AcceptsZeroMaxDepth(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "0"})
+	err := cmd.Execute()
+	// --max-depth 0 is valid (disables transitive resolution); the error
+	// should come from the run flow, not flag validation.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--max-depth must be >= 0")
+	}
+}
+
+func TestRunCommand_RejectsNegativeMaxDepth(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "-1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--max-depth must be >= 0")
+}
+
+func TestRunCommand_RejectsZeroMaxResources(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "0"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
+}
+
+func TestRunCommand_RejectsNegativeMaxResources(t *testing.T) {
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "-1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
+}
+
+func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
+	// Exercises the early runAgent pipeline: absFullsendDir, policy,
+	// org config loading, LoadWithBase, baseDeps, ResolveRelativeTo.
+	// The function fails later at sandbox.EnsureAvailable (no openshell
+	// in test env), but by then all harness-loading code paths are covered.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_YMLFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_HarnessNotFound(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
+}
+
+func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
+	// Same as above but with a config.yaml present, covering the
+	// orgCfg != nil → orgAllowlist path.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("allowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_MalformedOrgConfig(t *testing.T) {
+	// A malformed config.yaml should produce a warning but not prevent
+	// local-only harnesses from proceeding through the pipeline.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("{{invalid yaml"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
+	// A malformed config.yaml with URL-referenced resources should fail
+	// with a parse error on the re-attempt inside HasURLReferences.
+	agentHash := fetch.ComputeSHA256([]byte("agent content"))
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("{{invalid yaml"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing org config")
+}
+
+func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
+	// Harness with URL agent but no config.yaml → exercises the
+	// orgCfg == nil path inside HasURLReferences.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	agentHash := fetch.ComputeSHA256([]byte("agent content"))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+}
+
+func TestRunAgent_WithURLBase(t *testing.T) {
+	// Harness with a URL base — exercises the baseDeps logging loop.
+	baseContent := []byte("agent: agents/shared.md\n")
+	baseHash := fetch.ComputeSHA256(baseContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/base.yaml": baseContent,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "shared.md"),
+		[]byte("You are a shared agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\n", srv.URL, baseHash)),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte(fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)),
+		0o644,
+	))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
+	// Harness with a URL base but no config.yaml — exercises the
+	// pre-check that loads config strictly when a URL base is detected.
+	baseContent := []byte("agent: agents/shared.md\n")
+	baseHash := fetch.ComputeSHA256(baseContent)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(fmt.Sprintf("base: \"https://example.com/base.yaml#sha256=%s\"\n", baseHash)),
+		0o644,
+	))
+
+	// No config.yaml.
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+}
+
+func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
+	// Harness with a URL base and malformed config.yaml — exercises the
+	// pre-check parse error path.
+	baseContent := []byte("agent: agents/shared.md\n")
+	baseHash := fetch.ComputeSHA256(baseContent)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(fmt.Sprintf("base: \"https://example.com/base.yaml#sha256=%s\"\n", baseHash)),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("{{invalid yaml"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing org config")
+}
+
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 	traceID := "aabbccdd-1122-4334-8556-aabbccddeeff"
-	cmd := buildScanContextCommand("/tmp/workspace/repo", traceID)
-	assert.Contains(t, cmd, ". /tmp/workspace/.env &&")
+	cmd := buildScanContextCommand("/sandbox/workspace/repo", traceID)
+	assert.Contains(t, cmd, ". /sandbox/workspace/.env &&")
 	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
 	assert.Contains(t, cmd, "-exec fullsend scan context")
 }
@@ -203,6 +520,99 @@ func TestHasAgentsMD_OtherFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# claude"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644))
 	assert.False(t, hasAgentsMD(dir))
+}
+
+func TestHasClaudeMD_UpperCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_LowerCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "claude.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_TitleCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Claude.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_Missing(t *testing.T) {
+	dir := t.TempDir()
+	assert.False(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_OtherFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# agents"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644))
+	assert.False(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_DotPrefixed(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".claude.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestClaudeMDPointerContent(t *testing.T) {
+	// Verify the injected CLAUDE.md content references AGENTS.md and
+	// ends with a newline (so the file is well-formed).
+	assert.Contains(t, claudeMDPointerContent, "AGENTS.md")
+	assert.True(t, strings.HasSuffix(claudeMDPointerContent, "\n"), "content should end with newline")
+}
+
+func TestDoInjectClaudeMDPointer_Success(t *testing.T) {
+	var cmds []string
+	mockExec := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "", "", 0, nil
+	}
+
+	printer := ui.New(io.Discard)
+	doInjectClaudeMDPointer("test-sandbox", "/workspace/repo", printer, mockExec)
+
+	require.Len(t, cmds, 2)
+	assert.Contains(t, cmds[0], "CLAUDE.md")
+	assert.Contains(t, cmds[0], "/workspace/repo/CLAUDE.md")
+	assert.Contains(t, cmds[0], "AGENTS.md") // content references AGENTS.md
+	assert.Contains(t, cmds[1], ".git/info/exclude")
+	assert.Contains(t, cmds[1], "CLAUDE.md")
+}
+
+func TestDoInjectClaudeMDPointer_WriteFails(t *testing.T) {
+	var cmds []string
+	mockExec := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "", "write error", 1, fmt.Errorf("write failed")
+	}
+
+	printer := ui.New(io.Discard)
+	doInjectClaudeMDPointer("test-sandbox", "/workspace/repo", printer, mockExec)
+
+	// Should have attempted only the write, not the exclude.
+	require.Len(t, cmds, 1)
+}
+
+func TestDoInjectClaudeMDPointer_ExcludeFails(t *testing.T) {
+	callCount := 0
+	mockExec := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		callCount++
+		if callCount == 2 {
+			return "", "exclude error", 1, fmt.Errorf("exclude failed")
+		}
+		return "", "", 0, nil
+	}
+
+	printer := ui.New(io.Discard)
+	doInjectClaudeMDPointer("test-sandbox", "/workspace/repo", printer, mockExec)
+
+	// Both commands should have been attempted (write succeeds, exclude fails
+	// but function continues).
+	assert.Equal(t, 2, callCount)
 }
 
 func TestEnvToList_Sorted(t *testing.T) {
@@ -452,16 +862,15 @@ func TestSandboxArch_InvalidFallsBack(t *testing.T) {
 }
 
 func TestValidateLinuxBinary_RejectsNonELF(t *testing.T) {
-	// A plain text file should be rejected.
 	tmp := filepath.Join(t.TempDir(), "not-elf")
 	require.NoError(t, os.WriteFile(tmp, []byte("#!/bin/sh\necho hello"), 0o755))
-	err := validateLinuxBinary(tmp)
+	err := binary.ValidateLinuxBinary(tmp, "amd64")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid ELF binary")
 }
 
 func TestValidateLinuxBinary_RejectsMissing(t *testing.T) {
-	err := validateLinuxBinary("/tmp/nonexistent-fullsend-binary-12345")
+	err := binary.ValidateLinuxBinary("/tmp/nonexistent-fullsend-binary-12345", "amd64")
 	require.Error(t, err)
 }
 
@@ -471,115 +880,27 @@ func TestValidateLinuxBinary_AcceptsHostBinary(t *testing.T) {
 	}
 	exe, err := os.Executable()
 	require.NoError(t, err)
-	assert.NoError(t, validateLinuxBinary(exe))
+	assert.NoError(t, binary.ValidateLinuxBinary(exe, runtime.GOARCH))
 }
 
-func TestIsReleasedVersion(t *testing.T) {
-	tests := []struct {
-		version  string
-		expected bool
-	}{
-		{"0.4.0", true},
-		{"v0.4.0", true},
-		{"1.0.0", true},
-		{"dev", false},
-		{"", false},
-		{"0.4.0-3-gabcdef", false},
-		{"0.4.0-vendored", false},
-		{"0.4.0-crosscompiled", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.version, func(t *testing.T) {
-			assert.Equal(t, tt.expected, isReleasedVersion(tt.version), "version=%q", tt.version)
-		})
+func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
+	// Verify the exclusion list contains the known agent working directories.
+	expected := []string{".agentready/", ".fullsend-workspace/"}
+	for _, pattern := range expected {
+		found := false
+		for _, exclude := range agentWorkingDirExcludes {
+			if exclude == pattern {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "agentWorkingDirExcludes should contain %q", pattern)
 	}
 }
 
-func TestExtractFullsendFromTarGz_PathTraversal(t *testing.T) {
-	// Create a tar.gz with a path-traversal entry named "../../../tmp/fullsend".
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-
-	content := []byte("malicious binary content")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "../../../tmp/fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = extractFullsendFromTarGz(&buf, destPath)
-	assert.Error(t, err, "should reject traversal entry and report binary not found")
-	assert.Contains(t, err.Error(), "not found in archive")
-}
-
-func TestExtractFullsendFromTarGz_ValidEntry(t *testing.T) {
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-
-	content := []byte("valid binary content")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend_0.4.0_linux_amd64/fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = extractFullsendFromTarGz(&buf, destPath)
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(destPath)
-	require.NoError(t, err)
-	assert.Equal(t, "valid binary content", string(data))
-}
-
-func TestCrossCompileFullsend_ProducesBinary(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		t.Skip("cross-compilation test only meaningful on non-Linux hosts")
-	}
-	if testing.Short() {
-		t.Skip("skipping cross-compilation in short mode")
-	}
-
-	tmpDir := t.TempDir()
-	binPath := filepath.Join(tmpDir, "fullsend")
-	err := crossCompileFullsend(runtime.GOARCH, binPath)
-	require.NoError(t, err)
-
-	info, err := os.Stat(binPath)
-	require.NoError(t, err)
-	assert.True(t, info.Size() > 0, "binary should be non-empty")
-}
-
-func TestResolveLinuxBinary_Download(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping download test in short mode")
-	}
-
-	tmpDir := t.TempDir()
-	binPath := filepath.Join(tmpDir, "fullsend")
-	err := downloadReleaseBinary("0.4.0", "amd64", binPath)
-	require.NoError(t, err)
-
-	info, err := os.Stat(binPath)
-	require.NoError(t, err)
-	assert.True(t, info.Size() > 0, "downloaded binary should be non-empty")
-
-	// Verify the downloaded artifact is a valid Linux ELF for the requested arch.
-	t.Setenv("FULLSEND_SANDBOX_ARCH", "amd64")
-	assert.NoError(t, validateLinuxBinary(binPath), "downloaded binary should be a valid Linux/amd64 ELF")
+func TestAgentWorkingDirExcludes_NotEmpty(t *testing.T) {
+	assert.NotEmpty(t, agentWorkingDirExcludes,
+		"agentWorkingDirExcludes must not be empty — agents create working dirs that need exclusion")
 }
 
 func TestReadOIDCAuthFile_Success(t *testing.T) {
@@ -771,148 +1092,6 @@ func TestRunHeartbeat_NoNoticeWhenNotCI(t *testing.T) {
 	assert.Empty(t, buf.String(), "should not emit any ::notice:: when not in CI")
 }
 
-func TestDownloadChecksumForAsset_ParsesLine(t *testing.T) {
-	body := "1b4f0e9851971998e732078544c96b36c3d01cedf7caa332359d6f1d83567014  fullsend_1.0.0_linux_arm64.tar.gz\n" +
-		"60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752  fullsend_1.0.0_linux_amd64.tar.gz\n"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
-
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	hash, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_amd64.tar.gz")
-	require.NoError(t, err)
-	assert.Equal(t, "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752", hash)
-}
-
-func TestDownloadChecksumForAsset_AssetNotFound(t *testing.T) {
-	body := "1b4f0e9851971998e732078544c96b36c3d01cedf7caa332359d6f1d83567014  fullsend_1.0.0_linux_amd64.tar.gz\n"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
-
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	_, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_arm64.tar.gz")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in checksums.txt")
-}
-
-func TestDownloadChecksumForAsset_InvalidHex(t *testing.T) {
-	body := "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ  fullsend_1.0.0_linux_amd64.tar.gz\n"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
-
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	_, err := downloadChecksumForAsset("1.0.0", "fullsend_1.0.0_linux_amd64.tar.gz")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid hex hash")
-}
-
-func TestDownloadReleaseBinary_ChecksumMismatch(t *testing.T) {
-	// Build a valid tar.gz containing a "fullsend" binary.
-	var tarBuf bytes.Buffer
-	gw := gzip.NewWriter(&tarBuf)
-	tw := tar.NewWriter(gw)
-	content := []byte("fake binary")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	tarBytes := tarBuf.Bytes()
-
-	// Serve a checksums.txt with a WRONG hash for the asset.
-	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
-	checksumBody := fmt.Sprintf("%s  fullsend_1.0.0_linux_amd64.tar.gz\n", wrongHash)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1.0.0/checksums.txt" {
-			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = downloadReleaseBinary("1.0.0", "amd64", destPath)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checksum mismatch")
-}
-
-func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
-	var tarBuf bytes.Buffer
-	gw := gzip.NewWriter(&tarBuf)
-	tw := tar.NewWriter(gw)
-	content := []byte("good binary")
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend",
-		Size:     int64(len(content)),
-		Mode:     0o755,
-		Typeflag: tar.TypeReg,
-	}))
-	_, err := tw.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, tw.Close())
-	require.NoError(t, gw.Close())
-
-	tarBytes := tarBuf.Bytes()
-	h := sha256.Sum256(tarBytes)
-	correctHash := hex.EncodeToString(h[:])
-
-	checksumBody := fmt.Sprintf("%s  fullsend_2.0.0_linux_amd64.tar.gz\n", correctHash)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2.0.0/checksums.txt" {
-			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v2.0.0/fullsend_2.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	origBaseURL := releaseBaseURL
-	releaseBaseURL = srv.URL
-	defer func() { releaseBaseURL = origBaseURL }()
-
-	destPath := filepath.Join(t.TempDir(), "fullsend")
-	err = downloadReleaseBinary("2.0.0", "amd64", destPath)
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(destPath)
-	require.NoError(t, err)
-	assert.Equal(t, "good binary", string(data))
-}
-
 func TestValidationFailMessage_UsesOutputWhenPresent(t *testing.T) {
 	msg := validationFailMessage([]byte("check failed: lint errors"), fmt.Errorf("exit status 1"))
 	assert.Equal(t, "check failed: lint errors", msg)
@@ -931,4 +1110,756 @@ func TestValidationFailMessage_FallsBackWhenWhitespaceOnly(t *testing.T) {
 func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	msg := validationFailMessage([]byte("  some output\n"), fmt.Errorf("exit status 1"))
 	assert.Equal(t, "some output", msg)
+}
+
+func TestOpenTeeReader_EmptyPath(t *testing.T) {
+	src := strings.NewReader("hello")
+	printer := ui.New(io.Discard)
+
+	r, close := openTeeReader(src, "", printer)
+	defer close()
+
+	// r should be the original reader — no file created
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(got))
+}
+
+func TestOpenTeeReader_WritesToFile(t *testing.T) {
+	content := "line1\nline2\n"
+	src := strings.NewReader(content)
+	printer := ui.New(io.Discard)
+
+	outPath := filepath.Join(t.TempDir(), "out.jsonl")
+	r, close := openTeeReader(src, outPath, printer)
+	defer close()
+
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got))
+
+	close() // flush before reading file
+	fileData, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(fileData))
+}
+
+func TestOpenTeeReader_CreateFailFallsBackToSource(t *testing.T) {
+	content := "data"
+	src := strings.NewReader(content)
+
+	var warnBuf bytes.Buffer
+	printer := ui.New(&warnBuf)
+
+	// Unwritable path — directory that doesn't exist
+	r, close := openTeeReader(src, "/nonexistent-dir/out.jsonl", printer)
+	defer close()
+
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got), "source stream still readable after create failure")
+	assert.Contains(t, warnBuf.String(), "Failed to create claude-output.jsonl")
+}
+
+func TestOpenTeeReader_FileCompleteOnParserError(t *testing.T) {
+	// Simulate: progressParser reads part of stream, then errors; caller drains
+	// remainder via io.Copy(io.Discard, r). File should contain all bytes.
+	content := "part1\npart2\n"
+	src := strings.NewReader(content)
+	printer := ui.New(io.Discard)
+
+	outPath := filepath.Join(t.TempDir(), "out.jsonl")
+	r, closeFile := openTeeReader(src, outPath, printer)
+
+	// Simulate parser reading only first 6 bytes then returning an error
+	firstPart := make([]byte, 6)
+	_, err := io.ReadFull(r, firstPart)
+	require.NoError(t, err)
+
+	// Simulate drain of remaining bytes (as runAgentWithProgress does on parse error)
+	_, err = io.Copy(io.Discard, r)
+	require.NoError(t, err)
+
+	closeFile()
+
+	fileData, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(fileData), "file should contain all bytes including post-error drain")
+}
+
+func TestPRHeadSHAFromEventPath_WithSHA(t *testing.T) {
+	// Simulate a workflow_dispatch event file where the nested event_payload
+	// contains pull_request.head.sha.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"pull_request\":{\"number\":42,\"head\":{\"ref\":\"feature\",\"sha\":\"abc123def\",\"repo\":{\"full_name\":\"org/repo\"}}}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Equal(t, "abc123def", got)
+}
+
+func TestPRHeadSHAFromEventPath_WithoutSHA(t *testing.T) {
+	// Event payload has pull_request but no head.sha — should return empty.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"pull_request\":{\"number\":42,\"head\":{\"ref\":\"feature\",\"repo\":{\"full_name\":\"org/repo\"}}}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_NoPullRequest(t *testing.T) {
+	// Issue-only event — no pull_request in the payload.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"issue\":{\"number\":99}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_EmptyPath(t *testing.T) {
+	got := prHeadSHAFromEventPath("")
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_MissingFile(t *testing.T) {
+	got := prHeadSHAFromEventPath("/nonexistent/path/event.json")
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
+	// Direct event (not workflow_dispatch) — no inputs field.
+	eventJSON := `{"action": "opened", "pull_request": {"number": 1}}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+// --- detectForgePlatform tests ---
+
+func TestDetectForgePlatform_ExplicitFlag(t *testing.T) {
+	p, err := detectForgePlatform("github")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+
+	p, err = detectForgePlatform("gitlab")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_InvalidFlag(t *testing.T) {
+	_, err := detectForgePlatform("bitbucket")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestDetectForgePlatform_GitHubActions(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_GitLabCI(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "true")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_NoEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "", p)
+}
+
+func TestDetectForgePlatform_FlagOverridesEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	p, err := detectForgePlatform("gitlab")
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_GitHubPrecedesGitLab(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "true")
+
+	p, err := detectForgePlatform("")
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestRunCommand_HasForgeFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestLockCommand_HasForgeFlag(t *testing.T) {
+	cmd := newLockCmd()
+	flag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestBootstrapEnv_IncludesFetchServiceVars(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md"}
+	fEnv := fetchServiceEnv{addr: "127.0.0.1:54321", token: "deadbeef"}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil, fEnv)
+
+	// Expected to fail at sandbox.UploadFile — we just verify the fetch
+	// env var code path was reached (coverage) and the error is from upload.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md"}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+	start, warning := shouldStartFetchService(h)
+	assert.True(t, start)
+	assert.Empty(t, warning)
+}
+
+func TestShouldStartFetchService_URLSkills(t *testing.T) {
+	h := &harness.Harness{
+		Agent:  "agents/test.md",
+		Skills: []string{"https://github.com/org/skills/tree/abc/rust#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+	}
+	start, warning := shouldStartFetchService(h)
+	assert.True(t, start)
+	assert.Empty(t, warning)
+}
+
+func TestShouldStartFetchService_AllowedRemoteResourcesOnly(t *testing.T) {
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+	start, warning := shouldStartFetchService(h)
+	assert.True(t, start)
+	assert.Contains(t, warning, "deprecated")
+}
+
+func TestShouldStartFetchService_NoRemoteResources(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md"}
+	start, warning := shouldStartFetchService(h)
+	assert.False(t, start)
+	assert.Empty(t, warning)
+}
+
+func TestSetupFetchService_WithForgeClient(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &harness.Harness{Agent: "agents/test.md"}
+	mockClient := &mockForgeClient{}
+
+	env, shutdown, err := setupFetchService(
+		context.Background(),
+		mockClient,
+		h,
+		func() (string, error) { return "", fmt.Errorf("should not be called") },
+		fetchsvc.ServiceConfig{
+			Harness:       h,
+			WorkspaceRoot: tmpDir,
+			MaxFetches:    10,
+		},
+		func(string) {},
+	)
+	require.NoError(t, err)
+	defer shutdown()
+
+	assert.NotEmpty(t, env.addr)
+	assert.NotEmpty(t, env.token)
+	assert.Len(t, env.token, 64)
+}
+
+func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+
+	tokenResolved := false
+	env, shutdown, err := setupFetchService(
+		context.Background(),
+		nil,
+		h,
+		func() (string, error) { tokenResolved = true; return "ghp_test", nil },
+		fetchsvc.ServiceConfig{
+			Harness:       h,
+			WorkspaceRoot: tmpDir,
+			MaxFetches:    10,
+		},
+		func(string) {},
+	)
+	require.NoError(t, err)
+	defer shutdown()
+
+	assert.True(t, tokenResolved)
+	assert.NotEmpty(t, env.addr)
+}
+
+func TestSetupFetchService_NoForgeClientNoRemoteResources(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &harness.Harness{Agent: "agents/test.md"}
+
+	env, shutdown, err := setupFetchService(
+		context.Background(),
+		nil,
+		h,
+		func() (string, error) { return "", fmt.Errorf("should not be called") },
+		fetchsvc.ServiceConfig{
+			Harness:       h,
+			WorkspaceRoot: tmpDir,
+			MaxFetches:    10,
+		},
+		func(string) {},
+	)
+	require.NoError(t, err)
+	defer shutdown()
+
+	assert.NotEmpty(t, env.addr)
+}
+
+func TestSetupFetchService_TokenResolutionFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+
+	var warned string
+	env, shutdown, err := setupFetchService(
+		context.Background(),
+		nil,
+		h,
+		func() (string, error) { return "", fmt.Errorf("no token available") },
+		fetchsvc.ServiceConfig{
+			Harness:       h,
+			WorkspaceRoot: tmpDir,
+			MaxFetches:    10,
+		},
+		func(msg string) { warned = msg },
+	)
+	require.NoError(t, err)
+	defer shutdown()
+
+	assert.NotEmpty(t, env.addr)
+	assert.Contains(t, warned, "no token available")
+}
+
+func TestSetupFetchService_CustomMaxFetches(t *testing.T) {
+	tmpDir := t.TempDir()
+	maxFetches := 50
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+		MaxRuntimeFetches:      &maxFetches,
+	}
+
+	cfg := fetchsvc.ServiceConfig{
+		Harness:       h,
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    h.EffectiveMaxRuntimeFetches(),
+	}
+	assert.Equal(t, 50, cfg.MaxFetches)
+
+	env, shutdown, err := setupFetchService(
+		context.Background(),
+		nil,
+		h,
+		func() (string, error) { return "ghp_test", nil },
+		cfg,
+		func(string) {},
+	)
+	require.NoError(t, err)
+	defer shutdown()
+
+	assert.NotEmpty(t, env.addr)
+}
+
+func TestEffectiveMaxRuntimeFetches_MatchesFetchsvcDefault(t *testing.T) {
+	h := &harness.Harness{}
+	if h.EffectiveMaxRuntimeFetches() != fetchsvc.DefaultMaxFetches {
+		t.Fatalf("harness default %d != fetchsvc.DefaultMaxFetches %d — update defaultMaxRuntimeFetches in harness.go",
+			h.EffectiveMaxRuntimeFetches(), fetchsvc.DefaultMaxFetches)
+	}
+}
+
+type mockForgeClient struct {
+	forge.Client
+}
+
+func TestSetupStatusNotifier_MintURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	assert.True(t, n.HasClientFactory(), "client factory should be set when mint URL provided")
+}
+
+func TestSetupStatusNotifier_MintURLFromEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	assert.True(t, n.HasClientFactory(), "client factory should be set from FULLSEND_MINT_URL env var")
+}
+
+func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no mint URL available")
+}
+
+func TestSetupStatusNotifier_InvalidRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "noslash",
+		statusNum:  7,
+	}
+
+	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-repo must be in owner/repo format")
+}
+
+func TestRunCommand_HasMintURLFlag(t *testing.T) {
+	cmd := newRunCmd()
+
+	f := cmd.Flags().Lookup("mint-url")
+	require.NotNil(t, f, "run command should have --mint-url flag")
+	assert.Equal(t, "", f.DefValue)
+}
+
+func TestSetupStatusNotifier_FactoryMintSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, []string{"repo"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_test_minted"}, nil
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestSetupStatusNotifier_FactoryMintError(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC unavailable")
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OIDC unavailable")
+	assert.Nil(t, client)
+}
+
+func TestRunCommand_StatusTokenFlagRemoved(t *testing.T) {
+	cmd := newRunCmd()
+	f := cmd.Flags().Lookup("status-token")
+	assert.Nil(t, f, "--status-token flag should no longer exist")
+}
+
+func TestTitleCase(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"hello world", "Hello World"},
+		{"code", "Code"},
+		{"", ""},
+		{"already Title", "Already Title"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, titleCase(tt.in))
+	}
+}
+
+func TestSetupStatusNotifier_ConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	configData := `defaults:
+  status_notifications:
+    comment:
+      start: enabled
+      completion: disabled
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configData), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_RunIDFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_PRHeadSHA(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	eventPayload := `{"inputs":{"event_payload":"{\"pull_request\":{\"head\":{\"sha\":\"abc123def456\"}}}"}}`
+	eventFile := filepath.Join(tmpDir, "event.json")
+	require.NoError(t, os.WriteFile(eventFile, []byte(eventPayload), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_EVENT_PATH", eventFile)
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestEmitDiagnostic_Warning(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "role",
+		Message:  "test warning message",
+	}
+	emitDiagnostic(printer, diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "warning")
+	assert.Contains(t, output, "role")
+	assert.Contains(t, output, "test warning message")
+}
+
+func TestEmitDiagnostic_Error(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityError,
+		Field:    "agent",
+		Message:  "test error message",
+	}
+	emitDiagnostic(printer, diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "error")
+	assert.Contains(t, output, "agent")
+	assert.Contains(t, output, "test error message")
+}
+
+func TestEmitDiagnosticWithContext(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "role",
+		Message:  "role is not set",
+	}
+	emitDiagnosticWithContext(printer, "triage", diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "triage")
+	assert.Contains(t, output, "warning")
+	assert.Contains(t, output, "role")
+}
+
+func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
+	// Verifies that runAgent emits a lint warning when harness has no role,
+	// but the command still proceeds (fails later at sandbox availability).
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness without role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	// Command fails later (no openshell), but lint warning should be emitted
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+
+	// Verify lint warning was printed
+	output := buf.String()
+	assert.Contains(t, output, "role")
+	assert.Contains(t, output, "warning")
+}
+
+func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
+	// Verifies that runAgent does NOT emit a lint warning when harness has role set.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness with role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	// Command fails later (no openshell)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+
+	// Verify no lint warning about role
+	output := buf.String()
+	assert.NotContains(t, output, "role is not set")
 }

@@ -148,8 +148,8 @@ func firstLower(t *token) bool {
 	return unicode.IsLower([]rune(t.Tok)[0])
 }
 
-func isEllipsis(t *token) bool    { return reEllipsis.MatchString(t.Tok) }
-func isInitial(t *token) bool     { return reInitial.MatchString(t.Tok) }
+func isEllipsis(t *token) bool     { return reEllipsis.MatchString(t.Tok) }
+func isInitial(t *token) bool      { return reInitial.MatchString(t.Tok) }
 func hasPeriodFinal(t *token) bool { return strings.HasSuffix(t.Tok, ".") }
 
 // hasSentEndChars — prose's customized version that excludes entities like "Yahoo!".

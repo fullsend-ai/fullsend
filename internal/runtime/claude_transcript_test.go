@@ -222,9 +222,9 @@ func TestEmitTranscriptErrors(t *testing.T) {
 func TestEmitTranscriptErrors_EmptyMessage(t *testing.T) {
 	summaries := []TranscriptError{
 		{
-			Source:   "test.jsonl",
-			IsError:  true,
-			Subtype:  "error_unknown",
+			Source:  "test.jsonl",
+			IsError: true,
+			Subtype: "error_unknown",
 		},
 	}
 

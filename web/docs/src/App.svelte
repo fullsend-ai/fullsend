@@ -321,9 +321,13 @@
     loading = true;
 
     void loadPage(key)
-      .then((p) => {
+      .then(async (p) => {
         if (pageRouteKey === key) {
           page = p;
+          if (!slug && mainEl) {
+            await tick();
+            mainEl.scrollTop = 0;
+          }
         }
       })
       .catch(() => {
@@ -485,7 +489,7 @@
             />
           </svg>
         </button>
-        <span class="docs-brand">Fullsend docs</span>
+        <a class="docs-brand" href="/">Fullsend</a>
       </header>
 
       <div class="docs-main-wrap">

@@ -63,7 +63,9 @@ they are populated at runtime from upstream.
 replaced the earlier checkout at `@v0` with a checkout at a
 caller-controlled ref), copies them into the main dirs (`agents/`, `skills/`,
 etc.), then copies customizations on top so override files replace upstream
-defaults. The workflow inspects `install_mode` to resolve the correct
+defaults. When `--vendor` has committed upstream mirror content under
+`.defaults/`, the sparse checkout is skipped (see
+[ADR 0047](0047-vendored-installs-with-vendor-flag.md)). The workflow inspects `install_mode` to resolve the correct
 customization base:
 
 - `per-org`: reads from `customized/`

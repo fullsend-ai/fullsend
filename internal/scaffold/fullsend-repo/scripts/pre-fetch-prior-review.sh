@@ -30,8 +30,9 @@ if [[ -z "${COMMENT_JSON}" || "${COMMENT_JSON}" == "null" ]]; then
     # automated review missed the initial PR-creation window (e.g. due to
     # a transient webhook delivery failure) and a human had to review first.
     HUMAN_REVIEW_COUNT=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-      --paginate --jq '[.[] | select(.user.type != "Bot")] | length' \
-      2>/dev/null || echo "0")
+      --paginate --jq '.[]' 2>/dev/null \
+      | jq -s '[.[] | select(.user.type != "Bot")] | length' \
+      || echo "0")
     if [[ "${HUMAN_REVIEW_COUNT}" -gt 0 ]]; then
         echo "::warning::First automated review dispatch but PR already" \
           "has ${HUMAN_REVIEW_COUNT} human review(s). The automated review" \

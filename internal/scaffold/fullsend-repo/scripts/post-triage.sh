@@ -29,7 +29,7 @@ for dir in iteration-*/output; do
 done
 
 if [[ -z "${RESULT_FILE}" ]]; then
-  echo "ERROR: agent-result.json not found in any iteration output directory"
+  echo "ERROR: agent-result.json not found in any iteration output directory" >&2
   exit 1
 fi
 
@@ -37,7 +37,7 @@ echo "Reading triage result from: ${RESULT_FILE}"
 
 # Validate JSON is parseable.
 if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
-  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
 
@@ -47,7 +47,7 @@ COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 # Validate and extract repo and issue number from the HTML URL.
 # GITHUB_ISSUE_URL is e.g. https://github.com/org/repo/issues/42
 if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
+  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
   exit 1
 fi
 REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
@@ -59,8 +59,11 @@ echo "Issue: #${ISSUE_NUMBER}"
 
 # add_label uses the labels API to avoid firing issues.edited.
 add_label() {
-  if ! gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" -f "labels[]=$1" --silent; then
-    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER}" >&2
+  local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
+  local err_output
+  if ! err_output=$(gh api "${endpoint}" -f "labels[]=$1" --silent 2>&1); then
+    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER} (POST ${endpoint})" >&2
+    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
     exit 1
   fi
 }
@@ -98,7 +101,7 @@ DEFERRED_LABEL=""
 case "${ACTION}" in
   insufficient)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'insufficient' but no comment provided"
+      echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
     remove_label "blocked"
@@ -107,34 +110,133 @@ case "${ACTION}" in
 
   duplicate)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'duplicate' but no comment provided"
+      echo "ERROR: action is 'duplicate' but no comment provided" >&2
       exit 1
     fi
     DUPLICATE_OF=$(jq -r '.duplicate_of' "${RESULT_FILE}")
     if [[ "${DUPLICATE_OF}" -eq "${ISSUE_NUMBER}" ]]; then
-      echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})"
+      echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
     remove_label "blocked"
     add_label "duplicate"
     ;;
 
-  blocked)
-    # NOTE: There is no automatic mechanism to remove the "blocked" label when
-    # the blocking issue is resolved. Currently, editing the issue re-triggers
-    # triage, and the agent checks whether existing blockers are still open
-    # (Step 2c in triage.md). A scheduled workflow to check blocked issues
-    # periodically would be a more complete solution. (See review notes.)
+  prerequisites)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'blocked' but no comment provided"
+      echo "ERROR: action is 'prerequisites' but no comment provided" >&2
       exit 1
     fi
-    BLOCKED_BY=$(jq -r '.blocked_by // empty' "${RESULT_FILE}")
-    if [[ -z "${BLOCKED_BY}" ]]; then
-      echo "ERROR: action is 'blocked' but no blocked_by URL provided"
-      exit 1
+
+    # Read the allowlist from config.yaml. The config repo is checked out
+    # at $GITHUB_WORKSPACE by the reusable workflow.
+    CONFIG_FILE="${GITHUB_WORKSPACE}/config.yaml"
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+      # Per-repo mode: config is under .fullsend/
+      CONFIG_FILE="${GITHUB_WORKSPACE}/.fullsend/config.yaml"
     fi
-    echo "Blocked by: ${BLOCKED_BY}"
+
+    ALLOWED_ORGS=""
+    ALLOWED_REPOS=""
+    if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+      echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+    fi
+    if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
+      ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+      ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+    fi
+
+    # The source repo is always implicitly allowed.
+    is_target_allowed() {
+      local target_repo="$1"
+      local target_org="${target_repo%%/*}"
+
+      # Source repo is always allowed.
+      if [[ "${target_repo}" == "${REPO}" ]]; then
+        return 0
+      fi
+
+      # Check org allowlist.
+      if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
+        return 0
+      fi
+
+      # Check repo allowlist.
+      if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+        return 0
+      fi
+
+      return 1
+    }
+
+    # Process create entries: create issues, collect URLs.
+    CREATE_COUNT=$(jq '.prerequisites.create // [] | length' "${RESULT_FILE}")
+    CREATED_URLS=""
+    FAILED_CREATES=""
+
+    for i in $(seq 0 $((CREATE_COUNT - 1))); do
+      TARGET_REPO=$(jq -r ".prerequisites.create[${i}].repo" "${RESULT_FILE}")
+      ISSUE_TITLE=$(jq -r ".prerequisites.create[${i}].title" "${RESULT_FILE}")
+      ISSUE_BODY=$(jq -r ".prerequisites.create[${i}].body" "${RESULT_FILE}")
+
+      if ! is_target_allowed "${TARGET_REPO}"; then
+        echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
+
+${ISSUE_BODY}
+
+</details>"
+        continue
+      fi
+
+      echo "Creating prerequisite issue in ${TARGET_REPO}..."
+      CREATED_URL=$(gh issue create --repo "${TARGET_REPO}" --title "${ISSUE_TITLE}" --body "${ISSUE_BODY}" 2>&1) || {
+        echo "::warning::Failed to create issue in '${TARGET_REPO}': ${CREATED_URL}"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
+
+${ISSUE_BODY}
+
+</details>"
+        continue
+      }
+      echo "Created: ${CREATED_URL}"
+      CREATED_URLS="${CREATED_URLS} ${CREATED_URL}"
+    done
+
+    # Collect existing URLs.
+    EXISTING_COUNT=$(jq '.prerequisites.existing // [] | length' "${RESULT_FILE}")
+    EXISTING_URLS=""
+    for i in $(seq 0 $((EXISTING_COUNT - 1))); do
+      URL=$(jq -r ".prerequisites.existing[${i}].url" "${RESULT_FILE}")
+      EXISTING_URLS="${EXISTING_URLS} ${URL}"
+    done
+
+    # Merge all blocker URLs for the comment.
+    ALL_URLS="${EXISTING_URLS} ${CREATED_URLS}"
+    ALL_URLS=$(echo "${ALL_URLS}" | xargs)  # trim whitespace
+
+    if [[ -n "${ALL_URLS}" ]]; then
+      BLOCKER_LIST=""
+      for url in ${ALL_URLS}; do
+        BLOCKER_LIST="${BLOCKER_LIST}
+- ${url}"
+      done
+      COMMENT="${COMMENT}
+
+**Blocked by:**${BLOCKER_LIST}"
+    fi
+
+    if [[ -n "${FAILED_CREATES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+${FAILED_CREATES}"
+    fi
+
     remove_label "ready-to-code"
     remove_label "needs-info"
     add_label "blocked"
@@ -142,7 +244,7 @@ case "${ACTION}" in
 
   sufficient)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'sufficient' but no comment provided"
+      echo "ERROR: action is 'sufficient' but no comment provided" >&2
       exit 1
     fi
 
@@ -150,7 +252,7 @@ case "${ACTION}" in
     # If the agent identified open questions, it should have used "insufficient".
     GAP_COUNT=$(jq '.triage_summary.information_gaps // [] | length' "${RESULT_FILE}")
     if [[ "${GAP_COUNT}" -gt 0 ]]; then
-      echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage"
+      echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage" >&2
       exit 1
     fi
 
@@ -182,7 +284,7 @@ case "${ACTION}" in
 
   question)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'question' but no comment provided"
+      echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
     remove_label "blocked"
@@ -191,7 +293,7 @@ case "${ACTION}" in
     ;;
 
   *)
-    echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet"
+    echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet" >&2
     exit 1
     ;;
 esac
