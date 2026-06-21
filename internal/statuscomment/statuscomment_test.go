@@ -749,7 +749,7 @@ func TestPostCompletion_AnalyzeTimelineError_UpdatesStartInPlace(t *testing.T) {
 	assert.Len(t, comments, 1, "should not create a new comment")
 }
 
-func TestReconcileOrphaned_CancelledReason(t *testing.T) {
+func TestReconcileOrphaned_CancelledReason_DeletesComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
 	setNow(t, time.Date(2026, 6, 3, 14, 47, 0, 0, time.UTC))
@@ -765,13 +765,49 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled)
 	require.NoError(t, err)
 
-	require.Len(t, fc.UpdatedComments, 1)
-	body := fc.UpdatedComments[0].Body
-	assert.Contains(t, body, "Reviewing this PR")
-	assert.Contains(t, body, "⚠️ Cancelled")
-	assert.Contains(t, body, "Started 2:34 PM UTC")
-	assert.Contains(t, body, "Ended 2:47 PM UTC")
-	assert.Contains(t, body, terminalTag)
+	assert.Empty(t, fc.UpdatedComments, "should not update — should delete instead")
+	require.Len(t, fc.DeletedComments, 1, "should delete the cancelled comment")
+	assert.Equal(t, 42, fc.DeletedComments[0])
+	assert.Empty(t, fc.IssueComments["org/repo/7"], "comment should be removed")
+}
+
+func TestReconcileOrphaned_CancelledReason_PreservesTerminalComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	// Comment already reached terminal state (agent finished before cancellation).
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n🤖 Finished Reviewing this PR · ✅ Success · Started 2:34 PM UTC · Completed 2:41 PM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled)
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
+	assert.Empty(t, fc.DeletedComments, "should not delete already-finished comment")
+}
+
+func TestReconcileOrphaned_CancelledReason_DeleteError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Working · Started 1:00 PM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	fc.Errors["DeleteIssueComment"] = fmt.Errorf("forbidden")
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting cancelled comment")
 }
 
 func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {

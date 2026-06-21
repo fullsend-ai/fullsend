@@ -393,7 +393,15 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 		if strings.Contains(c.Body, terminalTag) {
 			return nil
 		}
-		// Still in "Started" state — finalize it.
+		// Still in "Started" state — handle based on reason.
+		if reason == ReasonCancelled {
+			// Cancelled runs are noise — delete the comment entirely
+			// rather than updating it to show a "Cancelled" status.
+			if err := client.DeleteIssueComment(ctx, owner, repo, c.ID); err != nil {
+				return fmt.Errorf("deleting cancelled comment: %w", err)
+			}
+			return nil
+		}
 		desc, startTimeStr := parseStartBody(c.Body)
 		endTime := now().UTC()
 		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
