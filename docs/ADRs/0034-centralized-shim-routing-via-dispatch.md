@@ -135,12 +135,15 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
 
 - Adding a new stage (command or event trigger) requires only a `case` branch
   in `dispatch.yml` and a new agent workflow file. No enrolled repo changes.
-- Enrolled repos gain a single concurrency group
-  (`fullsend-${{ github.event.pull_request.number || github.event.issue.number }}`).
-  This is a behavioral change from the status quo, where stages run
-  independently: a new dispatch now cancels any in-progress run for the
-  same issue/PR. In practice, only one agent should run per issue/PR at a
-  time, and the latest event takes priority.
+- Enrolled repos gain per-role concurrency groups with `cancel-in-progress: true`
+  on each stage (triage, code, review, fix, retro, prioritize). Groups are keyed
+  by `{repo}-{issue|pr}` per stage so roles operate independently — a new review
+  dispatch cancels an in-flight review but does not cancel triage or code on the
+  same issue. Per-org: thin caller workflows (`review.yml`, etc.) and
+  `dispatch.yml` stage jobs; per-repo: `reusable-dispatch.yml` stage jobs and
+  matching `reusable-{stage}.yml` workflows (two-layer defense-in-depth).
+  The per-org shim retains a single queue group (`cancel-in-progress: false`);
+  the per-repo shim has no monolithic group (#2452).
 - Events that don't match any stage still trigger a `workflow_call` to
   `dispatch.yml`, which exits early. Cost: one runner spin-up (~20s). The
   `if:` filter on the dispatch job eliminates bot comments, the

@@ -52,7 +52,7 @@ type jobConcurrency struct {
 
 // reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
 type reusableStageWorkflow struct {
-	Concurrency *jobConcurrency `yaml:"concurrency"`
+	Concurrency *jobConcurrency  `yaml:"concurrency"`
 	On          reusableWorkflow `yaml:"on"`
 }
 

@@ -134,7 +134,10 @@ re-evaluate whether a discovery mechanism is needed.
   ([ADR 0034](0034-centralized-shim-routing-via-dispatch.md)) remains.
 - Adding or removing org-specific agent workflows requires editing
   `dispatch.yml` directly; the single-file marker pattern from ADR 0026 is gone.
-- Per-org and per-repo dispatch shapes converge; enrolled-repo shims may need
-  `needs:` / concurrency review ([#504](https://github.com/fullsend-ai/fullsend/issues/504)).
+- Per-org and per-repo dispatch shapes converge; per-role concurrency is
+  documented in [ADR 0034](0034-centralized-shim-routing-via-dispatch.md)
+  (per-org thin callers + per-repo `reusable-dispatch.yml` / `reusable-*.yml`).
+  Resolves the concurrency review noted in [#504](https://github.com/fullsend-ai/fullsend/issues/504)
+  for per-repo installs ([#981](https://github.com/fullsend-ai/fullsend/issues/981)).
 - Discovery may be revisited after [ADR 0038](0038-universal-harness-access.md)
   agent architecture changes land.
