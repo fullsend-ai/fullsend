@@ -107,6 +107,9 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          # checkout@v7 blocks fork PR head checkouts on pull_request_target by default.
+          # Safe here: gate job authorizes before this job runs; no pull-requests: write.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
       - uses: actions/setup-go@v6
         if: steps.changes.outputs.relevant != 'false'
