@@ -478,7 +478,8 @@ authoritative pre-commit check on the runner before pushing.
 echo "::notice::STEP 9c: Tests and linters"
 ```
 
-You MUST run the test suite that covers the code you changed.
+You MUST run both **tests** and **linters** on the code you changed.
+Both are mandatory — do not skip either one.
 
 **Run targeted tests** — only test the packages/modules you changed:
 
@@ -504,33 +505,51 @@ Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
 first to save time and context budget.
 
-Also run linters. Determine which lint command to use by reading the
-Makefile, CONTRIBUTING.md, or existing CI workflows.
+**Run the repo's lint command** — this is the lint command you identified
+in step 3 from `CLAUDE.md`, `CONTRIBUTING.md`, `Makefile`, or CI config.
+You MUST run it now. Linting is separate from pre-commit (9b) — even if
+pre-commit passed or was skipped, you still run the lint command here.
 
 ```bash
-make lint        # or: golangci-lint run, eslint, ruff, etc.
+# Use the exact lint command discovered in step 3. Examples:
+make lint                                         # Go repos with Makefile
+golangci-lint run ./...                           # Go without Makefile
+uv run ruff check src/ tests/                     # Python with ruff
+npm run lint                                      # JS/TS repos
+eslint src/                                       # JS/TS without npm script
 ```
 
-**If tests fail due to missing tools or infrastructure** (not due to your
-code): try the Makefile's setup targets first (`make deps`, `make setup`,
-etc.). If the tool genuinely cannot be installed in the sandbox, note
-this in your commit message body so reviewers know what was not verified:
+If the repo specifies multiple lint/format commands (e.g.,
+`ruff format && ruff check && pytest`), run all of them — not just the
+test command. Lint violations like `SIM401` or `UP038` require you to
+understand the error and rewrite your code, the same way you handle test
+failures.
+
+**If tests or linters fail due to missing tools or infrastructure** (not
+due to your code): try the Makefile's setup targets first (`make deps`,
+`make setup`, etc.). If the tool genuinely cannot be installed in the
+sandbox, note this in your commit message body so reviewers know what was
+not verified:
 
 > Note: <suite-name> tests could not run (<reason>). <other-suite>
 > tests passed. Manual verification of <suite-name> is required.
 
-**Do NOT silently skip tests and commit as if everything passed.** If you
-cannot run the relevant test suite, you must disclose that.
+**Do NOT silently skip tests or linters and commit as if everything
+passed.** If you cannot run the relevant test suite or lint command, you
+must disclose that.
 
-**If tests fail due to your code:**
+**If tests or linters fail due to your code:**
 
 1. Read the failure output carefully. Understand the root cause.
 2. Fix the issue in your implementation. Do not weaken or skip tests.
-3. Re-run secret scan (9a) and then tests (9c). This consumes one retry
-   iteration. **Do NOT re-run pre-commit (9b) during retries** — you
-   already used your 2 pre-commit runs. The post-script handles
-   pre-commit authoritatively on the runner.
-4. Repeat until tests pass or the retry limit is reached.
+   For lint errors, fix the specific reported violation — do not
+   refactor unrelated code or disable the lint rule.
+3. Re-run secret scan (9a), then tests and linters (9c). This consumes
+   one retry iteration. **Do NOT re-run pre-commit (9b) during
+   retries** — you already used your 2 pre-commit runs. The post-script
+   handles pre-commit authoritatively on the runner.
+4. Repeat until both tests and linters pass or the retry limit is
+   reached.
 
 The retry limit is read from the `MAX_RETRIES` environment variable
 (default: 1 if unset). The harness may also enforce a hard timeout
