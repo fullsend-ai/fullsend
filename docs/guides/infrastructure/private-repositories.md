@@ -191,6 +191,49 @@ Not all private repos are equal. A repo containing open-source code that happens
 - **Enable:** all agents
 - **Recommended:** `AGENTS.md` with basic private-repo rules as defense in depth
 
+## Private Jira instances and public repositories
+
+> **⚠ Data leakage risk:** Connecting a private Jira instance to a pipeline running in a **public** GitHub repository can expose sensitive customer information. Always use a **private** GitHub repository when processing issues from a private Jira instance.
+
+When a refinement pipeline processes Jira issues, the agent's pre-script fetches issue data (titles, descriptions, comments, and custom field values) and writes it to JSONL files. These JSONL files are stored as GitHub Actions **workflow artifacts**. In a public repository, anyone with read access to the repo can download workflow artifacts — meaning private Jira content becomes publicly accessible.
+
+### What gets exposed
+
+The JSONL reasoning traces and telemetry artifacts can contain:
+
+- **Issue titles and descriptions** from private Jira projects
+- **Comments** including internal discussions, customer names, and account details
+- **Custom field data** such as priority, severity, sprint names, and team assignments
+- **Intermediate agent reasoning** that quotes or paraphrases Jira content
+
+See [ADR 0021](../../ADRs/0021-jsonl-reasoning-trace-exposure.md) for the full analysis of JSONL trace exposure vectors.
+
+### Required configuration
+
+Use a **private GitHub repository** for any pipeline that processes a private Jira instance. This is the only reliable mitigation — artifact scrubbing is complex and risks false negatives.
+
+If your org uses per-org install:
+
+- Ensure the enrolled repository is **private** (not public or internal).
+- If the `.fullsend` config repo is public, workflow logs in `.fullsend` may also reference Jira content fetched by pre-scripts — review your `.fullsend` repo's Actions log visibility.
+
+If your org uses per-repo install:
+
+- The target repository must be **private**. Per-repo install is the recommended mode for private Jira integrations because it keeps all artifacts self-contained.
+
+### Cross-references
+
+For background on the Jira integration model and credential management, see the following related issues:
+
+- [#2263](https://github.com/fullsend-ai/fullsend/issues/2263) — Jira trigger model
+- [#2264](https://github.com/fullsend-ai/fullsend/issues/2264) — Jira refinement pipeline
+- [#2265](https://github.com/fullsend-ai/fullsend/issues/2265) — Jira field mapping
+- [#2266](https://github.com/fullsend-ai/fullsend/issues/2266) — Jira sync and status updates
+- [#2267](https://github.com/fullsend-ai/fullsend/issues/2267) — Jira webhook configuration
+- [#2268](https://github.com/fullsend-ai/fullsend/issues/2268) — Jira project scoping
+- [#2269](https://github.com/fullsend-ai/fullsend/issues/2269) — Jira identity and credential management
+- [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) — Retro agent: issue content from private repos may leak into public destinations
+
 ## See also
 
 - [Installation guide](../../reference/installation.md) — Initial fullsend setup

@@ -44,6 +44,10 @@ After installing open a new issue or comment `/fs-triage` in an open issue. Then
 Actions tab to see the Fullsend workflow in action. In some minutes the
 `fullsend-ai-triage` bot should post a comment in the issue.
 
+## Jira integration: private repository requirement
+
+> **⚠ Warning:** If you plan to connect a **private Jira instance** to this repository, the repository **must be private**. Refinement pipelines produce JSONL workflow artifacts that contain Jira issue content (titles, descriptions, comments, custom fields). In a public repository, these artifacts are downloadable by anyone, exposing private Jira data. See [Private repositories — Private Jira instances and public repositories](../infrastructure/private-repositories.md#private-jira-instances-and-public-repositories) for configuration details and the full risk analysis.
+
 ## Next steps
 
 * Read [Organization installation mode](org-mode.md) to learn how to share GCP project with other repositories
