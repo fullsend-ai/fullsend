@@ -121,7 +121,7 @@ The `--inference-region` flag defaults to `global` for the broadest model availa
 
 See [Setting up with pre-provisioned infrastructure](github-setup.md) for the full `github setup` reference, including per-repo mode, `--skip-app-setup`, and day-2 operations.
 
-> **Protected default branch:** If the `.fullsend` config repo or target repo has branch protection rules that prevent direct pushes, the installer automatically falls back to creating a PR with the scaffold files instead of pushing directly. Merge the scaffold PR to complete setup.
+> **Scaffold delivery:** The installer creates a PR with the scaffold files by default. Merge the scaffold PR to complete setup. If you prefer to push scaffold files directly to the default branch (e.g., for automation), pass `--direct` to skip PR creation — the installer will fall back to a PR automatically if branch protection blocks the direct push.
 
 ### Step 4: Merge enrollment PRs
 
@@ -263,6 +263,7 @@ The installer automatically provisions [Workload Identity Federation (WIF)](http
 | `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content (see [Vendored vs layered installs](#vendored-vs-layered-installs)) |
 | `--fullsend-source` | | Fullsend source checkout for content walks and binary cross-compile (requires `--vendor`) |
 | `--fullsend-binary` | | Path to a Linux fullsend binary to upload when `--vendor` is set (skips auto-resolution) |
+| `--direct` | `false` | Push scaffold files directly to the default branch instead of creating a PR (falls back to PR if branch protection blocks the push) |
 
 The `--skip-mint-check` flag bypasses all mint validation, GCP provisioning, and app setup. It requires `--mint-url` to be set and only validates that the URL uses HTTPS. This is useful when the mint infrastructure is managed externally or you want to skip GCP API calls entirely.
 

@@ -21,7 +21,7 @@ func newWorkflowsLayer(t *testing.T, client *forge.FakeClient, vendored bool) (*
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored)
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored).WithDirect(true)
 	return layer, &buf
 }
 
@@ -89,6 +89,33 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 	assert.Equal(t, "chore: activate fullsend workflows", client.CreatedFiles[0].Message)
 }
 
+func TestWorkflowsLayer_Install_DefaultCreatesPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	ensureFakeConfigRepo(client)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", false)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	assert.Empty(t, client.CommittedFiles, "default mode should not commit directly")
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "test-org/.fullsend/fullsend/scaffold-install", client.CreatedBranches[0])
+
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	assert.Equal(t, "fullsend/scaffold-install", client.CommittedFilesToBranch[0].Branch)
+
+	require.Len(t, client.CreatedProposals, 1)
+	assert.Contains(t, client.CreatedProposals[0].Title, "fullsend")
+
+	assert.Empty(t, client.CreatedFiles, "PR mode should not trigger repo-maintenance activation")
+
+	output := buf.String()
+	assert.Contains(t, output, "PR #1")
+	assert.Contains(t, output, "Merge the PR")
+}
+
 func TestWorkflowsLayer_Install_ActivatesRepoMaintenance(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.FileContents["test-org/.fullsend/config.yaml"] = []byte("repos: {}\n")
@@ -153,7 +180,7 @@ func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 			{Path: ".defaults/action.yml", Content: []byte("marker"), Mode: "100644"},
 		}, 1, nil
 	}
-	layer := NewWorkflowsLayer("test-org", client, ui.New(&bytes.Buffer{}), "admin-user", "test-version", true)
+	layer := NewWorkflowsLayer("test-org", client, ui.New(&bytes.Buffer{}), "admin-user", "test-version", true).WithDirect(true)
 	layer = layer.WithVendorCollect(collectFn)
 
 	err := layer.Install(context.Background())
@@ -343,6 +370,23 @@ func TestWorkflowsLayer_Install_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	noChange := false
 	client.CommitFilesChanged = &noChange
 	layer, buf := newWorkflowsLayer(t, client, false)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "up to date")
+}
+
+func TestWorkflowsLayer_Install_DefaultPR_NoChanges(t *testing.T) {
+	client := forge.NewFakeClient()
+	ensureFakeConfigRepo(client)
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", false)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)

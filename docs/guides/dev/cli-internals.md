@@ -180,11 +180,10 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
 │  │  Both modes: write workflow files + customized/ dirs       │ │
-│  │  CommitScaffoldFiles() handles protected-branch fallback:  │ │
-│  │    1. Try CommitFiles (default branch)                     │ │
-│  │    2. If ErrBranchProtected → create feature branch        │ │
-│  │    3. CommitFilesToBranch on feature branch                 │ │
-│  │    4. Open PR back to default branch                        │ │
+│  │  CommitScaffoldFiles() delivery modes:                      │ │
+│  │    Default (PR):  create feature branch → commit → open PR │ │
+│  │    --direct:      try CommitFiles (default branch)         │ │
+│  │      if ErrBranchProtected → fall back to PR mode          │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  create .fullsend config repo    │              │ │
 │  │  │           push reusable workflows         │              │ │
