@@ -4,6 +4,9 @@ doc: docs/agents/prioritize.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/prioritize.yaml
+providers:
+  - vertex-ai
+  - github
 
 role: prioritize
 slug: fullsend-ai-prioritize

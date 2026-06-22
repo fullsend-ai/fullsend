@@ -13,6 +13,11 @@ doc: docs/agents/fix.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/fix.yaml
+providers:
+  - vertex-ai
+  - github
+  - package-registries
+  - gitleaks
 
 role: coder
 slug: fullsend-ai-coder
