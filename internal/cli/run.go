@@ -610,6 +610,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 2b. Ensure providers exist on the gateway (if any declared).
 	if len(h.Providers) > 0 {
+		// Enable provider-backed policy composition on the gateway.
+		provV2Start := time.Now()
+		printer.StepStart("Enabling providers v2")
+		if err := sandbox.EnableProvidersV2(); err != nil {
+			printer.StepFail("Failed to enable providers v2")
+			return fmt.Errorf("enabling providers v2: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
+
+		// Import provider profiles (if profiles/ directory exists).
+		profilesDir := filepath.Join(absFullsendDir, "profiles")
+		profileStart := time.Now()
+		printer.StepStart("Importing provider profiles")
+		if err := sandbox.ImportProfiles(profilesDir); err != nil {
+			printer.StepFail("Failed to import provider profiles")
+			return fmt.Errorf("importing provider profiles: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(profileStart).Seconds()))
+
 		providersDir := filepath.Join(absFullsendDir, "providers")
 		providerDefs, err := harness.LoadProviderDefs(providersDir)
 		if err != nil {
