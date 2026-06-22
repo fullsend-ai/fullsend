@@ -162,7 +162,7 @@ directory so the orchestrator can find it.
 | `eval/fullsend-runner.sh` | Copy `metrics.json` to case output directory |
 | `eval/run-functional.sh` | Add pre-flight validation and post-run threshold checks |
 | `eval/triage/cases/001-bug-url-encoding/annotations.yaml` | Add `max_turns` and `max_cost_usd` |
-| `docs/ADRs/0048-functional-tests-for-agent-pipelines.md` | Add behavioral thresholds section |
+| `docs/ADRs/0052-functional-tests-for-agent-pipelines.md` | Add behavioral thresholds section |
 | `docs/testing/functional-tests.md` | Document threshold requirements |
 
 ## Open questions

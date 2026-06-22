@@ -22,7 +22,7 @@ Accepted
 
 ## Context
 
-[ADR 0048](0048-functional-tests-for-agent-pipelines.md) establishes
+[ADR 0052](0052-functional-tests-for-agent-pipelines.md) establishes
 functional tests as a test category for agent pipelines. That decision is
 silent on which framework orchestrates them — it could be custom scripts,
 Inspect AI, or something else.
