@@ -7,6 +7,7 @@ description: >-
 skills:
   - retro-analysis
   - finding-agent-runs
+  - autonomy-readiness
 tools: >-
   Read, Grep, Glob, Bash(gh,jq)
 disallowedTools: >-
