@@ -89,6 +89,9 @@ Return a JSON object:
   `security_critical_files` or `standard_files`
 - Err on the side of inclusion — when uncertain, mark as
   security-critical
+- Return raw JSON only — do not wrap the output in markdown code
+  fences (`` ```json ... ``` ``). The orchestrator parses your
+  response directly as JSON
 - Do not read file contents beyond what is provided in the diff
   summary — this is a fast classification pass
 - Do not write any files

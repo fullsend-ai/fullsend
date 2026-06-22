@@ -322,8 +322,14 @@ See #2096 for the motivating incident.
 
    **Part 2 — Context:** the PR's changed file list with per-file
    diff stats (additions, deletions), plus a brief diff summary for
-   each file (first 20 lines of each file's diff, enough for import
-   statements and function signatures). Format as:
+   each file. For files that match a path pattern from the
+   classification criteria, include the first ~20 lines of the diff
+   (path patterns are sufficient for classification; the diff summary
+   confirms rather than drives the decision). For files that do NOT
+   match any path pattern, include the first ~50 lines of the diff
+   to give the classifier enough content signal to detect
+   security-relevant changes (auth logic, token handling, permission
+   checks) that only appear in the diff body. Format as:
 
    ```markdown
    ## Files to classify
@@ -353,11 +359,18 @@ See #2096 for the motivating incident.
    `file` and `reason`), `standard_files` (array of paths), and
    `summary` (string).
 
-5. Store the classification result for use in step 3d. If the
-   security-triage sub-agent fails (timeout, parse error, empty
-   response), fall back to treating **all files as
-   security-critical** — this preserves the existing uniform-attention
-   behavior as a safe default.
+5. Validate and store the classification result for use in step 3d:
+
+   - If the security-triage sub-agent fails (timeout, parse error,
+     empty response), fall back to treating **all files as
+     security-critical** — this preserves the existing
+     uniform-attention behavior as a safe default.
+   - If `security_critical_files` is empty but any changed files
+     match the path patterns from the classification criteria (e.g.,
+     `**/auth/**`, `**/mint/**`, `**/token/**`), treat this as a
+     triage failure and apply the same fallback. An empty
+     classification when path-pattern matches exist indicates the
+     classifier missed obvious signals.
 
 **Edge cases:**
 
@@ -390,7 +403,7 @@ For each selected sub-agent, assemble a context package containing:
   `intent-coherence`)
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
 
-**Security-prioritized context (large PRs with triage results):**
+#### Security-prioritized context (large PRs with triage results)
 
 When step 3c-1 produced a security triage classification (i.e., the PR
 has ≥ 50 files and the triage pass succeeded), modify the context
