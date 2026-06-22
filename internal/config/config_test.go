@@ -60,7 +60,7 @@ func TestNewOrgConfig(t *testing.T) {
 	assert.False(t, cfg.Repos["repo-b"].Enabled)
 	assert.True(t, cfg.Repos["repo-c"].Enabled)
 
-	assert.Empty(t, cfg.Agents)
+	assert.Nil(t, cfg.Agents)
 
 	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}, cfg.AllowedRemoteResources)
 }

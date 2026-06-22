@@ -56,13 +56,19 @@ func TestConfigRepoLayer_Install_CreatesRepo(t *testing.T) {
 	// Verify config.yaml was written
 	require.NotEmpty(t, client.CreatedFiles)
 	var foundConfig bool
+	var configContent string
 	for _, f := range client.CreatedFiles {
 		if f.Path == "config.yaml" && f.Repo == ".fullsend" {
 			foundConfig = true
+			configContent = string(f.Content)
 			break
 		}
 	}
 	assert.True(t, foundConfig, "config.yaml should have been written")
+
+	// ADR-0045 Phase 4: NewOrgConfig no longer sets the agents field,
+	// so the written config.yaml must not contain an agents: key.
+	assert.NotContains(t, configContent, "agents:", "config.yaml should not contain agents: block after ADR-0045 Phase 4")
 }
 
 func TestConfigRepoLayer_Install_AlreadyExists(t *testing.T) {
