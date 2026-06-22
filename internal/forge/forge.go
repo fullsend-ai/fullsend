@@ -274,6 +274,9 @@ type Client interface {
 
 	// Org-level variables (for dispatch function URL)
 	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
+	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
+	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
 	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
 	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
 	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)

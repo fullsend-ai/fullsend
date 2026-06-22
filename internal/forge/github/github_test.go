@@ -1217,6 +1217,52 @@ func TestCreateOrUpdateOrgVariable_NilRepoIDs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreateOrUpdateOrgVariableAll_Create(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			assert.Equal(t, "PATCH", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		case 2:
+			assert.Equal(t, "POST", r.Method)
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			assert.Equal(t, "FULLSEND_FOREIGN_E2E_REPOS", body["name"])
+			assert.Equal(t, "fullsend-ai/fullsend", body["value"])
+			assert.Equal(t, "all", body["visibility"])
+			_, hasRepoIDs := body["selected_repository_ids"]
+			assert.False(t, hasRepoIDs)
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateOrgVariableAll(context.Background(), "myorg", "FULLSEND_FOREIGN_E2E_REPOS", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+}
+
+func TestCreateOrUpdateOrgVariableAll_Update(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "fullsend-ai/fullsend", body["value"])
+		assert.Equal(t, "all", body["visibility"])
+		_, hasRepoIDs := body["selected_repository_ids"]
+		assert.False(t, hasRepoIDs)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateOrgVariableAll(context.Background(), "myorg", "FULLSEND_FOREIGN_E2E_REPOS", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+}
+
 func TestOrgVariableExists(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

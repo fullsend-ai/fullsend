@@ -2448,6 +2448,37 @@ func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, v
 	return nil
 }
 
+// CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
+// visible to all repositories in the org (visibility all).
+func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
+	patchPayload := map[string]any{
+		"value":      value,
+		"visibility": "all",
+	}
+
+	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), patchPayload)
+	if err == nil {
+		resp.Body.Close()
+		return nil
+	}
+
+	if !isNotFound(err) {
+		return fmt.Errorf("update org variable %s: %w", name, err)
+	}
+
+	createPayload := map[string]any{
+		"name":       name,
+		"value":      value,
+		"visibility": "all",
+	}
+	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), createPayload)
+	if err != nil {
+		return fmt.Errorf("create org variable %s: %w", name, err)
+	}
+	resp2.Body.Close()
+	return nil
+}
+
 // OrgVariableExists checks if an org-level variable exists.
 func (c *LiveClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
 	_, exists, err := c.GetOrgVariable(ctx, org, name)

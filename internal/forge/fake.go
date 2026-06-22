@@ -1237,6 +1237,10 @@ func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, val
 	return nil
 }
 
+func (f *FakeClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
+	return f.CreateOrUpdateOrgVariable(ctx, org, name, value, nil)
+}
+
 func (f *FakeClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
 	f.mu.Lock()
 	e := f.err("OrgVariableExists")

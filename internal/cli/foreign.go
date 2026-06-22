@@ -67,19 +67,26 @@ func newForeignAllowCmd() *cobra.Command {
 				return err
 			}
 
-			if containsForeignCaller(allowlist, caller) {
-				printer.StepDone(fmt.Sprintf("%s already lists %q", varName, caller))
-				return nil
+			alreadyListed := containsForeignCaller(allowlist, caller)
+			if !alreadyListed {
+				allowlist = append(allowlist, caller)
 			}
-			allowlist = append(allowlist, caller)
 			value := strings.Join(allowlist, ", ")
 
-			printer.StepStart(fmt.Sprintf("Updating %s on %s", varName, org))
-			if err := client.CreateOrUpdateOrgVariable(ctx, org, varName, value, nil); err != nil {
+			if alreadyListed {
+				printer.StepStart(fmt.Sprintf("Ensuring %s is org-wide on %s", varName, org))
+			} else {
+				printer.StepStart(fmt.Sprintf("Updating %s on %s", varName, org))
+			}
+			if err := client.CreateOrUpdateOrgVariableAll(ctx, org, varName, value); err != nil {
 				printer.StepFail(fmt.Sprintf("Failed to update %s", varName))
 				return err
 			}
-			printer.StepDone(fmt.Sprintf("Added %q to %s", caller, varName))
+			if alreadyListed {
+				printer.StepDone(fmt.Sprintf("%s already lists %q (org-wide visibility ensured)", varName, caller))
+			} else {
+				printer.StepDone(fmt.Sprintf("Added %q to %s", caller, varName))
+			}
 			return nil
 		},
 	}
@@ -233,7 +240,7 @@ func newForeignRevokeCmd() *cobra.Command {
 				return nil
 			}
 			value := strings.Join(updated, ", ")
-			if err := client.CreateOrUpdateOrgVariable(ctx, org, varName, value, nil); err != nil {
+			if err := client.CreateOrUpdateOrgVariableAll(ctx, org, varName, value); err != nil {
 				printer.StepFail(fmt.Sprintf("Failed to update %s", varName))
 				return err
 			}
