@@ -63,10 +63,8 @@ jobs:
 
       - name: Configure OpenShell gateway
         run: |
-          mkdir -p $HOME/.config/openshell/
-          cat > $HOME/.config/openshell/gateway.env << EOF
-          OPENSHELL_BIND_ADDRESS=0.0.0.0
-          EOF
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
 
       - name: Install OpenShell CLI
         run: .github/scripts/install-openshell.sh
