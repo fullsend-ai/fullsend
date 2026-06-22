@@ -557,7 +557,7 @@ independently — if the harness kills the session, your retry count is
 irrelevant. Prefer committing with a disclosed issue over burning time
 on additional retry iterations.
 
-If the retry limit is reached and tests still fail, do not commit. Stop.
+If the retry limit is reached and tests or linters still fail, do not commit. Stop.
 
 **9d. Self-review**
 
