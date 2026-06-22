@@ -3,7 +3,7 @@ agent: agents/prioritize.md
 doc: docs/agents/prioritize.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/prioritize.yaml
+policy: policies/base.yaml
 providers:
   - vertex-ai
   - github
