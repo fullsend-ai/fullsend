@@ -1826,7 +1826,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1851,7 +1851,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1899,7 +1899,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -2737,4 +2737,23 @@ func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "up to date")
+}
+
+func TestToAgentCredentials(t *testing.T) {
+	ac := &appsetup.AppCredentials{
+		AppID:    42,
+		Slug:     "test-slug",
+		Name:     "test-name",
+		PEM:      "pem-data",
+		ClientID: "client-id",
+	}
+
+	cred := toAgentCredentials("triage", ac)
+
+	assert.Equal(t, "triage", cred.Role)
+	assert.Equal(t, "test-name", cred.Name)
+	assert.Equal(t, "test-slug", cred.Slug)
+	assert.Equal(t, "pem-data", cred.PEM)
+	assert.Equal(t, "client-id", cred.ClientID)
+	assert.Equal(t, 42, cred.AppID)
 }

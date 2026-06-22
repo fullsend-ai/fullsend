@@ -1204,7 +1204,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	var agentCreds []layers.AgentCredentials
 	for _, role := range roles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1385,16 +1385,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		if err != nil {
 			return nil, fmt.Errorf("setting up app for role %s: %w", role, err)
 		}
-		creds = append(creds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{
-				Role: role,
-				Name: appCreds.Name,
-				Slug: appCreds.Slug,
-			},
-			PEM:      appCreds.PEM,
-			ClientID: appCreds.ClientID,
-			AppID:    appCreds.AppID,
-		})
+		creds = append(creds, toAgentCredentials(role, appCreds))
 	}
 
 	if err := setup.PermissionErrors(); err != nil {
@@ -1783,7 +1774,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	var agentCreds []layers.AgentCredentials
 	for _, role := range defaultRoles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1996,6 +1987,17 @@ func loadExistingEnabledRepos(ctx context.Context, client forge.Client, org stri
 		return nil
 	}
 	return cfg.EnabledRepos()
+}
+
+func toAgentCredentials(role string, ac *appsetup.AppCredentials) layers.AgentCredentials {
+	return layers.AgentCredentials{
+		Role:     role,
+		Name:     ac.Name,
+		Slug:     ac.Slug,
+		PEM:      ac.PEM,
+		ClientID: ac.ClientID,
+		AppID:    ac.AppID,
+	}
 }
 
 // filterSlugsByAppSet returns a new map containing only entries whose slug

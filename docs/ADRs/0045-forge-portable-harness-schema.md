@@ -31,7 +31,7 @@ harness. They reside in `config.yaml`'s `agents:` block
 ([ADR 0011](0011-admin-install-org-config-yaml-v1.md)):
 
 ```yaml
-# config.yaml (current)
+# config.yaml (before ADR-0045)
 agents:
   - role: triage
     name: fullsend-ai-triage
@@ -684,14 +684,12 @@ forge-specific artifact. The harness and agent definition are portable.
   duplication. Script-level factoring (shared functions sourced by
   forge-specific scripts) is a convention, not a schema concern.
 
-- **config.yaml schema versioning.** Removing `agents:` (Phase 4) changes
-  the v1 schema contract established by ADR 0011. The current
-  `OrgConfig.Agents` field uses `yaml:"agents"` without `omitempty`,
-  meaning it is part of the v1 contract. Adding `omitempty` and treating
-  absence as "discover from harness files" is likely v1-compatible for
-  Phase 3 (deprecation), but full removal in Phase 4 may warrant a v2
-  schema. Consumers that assume `Agents` is always populated need
-  auditing.
+- **config.yaml schema versioning.** Removing `agents:` (Phase 4) changed
+  the v1 schema contract established by ADR 0011. The `OrgConfig.Agents`
+  field was removed in Phase 4; `yaml.Unmarshal` silently ignores the
+  key in existing config files, so v1 compatibility is preserved.
+  Phase 3 (PR 6) added `omitempty` as a deprecation step; Phase 4
+  completed the removal. No v2 schema bump was needed.
   *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field. The
   Phase 4 plan (`docs/plans/adr-0045-forge-portable-harness-phase4.md`)
   recommends staying on v1 — removal is backward-compatible since

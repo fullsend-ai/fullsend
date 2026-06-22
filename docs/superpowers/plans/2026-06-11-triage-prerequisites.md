@@ -55,7 +55,6 @@ func TestOrgConfig_CreateIssues_OmittedWhenEmpty(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
 		Repos:  map[string]RepoConfig{},
 	}
 	data, err := cfg.Marshal()
@@ -71,7 +70,6 @@ func TestOrgConfig_CreateIssues_Marshal(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
 		Repos:  map[string]RepoConfig{},
 		CreateIssues: &CreateIssuesConfig{
 			AllowTargets: AllowTargets{

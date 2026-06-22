@@ -426,7 +426,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	var agentCreds []layers.AgentCredentials
 	for _, role := range roles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 

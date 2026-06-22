@@ -52,7 +52,7 @@ If a future change requires breaking the v1 contract (e.g., removing `dispatch.p
 
 - Does NOT add new harness schema features (forge blocks, base composition improvements)
 - Does NOT change `PerRepoConfig` -- per-repo mode does not use the `agents:` block
-- Does NOT remove `AgentEntry` from `config.go` -- it is still used by `AgentCredentials` in `internal/layers/secrets.go` for the install flow's credential passing. `AgentEntry` represents credentials obtained during app setup, not config.yaml schema.
+- ~~Does NOT remove `AgentEntry` from `config.go`~~ — **Done:** `AgentEntry` was removed and its fields (Role, Name, Slug) inlined into `layers.AgentCredentials`.
 - Does NOT change harness loading pipelines (`Load`, `LoadWithOpts`, `LoadWithBase`)
 - Does NOT remove `DefaultAgentRoles()` or `ValidRoles()` -- these are used for role validation and app setup, independent of the `agents:` block
 - Does NOT remove the `forge:` section or `base:` field infrastructure (those are permanent schema additions)
@@ -72,9 +72,9 @@ Every consumer of the removed code, and the action taken:
 
 | Consumer | Location | Current behavior | Phase 4 action |
 |---|---|---|---|
-| `OrgConfig.Agents` field | `internal/config/config.go:86` | `yaml:"agents,omitempty"` | Remove field |
-| `AgentSlugs()` method | `internal/config/config.go:259` | Returns `map[role]slug` from `Agents` | Remove method |
-| `HasAgentsBlock()` method | `internal/config/config.go:270` | Returns `len(c.Agents) > 0` | Remove method |
+| `OrgConfig.Agents` field | `internal/config/config.go:86` | `yaml:"agents,omitempty"` | ✅ Remove field (#2517) |
+| `AgentSlugs()` method | `internal/config/config.go:259` | Returns `map[role]slug` from `Agents` | ✅ Remove method (#2517) |
+| `HasAgentsBlock()` method | `internal/config/config.go:270` | Returns `len(c.Agents) > 0` | ✅ Remove method (#2517) |
 | `NewOrgConfig` agents param | `internal/config/config.go:117` | Accepts `[]AgentEntry`, sets `cfg.Agents` | ✅ Remove parameter, stop setting field (#2447) |
 | `NewOrgConfig` caller: `runDryRun` | `internal/cli/admin.go:1196` | Passes `nil` for agents | ✅ Remove agents arg (#2447) |
 | `NewOrgConfig` caller: `runInstall` | `internal/cli/admin.go:1513` | Passes agents built from `agentCreds` | ✅ Remove agents arg (#2447) |
@@ -290,7 +290,7 @@ func discoverAgentSlugs(ctx context.Context, client forge.Client, owner, configR
 - Remove `Agents []AgentEntry` from `OrgConfig` struct (line 86)
 - Remove `AgentSlugs()` method (lines 258-265)
 - Remove `HasAgentsBlock()` method (lines 267-272)
-- Keep `AgentEntry` type (lines 20-24) -- it is still used by `layers.AgentCredentials` for passing app credentials through the install flow. `AgentEntry` describes credentials obtained during app setup, not config.yaml schema.
+- Remove `AgentEntry` type (lines 20-24) -- its fields (Role, Name, Slug) are now inlined directly into `layers.AgentCredentials`.
 
 **Modify `internal/config/config_test.go`:**
 

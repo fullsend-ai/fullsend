@@ -16,13 +16,6 @@ const (
 	DefaultUpstreamRef = "v0"
 )
 
-// AgentEntry represents a configured agent with its role and app identity.
-type AgentEntry struct {
-	Role string `yaml:"role"`
-	Name string `yaml:"name"`
-	Slug string `yaml:"slug"`
-}
-
 // DispatchConfig configures how agent work is dispatched.
 type DispatchConfig struct {
 	Platform string `yaml:"platform"`
@@ -83,7 +76,6 @@ type OrgConfig struct {
 	Dispatch               DispatchConfig        `yaml:"dispatch"`
 	Inference              InferenceConfig       `yaml:"inference,omitempty"`
 	Defaults               RepoDefaults          `yaml:"defaults"`
-	Agents                 []AgentEntry          `yaml:"agents,omitempty"`
 	Repos                  map[string]RepoConfig `yaml:"repos"`
 	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
@@ -252,22 +244,6 @@ func (c *OrgConfig) DisabledRepos() []string {
 	}
 	sort.Strings(disabled)
 	return disabled
-}
-
-// AgentSlugs returns a map of role to slug from the configured agents.
-func (c *OrgConfig) AgentSlugs() map[string]string {
-	slugs := make(map[string]string, len(c.Agents))
-	for _, a := range c.Agents {
-		slugs[a.Role] = a.Slug
-	}
-	return slugs
-}
-
-// HasAgentsBlock reports whether the config contains a non-empty agents list.
-// CLI commands use this to decide whether to emit a deprecation notice for the
-// legacy agents block (see ADR-0045 Phase 3).
-func (c *OrgConfig) HasAgentsBlock() bool {
-	return len(c.Agents) > 0
 }
 
 // DefaultRoles returns the default roles configured for the organization.
