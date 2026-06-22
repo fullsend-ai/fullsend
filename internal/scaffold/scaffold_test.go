@@ -64,9 +64,8 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"env/code-agent.env",
 		"harness/triage.yaml",
 		"harness/code.yaml",
-		"policies/triage.yaml",
+		"policies/base.yaml",
 		"plugins/gopls-lsp/plugin.json",
-		"policies/code.yaml",
 		"schemas/triage-result.schema.json",
 		"scripts/post-triage.sh",
 		"scripts/pre-triage.sh",
@@ -84,7 +83,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"templates/shim-workflow-call.yaml",
 		"agents/prioritize.md",
 		"harness/prioritize.yaml",
-		"policies/prioritize.yaml",
 		"schemas/prioritize-result.schema.json",
 		"scripts/setup-prioritize.sh",
 		"scripts/pre-prioritize.sh",
@@ -291,6 +289,8 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 		"harness/",
 		"plugins/",
 		"policies/",
+		"profiles/",
+		"providers/",
 		"scripts/",
 		"env/",
 		".github/actions/",
@@ -309,14 +309,16 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 
 func TestCustomizedDirsInstalled(t *testing.T) {
 	expected := map[string]bool{
-		"customized/agents/.gitkeep":   false,
-		"customized/skills/.gitkeep":   false,
-		"customized/schemas/.gitkeep":  false,
-		"customized/harness/.gitkeep":  false,
-		"customized/plugins/.gitkeep":  false,
-		"customized/policies/.gitkeep": false,
-		"customized/scripts/.gitkeep":  false,
-		"customized/env/.gitkeep":      false,
+		"customized/agents/.gitkeep":    false,
+		"customized/skills/.gitkeep":    false,
+		"customized/schemas/.gitkeep":   false,
+		"customized/harness/.gitkeep":   false,
+		"customized/plugins/.gitkeep":   false,
+		"customized/policies/.gitkeep":  false,
+		"customized/profiles/.gitkeep":  false,
+		"customized/providers/.gitkeep": false,
+		"customized/scripts/.gitkeep":   false,
+		"customized/env/.gitkeep":       false,
 	}
 	err := WalkFullsendRepo(func(path string, _ []byte) error {
 		if _, ok := expected[path]; ok {

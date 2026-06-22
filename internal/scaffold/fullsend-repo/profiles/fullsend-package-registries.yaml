@@ -1,3 +1,4 @@
+---
 id: fullsend-package-registries
 display_name: Fullsend Package Registries
 description: npm, PyPI, and Go module registries for dependency installation
