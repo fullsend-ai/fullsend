@@ -13,7 +13,7 @@ export type OrgConfigYaml = {
   repos?: Record<string, { enabled?: boolean; roles?: string[] }>;
 };
 
-const VALID_ROLES = new Set(["fullsend", "triage", "coder", "review"]);
+const VALID_ROLES = new Set(["fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"]);
 
 /** 512 KiB — more than sufficient for any realistic org `config.yaml`. */
 export const MAX_ORG_CONFIG_YAML_UTF8_BYTES = 512 * 1024;
