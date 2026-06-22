@@ -547,6 +547,9 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 		if result.Sanitized != "" {
 			r.Body = result.Sanitized
 			printer.StepWarn(fmt.Sprintf("Sanitized review body (%d finding(s))", len(result.Findings)))
+			for _, f := range result.Findings {
+				printer.StepWarn(fmt.Sprintf("  %s: %s", f.Name, f.Detail))
+			}
 		}
 	}
 
