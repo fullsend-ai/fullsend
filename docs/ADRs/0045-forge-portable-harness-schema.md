@@ -382,10 +382,14 @@ the org's `allowed_remote_resources` allowlist, fetched via the
 SSRF-hardened fetch layer, and cached in `.fullsend-cache/`.
 
 Relative paths in the merged result (e.g., `pre_script: scripts/pre.sh`)
-resolve against the local `.fullsend/` directory, not the base's origin.
-This works because scripts are always scaffolded locally (ADR 0038's
-"no remote executables" rule) — `base` handles declarative config while
-scripts stay local and customizable.
+resolve against the local `.fullsend/` directory when the base is a
+local file. When the base is a URL, script fields (`pre_script`,
+`post_script`, `validation_loop.script`) declared in the base harness
+are fetched from the base URL's directory, cached content-addressed,
+and rewritten to local cache paths before validation (see ADR 0038's
+`base:` composition exception). `agent_input` is excluded from URL-base
+resolution because it is a directory, not a single file. Scripts in the
+child harness always resolve against the local `.fullsend/` directory.
 
 #### Depth limit and circular detection
 
