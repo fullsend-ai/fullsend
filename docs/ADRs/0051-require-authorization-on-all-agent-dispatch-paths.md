@@ -84,13 +84,29 @@ fi
 ### Automatic event triggers
 
 For events where the acting user may be external, the dispatch logic
-must check the actor's `author_association` before setting a `STAGE`.
-Note: the `is_authorized()` helper checks `COMMENT_AUTHOR_ASSOC`, which
-is only populated for `issue_comment` events. For non-comment triggers
-(`issues.opened`, `pull_request_target.opened`), the implementation must
-read the actor's association from the appropriate event field (e.g.,
-`github.event.issue.author_association` or
-`github.event.pull_request.author_association`):
+must verify the actor has write-level access before setting a `STAGE`.
+
+**Why not `author_association`?** The `author_association` field in
+webhook payloads does not correctly reflect private org membership — an
+org admin with private membership gets `CONTRIBUTOR` instead of `MEMBER`
+(see [github/gh-aw-mcpg#2862](https://github.com/github/gh-aw-mcpg/issues/2862)).
+Instead, we use the collaborator permission API
+(`GET /repos/{owner}/{repo}/collaborators/{username}/permission`) which
+returns the user's **effective** permission level including inherited org
+grants regardless of membership visibility.
+
+```bash
+is_event_actor_authorized() {
+  local username="${1:-}"
+  local perm
+  perm=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
+    --jq '.permission' 2>/dev/null || echo "none")
+  case "${perm}" in
+    admin|maintain|write) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+```
 
 | Event | Actor checked | Gated? |
 |-------|---------------|--------|

@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=435
+# lint-workflow-size: max-lines=445
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -44,9 +44,8 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
-          ISSUE_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
           ORG_NAME: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -61,11 +60,19 @@ jobs:
             esac
           }
 
-          # Helper: check event-level actor authorization (for non-comment triggers)
+          # Helper: check actor has write+ permission on the repo (for non-comment triggers).
+          # Uses the collaborator permission API which correctly resolves org membership
+          # regardless of membership visibility (private vs public).
           is_event_actor_authorized() {
-            local assoc="${1:-}"
-            case "${assoc}" in
-              OWNER|MEMBER|COLLABORATOR) return 0 ;;
+            local username="${1:-}"
+            if [[ -z "${username}" ]]; then
+              return 1
+            fi
+            local perm
+            perm=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
+              --jq '.permission' 2>/dev/null || echo "none")
+            case "${perm}" in
+              admin|maintain|write) return 0 ;;
               *) return 1 ;;
             esac
           }
@@ -154,7 +161,7 @@ jobs:
 
             issues)
               if [[ "${EVENT_ACTION}" == "opened" || "${EVENT_ACTION}" == "edited" ]]; then
-                if is_event_actor_authorized "${ISSUE_AUTHOR_ASSOC}"; then
+                if is_event_actor_authorized "${ISSUE_USER_LOGIN}"; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
@@ -169,7 +176,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_AUTHOR_ASSOC}"; then
+                  if is_event_actor_authorized "${PR_USER_LOGIN}"; then
                     STAGE="review"
                   fi
                   ;;
