@@ -812,18 +812,10 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 	printer.Header("Uninstalling fullsend from " + org)
 	printer.Blank()
 
-	// Discover agent slugs: harness files first, then config.yaml agents:
-	// block, then default naming convention.
+	// Discover agent slugs from harness files, then default naming convention.
 	var agentSlugs []string
-	var parsedCfg *config.OrgConfig
-	cfgData, cfgErr := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
-	if cfgErr == nil {
-		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			parsedCfg = parsed
-		}
-	}
 
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, parsedCfg, printer)
+	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
 
 	if len(agentSlugs) == 0 {
 		for _, role := range config.DefaultAgentRoles() {

@@ -1578,8 +1578,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 // runUninstall tears down the fullsend installation.
 func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string, browser appsetup.BrowserOpener, stdin io.Reader) error {
-	// Try to discover agent slugs. Prefer harness wrapper files, then
-	// fall back to config.yaml agents: block, then default naming.
+	// Try to discover agent slugs from harness wrapper files, then default naming.
 	// If the .fullsend repo is already gone (e.g., previous partial
 	// uninstall), fall back to the default naming convention so we can
 	// still guide the user to delete the apps. Without this fallback,
@@ -1588,11 +1587,9 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	var agentSlugs []string
 	var configMode string
 	var enrolledRepos []string
-	var parsedCfg *config.OrgConfig
 	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
 		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			parsedCfg = parsed
 			configMode = parsed.Dispatch.Mode
 			enrolledRepos = parsed.EnabledRepos()
 		} else {
@@ -1600,7 +1597,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		}
 	}
 
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, parsedCfg, printer)
+	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
 
 	if len(agentSlugs) == 0 {
 		// Neither harness files nor config agents found — assume default
@@ -2017,53 +2014,36 @@ func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]stri
 }
 
 // loadKnownSlugs discovers agent slugs from harness wrapper files in the
-// config repo, falling back to the config.yaml agents: block.
+// config repo.
 func loadKnownSlugs(ctx context.Context, client forge.Client, org, configRepo, ref string, printer *ui.Printer) map[string]string {
 	agents, err := harness.DiscoverRemoteAgents(ctx, client, org, configRepo, ref)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("harness discovery: %v", err))
 	}
-	if len(agents) > 0 {
-		slugs := make(map[string]string, len(agents))
-		seen := make(map[string]bool, len(agents))
-		for _, a := range agents {
-			if a.Role == "" && a.Slug == "" {
-				continue
-			}
-			if a.Role == "" || a.Slug == "" {
-				printer.StepWarn(fmt.Sprintf("harness %s has role=%q slug=%q; both must be set", a.Filename, a.Role, a.Slug))
-				continue
-			}
-			if seen[a.Role] {
-				printer.StepInfo(fmt.Sprintf("duplicate role %q in harness file %s, using first occurrence", a.Role, a.Filename))
-				continue
-			}
-			seen[a.Role] = true
-			slugs[a.Role] = a.Slug
-		}
-		if len(slugs) > 0 {
-			return slugs
-		}
+	if len(agents) == 0 {
+		return nil
 	}
-
-	slugs := loadKnownSlugsLegacy(ctx, client, org)
+	slugs := make(map[string]string, len(agents))
+	seen := make(map[string]bool, len(agents))
+	for _, a := range agents {
+		if a.Role == "" && a.Slug == "" {
+			continue
+		}
+		if a.Role == "" || a.Slug == "" {
+			printer.StepWarn(fmt.Sprintf("harness %s has role=%q slug=%q; both must be set", a.Filename, a.Role, a.Slug))
+			continue
+		}
+		if seen[a.Role] {
+			printer.StepInfo(fmt.Sprintf("duplicate role %q in harness file %s, using first occurrence", a.Role, a.Filename))
+			continue
+		}
+		seen[a.Role] = true
+		slugs[a.Role] = a.Slug
+	}
 	if len(slugs) > 0 {
-		printer.StepWarn("config.yaml agents: block is deprecated; agent identity should be in harness files with role/slug fields")
+		return slugs
 	}
-	return slugs
-}
-
-// loadKnownSlugsLegacy reads agent slugs from the config.yaml agents: block.
-func loadKnownSlugsLegacy(ctx context.Context, client forge.Client, org string) map[string]string {
-	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
-	if err != nil {
-		return nil
-	}
-	cfg, err := config.ParseOrgConfig(data)
-	if err != nil {
-		return nil
-	}
-	return cfg.AgentSlugs()
+	return nil
 }
 
 // collectEnrolledRepoIDs returns the IDs of repos whose names appear in
