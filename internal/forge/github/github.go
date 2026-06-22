@@ -1336,6 +1336,45 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	return app.Slug + "[bot]", nil
 }
 
+// ProbeInstallationToken reports whether token is a GitHub App installation
+// access token by calling GET /installation/repositories. PATs and OAuth
+// tokens receive 401/403 on that endpoint.
+func ProbeInstallationToken(ctx context.Context, httpClient *http.Client, baseURL, token string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+
+	url := baseURL + "/installation/repositories?per_page=1"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("creating installation token probe request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("probing installation token: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return false, nil
+	default:
+		return false, &APIError{StatusCode: resp.StatusCode, Message: "installation token probe failed"}
+	}
+}
+
+// IsInstallationToken reports whether the client's token is a GitHub App
+// installation access token.
+func (c *LiveClient) IsInstallationToken(ctx context.Context) (bool, error) {
+	return ProbeInstallationToken(ctx, c.http, c.baseURL, c.token)
+}
+
 // GetTokenScopes returns the OAuth scopes granted to the current token
 // by inspecting the X-OAuth-Scopes header from a lightweight API call.
 //

@@ -14,7 +14,8 @@ import (
 func TestFetchTokenScope_ReturnsRepoNames(t *testing.T) {
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/installation/repositories", r.URL.Path)
-		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		perPage := r.URL.Query().Get("per_page")
+		assert.Contains(t, []string{"1", "100"}, perPage)
 		assert.Equal(t, "Bearer ghs_test_token", r.Header.Get("Authorization"))
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -94,7 +95,7 @@ func TestFetchTokenScope_UnexpectedStatus(t *testing.T) {
 
 	repos, err := fetchTokenScope(context.Background(), "ghs_token", github.URL)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "status 500")
+	assert.Contains(t, err.Error(), "500")
 	assert.Nil(t, repos)
 }
 

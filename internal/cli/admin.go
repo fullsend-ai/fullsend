@@ -2676,6 +2676,16 @@ func checkPerRepoScopes(ctx context.Context, client forge.Client, printer *ui.Pr
 func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Printer, required []string) error {
 	printer.StepStart("Checking token permissions")
 
+	isInstallation, err := client.IsInstallationToken(ctx)
+	if err != nil {
+		printer.StepFail("Could not verify token permissions")
+		return fmt.Errorf("detecting installation token: %w", err)
+	}
+	if isInstallation {
+		printer.StepWarn("Preflight skipped: installation token (OAuth scopes do not apply)")
+		return nil
+	}
+
 	granted, err := client.GetTokenScopes(ctx)
 	if err != nil {
 		printer.StepFail("Could not verify token permissions")

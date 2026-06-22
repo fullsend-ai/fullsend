@@ -7,13 +7,16 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
 var tokenScopeClient = &http.Client{Timeout: 10 * time.Second}
 
 // fetchTokenScope introspects a GitHub installation token by calling
 // GET /installation/repositories and returning the full_name of each
-// accessible repo. Returns (nil, nil) if the token is empty.
+// accessible repo. Returns (nil, nil) when the token is empty or not an
+// installation token.
 func fetchTokenScope(ctx context.Context, token, baseURL string) ([]string, error) {
 	if token == "" {
 		return nil, nil
@@ -21,6 +24,14 @@ func fetchTokenScope(ctx context.Context, token, baseURL string) ([]string, erro
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
+	isInstallation, err := gh.ProbeInstallationToken(ctx, tokenScopeClient, baseURL, token)
+	if err != nil {
+		return nil, fmt.Errorf("probing installation token: %w", err)
+	}
+	if !isInstallation {
+		return nil, nil
+	}
 
 	url := baseURL + "/installation/repositories?per_page=100"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -36,12 +47,6 @@ func fetchTokenScope(ctx context.Context, token, baseURL string) ([]string, erro
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-		// PATs and GITHUB_TOKENs can't call /installation/repositories.
-		// Not an error — just means this isn't an installation token.
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return nil, nil
-	}
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("token scope check returned status %d", resp.StatusCode)

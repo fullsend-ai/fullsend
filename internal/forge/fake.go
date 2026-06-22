@@ -119,6 +119,7 @@ type FakeClient struct {
 	Secrets           map[string]bool             // key: "owner/repo/name"
 	PullRequests      map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes       []string                    // scopes returned by GetTokenScopes
+	InstallationToken bool                        // IsInstallationToken return value
 	VariablesExist    map[string]bool             // key: "owner/repo/name"
 	VariableValues    map[string]string           // key: "owner/repo/name"
 
@@ -636,6 +637,17 @@ func (f *FakeClient) GetTokenScopes(_ context.Context) ([]string, error) {
 	}
 
 	return f.TokenScopes, nil
+}
+
+func (f *FakeClient) IsInstallationToken(_ context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("IsInstallationToken"); e != nil {
+		return false, e
+	}
+
+	return f.InstallationToken, nil
 }
 
 func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, value string) error {

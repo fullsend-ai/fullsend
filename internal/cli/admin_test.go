@@ -1200,6 +1200,16 @@ func TestCheckInstallScopes_FineGrainedToken(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCheckInstallScopes_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkInstallScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
 func TestCheckInstallScopes_GetTokenScopesError(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{"GetTokenScopes": errors.New("network error")},
@@ -1255,6 +1265,16 @@ func TestCheckPerRepoScopes_Missing(t *testing.T) {
 func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
+func TestCheckPerRepoScopes_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
 	}
 	printer := ui.New(&discardWriter{})
 

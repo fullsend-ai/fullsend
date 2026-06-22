@@ -256,6 +256,11 @@ type Client interface {
 	// Returns nil (not an error) if the forge doesn't support scope introspection.
 	GetTokenScopes(ctx context.Context) ([]string, error)
 
+	// IsInstallationToken reports whether the current token is a GitHub App
+	// installation access token (as opposed to a user PAT or OAuth token).
+	// Used to skip OAuth scope preflight, which does not apply to installation tokens.
+	IsInstallationToken(ctx context.Context) (bool, error)
+
 	// Secrets and variables
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
