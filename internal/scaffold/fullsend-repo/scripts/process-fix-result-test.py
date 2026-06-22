@@ -165,6 +165,19 @@ class TestBuildSummaryBody(unittest.TestCase):
         self.assertIn("**typo in docs**:", body)
         self.assertNotIn("(`", body)
 
+    def test_action_hints_footer_present(self):
+        data = {
+            "summary": "Fixed.",
+            "tests_passed": True,
+            "actions": [
+                {"type": "fix", "finding": "bug", "description": "Fixed"},
+            ],
+        }
+        body = build_summary_body(data)
+        self.assertIn("**Next steps:**", body)
+        self.assertIn("/fs-review", body)
+        self.assertIn("/fs-fix", body)
+
 
 post_summary = mod.post_summary
 MAX_COMMENT_LENGTH = mod.MAX_COMMENT_LENGTH

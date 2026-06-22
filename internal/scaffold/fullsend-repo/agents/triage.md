@@ -313,3 +313,11 @@ Information is sufficient for a developer to investigate and fix.
 - Do not present unverified assumptions with certainty. Convey uncertainty when appropriate.
 - Write in second person ("you") addressing the reporter. Do not use first person ("I") — the comment is from the triage system, not an individual.
 - If you include `label_actions`, the pipeline appends your label reason to the comment automatically — do not include label justifications in the `comment` field yourself.
+- **Action hints footer (sufficient action only):** When `action` is `sufficient`, append the following footer to the end of the `comment` field. Omit it for all other actions (`insufficient`, `duplicate`, `prerequisites`, `question`).
+
+  ```markdown
+  ---
+  **Next steps:**
+  - `/fs-code` — agent creates a PR to implement this issue
+  - `/fs-code <your instruction>` — agent implements with your specific guidance
+  ```

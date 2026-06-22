@@ -725,8 +725,21 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   section. If there are no findings at all, set the body to
   the hidden SHA comment followed by a newline and "Looks good to me"
   — omit the `## Review` header and `### Findings` section entirely.
-- **No footer.** Do not repeat the outcome or include boilerplate
-  about pushes clearing the review.
+- **No general footer.** Do not repeat the outcome or include
+  boilerplate about pushes clearing the review. **Exception:** for
+  `request-changes` outcomes only, append an action-hints footer
+  after the findings:
+
+  ```markdown
+  ---
+  **Next steps:**
+  - `/fs-fix` — agent addresses review findings automatically
+  - `/fs-fix <your instruction>` — agent fixes with your specific guidance
+  - Push commits directly — review re-runs automatically on push
+  - `/fs-fix-stop` — disable automatic fix runs for this PR
+  ```
+
+  Omit this footer for `approve`, `comment`, and `reject` outcomes.
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:

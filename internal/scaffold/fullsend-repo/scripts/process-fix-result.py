@@ -89,6 +89,14 @@ def build_summary_body(data):
         sections.append(dp_text)
 
     sections.append(
+        "\n---\n"
+        "**Next steps:**\n"
+        "- `/fs-review` — request a re-review of the changes\n"
+        "- `/fs-fix <your instruction>` — run another fix pass with specific guidance\n"
+        "- Push commits directly — review re-runs automatically on push"
+    )
+
+    sections.append(
         '\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
         "fullsend</a> fix agent</sub>"
     )
