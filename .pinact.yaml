@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/suzuki-shunsuke/pinact/refs/heads/main/json-schema/pinact.json
+# pinact - https://github.com/suzuki-shunsuke/pinact
+version: 3
+
+files:
+  - pattern: "internal/scaffold/fullsend-repo/.github/workflows/*.yml"
+
+rules:
+  # Ignore self-references to this repo's own reusable workflows and actions.
+  # These use floating tags (v0, main) that track releases and should not be
+  # SHA-pinned.
+  - ignore: true
+    conditions:
+      - expr: |
+          ActionRepoOwner == "fullsend-ai"

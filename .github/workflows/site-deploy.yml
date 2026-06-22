@@ -28,9 +28,9 @@ jobs:
     steps:
       # Trusted tree only: wrangler.toml must not come from PR checkout (no PR-controlled [build] on the deploy runner).
       # PR/fork Worker + static files ship in the Build Site artifact under _bundle/; we copy only public/ and worker/ (never extract TOML from the zip into cloudflare_site/).
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
           cache: npm
@@ -40,7 +40,7 @@ jobs:
         run: npm ci
 
       - name: Download build artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: site
           path: _bundle
@@ -81,7 +81,7 @@ jobs:
       - name: Resolve preview context (PR number + preview alias)
         id: preview-context
         if: success()
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const run = context.payload.workflow_run;
@@ -131,7 +131,7 @@ jobs:
       - name: Deploy to production (Workers + static assets)
         id: cf-prod
         if: github.event.workflow_run.event == 'push'
-        uses: cloudflare/wrangler-action@v3.14.1
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65 # v3.14.1
         with:
           wranglerVersion: "4.36.0"
           workingDirectory: cloudflare_site
@@ -157,7 +157,7 @@ jobs:
       - name: Upload preview version (Workers + static assets)
         id: cf-preview
         if: github.event.workflow_run.event == 'pull_request'
-        uses: cloudflare/wrangler-action@v3.14.1
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65 # v3.14.1
         with:
           wranglerVersion: "4.36.0"
           workingDirectory: cloudflare_site
@@ -220,7 +220,7 @@ jobs:
 
       - name: GitHub Deployment + preview comment
         if: steps.meta.outcome == 'success'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_URL: ${{ steps.meta.outputs.deployment_url }}
           PREVIEW_PR_NUMBER: ${{ steps.preview-context.outputs.pr_number }}
