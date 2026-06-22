@@ -546,14 +546,26 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 		result := pipeline.Scan(r.Body)
 		if result.Sanitized != "" {
 			r.Body = result.Sanitized
-			printer.StepWarn(fmt.Sprintf("Redacted %d secret(s) in review body", len(result.Findings)))
+			printer.StepWarn(fmt.Sprintf("Sanitized review body (%d finding(s))", len(result.Findings)))
 		}
 	}
 
-	// Sanitize finding descriptions and remediations — these are
-	// posted as inline PR review comments and could carry secrets
-	// from agent output.
+	// Sanitize finding fields — severity, category, description, and
+	// remediation are all interpolated into Markdown posted to the
+	// forge and could carry secrets from agent output.
 	for i := range r.Findings {
+		if r.Findings[i].Severity != "" {
+			result := pipeline.Scan(r.Findings[i].Severity)
+			if result.Sanitized != "" {
+				r.Findings[i].Severity = result.Sanitized
+			}
+		}
+		if r.Findings[i].Category != "" {
+			result := pipeline.Scan(r.Findings[i].Category)
+			if result.Sanitized != "" {
+				r.Findings[i].Category = result.Sanitized
+			}
+		}
 		if r.Findings[i].Description != "" {
 			result := pipeline.Scan(r.Findings[i].Description)
 			if result.Sanitized != "" {

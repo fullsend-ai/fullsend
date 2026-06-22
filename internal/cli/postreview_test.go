@@ -1081,6 +1081,28 @@ func TestSanitizeReviewResult_RedactsSecretsInFindings(t *testing.T) {
 	assert.Contains(t, sanitized.Findings[0].Description, "Hardcoded token:", "non-secret text should remain")
 }
 
+func TestSanitizeReviewResult_RedactsSecretsInSeverityAndCategory(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "request-changes",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "high " + secret,
+				Category:    "security " + secret,
+				File:        "main.go",
+				Line:        10,
+				Description: "Clean description.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Findings[0].Severity, "ghp_FAKEtest", "secret should be redacted from finding severity")
+	assert.NotContains(t, sanitized.Findings[0].Category, "ghp_FAKEtest", "secret should be redacted from finding category")
+}
+
 func TestSanitizeReviewResult_ZeroWidthObfuscatedSecret(t *testing.T) {
 	printer := ui.New(io.Discard)
 	plain := "ghp_FAKEtesttoken000000000000000000000000"
@@ -1117,6 +1139,8 @@ func TestSanitizeReviewResult_NoSecretsPassesThrough(t *testing.T) {
 	sanitized := sanitizeReviewResult(r, printer)
 	assert.Equal(t, "Looks good! No issues found.", sanitized.Body, "clean body should pass through unchanged")
 	assert.Equal(t, "Consider renaming variable.", sanitized.Findings[0].Description, "clean finding should pass through unchanged")
+	assert.Equal(t, "low", sanitized.Findings[0].Severity, "clean severity should pass through unchanged")
+	assert.Equal(t, "style", sanitized.Findings[0].Category, "clean category should pass through unchanged")
 }
 
 func TestSanitizeReviewResult_EmptyBody(t *testing.T) {
