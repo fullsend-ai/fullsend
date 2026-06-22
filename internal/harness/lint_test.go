@@ -7,19 +7,9 @@ import (
 )
 
 func TestLint(t *testing.T) {
-	t.Run("role set", func(t *testing.T) {
+	t.Run("valid harness returns nil", func(t *testing.T) {
 		h := &Harness{Role: "triage"}
 		assert.Nil(t, h.Lint())
-	})
-
-	t.Run("role empty", func(t *testing.T) {
-		h := &Harness{}
-		diags := h.Lint()
-		assert.NotNil(t, diags)
-		assert.Len(t, diags, 1)
-		assert.Equal(t, SeverityWarning, diags[0].Severity)
-		assert.Equal(t, "role", diags[0].Field)
-		assert.Contains(t, diags[0].Message, "required in a future version")
 	})
 
 	t.Run("role and slug set", func(t *testing.T) {

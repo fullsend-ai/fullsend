@@ -245,6 +245,7 @@ func TestResolveForge_ForgeConsumed(t *testing.T) {
 func TestValidate_ForgeUnrecognizedKey(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
+		Role:  "test",
 		Forge: map[string]*ForgeConfig{
 			"gihub": {PreScript: "scripts/gh.sh"},
 		},
@@ -261,6 +262,7 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 	t.Run("pre_script URL", func(t *testing.T) {
 		h := &Harness{
 			Agent: "agents/test.md",
+			Role:  "test",
 			Forge: map[string]*ForgeConfig{
 				"github": {PreScript: "https://example.com/scripts/pre.sh"},
 			},
@@ -273,6 +275,7 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 	t.Run("post_script URL", func(t *testing.T) {
 		h := &Harness{
 			Agent: "agents/test.md",
+			Role:  "test",
 			Forge: map[string]*ForgeConfig{
 				"gitlab": {PostScript: "https://example.com/scripts/post.sh"},
 			},
@@ -285,6 +288,7 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 	t.Run("validation_loop.script URL", func(t *testing.T) {
 		h := &Harness{
 			Agent: "agents/test.md",
+			Role:  "test",
 			Forge: map[string]*ForgeConfig{
 				"github": {
 					ValidationLoop: &ValidationLoop{
@@ -302,6 +306,7 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 	t.Run("validation_loop missing script", func(t *testing.T) {
 		h := &Harness{
 			Agent: "agents/test.md",
+			Role:  "test",
 			Forge: map[string]*ForgeConfig{
 				"github": {
 					ValidationLoop: &ValidationLoop{
@@ -319,6 +324,7 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 func TestValidate_ForgeValidConfig(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
+		Role:  "test",
 		Forge: map[string]*ForgeConfig{
 			"github": {
 				PreScript:  "scripts/pre-gh.sh",
@@ -343,6 +349,7 @@ func TestValidate_ForgeValidConfig(t *testing.T) {
 func TestValidate_ForgeNilConfig(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
+		Role:  "test",
 		Forge: map[string]*ForgeConfig{
 			"github": nil,
 		},
@@ -353,6 +360,7 @@ func TestValidate_ForgeNilConfig(t *testing.T) {
 func TestValidate_ForgeSkillURLWithoutHash(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
+		Role:  "test",
 		Forge: map[string]*ForgeConfig{
 			"github": {
 				Skills: []string{"https://example.com/skills/summarize.md"},
@@ -368,6 +376,7 @@ func TestValidate_ForgeSkillURLWithoutHash(t *testing.T) {
 func TestValidate_ForgeSkillURLWithHash(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
+		Role:  "test",
 		Forge: map[string]*ForgeConfig{
 			"github": {
 				Skills: []string{"https://example.com/skills/summarize.md#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
@@ -380,6 +389,7 @@ func TestValidate_ForgeSkillURLWithHash(t *testing.T) {
 func TestLoad_WithForgeSection(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 pre_script: scripts/pre-common.sh
 skills:
   - skills/common
@@ -415,6 +425,7 @@ forge:
 func TestLoad_WithoutForgeSection(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 pre_script: scripts/pre.sh
 `
 	dir := t.TempDir()

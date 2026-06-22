@@ -94,7 +94,7 @@ Every consumer of the removed code, and the action taken:
 ## PR Dependency Graph
 
 ```
-PR 1 (require role in Validate)  [independent]
+PR 1 (require role in Validate)  [independent]  🔄 In Review (#2446)
 
 PR 2 (remove agents from NewOrgConfig + ConfigRepoLayer) ──> PR 4 (remove OrgConfig.Agents field)
                                                                       │

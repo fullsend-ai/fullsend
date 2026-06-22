@@ -33,6 +33,7 @@ func TestLoadWithBase_NoBase(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/test.md
+role: test
 model: opus
 `)
 
@@ -49,6 +50,7 @@ func TestLoadWithBase_LocalBase_ScalarOverride(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 model: sonnet
 image: base-image
 timeout_minutes: 30
@@ -57,6 +59,7 @@ timeout_minutes: 30
 	path := writeTestHarness(t, dir, "child.yaml", `
 base: base.yaml
 agent: agents/child.md
+role: test
 model: opus
 `)
 
@@ -80,6 +83,7 @@ func TestLoadWithBase_LocalBase_SkillsConcat(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 skills:
   - skill-a
   - skill-b
@@ -103,6 +107,7 @@ func TestLoadWithBase_LocalBase_RunnerEnvMerge(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 runner_env:
   KEY1: base-value1
   KEY2: base-value2
@@ -131,6 +136,7 @@ func TestLoadWithBase_LocalBase_HostFilesDedup(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 host_files:
   - src: base-src1
     dest: /dest1
@@ -165,6 +171,7 @@ func TestLoadWithBase_LocalBase_ValidationLoopReplace(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 validation_loop:
   script: base-script.sh
   max_iterations: 5
@@ -191,6 +198,7 @@ func TestLoadWithBase_LocalBase_ValidationLoopInherit(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 validation_loop:
   script: base-script.sh
   max_iterations: 5
@@ -216,6 +224,7 @@ func TestLoadWithBase_ChainedBases(t *testing.T) {
 	// A → B → C: C is the root, B extends C, A extends B
 	writeTestHarness(t, dir, "c.yaml", `
 agent: agents/c.md
+role: test
 model: c-model
 image: c-image
 skills:
@@ -232,6 +241,7 @@ skills:
 	path := writeTestHarness(t, dir, "a.yaml", `
 base: b.yaml
 agent: agents/a.md
+role: test
 skills:
   - skill-a
 `)
@@ -255,11 +265,13 @@ func TestLoadWithBase_CycleDetection(t *testing.T) {
 	// A → B → A (cycle)
 	writeTestHarness(t, dir, "a.yaml", `
 agent: agents/a.md
+role: test
 base: b.yaml
 `)
 
 	writeTestHarness(t, dir, "b.yaml", `
 agent: agents/b.md
+role: test
 base: a.yaml
 `)
 
@@ -275,6 +287,7 @@ func TestLoadWithBase_SelfReference(t *testing.T) {
 	// A → A (self-reference)
 	path := writeTestHarness(t, dir, "a.yaml", `
 agent: agents/a.md
+role: test
 base: a.yaml
 `)
 
@@ -291,6 +304,7 @@ func TestLoadWithBase_LocalBase_PathTraversal(t *testing.T) {
 	// Child in subdir tries to reference base outside workspace root via ../
 	path := writeTestHarness(t, subdir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: ../../../etc/passwd
 `)
 
@@ -310,6 +324,7 @@ func TestLoadWithBase_LocalBase_PathTraversal_NoWorkspaceRoot(t *testing.T) {
 	// Child in subdir tries to reference base outside via ../
 	path := writeTestHarness(t, subdir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: ../outside.yaml
 `)
 
@@ -345,6 +360,7 @@ func TestLoadWithBase_ForgeBlockMerge(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 forge:
   github:
     pre_script: base-pre.sh
@@ -389,6 +405,7 @@ func TestLoadWithBase_ForgeInheritPlatform(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 forge:
   github:
     pre_script: gh-pre.sh
@@ -413,6 +430,7 @@ model: opus
 func TestLoadWithBase_URLBase(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/remote.md
+role: test
 model: sonnet
 skills:
   - remote-skill
@@ -432,6 +450,7 @@ skills:
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: `+baseURL+`
 allowed_remote_resources:
   - `+server.URL+`/
@@ -467,12 +486,14 @@ func TestLoadWithBase_ChainedURLBases(t *testing.T) {
 	// Test URL base whose own base is also a URL
 	grandparentContent := []byte(`
 agent: agents/grandparent.md
+role: test
 model: opus
 `)
 	grandparentHash := computeHash(grandparentContent)
 
 	parentContent := []byte(`
 agent: agents/parent.md
+role: test
 skills:
   - parent-skill
 `)
@@ -494,6 +515,7 @@ skills:
 	// Now create parent content with base pointing to grandparent
 	parentContentWithBase := []byte(fmt.Sprintf(`
 agent: agents/parent.md
+role: test
 base: %s/grandparent.yaml#sha256=%s
 skills:
   - parent-skill
@@ -520,6 +542,7 @@ skills:
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: `+parentURL+`
 skills:
   - child-skill
@@ -567,6 +590,7 @@ func TestLoadWithBase_URLBase_HashMismatch(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: `+baseURL+`
 allowed_remote_resources:
   - `+server.URL+`/
@@ -604,6 +628,7 @@ func TestLoadWithBase_URLBase_NotInAllowlist(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: `+baseURL+`
 allowed_remote_resources:
   - https://other.example.com/
@@ -630,6 +655,7 @@ func TestLoadWithBase_URLBase_NoOrgAllowlist(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: https://example.com/base.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000
 `)
 
@@ -644,6 +670,7 @@ func TestLoadWithBase_URLBase_MissingHash(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: https://example.com/base.yaml
 allowed_remote_resources:
   - https://example.com/
@@ -662,6 +689,7 @@ func TestLoadWithBase_URLBase_OfflineMode_CacheMiss(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: https://example.com/base.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000
 allowed_remote_resources:
   - https://example.com/
@@ -681,6 +709,7 @@ allowed_remote_resources:
 func TestLoadWithBase_URLBase_OfflineMode_CacheHit(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/remote.md
+role: test
 model: sonnet
 `)
 	hash := computeHash(baseContent)
@@ -693,6 +722,7 @@ model: sonnet
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: https://example.com/base.yaml#sha256=`+hash+`
 allowed_remote_resources:
   - https://example.com/
@@ -743,6 +773,7 @@ func TestLoadWithBase_AllowedRemoteResourcesNotMerged(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 allowed_remote_resources:
   - https://example.com/base/
 `)
@@ -881,6 +912,7 @@ func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 forge:
   invalid_platform:
     pre_script: test.sh
@@ -901,6 +933,7 @@ func TestLoadWithBase_ValidationErrorAfterMerge(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 `)
 
 	// Child clears the agent field (empty string doesn't override)
@@ -921,6 +954,7 @@ func TestLoadWithBase_BaseFileNotFound(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: nonexistent.yaml
 `)
 
@@ -934,6 +968,7 @@ func TestLoadWithBase_URLBase_NonHTTPS(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
+role: test
 base: http://example.com/base.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000
 allowed_remote_resources:
   - http://example.com/
@@ -951,6 +986,7 @@ func TestLoadWithBase_SecurityInheritance(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 security:
   fail_mode: closed
 `)
@@ -972,6 +1008,7 @@ func TestLoadWithBase_SecurityChildOverrides(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 security:
   fail_mode: closed
 `)
@@ -994,6 +1031,7 @@ func TestLoadWithBase_APIServersConcat(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 api_servers:
   - name: base-api
     script: base-api.sh
@@ -1021,6 +1059,7 @@ func TestLoadWithBase_PluginsConcat(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 plugins:
   - plugin-a
 `)
@@ -1042,6 +1081,7 @@ func TestLoadWithBase_ProvidersConcat(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 providers:
   - provider-a
 `)
@@ -1063,6 +1103,7 @@ func TestLoadWithBase_TimeoutInheritance(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 timeout_minutes: 30
 sandbox_timeout_seconds: 600
 `)
@@ -1084,6 +1125,7 @@ func TestLoadWithBase_RunnerEnvNilBase(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
+role: test
 `)
 
 	path := writeTestHarness(t, dir, "child.yaml", `
@@ -1103,6 +1145,7 @@ func TestLoadWithBase_RuntimeFetchFieldsNotInherited(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 allowed_remote_resources:
   - https://example.com/
 allow_runtime_fetch: true
