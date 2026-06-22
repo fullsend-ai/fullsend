@@ -2213,6 +2213,30 @@ func TestRunUninstall_NoHarnessFiles_FallsBackToDefaultNaming(t *testing.T) {
 	assert.Contains(t, output, "fullsend-ai-triage")
 }
 
+func TestRunUninstall_TransientDiscoveryError_Aborts(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+
+	// Inject a transient error for ListDirectoryContents so harness discovery
+	// fails. runUninstall should abort rather than silently falling back to
+	// default naming and deleting the config repo (which would orphan apps
+	// whose slugs don't match the default convention).
+	client.Errors = map[string]error{
+		"ListDirectoryContents": fmt.Errorf("network timeout"),
+	}
+	client.FileContents = map[string][]byte{
+		"test-org/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\n"),
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader("\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot discover agent slugs")
+	assert.Contains(t, err.Error(), "network timeout")
+}
+
 func TestAwaitRepoMaintenance_Success(t *testing.T) {
 	client := forge.NewFakeClient()
 	dispatchTime := time.Now().UTC().Add(-10 * time.Second)
@@ -2619,8 +2643,9 @@ func TestLoadKnownSlugs_HarnessFiles(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
+	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"triage": "fullsend-ai-triage",
 		"coder":  "fullsend-ai-coder",
@@ -2632,8 +2657,9 @@ func TestLoadKnownSlugs_NoHarnessFiles_ReturnsNil(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
+	assert.NoError(t, err)
 	assert.Nil(t, slugs)
 }
 
@@ -2646,8 +2672,9 @@ func TestLoadKnownSlugs_HarnessFilesWithoutRoleSlug_ReturnsNil(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
+	assert.NoError(t, err)
 	assert.Nil(t, slugs)
 }
 
@@ -2664,8 +2691,9 @@ func TestLoadKnownSlugs_DuplicateRoles_FirstWins(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
+	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"coder": "fullsend-ai-coder",
 	}, slugs)
@@ -2683,8 +2711,10 @@ func TestLoadKnownSlugs_PartialError_LogsWarning(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
+	// Partial error with valid agents: returns slugs, no error propagated.
+	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"triage": "fullsend-ai-triage",
 	}, slugs)
@@ -2700,21 +2730,25 @@ func TestLoadKnownSlugs_RoleWithoutSlug_WarnsAndSkips(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
+	assert.NoError(t, err)
 	assert.Nil(t, slugs)
 	assert.Contains(t, buf.String(), "both must be set")
 }
 
-func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
+func TestLoadKnownSlugs_HardError_ReturnsError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["ListDirectoryContents"] = fmt.Errorf("network timeout")
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+	slugs, err := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
 	assert.Nil(t, slugs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness discovery failed")
+	assert.Contains(t, err.Error(), "network timeout")
 	assert.Contains(t, buf.String(), "harness discovery")
 }
 

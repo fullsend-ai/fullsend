@@ -812,10 +812,12 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 	printer.Header("Uninstalling fullsend from " + org)
 	printer.Blank()
 
-	// Discover agent slugs from harness files, then default naming convention.
-	var agentSlugs []string
+	// Agent slugs discovered from harness files only (ADR-0045 Phase 4).
+	agentSlugs, discoveryErr := discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
 
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
+	if discoveryErr != nil && len(agentSlugs) == 0 {
+		return fmt.Errorf("cannot discover agent slugs: %w; aborting uninstall to avoid orphaning apps", discoveryErr)
+	}
 
 	if len(agentSlugs) == 0 {
 		for _, role := range config.DefaultAgentRoles() {
