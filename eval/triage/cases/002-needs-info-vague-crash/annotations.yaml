@@ -1,0 +1,31 @@
+# The agent should NOT mark this ready-to-code. The issue is too vague
+# to act on — no error messages, no repro steps, no environment info.
+state: open
+
+labels:
+  required:
+    - needs-info
+  forbidden:
+    - ready-to-code
+    - triaged
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue is deliberately vague. A good triage should:
+
+  1. Recognize that the issue lacks actionable information — no error
+     messages, no stack traces, no reproduction steps, no environment.
+  2. Choose action "insufficient" and ask a focused clarifying question.
+  3. NOT mark the issue ready-to-code or triaged. The anti-premature-
+     resolution rule requires "insufficient" when any information gaps
+     exist.
+  4. The clarifying question should target the lowest clarity dimension
+     — likely symptom clarity ("what exactly happens when it crashes?")
+     or reproduction clarity ("what steps lead to the crash?").
+
+  A score of 1 means the agent marked this sufficient despite the gaps.
+  A score of 3 means it asked a question but the question was generic.
+  A score of 5 means it asked a precise, diagnostic question targeting
+  the biggest information gap.

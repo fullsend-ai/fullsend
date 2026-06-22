@@ -1,0 +1,25 @@
+forge: github
+fixture:
+  type: issue
+  title: "Add pagination to user list API endpoint"
+  body: |
+    ## Feature Request
+
+    **What I need:**
+    The `GET /api/users` endpoint currently returns all users in a single
+    response. Our user base has grown to ~50k records and the response is
+    now 12MB+ and takes 8 seconds. We need cursor-based pagination.
+
+    **Proposed behavior:**
+    - `GET /api/users?limit=50` returns the first 50 users plus a `next_cursor`
+    - `GET /api/users?limit=50&cursor=<token>` returns the next page
+    - Default limit: 50, max limit: 200
+    - Response includes `total_count` and `has_more` fields
+
+    **Why not offset-based?**
+    We considered `?page=2&per_page=50` but cursor-based is more efficient
+    for large datasets and avoids the skip-scan problem.
+
+    **Impact:**
+    This is blocking the admin dashboard redesign — the user management
+    panel can't load without pagination.

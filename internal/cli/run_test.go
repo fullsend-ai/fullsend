@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -1822,4 +1823,49 @@ func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid harness: role field is required")
+}
+
+func TestWriteMetricsJSON(t *testing.T) {
+	dir := t.TempDir()
+	m := aggregateMetrics{
+		NumTurns:     12,
+		TotalCostUSD: 0.58,
+		Iterations:   2,
+		ToolCalls:    34,
+	}
+	m.TokenUsage.Input = 18000
+	m.TokenUsage.Output = 5200
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "metrics.json"))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	if got.NumTurns != 12 {
+		t.Errorf("num_turns = %d, want 12", got.NumTurns)
+	}
+	if got.TotalCostUSD != 0.58 {
+		t.Errorf("total_cost_usd = %f, want 0.58", got.TotalCostUSD)
+	}
+	if got.TokenUsage.Input != 18000 {
+		t.Errorf("token_usage.input = %d, want 18000", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 5200 {
+		t.Errorf("token_usage.output = %d, want 5200", got.TokenUsage.Output)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 34 {
+		t.Errorf("tool_calls = %d, want 34", got.ToolCalls)
+	}
 }
