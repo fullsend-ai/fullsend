@@ -13,7 +13,7 @@
     {
       "description": "Ignore fullsend self-references (own reusable workflows and actions)",
       "matchManagers": ["github-actions"],
-      "matchPackagePatterns": ["^fullsend-ai/"],
+      "matchPackageNames": ["/^fullsend-ai\\//"],
       "enabled": false
     }
   ],

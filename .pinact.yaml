@@ -3,6 +3,7 @@
 version: 3
 
 files:
+  - pattern: ".github/workflows/*.yml"
   - pattern: "internal/scaffold/fullsend-repo/.github/workflows/*.yml"
   - pattern: ".github/actions/*/action.yml"
 
