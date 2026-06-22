@@ -122,6 +122,26 @@ func TestCollectLogs_InvalidSource(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestImportProfiles_DirNotExist(t *testing.T) {
+	err := ImportProfiles("/nonexistent/path/that/does/not/exist")
+	assert.NoError(t, err, "should return nil when directory does not exist")
+}
+
+func TestImportProfiles_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+	dir := t.TempDir()
+	err := ImportProfiles(dir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "provider profile import")
+}
+
+func TestEnableProvidersV2_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+	err := EnableProvidersV2()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "providers_v2")
+}
+
 func TestExec_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 

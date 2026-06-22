@@ -210,6 +210,31 @@ func CheckGateway() error {
 	return nil
 }
 
+// ImportProfiles imports provider profile YAMLs from a directory into the
+// gateway via openshell provider profile import. If the directory does not
+// exist, this is a no-op. This allows callers to import profiles from optional
+// directories without checking existence first.
+func ImportProfiles(dir string) error {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	out, err := exec.Command("openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("provider profile import from %s failed: %s", dir, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// EnableProvidersV2 enables the providers_v2_enabled setting globally in the
+// openshell gateway. This is idempotent and can be called multiple times.
+func EnableProvidersV2() error {
+	out, err := exec.Command("openshell", "settings", "set", "providers_v2_enabled", "true", "--global").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to enable providers_v2: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // effectiveReadyTimeout returns the sandbox ready timeout to use. Priority:
 // explicit override (from harness config) > FULLSEND_SANDBOX_READY_TIMEOUT
 // env var > package default.
