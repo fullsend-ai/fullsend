@@ -26,6 +26,7 @@ export default defineConfig([
   svelte.configs.prettier,
 
   {
+    files: ["web/admin/src/**/*.{ts,js,svelte}", "web/docs/src/**/*.{ts,js,svelte}"],
     languageOptions: {
       globals: {
         ...globals.browser,
