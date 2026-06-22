@@ -1,5 +1,5 @@
 ---
-title: "52. Agent-driven branch targeting for the code agent"
+title: "53. Agent-driven branch targeting for the code agent"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -10,7 +10,7 @@ topics:
   - structured-output
 ---
 
-# 52. Agent-driven branch targeting for the code agent
+# 53. Agent-driven branch targeting for the code agent
 
 Date: 2026-06-17
 

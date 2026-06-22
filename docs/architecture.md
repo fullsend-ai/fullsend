@@ -100,7 +100,7 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   branch to structured output. The post-script validates the choice against
   an allowlist and falls back to the repo's auto-detected default branch.
   Branch-targeting logic lives in the portable post-script, not in workflow
-  YAML ([ADR 0052](ADRs/0052-agent-driven-branch-targeting.md)).
+  YAML ([ADR 0053](ADRs/0053-agent-driven-branch-targeting.md)).
 
 **Open questions:**
 

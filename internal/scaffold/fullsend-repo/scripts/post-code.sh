@@ -63,7 +63,7 @@ fi
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
 # ---------------------------------------------------------------------------
-# Resolve target branch (ADR 0052)
+# Resolve target branch (ADR 0053)
 #
 # Priority: agent output > allowed-list validation > auto-detect default
 # The agent writes its chosen branch to code-result.json. The post-script
