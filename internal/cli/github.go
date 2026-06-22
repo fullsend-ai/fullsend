@@ -63,6 +63,7 @@ type githubSetupConfig struct {
 	fullsendBinary       string
 	fullsendSource       string
 	dryRun               bool
+	direct               bool
 }
 
 func newGitHubSetupCmd() *cobra.Command {
@@ -139,6 +140,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.enrollAll, "enroll-all", false, "enroll all repositories without prompting")
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
+	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 
 	return cmd
@@ -290,7 +292,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, cfg.direct); err != nil {
 		return err
 	}
 
@@ -447,7 +449,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		vendorFn, vendorCollect = vendorStackArgs(true, cfg.fullsendBinary, cfg.fullsendSource)
 	}
 
-	stack := buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
+	stack := buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
 
 	if cfg.dryRun {
 		printer.Header("Dry run — analyzing what setup would do")
@@ -479,7 +481,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 		orgCfg.Dispatch.Mode = "oidc-mint"
 
-		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
+		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
 	}
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
@@ -979,7 +981,7 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("reading config.yaml: %w", cfgErr)
 	}
 
-	workflowsLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored)
+	workflowsLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(true)
 
 	if err := workflowsLayer.Install(ctx); err != nil {
 		return fmt.Errorf("syncing scaffold: %w", err)
