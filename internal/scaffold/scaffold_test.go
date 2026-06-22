@@ -203,9 +203,9 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, `! has_label "feature"`)
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs; /review must only run on PRs
-	assert.Contains(t, s, "ISSUE_HAS_PR")
-	assert.Regexp(t, `(?s)/fs-review\).*?ISSUE_HAS_PR`, s)
-	assert.Regexp(t, `(?s)ready-for-review.*?ISSUE_HAS_PR`, s)
+	assert.Contains(t, s, "IS_PR")
+	assert.Regexp(t, `(?s)/fs-review\).*?IS_PR`, s)
+	assert.Regexp(t, `(?s)ready-for-review.*?IS_PR`, s)
 	// Author association checks
 	assert.Contains(t, s, "is_authorized")
 	assert.Contains(t, s, "OWNER|MEMBER|COLLABORATOR")
