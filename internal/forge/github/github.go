@@ -1299,9 +1299,9 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 // GetAuthenticatedUser returns the login of the authenticated user.
 //
 // For classic PATs and OAuth tokens the identity comes from GET /user.
-// GitHub App installation tokens cannot call /user, so when that call
-// fails the method falls back to GET /app and constructs the
-// conventional bot login "{slug}[bot]".
+// GitHub App JWTs fall back to GET /app and derive "{slug}[bot]".
+// Installation access tokens cannot use either REST endpoint; those fall
+// back to a GraphQL viewer query, which returns the bot login directly.
 func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	resp, err := c.get(ctx, "/user")
 	if err == nil {
@@ -1314,26 +1314,78 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 		return user.Login, nil
 	}
 
-	// /user is not available for GitHub App installation tokens.
-	// Fall back to /app which returns the app's metadata including
-	// its slug, from which we derive the bot login.
+	userErr := err
+
+	// App JWT auth can resolve the bot identity from GET /app.
 	appResp, appErr := c.get(ctx, "/app")
-	if appErr != nil {
-		// Neither endpoint worked — return the original /user error
-		// because that is the more common path.
-		return "", fmt.Errorf("get authenticated user: %w (app fallback: %v)", err, appErr)
+	if appErr == nil {
+		var app struct {
+			Slug string `json:"slug"`
+		}
+		if decodeErr := decodeJSON(appResp, &app); decodeErr != nil {
+			return "", fmt.Errorf("decode app: %w", decodeErr)
+		}
+		if app.Slug == "" {
+			return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+		}
+		return app.Slug + "[bot]", nil
 	}
 
-	var app struct {
-		Slug string `json:"slug"`
+	// Installation tokens reject /user and /app but support GraphQL viewer.
+	login, graphErr := c.graphqlViewerLogin(ctx)
+	if graphErr == nil {
+		return login, nil
 	}
-	if appErr := decodeJSON(appResp, &app); appErr != nil {
-		return "", fmt.Errorf("decode app: %w", appErr)
+
+	return "", fmt.Errorf("get authenticated user: %w (app fallback: %v; graphql fallback: %v)", userErr, appErr, graphErr)
+}
+
+const graphqlViewerLoginQuery = `query { viewer { login } }`
+
+func (c *LiveClient) graphqlViewerLogin(ctx context.Context) (string, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/graphql", map[string]string{
+		"query": graphqlViewerLoginQuery,
+	})
+	if err != nil {
+		return "", fmt.Errorf("graphql viewer query: %w", err)
 	}
-	if app.Slug == "" {
-		return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return "", fmt.Errorf("read graphql viewer response: %w", err)
 	}
-	return app.Slug + "[bot]", nil
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
+			return "", &APIError{StatusCode: resp.StatusCode, Message: errResp.Message}
+		}
+		return "", &APIError{StatusCode: resp.StatusCode, Message: "graphql viewer query failed"}
+	}
+
+	var result struct {
+		Data struct {
+			Viewer struct {
+				Login string `json:"login"`
+			} `json:"viewer"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("decode graphql viewer response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("graphql viewer query: %s", result.Errors[0].Message)
+	}
+	if result.Data.Viewer.Login == "" {
+		return "", fmt.Errorf("graphql viewer query returned empty login")
+	}
+	return result.Data.Viewer.Login, nil
 }
 
 // ProbeInstallationToken reports whether token is a GitHub App installation

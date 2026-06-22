@@ -337,6 +337,40 @@ func TestGetAuthenticatedUser_FallbackToApp(t *testing.T) {
 	assert.Equal(t, "fullsend-ai-review[bot]", user)
 }
 
+func TestGetAuthenticatedUser_FallbackToGraphQL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Resource not accessible by integration",
+			})
+		case "/app":
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "A JSON web token could not be decoded",
+			})
+		case "/graphql":
+			assert.Equal(t, http.MethodPost, r.Method)
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"viewer": map[string]any{
+						"login": "fullsend-e2e[bot]",
+					},
+				},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	user, err := client.GetAuthenticatedUser(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-e2e[bot]", user)
+}
+
 func TestGetAuthenticatedUser_BothFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -350,6 +384,7 @@ func TestGetAuthenticatedUser_BothFail(t *testing.T) {
 	_, err := client.GetAuthenticatedUser(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "get authenticated user")
+	assert.Contains(t, err.Error(), "graphql fallback")
 }
 
 func TestGetAuthenticatedUser_AppEmptySlug(t *testing.T) {
