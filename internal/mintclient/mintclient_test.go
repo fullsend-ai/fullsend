@@ -81,6 +81,65 @@ func TestMintToken_HappyPath(t *testing.T) {
 	}
 }
 
+func TestMintToken_CrossOrgTarget(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+	}))
+	defer oidcServer.Close()
+
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body mintRequestBody
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Role != "e2e" {
+			t.Errorf("role = %q, want %q", body.Role, "e2e")
+		}
+		if body.TargetOrg != "halfsend-01" {
+			t.Errorf("target_org = %q, want %q", body.TargetOrg, "halfsend-01")
+		}
+		wantRepos := []string{"test-repo", ".fullsend", "e2e-lock"}
+		if len(body.Repos) != len(wantRepos) {
+			t.Fatalf("repos = %v, want %v", body.Repos, wantRepos)
+		}
+		for i, repo := range wantRepos {
+			if body.Repos[i] != repo {
+				t.Errorf("repos[%d] = %q, want %q", i, body.Repos[i], repo)
+			}
+		}
+
+		json.NewEncoder(w).Encode(MintResult{
+			Token:     "ghu_e2e_token",
+			ExpiresAt: "2026-06-11T23:30:00Z",
+		})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?dummy=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "test-request-token"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	result, err := MintToken(context.Background(), MintRequest{
+		MintURL:   mintServer.URL,
+		Role:      "e2e",
+		TargetOrg: "halfsend-01",
+		Repos:     []string{"test-repo", ".fullsend", "e2e-lock"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v", err)
+	}
+	if result.Token != "ghu_e2e_token" {
+		t.Errorf("token = %q, want %q", result.Token, "ghu_e2e_token")
+	}
+}
+
 func TestMintToken_CustomAudience(t *testing.T) {
 	var gotAudience string
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

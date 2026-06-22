@@ -2412,35 +2412,27 @@ func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, re
 // CreateOrUpdateOrgVariable creates or updates an org-level Actions variable
 // scoped to the given repository IDs.
 func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	if selectedRepoIDs == nil {
-		selectedRepoIDs = []int64{}
-	}
+	return c.createOrUpdateOrgVariable(ctx, org, name, value, "selected", selectedRepoIDs)
+}
 
-	// Try PATCH first (update existing).
-	patchPayload := map[string]any{
-		"value":                   value,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
+// CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
+// visible to all repositories in the org (visibility all).
+func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
+	return c.createOrUpdateOrgVariable(ctx, org, name, value, "all", nil)
+}
 
-	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), patchPayload)
+func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, value, visibility string, selectedRepoIDs []int64) error {
+	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value, visibility, selectedRepoIDs))
 	if err == nil {
 		resp.Body.Close()
 		return nil
 	}
 
-	// If the variable doesn't exist (404), create it.
 	if !isNotFound(err) {
 		return fmt.Errorf("update org variable %s: %w", name, err)
 	}
 
-	createPayload := map[string]any{
-		"name":                    name,
-		"value":                   value,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
-	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), createPayload)
+	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value, visibility, selectedRepoIDs))
 	if err != nil {
 		return fmt.Errorf("create org variable %s: %w", name, err)
 	}
@@ -2448,35 +2440,23 @@ func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, v
 	return nil
 }
 
-// CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
-// visible to all repositories in the org (visibility all).
-func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
-	patchPayload := map[string]any{
+// orgVariableBody builds a GitHub org Actions variable request body.
+// name is included only for create (POST) requests.
+func orgVariableBody(name, value, visibility string, selectedRepoIDs []int64) map[string]any {
+	body := map[string]any{
 		"value":      value,
-		"visibility": "all",
+		"visibility": visibility,
 	}
-
-	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), patchPayload)
-	if err == nil {
-		resp.Body.Close()
-		return nil
+	if name != "" {
+		body["name"] = name
 	}
-
-	if !isNotFound(err) {
-		return fmt.Errorf("update org variable %s: %w", name, err)
+	if visibility == "selected" {
+		if selectedRepoIDs == nil {
+			selectedRepoIDs = []int64{}
+		}
+		body["selected_repository_ids"] = selectedRepoIDs
 	}
-
-	createPayload := map[string]any{
-		"name":       name,
-		"value":      value,
-		"visibility": "all",
-	}
-	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), createPayload)
-	if err != nil {
-		return fmt.Errorf("create org variable %s: %w", name, err)
-	}
-	resp2.Body.Close()
-	return nil
+	return body
 }
 
 // OrgVariableExists checks if an org-level variable exists.

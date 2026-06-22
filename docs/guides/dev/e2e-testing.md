@@ -37,7 +37,7 @@ Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 In GitHub Actions, tests mint a cross-org installation token via the mint service:
 
 1. Workflow requests a GHA OIDC token (`id-token: write`)
-2. `resolveE2EToken` POSTs to `E2E_MINT_URL/v1/token` with `{role: "e2e", target_org: "<pool org>", repos: [...]}`
+2. `mintclient.MintToken` POSTs to `E2E_MINT_URL/v1/token` with `{role: "e2e", target_org: "<pool org>", repos: ["test-repo", ".fullsend", "e2e-lock"]}`
 3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0051](../../ADRs/0051-cross-org-mint-authorization-via-org-variables.md))
 
 Required repository secrets:
