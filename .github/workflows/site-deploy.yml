@@ -28,7 +28,7 @@ jobs:
     steps:
       # Trusted tree only: wrangler.toml must not come from PR checkout (no PR-controlled [build] on the deploy runner).
       # PR/fork Worker + static files ship in the Build Site artifact under _bundle/; we copy only public/ and worker/ (never extract TOML from the zip into cloudflare_site/).
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
@@ -40,7 +40,7 @@ jobs:
         run: npm ci
 
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: site
           path: _bundle
@@ -81,7 +81,7 @@ jobs:
       - name: Resolve preview context (PR number + preview alias)
         id: preview-context
         if: success()
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const run = context.payload.workflow_run;
@@ -220,7 +220,7 @@ jobs:
 
       - name: GitHub Deployment + preview comment
         if: steps.meta.outcome == 'success'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           DEPLOYMENT_URL: ${{ steps.meta.outputs.deployment_url }}
           PREVIEW_PR_NUMBER: ${{ steps.preview-context.outputs.pr_number }}
