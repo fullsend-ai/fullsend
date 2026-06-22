@@ -107,3 +107,7 @@ When in doubt, prefer the smaller change. One directory before an entire subtree
 
 - Upstream changes to fullsend skills, prompts, or sub-agents. Note these when relevant, but do not propose them as the primary action. The repo should be self-sufficient.
 - Changes to review agent model or architecture.
+
+## Constraints
+
+The consuming agent's definition is the authoritative source of prohibitions and output constraints. This skill does not restate them.
