@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -118,6 +119,63 @@ func TestEnrollmentLayer_Install_NoRepos(t *testing.T) {
 	assert.Contains(t, output, "no repositories to reconcile")
 }
 
+func TestEnrollmentLayer_Install_DispatchRetry(t *testing.T) {
+	now := time.Now().UTC()
+	client := &dispatchRetryClient{
+		FakeClient: forge.FakeClient{
+			WorkflowRuns: map[string]*forge.WorkflowRun{
+				"test-org/.fullsend/repo-maintenance.yml": {
+					ID:         1,
+					Status:     "completed",
+					Conclusion: "success",
+					CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+					HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
+				},
+			},
+		},
+		failUntil: 2,
+	}
+	repos := []string{"repo-a"}
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, client.attempts)
+	output := buf.String()
+	assert.Contains(t, output, "retrying")
+	assert.Contains(t, output, "dispatched repo-maintenance workflow")
+}
+
+type dispatchRetryClient struct {
+	forge.FakeClient
+	failUntil int
+	attempts  int
+}
+
+func (c *dispatchRetryClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ map[string]string) error {
+	c.attempts++
+	if c.attempts <= c.failUntil {
+		return fmt.Errorf("dispatch workflow repo-maintenance.yml: %w", &gh.APIError{
+			StatusCode: 422,
+			Message:    "Workflow does not have 'workflow_dispatch' trigger",
+		})
+	}
+	return nil
+}
+
+func TestIsWorkflowDispatchNotReady(t *testing.T) {
+	dispatchNotReady := fmt.Errorf("dispatch workflow repo-maintenance.yml: %w", &gh.APIError{
+		StatusCode: 422,
+		Message:    "Workflow does not have 'workflow_dispatch' trigger",
+	})
+	assert.True(t, isWorkflowDispatchNotReady(dispatchNotReady))
+	assert.False(t, isWorkflowDispatchNotReady(fmt.Errorf("dispatch workflow repo-maintenance.yml: %w", &gh.APIError{
+		StatusCode: 403,
+		Message:    "Forbidden",
+	})))
+	assert.False(t, isWorkflowDispatchNotReady(nil))
+}
+
 func TestEnrollmentLayer_Install_DispatchError(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{
@@ -155,17 +213,119 @@ func TestEnrollmentLayer_Install_WorkflowWarning(t *testing.T) {
 	assert.Contains(t, output, "conclusion: failure")
 }
 
-func TestEnrollmentLayer_Uninstall_Noop(t *testing.T) {
+func TestEnrollmentLayer_Uninstall_NoRepos(t *testing.T) {
 	client := &forge.FakeClient{}
-	layer, _ := newEnrollmentLayer(t, client, []string{"repo-a"}, nil)
+	layer, buf := newEnrollmentLayer(t, client, nil, nil)
 
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
 
-	assert.Empty(t, client.CreatedBranches)
-	assert.Empty(t, client.CreatedFiles)
-	assert.Empty(t, client.CreatedProposals)
-	assert.Empty(t, client.DeletedRepos)
+	output := buf.String()
+	assert.Contains(t, output, "no repositories to unenroll")
+}
+
+func TestEnrollmentLayer_Uninstall_DisablesAndDispatches(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Seed config.yaml with an enabled repo.
+	cfgYAML := `version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  max_implementation_retries: 2
+  auto_merge: false
+agents: []
+repos:
+  repo-a:
+    enabled: true
+  repo-b:
+    enabled: true
+`
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/.fullsend/config.yaml": []byte(cfgYAML),
+		},
+		WorkflowRuns: map[string]*forge.WorkflowRun{
+			"test-org/.fullsend/repo-maintenance.yml": {
+				ID:         42,
+				Status:     "completed",
+				Conclusion: "success",
+				CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+				HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/42",
+			},
+		},
+		PullRequests: map[string][]forge.ChangeProposal{
+			"test-org/repo-a": {
+				{Title: "chore: disconnect from fullsend agent pipeline", URL: "https://github.com/test-org/repo-a/pull/10"},
+			},
+			"test-org/repo-b": {
+				{Title: "chore: disconnect from fullsend agent pipeline", URL: "https://github.com/test-org/repo-b/pull/11"},
+			},
+		},
+	}
+
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-a", "repo-b"})
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "Disabled all repos in config")
+	assert.Contains(t, output, "Dispatched repo-maintenance for unenrollment")
+	assert.Contains(t, output, "Unenrollment completed successfully")
+	assert.Contains(t, output, "repo-a/pull/10")
+	assert.Contains(t, output, "repo-b/pull/11")
+
+	// Verify config was updated with all repos disabled.
+	require.Len(t, client.CreatedFiles, 1)
+	assert.Equal(t, "config.yaml", client.CreatedFiles[0].Path)
+	assert.Contains(t, string(client.CreatedFiles[0].Content), "enabled: false")
+	assert.NotContains(t, string(client.CreatedFiles[0].Content), "enabled: true")
+}
+
+func TestEnrollmentLayer_Uninstall_ConfigNotFound(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{},
+	}
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-a"})
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "config repo unavailable")
+}
+
+func TestEnrollmentLayer_Uninstall_DispatchError(t *testing.T) {
+	cfgYAML := `version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  max_implementation_retries: 2
+  auto_merge: false
+agents: []
+repos:
+  repo-a:
+    enabled: true
+`
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/.fullsend/config.yaml": []byte(cfgYAML),
+		},
+		Errors: map[string]error{
+			"DispatchWorkflow": assert.AnError,
+		},
+	}
+	layer, buf := newEnrollmentLayer(t, client, nil, []string{"repo-a"})
+
+	err := layer.Uninstall(context.Background())
+	require.NoError(t, err) // non-fatal
+
+	output := buf.String()
+	assert.Contains(t, output, "could not dispatch unenrollment workflow")
+	assert.Contains(t, output, "manual cleanup")
 }
 
 func TestEnrollmentLayer_Analyze_AllEnrolled(t *testing.T) {
@@ -367,4 +527,45 @@ func TestEnrollmentLayer_Analyze_PerRepoGuardCheckError(t *testing.T) {
 	require.Len(t, report.Details, 2)
 	assert.Contains(t, report.Details[0], "all 1 repos failed guard check")
 	assert.Contains(t, report.Details[1], "guard check failed, skipped")
+}
+
+func TestEnrollmentLayer_Install_WorkflowRegistrationWait(t *testing.T) {
+	now := time.Now().UTC()
+	client := &registrationWaitClient{
+		FakeClient: forge.FakeClient{
+			WorkflowRuns: map[string]*forge.WorkflowRun{
+				"test-org/.fullsend/repo-maintenance.yml": {
+					ID:         1,
+					Status:     "completed",
+					Conclusion: "success",
+					CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+				},
+			},
+		},
+		activeAfter: 2,
+	}
+	layer, buf := newEnrollmentLayer(t, client, []string{"repo-a"}, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, client.getAttempts)
+	assert.Contains(t, buf.String(), "waiting for repo-maintenance workflow registration")
+}
+
+type registrationWaitClient struct {
+	forge.FakeClient
+	activeAfter int
+	getAttempts int
+}
+
+func (c *registrationWaitClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Workflow, error) {
+	c.getAttempts++
+	if c.getAttempts < c.activeAfter {
+		return nil, forge.ErrNotFound
+	}
+	return &forge.Workflow{
+		Name:  repoMaintenanceWorkflow,
+		Path:  ".github/workflows/" + repoMaintenanceWorkflow,
+		State: "active",
+	}, nil
 }

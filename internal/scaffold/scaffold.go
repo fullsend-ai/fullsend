@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 )
 
@@ -129,6 +130,89 @@ func PerRepoCustomizedDirs() []string {
 		dirs = append(dirs, ".fullsend/customized/"+strings.TrimSuffix(d, "/"))
 	}
 	return dirs
+}
+
+// IsLayeredPath reports whether path is in a layered content directory.
+func IsLayeredPath(path string) bool {
+	for _, prefix := range layeredDirs {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUpstreamOnlyPath reports whether path is upstream-only infrastructure.
+func IsUpstreamOnlyPath(path string) bool {
+	for _, prefix := range upstreamOnlyDirs {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// WalkLayeredContent calls fn for layered directories and .github/scripts from fullsend-repo.
+func WalkLayeredContent(fn func(path string, content []byte) error) error {
+	return WalkFullsendRepoAll(func(path string, data []byte) error {
+		if !IsLayeredPath(path) && path != ".github/scripts/setup-agent-env.sh" {
+			return nil
+		}
+		return fn(path, data)
+	})
+}
+
+// WalkUpstream calls fn for upstream assets from the current module checkout.
+// Used by tests; install-time vendoring reads from ResolveVendorRoot instead.
+func WalkUpstream(fn func(path string, content []byte) error) error {
+	root, err := moduleRootFromScaffold()
+	if err != nil {
+		return err
+	}
+	return walkVendoredUpstreamFromRoot(root, fn)
+}
+
+const upstreamBase = "https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/"
+
+// ManagedHeader returns the managed-by header to prepend to a scaffold file
+// at install time, or an empty string if the file should not have one.
+// Files that support # comments (YAML, shell) get a header pointing to the
+// upstream source. Markdown, JSON, and .gitkeep files are skipped.
+func ManagedHeader(path string) string {
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".yml", ".yaml", ".sh", ".env":
+		return fmt.Sprintf(
+			"# This file is managed by fullsend. Do not edit it directly.\n# Upstream: %s%s\n",
+			upstreamBase, path,
+		)
+	default:
+		// Check for extensionless scripts (e.g. scripts/scan-secrets)
+		if strings.HasPrefix(path, "scripts/") && ext == "" {
+			return fmt.Sprintf(
+				"# This file is managed by fullsend. Do not edit it directly.\n# Upstream: %s%s\n",
+				upstreamBase, path,
+			)
+		}
+		return ""
+	}
+}
+
+// PrependManagedHeader prepends the managed-by header to file content.
+// If the file starts with a shebang (#!), the header is inserted after
+// the first line. Returns content unchanged if no header applies.
+func PrependManagedHeader(path string, content []byte) []byte {
+	header := ManagedHeader(path)
+	if header == "" {
+		return content
+	}
+	s := string(content)
+	if strings.HasPrefix(s, "#!") {
+		if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+			return []byte(s[:idx+1] + header + s[idx+1:])
+		}
+	}
+	return []byte(header + s)
 }
 
 func walkFullsendRepo(fn func(path string, content []byte) error, filter bool) error {

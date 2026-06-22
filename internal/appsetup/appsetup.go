@@ -135,7 +135,7 @@ type Setup struct {
 	permErrors   []string
 	publicApps   bool
 	appSet       string
-	storedAppIDs map[string]string // org/role → app_id from ROLE_APP_IDS
+	storedAppIDs map[string]string // role → app_id from ROLE_APP_IDS
 }
 
 // NewSetup creates a new Setup instance.
@@ -177,7 +177,7 @@ func (s *Setup) WithPublicApps(public bool) *Setup {
 	return s
 }
 
-// WithStoredAppIDs sets the stored ROLE_APP_IDS mapping (org/role → app_id)
+// WithStoredAppIDs sets the stored ROLE_APP_IDS mapping (role → app_id)
 // used to detect stale credentials when an app is deleted and recreated.
 func (s *Setup) WithStoredAppIDs(ids map[string]string) *Setup {
 	s.storedAppIDs = ids
@@ -509,7 +509,7 @@ func (s *Setup) isAppIDStale(org, role string, liveID int) bool {
 	if s.storedAppIDs == nil {
 		return false
 	}
-	storedID, ok := s.storedAppIDs[org+"/"+role]
+	storedID, ok := s.storedAppIDs[role]
 	if !ok {
 		return false
 	}

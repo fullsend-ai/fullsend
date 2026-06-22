@@ -47,8 +47,10 @@ func TestFindInstallation(t *testing.T) {
 		assert.Equal(t, "/repos/myorg/my-repo/installation", r.URL.Path)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 		json.NewEncoder(w).Encode(installationResponse{
-			ID:      42,
-			Account: struct{ Login string `json:"login"` }{Login: "myorg"},
+			ID: 42,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "myorg"},
 		})
 	}))
 	defer mockGH.Close()
@@ -61,8 +63,10 @@ func TestFindInstallation(t *testing.T) {
 func TestFindInstallation_OrgMismatch(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(installationResponse{
-			ID:      42,
-			Account: struct{ Login string `json:"login"` }{Login: "other-org"},
+			ID: 42,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "other-org"},
 		})
 	}))
 	defer mockGH.Close()
@@ -100,7 +104,7 @@ func TestCreateInstallationToken_UnknownRole(t *testing.T) {
 }
 
 func TestRolePermissions_AllRolesPresent(t *testing.T) {
-	expectedRoles := []string{"triage", "coder", "review", "fix", "retro", "prioritize", "fullsend"}
+	expectedRoles := []string{"triage", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e"}
 	allPerms := RolePermissions()
 	for _, role := range expectedRoles {
 		perms, ok := allPerms[role]
@@ -109,6 +113,22 @@ func TestRolePermissions_AllRolesPresent(t *testing.T) {
 		_, hasMetadata := perms["metadata"]
 		assert.True(t, hasMetadata, "role %q should have metadata permission", role)
 	}
+}
+
+func TestRolePermissions_E2e(t *testing.T) {
+	perms := RolePermissionsFor("e2e")
+	require.NotNil(t, perms)
+	assert.Equal(t, "write", perms["actions"])
+	assert.Equal(t, "read", perms["actions_variables"])
+	assert.Equal(t, "write", perms["administration"])
+	assert.Equal(t, "write", perms["contents"])
+	assert.Equal(t, "write", perms["issues"])
+	assert.Equal(t, "write", perms["members"])
+	assert.Equal(t, "read", perms["metadata"])
+	assert.Equal(t, "write", perms["organization_administration"])
+	assert.Equal(t, "write", perms["pull_requests"])
+	assert.Equal(t, "write", perms["secrets"])
+	assert.Equal(t, "write", perms["workflows"])
 }
 
 func TestRolePermissions_ReturnsCopy(t *testing.T) {

@@ -72,7 +72,7 @@ func (f *fakeDispatcher) Provision(_ context.Context) (map[string]string, error)
 	}
 	return f.variables, nil
 }
-func (f *fakeDispatcher) StoreAgentPEM(_ context.Context, _, _ string, _ []byte) error {
+func (f *fakeDispatcher) StoreAgentPEM(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
 func (f *fakeDispatcher) OrgSecretNames() []string   { return f.secretNames }

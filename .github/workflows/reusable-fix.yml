@@ -68,6 +68,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         uses: actions/checkout@v6
         with:
           repository: fullsend-ai/fullsend
@@ -113,6 +114,7 @@ jobs:
           done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
 
       - name: Validate enrollment and extract repo metadata
         id: repo-parts
@@ -253,7 +255,8 @@ jobs:
           # agent execution, allowing at most +1 overshoot. The concurrency
           # group's cancel-in-progress mostly prevents this.
           FIX_COMMITS="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/commits" \
-            --paginate --jq '[.[] | select(.commit.author.name == "fullsend-fix")] | length' 2>/dev/null)" \
+            --paginate 2>/dev/null \
+            | jq -s 'add | [.[] | select(.commit.author.name == "fullsend-fix")] | length')" \
             || { echo "::warning::Could not count prior fix commits — defaulting to cap"; FIX_COMMITS="${ITERATION_CAP:-5}"; }
           ITERATION=$(( FIX_COMMITS + 1 ))
           echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
@@ -377,3 +380,7 @@ jobs:
         with:
           agent: fix
           version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          status-number: ${{ steps.context.outputs.pr_number }}
+          mint-url: ${{ inputs.mint_url }}

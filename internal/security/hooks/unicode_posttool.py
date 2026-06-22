@@ -24,7 +24,7 @@ import sys
 import unicodedata
 from datetime import UTC, datetime
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_DECODED_LOG = 200
 
 # --- Unicode categories to detect ---

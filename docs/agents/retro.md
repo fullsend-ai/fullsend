@@ -46,6 +46,10 @@ The retro agent does not apply or consume control labels.
 See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Customizing with Skills](../guides/user/customizing-with-skills.md).
 
+### Variables
+
+None.
+
 ## Source
 
 [`internal/scaffold/fullsend-repo/harness/retro.yaml`](../../internal/scaffold/fullsend-repo/harness/retro.yaml)

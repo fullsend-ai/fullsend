@@ -2,6 +2,7 @@
   import type { ManifestNode } from "virtual:fullsend-docs";
   import DocTreeNav from "./DocTreeNav.svelte";
   import { highlightSegments } from "./filterTree";
+  import { formatDocHash } from "./hashRoute";
   import { navigateToRouteKey } from "./routing";
 
   interface Props {
@@ -121,12 +122,12 @@
           {/if}
         </div>
       {:else}
-        <button
-          type="button"
+        <a
+          href={formatDocHash(node.routeKey)}
           class="doc-tree-link"
           class:doc-tree-link--active={node.routeKey === activeRouteKey}
           data-doc-tree-route={node.routeKey}
-          onclick={() => navigateToRouteKey(node.routeKey)}
+          onclick={(e: MouseEvent) => { e.preventDefault(); navigateToRouteKey(node.routeKey); }}
         >
           <span class="doc-tree-chevron-slot" aria-hidden="true"></span>
           <span class="doc-tree-doc-glyph" aria-hidden="true">
@@ -138,7 +139,7 @@
             </svg>
           </span>
           <span class="doc-tree-link-text">{#each highlightSegments(node.title, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
-        </button>
+        </a>
       {/if}
     </li>
   {/each}

@@ -98,9 +98,9 @@ func parseTranscriptFile(path string) (TranscriptError, bool) {
 
 	return TranscriptError{
 		Source:       filepath.Base(path),
-		IsError:     lastResult.IsError,
+		IsError:      lastResult.IsError,
 		ErrorMessage: truncateError(lastResult.Result),
-		Subtype:     lastResult.Subtype,
+		Subtype:      lastResult.Subtype,
 	}, true
 }
 

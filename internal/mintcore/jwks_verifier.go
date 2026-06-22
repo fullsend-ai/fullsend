@@ -36,12 +36,12 @@ type JWKSVerifier struct {
 	allowedWorkflowFiles []string
 	perRepoWIFRepos      map[string]bool
 
-	mu             sync.RWMutex
-	keys           map[string]*rsa.PublicKey
-	cachedJWKSURI  string
-	fetchedAt      time.Time
-	lastKidMissAt  time.Time
-	refreshGroup   singleflight.Group
+	mu            sync.RWMutex
+	keys          map[string]*rsa.PublicKey
+	cachedJWKSURI string
+	fetchedAt     time.Time
+	lastKidMissAt time.Time
+	refreshGroup  singleflight.Group
 }
 
 // JWKSVerifierConfig configures a new JWKSVerifier.

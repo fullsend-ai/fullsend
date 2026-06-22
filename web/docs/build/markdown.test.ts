@@ -66,4 +66,49 @@ describe("markdownToHtml", () => {
     const { html } = await markdownToHtml(md, "docs/vision.md", repoRoot);
     expect(html).toContain('href="#/problems/applied/"');
   });
+
+  it("rewrites link escaping docs/ to GitHub blob URL", async () => {
+    // docs/ADRs/ → routeKeyDir=ADRs → join(ADRs, ../../README.md) = ../README.md → escapes docs/
+    const md = "[readme](../../README.md)";
+    const { html } = await markdownToHtml(
+      md,
+      "docs/ADRs/0002-initial-fullsend-design.md",
+      repoRoot,
+    );
+    expect(html).toContain(
+      'href="https://github.com/fullsend-ai/fullsend/blob/main/README.md"',
+    );
+  });
+
+  it("rewrites non-.md link escaping docs/ to GitHub blob URL", async () => {
+    // docs/site-deployment.md → routeKeyDir="" → join("", ../.github/workflows/site-build.yml)
+    const md = "[workflow](../.github/workflows/site-build.yml)";
+    const { html } = await markdownToHtml(
+      md,
+      "docs/site-deployment.md",
+      repoRoot,
+    );
+    expect(html).toContain(
+      'href="https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-build.yml"',
+    );
+  });
+
+  it("preserves fragment when rewriting outside-docs link", async () => {
+    const md = "[workflow](../.github/workflows/site-build.yml#L10)";
+    const { html } = await markdownToHtml(
+      md,
+      "docs/site-deployment.md",
+      repoRoot,
+    );
+    expect(html).toContain(
+      'href="https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-build.yml#L10"',
+    );
+  });
+
+  it("does not rewrite link that escapes the repo root", async () => {
+    // ../../../../etc/passwd from docs/vision.md escapes repo root — no rewrite
+    const md = "[outside](../../../../etc/passwd)";
+    const { html } = await markdownToHtml(md, "docs/vision.md", repoRoot);
+    expect(html).not.toContain("github.com/fullsend-ai/fullsend");
+  });
 });

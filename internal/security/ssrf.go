@@ -26,10 +26,10 @@ func NewSSRFValidator() *SSRFValidator {
 	return &SSRFValidator{
 		blockedHosts: map[string]bool{
 			"metadata.google.internal": true,
-			"metadata.goog":           true,
-			"169.254.169.254":         true,
-			"100.100.100.200":         true,
-			"fd00:ec2::254":           true,
+			"metadata.goog":            true,
+			"169.254.169.254":          true,
+			"100.100.100.200":          true,
+			"fd00:ec2::254":            true,
 		},
 	}
 }

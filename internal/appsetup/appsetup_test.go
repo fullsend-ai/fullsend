@@ -365,6 +365,36 @@ func TestSetup_ExistingApp_OrgOwned_NoSecret_EntersRecovery(t *testing.T) {
 	assert.Contains(t, err.Error(), "private key secret is missing")
 }
 
+func TestSetup_ExistingApp_NoSecretExistsFunc_ReuseSilently(t *testing.T) {
+	// When no secretExists callback is configured (e.g. github setup in
+	// OIDC mint mode with no local GCP project), existing apps should be
+	// reused silently without prompting for a PEM file.
+	client := &forge.FakeClient{
+		Installations: []forge.Installation{
+			{ID: 100, AppID: 10, AppSlug: "fullsend-triage"},
+		},
+		AppClientIDs: map[string]string{
+			"fullsend-triage": "Iv1.triage123",
+		},
+	}
+	prompter := &fakePrompter{}
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, newFakeBrowser(), printer).
+		WithAppSet("fullsend")
+	// Deliberately NOT calling WithSecretExists — simulates the OIDC
+	// mint-URL-only path where the remote mint manages PEMs.
+
+	creds, err := s.Run(context.Background(), "myorg", "triage")
+	require.NoError(t, err)
+	assert.Equal(t, 10, creds.AppID)
+	assert.Equal(t, "fullsend-triage", creds.Slug)
+	assert.Equal(t, "Iv1.triage123", creds.ClientID)
+	assert.Empty(t, creds.PEM, "PEM should be empty to signal reuse")
+	assert.False(t, prompter.confirmCalled, "should not prompt for PEM recovery")
+	assert.False(t, prompter.readLineCalled, "should not ask for PEM file path")
+}
+
 func TestIsOrgOwned(t *testing.T) {
 	s := &Setup{}
 
@@ -992,7 +1022,7 @@ func TestSetup_ExistingApp_StaleAppID_TriggersRecovery(t *testing.T) {
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"}).
+		WithStoredAppIDs(map[string]string{"fullsend": "10"}).
 		WithStoreSecret(func(_ context.Context, _, p string) error {
 			storedPEM = p
 			return nil
@@ -1021,7 +1051,7 @@ func TestSetup_ExistingApp_MatchingAppID_Reuses(t *testing.T) {
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"})
+		WithStoredAppIDs(map[string]string{"fullsend": "10"})
 
 	creds, err := s.Run(context.Background(), "myorg", "fullsend")
 	require.NoError(t, err)
@@ -1062,8 +1092,8 @@ func TestIsAppIDStale(t *testing.T) {
 	})
 
 	s.storedAppIDs = map[string]string{
-		"myorg/fullsend":   "10",
-		"myorg/prioritize": "20",
+		"fullsend":   "10",
+		"prioritize": "20",
 	}
 
 	t.Run("matching ID returns false", func(t *testing.T) {
@@ -1094,7 +1124,7 @@ func TestSetup_ExistingApp_StaleAppID_UserDeclines(t *testing.T) {
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"})
+		WithStoredAppIDs(map[string]string{"fullsend": "10"})
 
 	_, err := s.Run(context.Background(), "myorg", "fullsend")
 	require.Error(t, err)

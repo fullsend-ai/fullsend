@@ -25,12 +25,12 @@ plugins:
 
 host_files:
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/workspace/.gcp-credentials.json
+    dest: /tmp/.gcp-credentials.json
   - src: ${GCP_OIDC_TOKEN_FILE}
-    dest: /tmp/workspace/.gcp-oidc-token
+    dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
 pre_script: scripts/pre-code.sh
@@ -54,6 +54,11 @@ providers:                       # Inference providers (loaded from providers/ d
 
 validation_loop:
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
+
+allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
+  - https://github.com/org/       # Resources must match a prefix to be fetched
+allow_runtime_fetch: true         # Opt-in to runtime skill fetching (default: false)
+max_runtime_fetches: 10           # Max runtime fetch requests per run (1–1000, default: 10)
 
 security:                        # Security is enabled by default with fail_mode: closed
   enabled: true                  # All scanners enabled by default
@@ -160,10 +165,11 @@ To add a custom skill to the code agent's harness:
      - skills/my-custom-validation      # Your custom skill
    ```
 
-3. **Add your custom skill file**:
+3. **Add your custom skill directory**:
    ```bash
    # Create your custom skill
-   cat > .fullsend/customized/skills/my-custom-validation.md <<'EOF'
+   mkdir -p .fullsend/customized/skills/my-custom-validation
+   cat > .fullsend/customized/skills/my-custom-validation/SKILL.md <<'EOF'
    # My Custom Validation Skill
 
    [Your skill content...]
@@ -174,7 +180,7 @@ To add a custom skill to the code agent's harness:
 - Copies upstream defaults to `harness/`, `skills/`, etc.
 - Copies your `customized/` files on top, **replacing** any files with matching names
 - The harness loads `harness/code.yaml` (now your customized version)
-- Your skill at `skills/my-custom-validation.md` is available
+- Your skill at `skills/my-custom-validation/` is available
 
 **Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
 
@@ -200,10 +206,10 @@ Each agent role has its own identity, permissions, and purpose:
 │  App naming: {org}-{role}                                   │
 │  Bot naming: {org}-{role}[bot]                              │
 │  PEM storage: GCP Secret Manager                            │
-│  Secret name: fullsend-{org}--{role}-app-pem                │
+│  Secret name: fullsend-{role}-app-pem                       │
 │                                                             │
-│  Note: "fix" role reuses the "coder" app — no separate      │
-│  GitHub App is created for it.                               │
+│  Note: "fix" role reuses the "coder" app and PEM — no       │
+│  separate GitHub App or secret is created for it.          │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -212,7 +218,7 @@ Each agent role has its own identity, permissions, and purpose:
 
 ### Adding a Custom Skill
 
-Create `.fullsend/customized/skills/my-skill.md` in your config repo:
+Create `.fullsend/customized/skills/my-skill/SKILL.md` in your config repo:
 
 ```markdown
 # My Custom Skill
@@ -224,7 +230,7 @@ Custom domain knowledge for this organization.
 ...
 ```
 
-The skill will be automatically available to all agents that include `skills/my-skill.md` in their harness configuration.
+The skill will be automatically available to all agents that include `skills/my-skill/` in their harness configuration.
 
 ### Overriding an Agent Definition
 
@@ -259,12 +265,12 @@ plugins:
 
 host_files:
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/workspace/.gcp-credentials.json
+    dest: /tmp/.gcp-credentials.json
   - src: ${GCP_OIDC_TOKEN_FILE}
-    dest: /tmp/workspace/.gcp-oidc-token
+    dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
 pre_script: scripts/pre-code.sh
@@ -280,7 +286,7 @@ runner_env:
   REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
-Then create your custom skill at `.fullsend/customized/skills/my-custom-linting.md`.
+Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
 
 ### Per-Repo Overrides
 
@@ -291,12 +297,12 @@ my-repo/
 ├── .fullsend/
 │   └── customized/
 │       ├── agents/code.md         # Repo-specific agent instructions
-│       ├── skills/repo-skill.md   # Repo-specific skill
+│       ├── skills/repo-skill/     # Repo-specific skill (contains SKILL.md)
 │       └── harness/code.yaml      # Repo-specific harness config
 ```
 
 ## See Also
 
-- [Installation Guide](../getting-started/installation.md) - Initial setup
+- [Installation Guide](../../reference/installation.md) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md)

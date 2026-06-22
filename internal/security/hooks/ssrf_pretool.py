@@ -51,7 +51,7 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 
 def log_finding(scanner: str, name: str, severity: str, detail: str, action: str):

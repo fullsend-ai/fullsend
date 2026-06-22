@@ -45,8 +45,9 @@ type Handler struct {
 
 	githubBaseURL string
 
-	roleAppIDs   map[string]string
-	allowedRoles []string
+	roleAppIDs       map[string]string
+	allowedRoles     []string
+	legacyAppIDsOnly bool // ROLE_APP_IDS has org/role keys but no role-only keys
 }
 
 // NewHandler creates a Handler with the given dependencies.
@@ -70,14 +71,13 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
 		}
-		h.roleAppIDs = ids
+		h.roleAppIDs = RoleOnlyAppIDs(ids)
+		h.legacyAppIDsOnly = legacyAppIDsOnly(ids)
 	}
 
-	roleSet := make(map[string]bool)
-	for key := range h.roleAppIDs {
-		if idx := strings.Index(key, "/"); idx >= 0 {
-			roleSet[key[idx+1:]] = true
-		}
+	roleSet := make(map[string]bool, len(h.roleAppIDs))
+	for role := range h.roleAppIDs {
+		roleSet[role] = true
 	}
 
 	if raw := os.Getenv("ALLOWED_ROLES"); raw != "" {
@@ -101,7 +101,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but RolePermissions has no entry for it", role)
 		}
 		if !roleSet[role] {
-			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but ROLE_APP_IDS has no org-scoped entry for it", role)
+			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but ROLE_APP_IDS has no entry for it", role)
 		}
 	}
 
@@ -111,9 +111,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 // ServeHTTP handles incoming token mint requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"status":"ok"}`)
+		h.handleHealth(w)
 		return
 	}
 
@@ -216,9 +214,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("minted: org=%s role=%s requested_repos=%v source_repo=%s workflow_ref=%s",
-		org, req.Role, req.Repos, claims.Repository, claims.JobWorkflowRef)
 	if granted != nil {
+		log.Printf("minted: org=%s role=%s app_id=%s installation_id=%d requested_repos=%v source_repo=%s workflow_ref=%s",
+			org, req.Role, granted.AppID, granted.InstallationID, req.Repos, claims.Repository, claims.JobWorkflowRef)
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
 			granted.Repos, granted.Permissions, granted.RepoSelection)
 		if granted.RepoSelection == "all" {
@@ -255,18 +253,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (h *Handler) handleHealth(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.legacyAppIDsOnly {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "unhealthy",
+			"reason": "ROLE_APP_IDS contains legacy org/role keys but no role-only keys; migration required",
+		})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, `{"status":"ok"}`)
+}
+
 func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	org := strings.ToLower(claims.RepositoryOwner)
-	prefix := org + "/"
-
-	roles := make([]string, 0)
-	for key := range h.roleAppIDs {
-		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, prefix) {
-			roles = append(roles, strings.TrimPrefix(lower, prefix))
-		}
-	}
-	sort.Strings(roles)
+	roles := append([]string(nil), h.allowedRoles...)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -280,12 +283,12 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 }
 
 func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
-	appID, err := h.lookupRoleAppID(org, role)
+	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
 	}
 
-	pemData, err := h.pemAccessor.AccessPEM(ctx, org, role)
+	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("reading PEM secret for role %s: %v", role, err)}
 	}
@@ -310,6 +313,11 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 
+	if granted != nil {
+		granted.AppID = appID
+		granted.InstallationID = installationID
+	}
+
 	return token, expiresAt, granted, nil
 }
 
@@ -322,21 +330,59 @@ func (h *Handler) checkAllowedRole(role string) bool {
 	return false
 }
 
-func (h *Handler) lookupRoleAppID(org, role string) (string, error) {
+// legacyAppIDsOnly reports whether ids contains org/role keys but no role-only
+// keys. An empty map or unset ROLE_APP_IDS is not a migration failure.
+func legacyAppIDsOnly(ids map[string]string) bool {
+	if len(ids) == 0 || len(RoleOnlyAppIDs(ids)) > 0 {
+		return false
+	}
+	for key := range ids {
+		if strings.Contains(key, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// RoleOnlyAppIDs extracts role-keyed entries from ROLE_APP_IDS, ignoring
+// legacy org/role keys left over during migration.
+func RoleOnlyAppIDs(ids map[string]string) map[string]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(ids))
+	for key, appID := range ids {
+		if strings.Contains(key, "/") {
+			continue
+		}
+		out[key] = appID
+	}
+	return out
+}
+
+func (h *Handler) lookupRoleAppID(role string) (string, error) {
 	if h.roleAppIDs == nil {
 		return "", fmt.Errorf("ROLE_APP_IDS not set or invalid")
 	}
 
-	lookup := strings.ToLower(org + "/" + role)
-	for key, appID := range h.roleAppIDs {
-		if strings.ToLower(key) == lookup {
-			if appID == "" {
-				return "", fmt.Errorf("no app ID configured for role %q (org %q)", role, org)
+	lookupRole := PemSecretRole(role)
+	appID, ok := h.roleAppIDs[lookupRole]
+	if !ok {
+		for key, id := range h.roleAppIDs {
+			if strings.EqualFold(key, lookupRole) {
+				appID = id
+				ok = true
+				break
 			}
-			return appID, nil
 		}
 	}
-	return "", fmt.Errorf("no app ID configured for role %q (org %q)", role, org)
+	if !ok {
+		return "", fmt.Errorf("no app ID configured for role %q", role)
+	}
+	if appID == "" {
+		return "", fmt.Errorf("no app ID configured for role %q", role)
+	}
+	return appID, nil
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.

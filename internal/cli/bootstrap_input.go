@@ -18,10 +18,10 @@ type harnessBootstrapWithHooks struct {
 	hooks security.ClaudeSandboxHooks
 }
 
-func (b *harnessBootstrap) SandboxName() string   { return b.sandboxName }
-func (b *harnessBootstrap) AgentPath() string     { return b.agentPath }
-func (b *harnessBootstrap) SkillDirs() []string   { return b.skillDirs }
-func (b *harnessBootstrap) PluginDirs() []string  { return b.pluginDirs }
+func (b *harnessBootstrap) SandboxName() string  { return b.sandboxName }
+func (b *harnessBootstrap) AgentPath() string    { return b.agentPath }
+func (b *harnessBootstrap) SkillDirs() []string  { return b.skillDirs }
+func (b *harnessBootstrap) PluginDirs() []string { return b.pluginDirs }
 
 func (b *harnessBootstrapWithHooks) ClaudeSandboxHooks() security.ClaudeSandboxHooks {
 	return b.hooks

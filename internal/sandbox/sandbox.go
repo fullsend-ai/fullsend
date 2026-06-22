@@ -14,9 +14,9 @@ import (
 
 const (
 	// SandboxWorkspace is the workspace directory inside the sandbox.
-	SandboxWorkspace = "/tmp/workspace" //nolint:gosec // not a credential
+	SandboxWorkspace = "/sandbox/workspace" //nolint:gosec // not a credential
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
-	SandboxClaudeConfig = "/tmp/claude-config" //nolint:gosec // not a credential
+	SandboxClaudeConfig = "/sandbox/claude-config" //nolint:gosec // not a credential
 
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second
@@ -75,8 +75,29 @@ func sanitizeDownload(localDir string) error {
 			return filepath.SkipDir
 		}
 
+		// Remove AppleDouble (._*) files inside .git/ directories.
+		// These are created by macOS bsdtar when archiving files with
+		// extended attributes and corrupt git when extracted on Linux.
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "._") && inGitDir(path, absLocal) {
+			return os.Remove(path)
+		}
+
 		return nil
 	})
+}
+
+// inGitDir reports whether path is inside a ".git" directory under root.
+func inGitDir(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, component := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+		if component == ".git" {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureProvider creates or updates a provider on the gateway. Credential
@@ -94,14 +115,49 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Redact known credential values from error output.
 		outStr := string(out)
+		// openshell emits: code: 'Some entity that we attempted to create already exists', message: "provider already exists"
+		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
+			// Provider exists from a prior run — update it with current credentials.
+			return updateProvider(name, credentials, config, extraEnv, secrets)
+		}
+		// Redact known credential values from error output.
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
 		return fmt.Errorf("provider create %q failed: %s", name, outStr)
 	}
 	return nil
+}
+
+// updateProvider runs openshell provider update for an already-existing provider.
+func updateProvider(name string, credentials, config map[string]string, extraEnv, secrets []string) error {
+	args := buildProviderUpdateArgs(name, credentials, config)
+	cmd := exec.Command("openshell", args...)
+	cmd.Env = append(os.Environ(), extraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := string(out)
+		for _, s := range secrets {
+			outStr = strings.ReplaceAll(outStr, s, "***")
+		}
+		return fmt.Errorf("provider update %q failed: %s", name, outStr)
+	}
+	return nil
+}
+
+// buildProviderUpdateArgs constructs CLI args for openshell provider update.
+// The update subcommand takes a positional name (not --name/--type).
+func buildProviderUpdateArgs(name string, credentials, config map[string]string) []string {
+	args := []string{"provider", "update", name}
+	for k := range credentials {
+		args = append(args, "--credential", k)
+	}
+	for k, v := range config {
+		expanded := os.ExpandEnv(v)
+		args = append(args, "--config", k+"="+expanded)
+	}
+	return args
 }
 
 // buildProviderArgs constructs the CLI args and child environment entries for
@@ -293,8 +349,15 @@ func Delete(name string) error {
 }
 
 // Exec runs a command inside a sandbox and returns stdout, stderr, and exit code.
+// It uses context.Background() internally. Use ExecContext for cancellation support.
 func Exec(sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+10*time.Second)
+	return ExecContext(context.Background(), sandboxName, command, timeout)
+}
+
+// ExecContext is like Exec but accepts a parent context for cancellation.
+// Cancelling the parent (e.g. on SIGTERM) terminates the subprocess.
+func ExecContext(ctx context.Context, sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
 
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
@@ -331,8 +394,13 @@ func Exec(sandboxName, command string, timeout time.Duration) (stdout, stderr st
 // ExecStreamReader runs a command inside a sandbox, returning an io.ReadCloser for
 // stdout so the caller can parse structured output. Stderr is forwarded to the
 // given writer. The caller must read stdout to completion, then call cmd.Wait().
-func ExecStreamReader(sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+//
+// The parent context is used as the base for the timeout context, so
+// cancelling the parent (e.g. on SIGTERM) terminates the subprocess. This
+// allows CLI-level signal handling to propagate into long-running sandbox
+// commands.
+func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "exec",
@@ -377,6 +445,66 @@ func Upload(sandboxName, localPath, remotePath string) error {
 	return nil
 }
 
+// shellQuote wraps s in single quotes with internal single quotes escaped,
+// making it safe to interpolate into a sh -c command string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// UploadFile copies a single local file into a sandbox at a specific remote path.
+// It checks if the remotePath is a file and if it is not it tries to fix it. This is
+// because of `openshell sandbox upload` in a git environment. Check
+// https://github.com/NVIDIA/OpenShell/issues/1740 for more information. When that gets
+// addressed, this can go away.
+func UploadFile(sandboxName, localPath, remotePath string) error {
+	if err := Upload(sandboxName, localPath, remotePath); err != nil {
+		return err
+	}
+
+	_, _, exitCode, err := Exec(sandboxName, fmt.Sprintf("test -f %s", shellQuote(remotePath)), 1*time.Second)
+	if err != nil {
+		return err
+	}
+
+	if exitCode != 0 {
+		wrongPath := fmt.Sprintf("%s/%s", remotePath, filepath.Base(localPath))
+		_, _, exitCode, err := Exec(sandboxName, fmt.Sprintf("test -f %s", shellQuote(wrongPath)), 1*time.Second)
+		if err != nil {
+			return err
+		}
+
+		if exitCode != 0 {
+			return fmt.Errorf("checking for file: %s", wrongPath)
+		}
+
+		tmpPath := fmt.Sprintf("/tmp/%s", filepath.Base(remotePath))
+		stdout, stderr, exitCode, err := Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(wrongPath), shellQuote(tmpPath)), 1*time.Second)
+		if err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("fixing UploadFile path: %s, %s", stdout, stderr)
+		}
+
+		stdout, stderr, exitCode, err = Exec(sandboxName, fmt.Sprintf("rm -r %s", shellQuote(remotePath)), 1*time.Second)
+		if err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("fixing UploadFile path: %s, %s", stdout, stderr)
+		}
+
+		stdout, stderr, exitCode, err = Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(tmpPath), shellQuote(remotePath)), 1*time.Second)
+		if err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("fixing UploadFile path: %s, %s", stdout, stderr)
+		}
+	}
+	return nil
+}
+
 // UploadDir uploads a local directory into a sandbox, preserving symlinks.
 // openshell sandbox upload dereferences symlinks; this builds a local tarball
 // with --no-dereference, uploads it, and extracts it in the sandbox.
@@ -390,6 +518,11 @@ func UploadDir(sandboxName, localPath, remotePath string) error {
 	defer os.Remove(tmpPath)
 
 	tarCmd := exec.Command("tar", "-czf", tmpPath, "-C", localPath, ".")
+	// Suppress macOS AppleDouble (._*) files in the tarball. On macOS,
+	// bsdtar generates ._* companion files for any file with extended
+	// attributes. These corrupt .git after a sandbox round-trip.
+	// COPYFILE_DISABLE is a no-op on Linux.
+	tarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
 	if out, tarErr := tarCmd.CombinedOutput(); tarErr != nil {
 		return fmt.Errorf("creating tarball of %q: %s: %w", localPath, string(out), tarErr)
 	}
@@ -478,8 +611,8 @@ func CollectLogs(name, source string) (string, error) {
 }
 
 const (
-	podmanLogTimeout  = 15 * time.Second
-	maxContainerLogs  = 1 << 20 // 1 MB
+	podmanLogTimeout   = 15 * time.Second
+	maxContainerLogs   = 1 << 20 // 1 MB
 	podmanLogTailLines = "200"
 )
 

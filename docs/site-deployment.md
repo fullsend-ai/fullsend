@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository publishes a static documentation site whose root page is built from [`web/public/index.html`](../web/public/index.html). **Vite** is rooted at **`web/`**; **`npm run build`** writes **`web/dist/`** with shared chunks in **`web/dist/assets/`**, the **admin** SPA under **`web/dist/admin/`** (see [`web/admin/README.md`](../web/admin/README.md)), and the **docs browser** under **`web/dist/docs/`** (see [`web/docs/README.md`](../web/docs/README.md)). CI copies **`assets/`**, **`admin/`**, and **`docs/`** into **`_bundle/public/`** so the Worker serves **`/admin/`** and **`/docs/`** from the same static asset tree. OAuth/CORS hardening for that Worker is summarized in [`docs/admin-oauth-worker.md`](admin-oauth-worker.md) (path-specific CORS for `/api/github/user`, no separate “OAuth enabled” env flag).
+This repository publishes a static documentation site. The root landing page is [`web/public/index.html`](../web/public/index.html); the interactive document graph is [`web/public/graph.html`](../web/public/graph.html) (served at `/graph.html`). **Vite** is rooted at **`web/`**; **`npm run build`** writes **`web/dist/`** with shared chunks in **`web/dist/assets/`**, the **admin** SPA under **`web/dist/admin/`** (see [`web/admin/README.md`](../web/admin/README.md)), and the **docs browser** under **`web/dist/docs/`** (see [`web/docs/README.md`](../web/docs/README.md)). CI copies **`assets/`**, **`admin/`**, and **`docs/`** into **`_bundle/public/`** so the Worker serves **`/admin/`** and **`/docs/`** from the same static asset tree. OAuth/CORS hardening for that Worker is summarized in [`docs/admin-oauth-worker.md`](admin-oauth-worker.md) (path-specific CORS for `/api/github/user`, no separate “OAuth enabled” env flag).
 
 **Build Site** runs **`npm ci`** and **`npm run build`** at the repository root, then packs **`public/`** (static files, including those three trees from `web/dist/`) and **`worker/`** (TypeScript Worker from the same checkout—PR head on PR builds) under **`_bundle/`** in one artifact. **Deploy Site** checks out **only the default branch** (trusted [`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml); never PR-controlled config on the secret-bearing runner), downloads the artifact to **`_bundle/`**, then **copies only** **`_bundle/public/`** and **`_bundle/worker/`** into **`cloudflare_site/`** (so a malicious artifact cannot overwrite `wrangler.toml` or other repo files), then runs Wrangler. Deployment uses **Cloudflare Workers with [static assets](https://developers.cloudflare.com/workers/static-assets/)** (not the legacy **Pages direct-upload** / `wrangler pages deploy` flow).
 
@@ -74,6 +74,7 @@ mkdir -p cloudflare_site/public/assets
 mkdir -p cloudflare_site/public/admin
 mkdir -p cloudflare_site/public/docs
 cp web/public/index.html cloudflare_site/public/index.html
+cp web/public/graph.html cloudflare_site/public/graph.html
 cp -a web/dist/assets/. cloudflare_site/public/assets/
 cp -a web/dist/admin/. cloudflare_site/public/admin/
 cp -a web/dist/docs/. cloudflare_site/public/docs/

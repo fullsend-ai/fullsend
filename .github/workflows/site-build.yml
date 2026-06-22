@@ -37,6 +37,7 @@ jobs:
           set -euo pipefail
           mkdir -p _bundle/public
           cp web/public/index.html _bundle/public/index.html
+          cp web/public/graph.html _bundle/public/graph.html
           mkdir -p _bundle/public/assets
           cp -a web/dist/assets/. _bundle/public/assets/
           mkdir -p _bundle/public/admin

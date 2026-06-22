@@ -13,6 +13,7 @@ type SkillMeta struct {
 	Name         string   `yaml:"name"`
 	Description  string   `yaml:"description,omitempty"`
 	Dependencies []string `yaml:"dependencies,omitempty"`
+	Policy       string   `yaml:"policy,omitempty"`
 }
 
 var (

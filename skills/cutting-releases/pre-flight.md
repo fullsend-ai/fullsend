@@ -102,13 +102,31 @@ gh run list --branch=main --limit=5
 All recent runs should be passing. If E2E tests are failing, investigate
 before releasing.
 
-## E. Identify post-flight check areas
+## E. Check fullsend-ai runs as a main-branch signal
+
+The `fullsend-ai/.fullsend` repo references reusable workflows via
+`@main` (not `@v0`). This means its recent runs already exercise the
+exact commit we are about to tag. Use this as a pre-flight signal:
+
+```
+gh run list --repo fullsend-ai/.fullsend --limit=5
+gh run list --repo fullsend-ai/fullsend --limit=5
+```
+
+If recent runs are passing, that is evidence the reusable workflows on
+`main` work correctly and moving `v0` to this commit is low-risk.
+
+If recent runs are failing, investigate whether the failures are related
+to reusable workflow changes. Workflow-resolution errors or permission
+failures are blockers. Unrelated agent runtime errors are not.
+
+## F. Identify post-flight check areas
 
 Based on the changes found in steps A–C, determine what needs
 post-flight verification after the `v0` tag moves:
 
-- **Reusable workflow changes** → verify workflow runs in fullsend-ai
-  repos resolve `@v0` correctly and pass.
+- **Reusable workflow changes** → verify workflow runs in downstream
+  `@v0` consumers (outside fullsend-ai) resolve correctly and pass.
 - **New secrets or permissions** → verify affected workflows don't
   fail on missing secrets.
 - **CLI default changes** → note migration steps for existing
@@ -116,7 +134,11 @@ post-flight verification after the `v0` tag moves:
 - **No reusable workflow changes** → post-flight can be limited to
   confirming the release artifacts built correctly.
 
-## F. Present summary
+Note: `fullsend-ai/.fullsend` uses `@main`, not `@v0`, so its runs
+are not useful for post-flight `v0` verification. Post-flight checks
+should focus on other downstream consumers that reference `@v0`.
+
+## G. Present summary
 
 Summarize findings to the user in a table:
 
@@ -126,6 +148,6 @@ Summarize findings to the user in a table:
 | Scaffold templates | ... | No/Yes |
 | CLI / internal | ... | No/Yes |
 
-List the post-flight check areas identified in step E.
+List the post-flight check areas identified in step F.
 
 Give a **GO / NO-GO** verdict. Do not proceed until the user confirms.

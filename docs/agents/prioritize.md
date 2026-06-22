@@ -55,6 +55,10 @@ This gives the prioritize agent concrete data to distinguish between "one user
 wants this" (Reach 0.25) and "three strategic accounts have filed support cases
 about it" (Reach 2.0), instead of guessing from the issue text alone.
 
+### Variables
+
+None.
+
 ## Source
 
 [`internal/scaffold/fullsend-repo/harness/prioritize.yaml`](../../internal/scaffold/fullsend-repo/harness/prioritize.yaml)

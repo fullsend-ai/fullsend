@@ -9,6 +9,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// DefaultUpstreamRepo is the canonical fullsend repository for layered workflow calls.
+	DefaultUpstreamRepo = "fullsend-ai/fullsend"
+	// DefaultUpstreamRef is the default tag for layered upstream workflow calls.
+	DefaultUpstreamRef = "v0"
+)
+
 // AgentEntry represents a configured agent with its role and app identity.
 type AgentEntry struct {
 	Role string `yaml:"role"`
@@ -28,17 +35,45 @@ type InferenceConfig struct {
 	Provider string `yaml:"provider"`
 }
 
+// StatusNotificationConfig controls status comments posted on issues/PRs
+// when agents start and complete.
+type StatusNotificationConfig struct {
+	Comment CommentNotificationConfig `yaml:"comment,omitempty"`
+}
+
+// CommentNotificationConfig controls start/completion comments.
+// Valid values: "enabled" (default when parent is set), "disabled".
+type CommentNotificationConfig struct {
+	Start      string `yaml:"start,omitempty"`
+	Completion string `yaml:"completion,omitempty"`
+}
+
 // RepoDefaults holds default settings applied to all repos.
 type RepoDefaults struct {
-	Roles                    []string `yaml:"roles"`
-	MaxImplementationRetries int      `yaml:"max_implementation_retries"`
-	AutoMerge                bool     `yaml:"auto_merge"`
+	Roles                    []string                  `yaml:"roles"`
+	MaxImplementationRetries int                       `yaml:"max_implementation_retries"`
+	AutoMerge                bool                      `yaml:"auto_merge"`
+	StatusNotifications      *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 }
 
 // RepoConfig holds per-repo configuration.
+// StatusNotifications is intentionally absent here — notification style is an
+// org-wide UX decision (consistent appearance across all repos), unlike roles
+// and auto_merge which are operationally per-repo.
 type RepoConfig struct {
 	Roles   []string `yaml:"roles,omitempty"`
 	Enabled bool     `yaml:"enabled"`
+}
+
+// AllowTargets defines which orgs and repos agents may create issues in.
+type AllowTargets struct {
+	Orgs  []string `yaml:"orgs,omitempty"`
+	Repos []string `yaml:"repos,omitempty"`
+}
+
+// CreateIssuesConfig controls cross-repo issue creation by agents.
+type CreateIssuesConfig struct {
+	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
 // OrgConfig is the top-level configuration for a fullsend organization.
@@ -48,14 +83,15 @@ type OrgConfig struct {
 	Dispatch               DispatchConfig        `yaml:"dispatch"`
 	Inference              InferenceConfig       `yaml:"inference,omitempty"`
 	Defaults               RepoDefaults          `yaml:"defaults"`
-	Agents                 []AgentEntry          `yaml:"agents"`
+	Agents                 []AgentEntry          `yaml:"agents,omitempty"`
 	Repos                  map[string]RepoConfig `yaml:"repos"`
 	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
 }
 
 // ValidRoles returns the set of recognized agent roles.
 func ValidRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
 
 // ValidProviders returns the set of recognized inference providers.
@@ -78,7 +114,7 @@ func PerRepoDefaultRoles() []string {
 }
 
 // NewOrgConfig creates a new OrgConfig with sensible defaults.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider string) *OrgConfig {
+func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider, org string) *OrgConfig {
 	repos := make(map[string]RepoConfig, len(allRepos))
 	for _, r := range allRepos {
 		repos[r] = RepoConfig{
@@ -98,9 +134,21 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 		},
 		Agents: agents,
 		Repos:  repos,
+		// Default allowlist for base: composition in harness wrappers (ADR-0045 Phase 2).
+		AllowedRemoteResources: []string{
+			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		},
 	}
 	if inferenceProvider != "" {
 		cfg.Inference = InferenceConfig{Provider: inferenceProvider}
+	}
+	if org != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Orgs:  []string{org},
+				Repos: []string{"fullsend-ai/fullsend"},
+			},
+		}
 	}
 	return cfg
 }
@@ -160,6 +208,26 @@ func (c *OrgConfig) Validate() error {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
 		}
 	}
+	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
+		return err
+	}
+	if err := validateCreateIssues(c.CreateIssues); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateStatusNotifications(cfg *StatusNotificationConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	validCommentValues := []string{"", "enabled", "disabled"}
+	if !slices.Contains(validCommentValues, cfg.Comment.Start) {
+		return fmt.Errorf("invalid status_notifications.comment.start %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Start)
+	}
+	if !slices.Contains(validCommentValues, cfg.Comment.Completion) {
+		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Completion)
+	}
 	return nil
 }
 
@@ -196,6 +264,13 @@ func (c *OrgConfig) AgentSlugs() map[string]string {
 	return slugs
 }
 
+// HasAgentsBlock reports whether the config contains a non-empty agents list.
+// CLI commands use this to decide whether to emit a deprecation notice for the
+// legacy agents block (see ADR-0045 Phase 3).
+func (c *OrgConfig) HasAgentsBlock() bool {
+	return len(c.Agents) > 0
+}
+
 // DefaultRoles returns the default roles configured for the organization.
 func (c *OrgConfig) DefaultRoles() []string {
 	return c.Defaults.Roles
@@ -204,9 +279,10 @@ func (c *OrgConfig) DefaultRoles() []string {
 // PerRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 type PerRepoConfig struct {
-	Version    string   `yaml:"version"`
-	KillSwitch bool     `yaml:"kill_switch,omitempty"`
-	Roles      []string `yaml:"roles,omitempty"`
+	Version      string              `yaml:"version"`
+	KillSwitch   bool                `yaml:"kill_switch,omitempty"`
+	Roles        []string            `yaml:"roles,omitempty"`
+	CreateIssues *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -217,14 +293,22 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 `
 
 // NewPerRepoConfig creates a new PerRepoConfig with the given roles.
-func NewPerRepoConfig(roles []string) *PerRepoConfig {
+func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 	if roles == nil {
 		roles = DefaultAgentRoles()
 	}
-	return &PerRepoConfig{
+	cfg := &PerRepoConfig{
 		Version: "1",
 		Roles:   roles,
 	}
+	if targetRepo != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+			},
+		}
+	}
+	return cfg
 }
 
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
@@ -260,6 +344,27 @@ func (c *PerRepoConfig) Validate() error {
 			return fmt.Errorf("duplicate role %q in roles", role)
 		}
 		seen[role] = true
+	}
+	if err := validateCreateIssues(c.CreateIssues); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCreateIssues(cfg *CreateIssuesConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, org := range cfg.AllowTargets.Orgs {
+		if org == "" {
+			return fmt.Errorf("create_issues: empty org in allow_targets.orgs")
+		}
+	}
+	for _, repo := range cfg.AllowTargets.Repos {
+		parts := strings.SplitN(repo, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("create_issues: repo %q in allow_targets.repos must contain owner/name", repo)
+		}
 	}
 	return nil
 }

@@ -27,12 +27,12 @@ func twoAgents() []AgentCredentials {
 		{
 			AgentEntry: config.AgentEntry{Role: "fullsend", Name: "FullsendBot", Slug: "fullsend-bot"},
 			PEM:        "-----BEGIN RSA PRIVATE KEY-----\nfullsend-key\n-----END RSA PRIVATE KEY-----",
-			ClientID: "Iv1.abc111",
+			ClientID:   "Iv1.abc111",
 		},
 		{
 			AgentEntry: config.AgentEntry{Role: "triage", Name: "TriageBot", Slug: "triage-bot"},
 			PEM:        "-----BEGIN RSA PRIVATE KEY-----\ntriage-key\n-----END RSA PRIVATE KEY-----",
-			ClientID: "Iv1.abc222",
+			ClientID:   "Iv1.abc222",
 		},
 	}
 }

@@ -22,7 +22,7 @@ PRs are strictly sequential. Each is independently reviewable and safe to merge 
 
 ## PR 1: Skill frontmatter parser — extract `dependencies:` from SKILL.md
 
-**Scope:** New package `internal/skill/` with a parser that extracts YAML frontmatter from SKILL.md content (bytes, not files). Pure functions with no callers. Zero risk to existing behavior.
+**Scope:** New package `internal/skill/` with a parser that extracts YAML frontmatter from SKILL.md content (bytes, not files). `ParseFrontmatter` reads SKILL.md content from the resolved skill directory (whether local or cached from forge), not from a raw URL response. Pure functions with no callers. Zero risk to existing behavior.
 
 **Rationale for new package:** Skill frontmatter parsing is a distinct concern from harness loading (`internal/harness/`) and resource resolution (`internal/resolve/`). Placing it in its own package avoids circular dependencies: `internal/resolve/` will import `internal/skill/`, but `internal/skill/` imports nothing from the resolve or harness packages.
 
@@ -47,8 +47,8 @@ type SkillMeta struct {
 //   ---
 //   name: rust-conventions
 //   dependencies:
-//     - ../common/cargo-integration/SKILL.md
-//     - https://github.com/fullsend-ai/skills/security-baseline/SKILL.md#sha256=abc123...
+//     - ../common/cargo-integration#sha256=<tree-hash>...
+//     - https://github.com/fullsend-ai/skills/tree/8cd3799.../security-baseline#sha256=<tree-hash>...
 //   ---
 func ParseFrontmatter(content []byte) (*SkillMeta, error)
 ```
@@ -79,7 +79,7 @@ Test cases:
 
 ## PR 2: Recursive resolver with cycle detection and depth/breadth limits
 
-**Scope:** Extends `internal/resolve/resolve.go` to recursively resolve transitive dependencies declared in fetched SKILL.md files. Modifies existing resolver internals but does not change the `ResolveHarness` public signature or behavior for harnesses without transitive dependencies. Harnesses with only local paths or single-level URL references continue to work identically.
+**Scope:** Extends `internal/resolve/resolve.go` to recursively resolve transitive dependencies declared in fetched SKILL.md files. Transitive skill dependencies resolve to directories (same as direct skill dependencies) and use forge API for listing and fetching. The resolver reads SKILL.md from the cached directory's `tree/` subdirectory. Modifies existing resolver internals but does not change the `ResolveHarness` public signature or behavior for harnesses without transitive dependencies. Harnesses with only local paths or single-level URL references continue to work identically.
 
 ### Changes to `internal/resolve/resolve.go`
 
@@ -181,10 +181,11 @@ func resolveTransitiveDeps(ctx context.Context, parentURL string, content []byte
 
 Logic:
 1. **Depth check:** If `depth+1 > maxDepth`, return error: `"exceeded maximum dependency depth of %d at %s"`.
-2. **Parse frontmatter:** Call `skill.ParseFrontmatter(content)`. If error, return wrapped error. If `nil` or no dependencies, return nil (leaf node).
-3. **Resolve each dependency reference:**
+2. **Read SKILL.md from cached directory:** For directory skills, read `SKILL.md` from the cached directory's `tree/` subdirectory (e.g., `.fullsend-cache/resources/sha256/<hash>/tree/SKILL.md`).
+3. **Parse frontmatter:** Call `skill.ParseFrontmatter(content)`. If error, return wrapped error. If `nil` or no dependencies, return nil (leaf node).
+4. **Resolve each dependency reference:**
    - If the reference is an absolute URL (`harness.IsURL(ref)`): use as-is.
-   - If the reference is a relative path: resolve relative to `parentURL` using `ResolveRelativeURL(parentURL, ref)` (defined in `relurl.go` below).
+   - If the reference is a relative path: resolve relative to `parentURL` using `ResolveRelativeURL(parentURL, ref)` (defined in `relurl.go` below). For directory skills, relative paths resolve to sibling directories, not sibling files (e.g., `../common/formatting` resolves to a sibling directory).
    - Recursively call `resolveURL(ctx, field, resolvedRef, h, opts, state, depth+1, maxDepth, maxResources)`.
 **Backward compatibility:** For harnesses with no URL-referenced skills, `resolveTransitiveDeps` is never called. For URL-referenced skills whose content has no `dependencies:` frontmatter, `ParseFrontmatter` returns `nil` and the function returns immediately. Phase 1 behavior is preserved exactly.
 
@@ -196,11 +197,11 @@ Logic:
 // which the containing resource was fetched.
 //
 // Examples:
-//   ResolveRelativeURL("https://github.com/org/skills/rust/SKILL.md", "../common/SKILL.md")
-//   → "https://github.com/org/skills/common/SKILL.md"
+//   ResolveRelativeURL("https://github.com/org/skills/tree/abc123/rust", "../common/formatting")
+//   → "https://github.com/org/skills/tree/abc123/common/formatting"
 //
-//   ResolveRelativeURL("https://github.com/org/skills/rust/SKILL.md", "policies/sandbox.yaml")
-//   → "https://github.com/org/skills/rust/policies/sandbox.yaml"
+//   ResolveRelativeURL("https://github.com/org/skills/tree/abc123/rust", "policies/sandbox.yaml")
+//   → "https://github.com/org/skills/tree/abc123/rust/policies/sandbox.yaml"
 //
 // Security: The resolved URL is returned as-is. The caller must validate it
 // against allowed_remote_resources prefixes (which operates on the normalized
@@ -219,13 +220,13 @@ This is deliberately simple — the security boundary is enforced by the existin
 ### New file: `internal/resolve/relurl_test.go`
 
 Test cases:
-- **Sibling reference:** `../common/SKILL.md` relative to `.../skills/rust/SKILL.md` resolves to `.../skills/common/SKILL.md`.
-- **Child reference:** `policies/sandbox.yaml` relative to `.../skills/rust/SKILL.md` resolves to `.../skills/rust/policies/sandbox.yaml`.
-- **Absolute URL reference:** `https://other.com/skill.md` is returned unchanged (no resolution against parent).
-- **Path traversal:** `../../../../attacker/evil.md` relative to `.../org/skills/rust/SKILL.md` resolves to `https://github.com/attacker/evil.md` (valid URL — the caller's prefix check rejects it).
-- **Multiple `..` segments:** `../../other/sub/SKILL.md` resolves correctly.
-- **Fragment preservation:** `../common/SKILL.md#sha256=abc123` resolves with the `#sha256=...` fragment intact. Integrity checking depends on the fragment surviving `url.ResolveReference`.
-- **Trailing slash handling:** Parent URL without trailing filename component.
+- **Sibling directory reference:** `../common/formatting` relative to `.../tree/abc123/skills/rust` resolves to `.../tree/abc123/skills/common/formatting`.
+- **Child reference:** `policies/sandbox.yaml` relative to `.../tree/abc123/skills/rust` resolves to `.../tree/abc123/skills/rust/policies/sandbox.yaml`.
+- **Absolute URL reference:** `https://github.com/other-org/skills/tree/abc123/python` is returned unchanged (no resolution against parent).
+- **Path traversal:** `../../../../attacker/evil` relative to `.../org/skills/tree/abc123/rust` resolves to `https://github.com/attacker/evil` (valid URL — the caller's prefix check rejects it).
+- **Multiple `..` segments:** `../../other/sub/formatting` resolves correctly.
+- **Fragment preservation:** `../common/formatting#sha256=<tree-hash>` resolves with the `#sha256=...` fragment intact. Integrity checking depends on the fragment surviving `url.ResolveReference`.
+- **Trailing slash handling:** Parent URL with and without trailing slash.
 
 ### Updates to `internal/resolve/resolve_test.go`
 
@@ -243,7 +244,7 @@ New test cases (in addition to existing Phase 1 tests, which remain unchanged):
 - **Transitive dependency not in allowlist:** Skill A depends on Skill B at a URL outside `allowed_remote_resources`. Verify error contains "not in allowed_remote_resources".
 - **Transitive dependency hash mismatch:** Skill A depends on Skill B; Skill B's content doesn't match its declared hash. Verify error contains "integrity check failed".
 - **Mixed local and transitive:** Harness with local skills and one URL skill that has transitive deps. Verify local skills are untouched, URL skill and its transitive deps are all resolved.
-- **Relative URL in dependency:** Skill at `https://example.com/skills/rust/SKILL.md` declares dependency `../common/SKILL.md`. Verify resolved to `https://example.com/skills/common/SKILL.md` and fetched.
+- **Relative URL in dependency:** Skill directory at `https://github.com/org/skills/tree/abc123/rust` declares dependency `../common/formatting#sha256=<tree-hash>...`. Verify resolved to `https://github.com/org/skills/tree/abc123/common/formatting` and fetched as a directory via forge API.
 
 **Depends on:** PR 1 (imports `internal/skill`)
 
@@ -331,30 +332,30 @@ agent: agents/code.md
 policy: policies/code.yaml
 skills:
   - skills/local-skill
-  - https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../skills/rust-conventions/SKILL.md#sha256=abc123...
+  - https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust-conventions#sha256=<tree-hash>...
 allowed_remote_resources:
-  - https://raw.githubusercontent.com/fullsend-ai/library/
+  - https://github.com/fullsend-ai/library/
 ```
 
-Where `rust-conventions/SKILL.md` contains:
+Where the `rust-conventions` skill directory's `SKILL.md` contains:
 
 ```yaml
 ---
 name: rust-conventions
 dependencies:
-  - ../cargo-integration/SKILL.md#sha256=def456...
-  - https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../skills/common/formatting/SKILL.md#sha256=ghi789...
+  - ../cargo-integration#sha256=<tree-hash>...
+  - https://github.com/fullsend-ai/library/tree/8cd3799.../skills/common/formatting#sha256=<tree-hash>...
 ---
 # Rust Conventions skill content...
 ```
 
 The resolver will:
-1. Fetch `rust-conventions/SKILL.md`, verify hash, cache it.
-2. Parse its frontmatter, discover 2 transitive skill dependencies.
-3. Resolve `../cargo-integration/SKILL.md` relative to the parent URL.
-4. Fetch and cache both transitive dependencies (each with hash verification and allowlist checks).
-5. Append all resolved cache paths to `h.Skills`.
-6. The sandbox upload loop uploads everything.
+1. Fetch `rust-conventions` skill directory via forge API (list files, fetch each), verify tree hash, cache under `tree/`.
+2. Read `SKILL.md` from the cached `tree/` subdirectory, parse its frontmatter, discover 2 transitive skill dependencies.
+3. Resolve `../cargo-integration` relative to the parent URL (sibling directory).
+4. Fetch and cache both transitive skill directories (each via forge API with tree hash verification and allowlist checks).
+5. Append all resolved cache `tree/` paths to `h.Skills`.
+6. The sandbox upload loop uploads all skill directory trees.
 
 ---
 
@@ -379,14 +380,14 @@ Maximum total resources defaults to 50 (configurable via `--max-resources`). Thi
 
 ### Relative URL path traversal
 
-When a skill at `https://github.com/org/skills/rust/SKILL.md` declares a dependency `../../../../attacker-org/evil/SKILL.md`, RFC 3986 resolution produces `https://github.com/attacker-org/evil/SKILL.md`. This URL passes the domain allowlist check (same domain), but **fails** the `allowed_remote_resources` prefix check:
+When a skill directory at `https://github.com/org/skills/tree/abc123/rust` declares a dependency `../../../../attacker-org/evil`, RFC 3986 resolution produces `https://github.com/attacker-org/evil`. This URL passes the domain allowlist check (same domain), but **fails** the `allowed_remote_resources` prefix check:
 
 ```yaml
 allowed_remote_resources:
   - https://github.com/org/skills/
 ```
 
-The normalized URL `https://github.com/attacker-org/evil/SKILL.md` does not match prefix `https://github.com/org/skills/`. The fetch is rejected.
+The normalized URL `https://github.com/attacker-org/evil` does not match prefix `https://github.com/org/skills/`. The fetch is rejected.
 
 **Critical:** The prefix check in `MatchingAllowedPrefix` operates on the **normalized** URL (after RFC 3986 `..` resolution), not the raw relative reference. This is already implemented in Phase 1 and applies to transitive dependencies without modification.
 
@@ -396,11 +397,11 @@ Transitive dependencies must satisfy the same `allowed_remote_resources` constra
 
 ### Integrity hash requirement
 
-Transitive dependency references in SKILL.md frontmatter must include `#sha256=...` integrity hashes, just like direct references. The existing `ParseIntegrityHash` validation in `resolveURL` enforces this uniformly. A dependency reference without a hash is rejected with a clear error message.
+Transitive dependency references in SKILL.md frontmatter must include `#sha256=...` integrity hashes, just like direct references. For skill directory dependencies, the hash is a tree hash covering the entire directory tree. The existing `ParseIntegrityHash` validation in `resolveURL` enforces this uniformly. A dependency reference without a hash is rejected with a clear error message.
 
 ### Aggregate fetch latency
 
-With `MaxResources=50` and the existing 30-second per-fetch timeout, the worst-case wall-clock time for a cold resolution is ~25 minutes (50 sequential fetches, each timing out). In practice, most fetches complete in under a second and dependency graphs are shallow, so this is unlikely. A total wall-clock timeout for the entire `ResolveHarness` call is a reasonable future addition but is not included in Phase 2 — the existing per-fetch timeout and breadth limit provide sufficient protection for now.
+With `MaxResources=50` and the existing 30-second per-fetch timeout, the worst-case wall-clock time for a cold resolution is significant (50 resources, each potentially involving multiple forge API calls for directory listing and file fetching). In practice, most fetches complete in under a second, skill directories are small, and dependency graphs are shallow, so this is unlikely. A total wall-clock timeout for the entire `ResolveHarness` call is a reasonable future addition but is not included in Phase 2 — the existing per-fetch timeout and breadth limit provide sufficient protection for now.
 
 ---
 
@@ -427,8 +428,8 @@ After PR 3 merges, verify Phase 2 end-to-end:
 2. **Lint:** `make lint` passes.
 3. **Local-only harness (regression):** Run an existing harness with only local paths — no behavioral change from Phase 1.
 4. **Single-level URL harness (regression):** Run a harness with URL-referenced skills that have no `dependencies:` frontmatter — same behavior as Phase 1.
-5. **Transitive dependency resolution:** Create a test harness referencing a URL-hosted skill whose SKILL.md frontmatter declares `dependencies:` with another URL-hosted skill. Verify both skills are fetched, cached, and uploaded to the sandbox.
-6. **Relative URL resolution:** Create a skill that references a dependency via a relative path (`../common/SKILL.md#sha256=...`). Verify the relative reference is resolved against the parent URL and fetched correctly.
+5. **Transitive dependency resolution:** Create a test harness referencing a URL-hosted skill directory whose SKILL.md frontmatter declares `dependencies:` with another URL-hosted skill directory. Verify both skill directories are fetched via forge API, cached as directory trees, and uploaded to the sandbox.
+6. **Relative URL resolution:** Create a skill directory that references a dependency via a relative path (`../common/formatting#sha256=<tree-hash>...`). Verify the relative reference is resolved to a sibling directory against the parent URL and fetched correctly via forge API.
 7. **Cycle detection:** Create two skills that reference each other in their `dependencies:`. Verify the resolver fails with a "circular dependency" error.
 8. **Depth limit:** Create a chain of skills deeper than 10 levels. Verify the resolver fails with a "exceeded maximum dependency depth" error. Verify `--max-depth 3` lowers the limit.
 9. **Breadth limit:** Create a skill that declares more than 50 transitive dependencies. Verify the resolver fails with a "exceeded maximum resource count" error. Verify `--max-resources 5` lowers the limit.
@@ -447,4 +448,4 @@ After PR 3 merges, verify Phase 2 end-to-end:
 
 ### Phase 4: Runtime dependency loading (2 PRs)
 - `allow_runtime_fetch` + `max_runtime_fetches` harness fields
-- `fullsend-fetch-skill` binary in sandbox, Unix socket to runner, rate limiting
+- `fullsend fetch-skill` subcommand in sandbox, HTTP to runner (ADR-0046), rate limiting

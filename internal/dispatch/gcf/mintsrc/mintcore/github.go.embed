@@ -31,8 +31,8 @@ type installationResponse struct {
 
 // installationTokenResponse is the response from POST /app/installations/{id}/access_tokens.
 type installationTokenResponse struct {
-	Token               string                       `json:"token"`
-	ExpiresAt           string                       `json:"expires_at"`
+	Token               string                        `json:"token"`
+	ExpiresAt           string                        `json:"expires_at"`
 	Permissions         map[string]string             `json:"permissions,omitempty"`
 	Repositories        []installationTokenRepository `json:"repositories,omitempty"`
 	RepositorySelection string                        `json:"repository_selection,omitempty"`
@@ -45,9 +45,11 @@ type installationTokenRepository struct {
 
 // GrantedScope holds the actual scope GitHub granted for the installation token.
 type GrantedScope struct {
-	Repos         []string
-	Permissions   map[string]string
-	RepoSelection string
+	Repos          []string
+	Permissions    map[string]string
+	RepoSelection  string
+	AppID          string
+	InstallationID int64
 }
 
 // canonicalRolePermissions defines the minimum GitHub App permissions per agent role.
@@ -62,6 +64,12 @@ var canonicalRolePermissions = map[string]map[string]string{
 	"retro":      {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
 	"prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
 	"fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+	"e2e": {
+		"actions": "write", "actions_variables": "read", "administration": "write",
+		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
+		"organization_administration": "write", "pull_requests": "write",
+		"secrets": "write", "workflows": "write",
+	},
 }
 
 // RolePermissions returns a deep copy of the role-to-permissions map,
