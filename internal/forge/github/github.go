@@ -892,15 +892,20 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 7. Update branch ref to point to new commit.
-	// A 422 here typically means branch protection rules prevent the push.
+	// A 422 may indicate branch protection or a non-fast-forward (e.g. auto_init race).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
 	refUpdateResp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch), refPayload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isBranchProtectionError(apiErr) {
-			return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			if isBranchProtectionError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+			}
+			if isNonFastForwardError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+			}
 		}
 		return false, fmt.Errorf("update ref: %w", err)
 	}
@@ -1061,6 +1066,14 @@ func isBranchProtectionError(apiErr *APIError) bool {
 		strings.Contains(msg, "required status") ||
 		strings.Contains(msg, "required review") ||
 		strings.Contains(msg, "rule violation")
+}
+
+func isNonFastForwardError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {

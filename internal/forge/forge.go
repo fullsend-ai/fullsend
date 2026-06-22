@@ -59,6 +59,15 @@ func IsNoChanges(err error) bool {
 	return errors.Is(err, ErrNoChanges)
 }
 
+// ErrNonFastForward indicates that a ref update was rejected because
+// the update is not a fast-forward (e.g. auto_init race on new repos).
+var ErrNonFastForward = errors.New("non-fast-forward update")
+
+// IsNonFastForward reports whether err indicates a non-fast-forward rejection.
+func IsNonFastForward(err error) bool {
+	return errors.Is(err, ErrNonFastForward)
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
