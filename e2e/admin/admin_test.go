@@ -164,7 +164,24 @@ func TestAdminInstallUninstall(t *testing.T) {
 	require.NoError(t, err, "vendored marker .defaults/action.yml should exist")
 	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
 	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
-	analyzeOutput := runCLI(t, env.binary, env.token, "admin", "analyze", env.org)
+	// Retry analyze with backoff to handle transient 401s from GitHub
+	// propagation delays after repo creation (see #2490).
+	var analyzeOutput string
+	for attempt := range 3 {
+		if attempt > 0 {
+			delay := time.Duration(attempt*10) * time.Second
+			t.Logf("Analyze attempt %d failed, retrying in %s...", attempt, delay)
+			time.Sleep(delay)
+		}
+		out, analyzeErr := tryRunCLI(t, env.binary, env.token, "admin", "analyze", env.org)
+		if analyzeErr == nil {
+			analyzeOutput = out
+			break
+		}
+		if attempt == 2 {
+			t.Fatalf("admin analyze failed after %d attempts: %v", attempt+1, analyzeErr)
+		}
+	}
 	t.Logf("Analyze output:\n%s", analyzeOutput)
 
 	// Standalone install vendors reusable workflows, actions, and agent content
@@ -205,7 +222,24 @@ func TestAdminInstallUninstall(t *testing.T) {
 	mergeEnrollmentPR(t, env)
 
 	// Phase 3: Triage dispatch smoke test.
+	// Verify the shim workflow is present on the default branch before
+	// creating the test issue. GitHub may take a few seconds after the
+	// merge to make the file available via the contents API (#2490).
 	t.Log("=== Phase 3: Triage Dispatch Smoke Test ===")
+	t.Log("Verifying shim workflow is on default branch...")
+	shimVerified := false
+	for attempt := range 5 {
+		if attempt > 0 {
+			time.Sleep(3 * time.Second)
+		}
+		_, shimErr := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
+		if shimErr == nil {
+			shimVerified = true
+			break
+		}
+		t.Logf("Attempt %d: shim workflow not yet visible on default branch: %v", attempt+1, shimErr)
+	}
+	require.True(t, shimVerified, "shim workflow should be on default branch before triage test")
 	runTriageDispatchSmokeTest(t, env)
 
 	// Phase 4: Unenrollment reconciliation.
