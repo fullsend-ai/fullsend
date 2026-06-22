@@ -57,8 +57,8 @@ Each pool org must be provisioned before e2e can use it:
 
 1. Org exists with `botsend` as owner
 2. `test-repo` and `e2e-lock` repos (lock created at runtime)
-3. All role apps installed, including `fullsend-ai-e2e`
-4. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` (authorizes CI workflows)
+3. All role apps installed, including `fullsend-ai-e2e` with **Organization → Variables: Read** (`organization_actions_variables`) in addition to repository permissions
+4. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
 5. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
 
 Use the idempotent setup script:

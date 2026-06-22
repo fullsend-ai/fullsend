@@ -67,8 +67,8 @@ var canonicalRolePermissions = map[string]map[string]string{
 	"e2e": {
 		"actions": "write", "actions_variables": "read", "administration": "write",
 		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
-		"organization_administration": "write", "pull_requests": "write",
-		"secrets": "write", "workflows": "write",
+		"organization_actions_variables": "read", "organization_administration": "write",
+		"pull_requests": "write", "secrets": "write", "workflows": "write",
 	},
 }
 
@@ -277,6 +277,11 @@ func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, ins
 	return varResp.Value, true, nil
 }
 
+// foreignPolicyPermissions are requested when reading FULLSEND_FOREIGN_* org variables.
+var foreignPolicyPermissions = map[string]string{
+	"organization_actions_variables": "read",
+}
+
 // createInstallationTokenWithPermissions creates an installation access token with explicit permissions.
 func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
 	tokenReqBody := map[string]interface{}{
@@ -324,7 +329,7 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 // ReadForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from the target org.
 func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
 	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
-		map[string]string{"actions_variables": "read"}, nil)
+		foreignPolicyPermissions, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating policy check token: %w", err)
 	}
