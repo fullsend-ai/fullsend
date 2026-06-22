@@ -46,10 +46,10 @@ while true; do
     .statusCheckRollup as $checks |
     # Build map of name -> conclusion
     ($checks | map({(.name): (.conclusion // .status // "PENDING")}) | add // {}) as $map |
-    # Check for failures
-    [$map | to_entries[] | select(.value | test("FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED")) | .key + " (" + .value + ")"] as $failures |
-    # Check for pending
-    [$map | to_entries[] | select(.value | test("SUCCESS|NEUTRAL|SKIPPED|COMPLETED|FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED") | not) | .key] as $pending |
+    # Check for failures (only required checks matter)
+    [$map | to_entries[] | select(.key as $k | $required | index($k)) | select(.value | test("FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED")) | .key + " (" + .value + ")"] as $failures |
+    # Check for pending (only required checks matter)
+    [$map | to_entries[] | select(.key as $k | $required | index($k)) | select(.value | test("SUCCESS|NEUTRAL|SKIPPED|COMPLETED|FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED") | not) | .key] as $pending |
     # Check for missing required checks
     [$required[] | select(. as $r | $map | has($r) | not)] as $missing |
     {failures: $failures, pending: $pending, missing: $missing}
