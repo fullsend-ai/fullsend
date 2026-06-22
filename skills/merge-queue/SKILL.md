@@ -15,6 +15,10 @@ allowed-tools: Bash(bash skills/merge-queue/scripts/*:*)
 Run `bash skills/merge-queue/scripts/enqueue-pr.sh [PR_NUMBER_OR_URL]` to enqueue a PR.
 Omit the argument to enqueue the current branch's PR.
 
+The script enqueues the PR and then **polls until the PR merges or is ejected
+from the queue**. If ejected, it reports the reason and exits non-zero. Run it
+in the background if you don't want to block.
+
 If the PR is not yet eligible (checks pending, missing approvals), use
 `await-and-enqueue.sh` instead — see below.
 

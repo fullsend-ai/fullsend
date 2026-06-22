@@ -45,14 +45,10 @@ fi
 position="$(echo "$result" | jq -r '.data.enqueuePullRequest.mergeQueueEntry.position')"
 eta="$(echo "$result" | jq -r '.data.enqueuePullRequest.mergeQueueEntry.estimatedTimeToMerge // "unknown"')"
 
-echo "PR enqueued at position $position (ETA: $eta)"
-echo "Confirming PR stays in queue..."
+echo "PR enqueued at position $position (ETA: ${eta}s)"
+echo "Waiting for merge queue outcome..."
 
-# Poll briefly to verify the PR wasn't immediately dequeued (e.g. for failed
-# required checks).  GitHub can take up to ~60s to remove a PR after the
-# mutation returns, so we check a few times before declaring success.
-VERIFY_ATTEMPTS="${VERIFY_ATTEMPTS:-4}"
-VERIFY_INTERVAL="${VERIFY_INTERVAL:-10}"
+POLL_INTERVAL="${POLL_INTERVAL:-30}"
 
 # Resolve owner/repo and number from the URL for GraphQL queries
 if [[ "$pr_url" =~ ^https://github.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
@@ -64,51 +60,69 @@ else
   exit 1
 fi
 
-for ((i = 1; i <= VERIFY_ATTEMPTS; i++)); do
-  sleep "$VERIFY_INTERVAL"
+# Poll until the PR either merges or gets ejected from the queue.
+while true; do
+  sleep "$POLL_INTERVAL"
 
-  verify="$(gh api graphql -f query='
+  state="$(gh api graphql -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
         pullRequest(number: $number) {
+          state
           mergeQueueEntry {
             position
+            state
           }
         }
       }
     }
-  ' -f owner="$_owner" -f name="$_name" -F number="$_number" --jq '.data.repository.pullRequest.mergeQueueEntry')"
+  ' -f owner="$_owner" -f name="$_name" -F number="$_number" --jq '{
+    pr_state: .data.repository.pullRequest.state,
+    queue_entry: .data.repository.pullRequest.mergeQueueEntry
+  }')"
 
-  if [[ -z "$verify" || "$verify" == "null" ]]; then
-    echo "" >&2
-    echo "ERROR: PR was removed from the merge queue shortly after being added." >&2
+  pr_state="$(echo "$state" | jq -r '.pr_state')"
+  queue_entry="$(echo "$state" | jq -r '.queue_entry')"
 
-    dq_result="$(gh api graphql -f query='
-      query($owner: String!, $name: String!, $number: Int!) {
-        repository(owner: $owner, name: $name) {
-          pullRequest(number: $number) {
-            timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-              nodes {
-                ... on RemovedFromMergeQueueEvent {
-                  createdAt
-                  reason
-                }
+  # PR was merged — success
+  if [[ "$pr_state" == "MERGED" ]]; then
+    echo "PR merged successfully."
+    exit 0
+  fi
+
+  # PR is still in the queue — keep waiting
+  if [[ -n "$queue_entry" && "$queue_entry" != "null" ]]; then
+    pos="$(echo "$queue_entry" | jq -r '.position')"
+    qstate="$(echo "$queue_entry" | jq -r '.state')"
+    echo "  position $pos ($qstate)"
+    continue
+  fi
+
+  # PR is no longer in the queue and not merged — it was ejected
+  echo "" >&2
+  echo "ERROR: PR was removed from the merge queue." >&2
+
+  dq_result="$(gh api graphql -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+            nodes {
+              ... on RemovedFromMergeQueueEvent {
+                createdAt
+                reason
               }
             }
           }
         }
       }
-    ' -f owner="$_owner" -f name="$_name" -F number="$_number" 2>/dev/null)" || true
+    }
+  ' -f owner="$_owner" -f name="$_name" -F number="$_number" 2>/dev/null)" || true
 
-    reason="$(echo "$dq_result" | jq -r '.data.repository.pullRequest.timelineItems.nodes[0].reason // empty' 2>/dev/null)" || true
-    if [[ -n "$reason" ]]; then
-      echo "Reason: $reason" >&2
-    fi
-
-    exit 1
+  reason="$(echo "$dq_result" | jq -r '.data.repository.pullRequest.timelineItems.nodes[0].reason // empty' 2>/dev/null)" || true
+  if [[ -n "$reason" ]]; then
+    echo "Reason: $reason" >&2
   fi
 
-  echo "  check $i/$VERIFY_ATTEMPTS: still queued at position $(echo "$verify" | jq -r '.position')"
+  exit 1
 done
-
-echo "Confirmed: PR is in the merge queue."
