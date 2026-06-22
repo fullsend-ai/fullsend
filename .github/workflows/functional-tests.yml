@@ -61,28 +61,15 @@ jobs:
       - name: Add bin to PATH
         run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
 
-      - name: Set OpenShell version
-        run: source .github/scripts/openshell-version.sh
+      - name: Configure OpenShell gateway
+        run: |
+          mkdir -p $HOME/.config/openshell/
+          cat > $HOME/.config/openshell/gateway.env << EOF
+          OPENSHELL_BIND_ADDRESS=0.0.0.0
+          EOF
 
       - name: Install OpenShell CLI
-        run: |
-          uv tool install "openshell==${OPENSHELL_VERSION}"
-          openshell --version
-
-      - name: Download openshell-gateway
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          case "${arch}" in
-            x86_64) ;;
-            aarch64|arm64) arch=aarch64 ;;
-            *) echo "::error::Unsupported architecture: ${arch}"; exit 1 ;;
-          esac
-          GATEWAY_ASSET="openshell-gateway-${arch}-unknown-linux-gnu.tar.gz"
-          GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/${GATEWAY_ASSET}"
-          curl -fsSL "${GATEWAY_URL}" -o "/tmp/${GATEWAY_ASSET}"
-          tar xzf "/tmp/${GATEWAY_ASSET}" -C "${{ runner.temp }}"
-          rm -f "/tmp/${GATEWAY_ASSET}"
+        run: .github/scripts/install-openshell.sh
 
       - name: Install Podman
         run: |
@@ -107,31 +94,6 @@ jobs:
             done
             [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
           fi
-
-      - name: Start openshell-gateway
-        run: |
-          set -euo pipefail
-          OPENSHELL_SSH_HANDSHAKE_SECRET="ci-$(openssl rand -hex 16)"
-          export OPENSHELL_SSH_HANDSHAKE_SECRET
-          echo "::add-mask::${OPENSHELL_SSH_HANDSHAKE_SECRET}"
-          "${{ runner.temp }}/openshell-gateway" \
-            --bind-address 0.0.0.0 \
-            --health-port 8081 \
-            --drivers podman \
-            --disable-tls \
-            --db-url "sqlite:/tmp/gateway.db?mode=rwc" \
-            >/tmp/gateway.log 2>&1 &
-          for _i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 && break
-            sleep 2
-          done
-          curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 || {
-            echo "::error::Gateway health check failed"
-            cat /tmp/gateway.log 2>/dev/null || true
-            exit 1
-          }
-          openshell gateway add http://127.0.0.1:8080 --local --name local
-          openshell gateway select local
 
       - name: Install validation dependencies
         run: pip install --quiet "jsonschema>=4.18.0"
