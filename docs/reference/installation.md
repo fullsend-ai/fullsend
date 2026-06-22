@@ -216,7 +216,7 @@ During installation, you'll be prompted to choose repository enrollment:
 
 The installer creates the `.fullsend` config repo as **public** by default. This is required for cross-repo `workflow_call` to work with enrolled repos of any visibility (public, private, or internal) across all GitHub plan tiers. If an admin later makes `.fullsend` private, only other private repos in the org will be able to trigger agent workflows — public and internal repos will fail silently.
 
-If the default branch of the `.fullsend` config repo has branch protection rules, the installer creates a PR with the scaffold files instead of pushing directly. Merge the scaffold PR to complete setup.
+The installer creates a PR with the scaffold files by default. Merge the scaffold PR to complete setup. Pass `--direct` to push scaffold files directly instead; the installer will fall back to a PR automatically if branch protection blocks the direct push.
 
 If the installer fails partway through, run `fullsend admin uninstall "$ORG_NAME"` to clean up before retrying. The uninstall preflight will prompt you to add the `delete_repo` scope if it is missing.
 
