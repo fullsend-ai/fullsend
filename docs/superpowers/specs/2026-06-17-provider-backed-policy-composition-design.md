@@ -25,7 +25,7 @@ harness-specific restrictions only (filesystem, process, landlock).
 ### New: `profiles/` directory
 
 A new `profiles/` directory in the scaffold
-(`internal/scaffold/fullsend-repo/profiles/`) contains four OpenShell
+(`internal/scaffold/fullsend-repo/profiles/`) contains five OpenShell
 provider profile YAML files:
 
 | Profile ID | Endpoints | Binaries | Access |
@@ -34,6 +34,7 @@ provider profile YAML files:
 | `fullsend-github` | `api.github.com:443`, `github.com:443` | `**/gh`, `**/node`, `**/git` | read-write |
 | `fullsend-package-registries` | `registry.npmjs.org:443`, `pypi.org:443`, `files.pythonhosted.org:443`, `proxy.golang.org:443`, `sum.golang.org:443`, `storage.googleapis.com:443` | `**/npm`, `**/npx`, `**/node`, `**/pip`, `**/python`, `**/go` | read-only |
 | `fullsend-gitleaks` | `github.com:443` (path: `/gitleaks/gitleaks/releases/`) | `**/curl` | read-only |
+| `fullsend-github-artifacts` | `*.blob.core.windows.net:443`, `*.actions.githubusercontent.com:443` | `**/gh` | read-only |
 
 Each file follows the OpenShell provider profile YAML format (same
 schema as `providers/github.yaml` in the OpenShell repo). Custom
@@ -72,23 +73,25 @@ Error handling follows the existing pattern: if profile import fails
 (invalid YAML, OpenShell too old), `fullsend run` fails early with a
 clear error message. No fallback to fat policies.
 
-### Modified: scaffold policy files
+### Replaced: per-agent policy files → single `base.yaml`
 
-Policy files in `internal/scaffold/fullsend-repo/policies/` have their
-`network_policies` entries removed where covered by provider profiles:
+**Principle: policy files must not contain `network_policies`.** All
+network access is provided exclusively through provider profiles. Policy
+files define only non-composable sandbox restrictions: filesystem access,
+landlock, and process identity.
 
-- `vertex_ai` block → removed (covered by `fullsend-vertex-ai` profile)
-- `github_api` block → removed (covered by `fullsend-github` profile)
-- `package_registries` block → removed (covered by `fullsend-package-registries` profile)
-- `gitleaks_releases` block → removed (covered by `fullsend-gitleaks` profile)
+The six per-agent policy files (`triage.yaml`, `code.yaml`,
+`review.yaml`, `fix.yaml`, `prioritize.yaml`, `retro.yaml`) are deleted
+and replaced by a single `policies/base.yaml`. This is possible because:
 
-What remains in each policy file: `version`, `filesystem_policy`,
-`landlock`, `process`, and any truly agent-specific network rules not
-shared across harnesses.
+1. All six files have identical `filesystem_policy`, `landlock`, and
+   `process` sections.
+2. All `network_policies` entries are now covered by provider profiles
+   (including retro's `github_artifacts`, now served by the
+   `fullsend-github-artifacts` profile).
 
-No format change — these are still valid OpenShell policy YAMLs, just
-shorter. For most harnesses (triage, review, prioritize, retro), the
-`network_policies` section becomes empty or disappears entirely.
+All harness files update their `policy` field to reference
+`policies/base.yaml` instead of per-agent policy files.
 
 ### Modified: provider definition `type` values
 
