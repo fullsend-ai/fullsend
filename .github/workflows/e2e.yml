@@ -107,6 +107,7 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          allow-unsafe-pr-checkout: true  # Safe: gate job requires ok-to-test label from maintainer before this runs
 
       - uses: actions/setup-go@v6
         if: steps.changes.outputs.relevant != 'false'
