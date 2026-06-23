@@ -192,6 +192,14 @@ type ValidationLoop struct {
 	FeedbackMode  string `yaml:"feedback_mode,omitempty"`
 }
 
+// EnvConfig holds environment variable maps for runner and sandbox targets.
+// Replaces runner_env (ADR 0055). Values support ${VAR} expansion from the
+// host environment.
+type EnvConfig struct {
+	Runner  map[string]string `yaml:"runner,omitempty"`
+	Sandbox map[string]string `yaml:"sandbox,omitempty"`
+}
+
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
@@ -214,6 +222,7 @@ type Harness struct {
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
+	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`

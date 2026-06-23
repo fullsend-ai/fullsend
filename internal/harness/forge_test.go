@@ -422,6 +422,26 @@ forge:
 	assert.Equal(t, "scripts/pre-gl.sh", h.Forge["gitlab"].PreScript)
 }
 
+func TestForgeConfig_EnvParsesFromYAML(t *testing.T) {
+	yaml := `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    env:
+      runner:
+        GH_TOKEN: "${GH_TOKEN}"
+      sandbox:
+        GITHUB_PR_URL: "${GITHUB_PR_URL}"
+`
+	h, err := parseRaw([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, h.Forge["github"])
+	require.NotNil(t, h.Forge["github"].Env)
+	assert.Equal(t, map[string]string{"GH_TOKEN": "${GH_TOKEN}"}, h.Forge["github"].Env.Runner)
+	assert.Equal(t, map[string]string{"GITHUB_PR_URL": "${GITHUB_PR_URL}"}, h.Forge["github"].Env.Sandbox)
+}
+
 func TestLoad_WithoutForgeSection(t *testing.T) {
 	content := `
 agent: agents/test.md

@@ -17,6 +17,7 @@ type ForgeConfig struct {
 	Skills         []string          `yaml:"skills,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
+	Env            *EnvConfig        `yaml:"env,omitempty"`
 }
 
 var validForgeKeys = map[string]bool{

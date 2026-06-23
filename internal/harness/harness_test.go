@@ -1458,3 +1458,20 @@ func TestValidForgePlatform(t *testing.T) {
 	assert.False(t, ValidForgePlatform("bitbucket"))
 	assert.False(t, ValidForgePlatform(""))
 }
+
+func TestEnvConfig_ParsesFromYAML(t *testing.T) {
+	yaml := `
+agent: agents/test.md
+role: test
+env:
+  runner:
+    FOO: bar
+  sandbox:
+    BAZ: qux
+`
+	h, err := parseRaw([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, h.Env)
+	assert.Equal(t, map[string]string{"FOO": "bar"}, h.Env.Runner)
+	assert.Equal(t, map[string]string{"BAZ": "qux"}, h.Env.Sandbox)
+}
