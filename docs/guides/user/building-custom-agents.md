@@ -509,6 +509,71 @@ jobs:
             -f content="rocket" --silent 2>/dev/null || true
 ```
 
+## Custom agent identity (optional)
+
+By default, agent actions (comments, commits, status checks) appear from the generic `github-actions` bot because the workflow uses the built-in `GITHUB_TOKEN`. If you want agent actions to appear from a branded bot identity, use a [GitHub App](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-creating-github-apps) with `actions/create-github-app-token@v3` to mint a scoped token at runtime.
+
+This is entirely optional — the default `GITHUB_TOKEN` works for teams that do not need branded identity.
+
+### 1. Create a GitHub App
+
+Create a GitHub App for your agent's identity (e.g., "My Team Agent"):
+
+- **Permissions** — grant only what the agent needs:
+  - `contents: read` (checkout code)
+  - `pull-requests: write` (create/comment on PRs)
+  - `issues: write` (comment on issues)
+  - Add other permissions as needed (e.g., `actions: read` for workflow status)
+- **Webhook** — disable (the App is used only for token minting, not event delivery)
+- Note the **App ID** (also called Client ID) after creation
+
+### 2. Install the App on your org or repos
+
+Install the App on the GitHub organization or specific repositories where the agent runs. Only installed repos can use tokens minted by the App.
+
+### 3. Store credentials
+
+In the repository (or organization) where the agent workflow runs:
+
+- Store the **App ID** as a repository variable: `Settings → Variables → New repository variable` → name it `MY_AGENT_APP_ID`
+- Store the **private key** as a repository secret: `Settings → Secrets → New repository secret` → name it `MY_AGENT_APP_PRIVATE_KEY`
+
+### 4. Mint a token in the workflow
+
+Add a step using `actions/create-github-app-token@v3` before the agent runs, then pass the minted token as `GH_TOKEN`:
+
+```yaml
+      - name: Generate agent token
+        id: agent-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.MY_AGENT_APP_ID }}
+          private-key: ${{ secrets.MY_AGENT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Run my-agent
+        env:
+          GH_TOKEN: ${{ steps.agent-token.outputs.token }}
+          # ... other env vars unchanged
+```
+
+The `permission-*` inputs scope the token to only the permissions listed, regardless of the App's broader installation permissions. Request the minimum set for each workflow.
+
+### 5. Update scripts to use the minted token
+
+Ensure your pre-scripts and post-scripts use `GH_TOKEN` (set by `runner_env` in the harness) instead of hardcoding `secrets.GITHUB_TOKEN`. The harness already threads `GH_TOKEN` through `runner_env`:
+
+```yaml
+runner_env:
+  GH_TOKEN: "${GH_TOKEN}"
+```
+
+With this setup, all `gh` CLI calls in pre-scripts and post-scripts — and any GitHub API actions the agent triggers — will appear under the GitHub App's bot identity instead of the generic `github-actions` user.
+
 ## Quick troubleshooting
 
 | Symptom | Likely cause |
