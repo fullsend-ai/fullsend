@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -26,12 +25,12 @@ func testPrinter() *ui.Printer {
 
 func testAgents() []AgentCredentials {
 	return []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "fullsend", Name: "test-fullsend", Slug: "test-fullsend"}},
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "test-triage", Slug: "test-triage"}},
-		{AgentEntry: config.AgentEntry{Role: "coder", Name: "test-coder", Slug: "test-coder"}},
-		{AgentEntry: config.AgentEntry{Role: "review", Name: "test-review", Slug: "test-review"}},
-		{AgentEntry: config.AgentEntry{Role: "retro", Name: "test-retro", Slug: "test-retro"}},
-		{AgentEntry: config.AgentEntry{Role: "prioritize", Name: "test-prioritize", Slug: "test-prioritize"}},
+		{Role: "fullsend", Name: "test-fullsend", Slug: "test-fullsend"},
+		{Role: "triage", Name: "test-triage", Slug: "test-triage"},
+		{Role: "coder", Name: "test-coder", Slug: "test-coder"},
+		{Role: "review", Name: "test-review", Slug: "test-review"},
+		{Role: "retro", Name: "test-retro", Slug: "test-retro"},
+		{Role: "prioritize", Name: "test-prioritize", Slug: "test-prioritize"},
 	}
 }
 
@@ -119,7 +118,7 @@ func TestHarnessWrappersLayer_Install_GeneratesWrappers(t *testing.T) {
 func TestHarnessWrappersLayer_Install_WrapperContainsManagedHeader(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -136,7 +135,7 @@ func TestHarnessWrappersLayer_Install_WrapperContainsManagedHeader(t *testing.T)
 func TestHarnessWrappersLayer_Install_WrapperContainsIntegrityHash(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -153,7 +152,7 @@ func TestHarnessWrappersLayer_Install_SkipsCustomizedFile(t *testing.T) {
 	client.FileContents["org/.fullsend/harness/triage.yaml"] = []byte("agent: agents/custom-triage.md\nmodel: sonnet\n")
 
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -170,7 +169,7 @@ func TestHarnessWrappersLayer_Install_OverwritesManagedFile(t *testing.T) {
 	client.FileContents["org/.fullsend/harness/triage.yaml"] = []byte("# This file is managed by fullsend. Do not edit it directly.\nbase: https://old-url\nrole: triage\nslug: old-slug\n")
 
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -188,7 +187,7 @@ func TestHarnessWrappersLayer_Install_CommitFilesError(t *testing.T) {
 	client.Errors["CommitFiles"] = errors.New("network error")
 
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -209,7 +208,7 @@ func TestHarnessWrappersLayer_Install_NoAgentsNoCommit(t *testing.T) {
 func TestHarnessWrappersLayer_Install_OnlyFullsendRoleNoCommit(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "fullsend", Name: "fs", Slug: "test-fullsend"}},
+		{Role: "fullsend", Name: "fs", Slug: "test-fullsend"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -221,7 +220,7 @@ func TestHarnessWrappersLayer_Install_OnlyFullsendRoleNoCommit(t *testing.T) {
 func TestHarnessWrappersLayer_Install_WrapperParsesAsValidHarness(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -246,7 +245,7 @@ func TestHarnessWrappersLayer_Install_WrapperParsesAsValidHarness(t *testing.T) 
 func TestHarnessWrappersLayer_Install_BaseURLMatchesScaffold(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -277,7 +276,7 @@ func TestHarnessWrappersLayer_Analyze_DevBuild(t *testing.T) {
 func TestHarnessWrappersLayer_Analyze_AllPresent(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	client.FileContents["org/.fullsend/harness/triage.yaml"] = []byte("role: triage\n")
 
@@ -290,7 +289,7 @@ func TestHarnessWrappersLayer_Analyze_AllPresent(t *testing.T) {
 func TestHarnessWrappersLayer_Analyze_AllMissing(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
@@ -304,8 +303,8 @@ func TestHarnessWrappersLayer_Analyze_AllMissing(t *testing.T) {
 func TestHarnessWrappersLayer_Analyze_Degraded(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
-		{AgentEntry: config.AgentEntry{Role: "review", Name: "r", Slug: "test-review"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
+		{Role: "review", Name: "r", Slug: "test-review"},
 	}
 	// Only triage exists
 	client.FileContents["org/.fullsend/harness/triage.yaml"] = []byte("role: triage\n")
@@ -350,7 +349,7 @@ func TestHarnessesForRole(t *testing.T) {
 func TestHarnessWrappersLayer_Install_FileMode(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -366,8 +365,8 @@ func TestHarnessWrappersLayer_Install_FileMode(t *testing.T) {
 func TestHarnessWrappersLayer_Install_CoderFixDedup(t *testing.T) {
 	client := forge.NewFakeClient()
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "coder", Name: "coder-a", Slug: "slug-a"}},
-		{AgentEntry: config.AgentEntry{Role: "coder", Name: "coder-b", Slug: "slug-b"}},
+		{Role: "coder", Name: "coder-a", Slug: "slug-a"},
+		{Role: "coder", Name: "coder-b", Slug: "slug-b"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -389,7 +388,7 @@ func TestHarnessWrappersLayer_Install_LoadExistingHarnessesError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["GetFileContent"] = errors.New("permission denied")
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 
@@ -403,7 +402,7 @@ func TestHarnessWrappersLayer_Install_IdempotentNoChange(t *testing.T) {
 	changed := false
 	client.CommitFilesChanged = &changed
 	agents := []AgentCredentials{
-		{AgentEntry: config.AgentEntry{Role: "triage", Name: "t", Slug: "test-triage"}},
+		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
 

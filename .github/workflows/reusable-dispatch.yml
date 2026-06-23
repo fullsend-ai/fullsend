@@ -86,7 +86,7 @@ jobs:
           COMMENT_AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          ISSUE_HAS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+          ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           ISSUE_USER_LOGIN: ${{ github.event.issue.user.login }}
           REVIEW_STATE: ${{ github.event.review.state }}
           REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
@@ -134,15 +134,17 @@ jobs:
                   STAGE="triage"
                   ;;
                 /fs-code)
-                  if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
+                  if [[ "${ISSUE_IS_PR}" == "false" ]]; then
                     STAGE="code"
                   fi
                   ;;
                 /fs-review)
-                  STAGE="review"
+                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                    STAGE="review"
+                  fi
                   ;;
                 /fs-fix)
-                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="fix"
                       TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
@@ -185,7 +187,9 @@ jobs:
                 if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  STAGE="review"
+                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                    STAGE="review"
+                  fi
                 fi
               fi
               ;;

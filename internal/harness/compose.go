@@ -2,7 +2,11 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -180,8 +184,21 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("parsing base harness from %s: %w", cleanURL, err)
 		}
 
-		// For URL bases, relative paths in the base resolve against the child's directory
-		// (scripts are always local per ADR-0038's "no remote executables" rule)
+		// Resolve script fields in the base by fetching them from the base's
+		// source URL. This extends ADR-0038: standalone script URL references
+		// (pre_script: https://...) remain rejected, but scripts inherited
+		// through base: composition are fetched using the same integrity and
+		// allowlist infrastructure. After resolution, all script paths are
+		// local cache paths, so ValidateResourceTypes still passes.
+		scriptDeps, err := resolveBaseScripts(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base scripts from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, scriptDeps...)
+
+		// Non-script relative paths in the base still resolve against the
+		// child's directory (agent, skills, policy are handled separately by
+		// ResolveHarness which processes URL fields).
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -457,6 +474,304 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if base.Forge != nil {
 		child.Forge = mergeForgeBlocks(base.Forge, child.Forge)
 	}
+}
+
+// resolveBaseScripts fetches script fields from a URL-referenced base harness.
+// For each script field (pre_script, post_script, validation_loop.script) that
+// is a non-empty relative path, the script is fetched from the base URL's
+// directory, cached content-addressed, and the field is rewritten to the local
+// cache path. Forge-level scripts are also resolved. agent_input is excluded
+// because runtime treats it as a directory (uploaded recursively).
+// Returns additional dependencies for the fetched scripts.
+func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	baseURLDir := urlDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	// agent_input is excluded: runtime treats it as a directory (uploaded
+	// recursively), so single-file fetch is not appropriate.
+	scriptFields := []struct {
+		name string
+		ptr  *string
+	}{
+		{"pre_script", &base.PreScript},
+		{"post_script", &base.PostScript},
+	}
+
+	for _, f := range scriptFields {
+		if *f.ptr == "" {
+			continue
+		}
+		if err := validateBaseScriptPath(f.name, *f.ptr); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseScript(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
+		if err != nil {
+			return nil, err
+		}
+		*f.ptr = cachePath
+		deps = append(deps, dep)
+	}
+
+	if base.ValidationLoop != nil && base.ValidationLoop.Script != "" {
+		if err := validateBaseScriptPath("validation_loop.script", base.ValidationLoop.Script); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseScript(ctx, "validation_loop.script", baseURLDir, base.ValidationLoop.Script, allowlist, opts)
+		if err != nil {
+			return nil, err
+		}
+		base.ValidationLoop.Script = cachePath
+		deps = append(deps, dep)
+	}
+
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		forgeScripts := []struct {
+			name string
+			ptr  *string
+		}{
+			{fmt.Sprintf("forge.%s.pre_script", platform), &fc.PreScript},
+			{fmt.Sprintf("forge.%s.post_script", platform), &fc.PostScript},
+		}
+		for _, f := range forgeScripts {
+			if *f.ptr == "" {
+				continue
+			}
+			if err := validateBaseScriptPath(f.name, *f.ptr); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseScript(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			*f.ptr = cachePath
+			deps = append(deps, dep)
+		}
+		if fc.ValidationLoop != nil && fc.ValidationLoop.Script != "" {
+			fieldName := fmt.Sprintf("forge.%s.validation_loop.script", platform)
+			if err := validateBaseScriptPath(fieldName, fc.ValidationLoop.Script); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseScript(ctx, fieldName, baseURLDir, fc.ValidationLoop.Script, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			fc.ValidationLoop.Script = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
+	// agent_input is a directory at runtime (uploaded recursively) and cannot
+	// be fetched as a single file from a URL. Clear it so it doesn't resolve
+	// against the child's local directory where it won't exist.
+	if base.AgentInput != "" {
+		base.AgentInput = ""
+	}
+
+	return deps, nil
+}
+
+func validateBaseScriptPath(field, val string) error {
+	if strings.ContainsRune(val, 0) {
+		return fmt.Errorf("base script %s must not contain null bytes (got %q)", field, val)
+	}
+	if strings.ContainsAny(val, "?#") {
+		return fmt.Errorf("base script %s must not contain query or fragment markers (got %q)", field, val)
+	}
+	if IsURL(val) {
+		return fmt.Errorf("base script %s must be a relative path, not a URL (got %q)", field, val)
+	}
+	if filepath.IsAbs(val) {
+		return fmt.Errorf("base script %s must be a relative path, not an absolute path (got %q)", field, val)
+	}
+	for _, seg := range strings.Split(val, "/") {
+		if seg == ".." {
+			return fmt.Errorf("base script %s must not contain path traversal segments (got %q)", field, val)
+		}
+	}
+	return nil
+}
+
+// fetchBaseScript fetches a single script file from a URL derived from the
+// base harness's directory and the script's relative path. The script is
+// cached content-addressed and the local cache path is returned.
+func fetchBaseScript(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	scriptURL := baseURLDir + relPath
+
+	allowedBy := matchingAllowedPrefix(scriptURL, allowlist)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("base script %s: URL %q is not in allowed_remote_resources", field, scriptURL)
+	}
+
+	// Check URL-to-hash index for cached content (supports offline mode).
+	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, scriptURL)
+	if indexHit {
+		content, entry, err := fetch.CacheGet(opts.WorkspaceRoot, hash)
+		if err == nil && content != nil {
+			cachePath, cpErr := fetch.CachePath(opts.WorkspaceRoot, hash)
+			if cpErr != nil {
+				return Dependency{}, "", fmt.Errorf("base script %s: computing cache path: %w", field, cpErr)
+			}
+			contentPath := filepath.Join(cachePath, "content")
+
+			if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+				return Dependency{}, "", fmt.Errorf("base script %s: setting executable permission on cached script: %w", field, chErr)
+			}
+
+			if aErr := auditScriptFetch(opts, scriptURL, hash, allowedBy, true, entry.FetchTime); aErr != nil {
+				return Dependency{}, "", aErr
+			}
+
+			return Dependency{
+				Field:     field,
+				URL:       scriptURL,
+				LocalPath: contentPath,
+				SHA256:    hash,
+				FetchedAt: entry.FetchTime,
+				CacheHit:  true,
+				Type:      "script",
+			}, contentPath, nil
+		}
+	}
+
+	if opts.FetchPolicy.Offline {
+		return Dependency{}, "", fmt.Errorf("base script %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, scriptURL)
+	}
+
+	content, err := fetch.FetchURL(ctx, scriptURL, opts.FetchPolicy)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base script %s: fetching %s: %w", field, scriptURL, err)
+	}
+
+	if err := fetch.CachePut(opts.WorkspaceRoot, scriptURL, content); err != nil {
+		return Dependency{}, "", fmt.Errorf("base script %s: caching: %w", field, err)
+	}
+
+	hash = fetch.ComputeSHA256(content)
+	cachePath, err := fetch.CachePath(opts.WorkspaceRoot, hash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base script %s: computing cache path: %w", field, err)
+	}
+	contentPath := filepath.Join(cachePath, "content")
+
+	// Make cached script executable.
+	if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+		return Dependency{}, "", fmt.Errorf("base script %s: setting executable permission: %w", field, chErr)
+	}
+
+	// Store URL→hash mapping for future offline lookups.
+	if iErr := urlIndexPut(opts.WorkspaceRoot, scriptURL, hash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base script %s: updating URL index: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditScriptFetch(opts, scriptURL, hash, allowedBy, false, fetchedAt); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       scriptURL,
+		LocalPath: contentPath,
+		SHA256:    hash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "script",
+	}, contentPath, nil
+}
+
+// auditScriptFetch appends a fetch audit log entry for a script fetch.
+func auditScriptFetch(opts ComposeOpts, scriptURL, hash, allowedBy string, cacheHit bool, fetchedAt time.Time) error {
+	if opts.AuditLogPath == "" {
+		return nil
+	}
+	return fetch.AppendFetchAudit(opts.AuditLogPath, fetch.FetchAuditEntry{
+		TraceID:   opts.TraceID,
+		FetchTime: fetchedAt,
+		URL:       scriptURL,
+		SHA256:    hash,
+		FetchType: "base_script",
+		AllowedBy: allowedBy,
+		CacheHit:  cacheHit,
+	})
+}
+
+// urlDirPrefix returns the directory portion of a URL (everything up to and
+// including the last "/" before the filename). The integrity hash fragment
+// is stripped first. Returns "" if the URL cannot be parsed.
+func urlDirPrefix(rawURL string) string {
+	cleanURL, _, _ := ParseIntegrityHash(rawURL)
+	parsed, err := url.Parse(cleanURL)
+	if err != nil {
+		return ""
+	}
+	dir := path.Dir(parsed.Path)
+	if dir == "." || dir == "" {
+		return ""
+	}
+	if !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	parsed.Path = dir
+	parsed.RawPath = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+// urlIndexPath returns the path to the URL-to-hash index file.
+func urlIndexPath(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, ".fullsend-cache", "url-index.json")
+}
+
+// urlIndexLookup reads the URL-to-hash index and returns the SHA256 for the
+// given URL. Returns ("", false) on miss or read error.
+func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
+	if workspaceRoot == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(urlIndexPath(workspaceRoot))
+	if err != nil {
+		return "", false
+	}
+	var index map[string]string
+	if err := json.Unmarshal(data, &index); err != nil {
+		return "", false
+	}
+	hash, ok := index[rawURL]
+	return hash, ok
+}
+
+// urlIndexPut records a URL→SHA256 mapping in the index file.
+func urlIndexPut(workspaceRoot, rawURL, hash string) error {
+	if workspaceRoot == "" {
+		return nil
+	}
+	idxPath := urlIndexPath(workspaceRoot)
+	if err := os.MkdirAll(filepath.Dir(idxPath), 0o700); err != nil {
+		return err
+	}
+
+	var index map[string]string
+	data, err := os.ReadFile(idxPath)
+	if err == nil {
+		_ = json.Unmarshal(data, &index)
+	}
+	if index == nil {
+		index = make(map[string]string)
+	}
+	index[rawURL] = hash
+
+	out, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(idxPath, out, 0o600)
 }
 
 // mergeHostFiles concatenates base and child host files, with child entries

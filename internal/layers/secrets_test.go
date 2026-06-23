@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -25,14 +24,18 @@ func newSecretsLayer(t *testing.T, client *forge.FakeClient, agents []AgentCrede
 func twoAgents() []AgentCredentials {
 	return []AgentCredentials{
 		{
-			AgentEntry: config.AgentEntry{Role: "fullsend", Name: "FullsendBot", Slug: "fullsend-bot"},
-			PEM:        "-----BEGIN RSA PRIVATE KEY-----\nfullsend-key\n-----END RSA PRIVATE KEY-----",
-			ClientID:   "Iv1.abc111",
+			Role:     "fullsend",
+			Name:     "FullsendBot",
+			Slug:     "fullsend-bot",
+			PEM:      "-----BEGIN RSA PRIVATE KEY-----\nfullsend-key\n-----END RSA PRIVATE KEY-----",
+			ClientID: "Iv1.abc111",
 		},
 		{
-			AgentEntry: config.AgentEntry{Role: "triage", Name: "TriageBot", Slug: "triage-bot"},
-			PEM:        "-----BEGIN RSA PRIVATE KEY-----\ntriage-key\n-----END RSA PRIVATE KEY-----",
-			ClientID:   "Iv1.abc222",
+			Role:     "triage",
+			Name:     "TriageBot",
+			Slug:     "triage-bot",
+			PEM:      "-----BEGIN RSA PRIVATE KEY-----\ntriage-key\n-----END RSA PRIVATE KEY-----",
+			ClientID: "Iv1.abc222",
 		},
 	}
 }
@@ -81,14 +84,18 @@ func TestSecretsLayer_Install_SkipsEmptyPEM(t *testing.T) {
 	client := &forge.FakeClient{}
 	agents := []AgentCredentials{
 		{
-			AgentEntry: config.AgentEntry{Role: "fullsend", Name: "FullsendBot", Slug: "fullsend-bot"},
-			PEM:        "-----BEGIN RSA PRIVATE KEY-----\nfullsend-key\n-----END RSA PRIVATE KEY-----",
-			ClientID:   "Iv1.abc111",
+			Role:     "fullsend",
+			Name:     "FullsendBot",
+			Slug:     "fullsend-bot",
+			PEM:      "-----BEGIN RSA PRIVATE KEY-----\nfullsend-key\n-----END RSA PRIVATE KEY-----",
+			ClientID: "Iv1.abc111",
 		},
 		{
-			AgentEntry: config.AgentEntry{Role: "triage", Name: "TriageBot", Slug: "triage-bot"},
-			PEM:        "", // empty — reused from existing app
-			ClientID:   "Iv1.abc222",
+			Role:     "triage",
+			Name:     "TriageBot",
+			Slug:     "triage-bot",
+			PEM:      "", // empty — reused from existing app
+			ClientID: "Iv1.abc222",
 		},
 	}
 	layer, _ := newSecretsLayer(t, client, agents)

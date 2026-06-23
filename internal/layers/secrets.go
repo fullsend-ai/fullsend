@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// AgentCredentials extends AgentEntry with app credentials.
+// AgentCredentials holds agent identity (role, name, slug) and app credentials for layer operations.
 type AgentCredentials struct {
-	config.AgentEntry
+	Role     string
+	Name     string
+	Slug     string
 	PEM      string
 	ClientID string
 	AppID    int

@@ -1,6 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "prHourlyLimit": 1,
+  "postUpdateOptions": ["gomodTidy"],
   "git-submodules": {
     "enabled": true
   },
