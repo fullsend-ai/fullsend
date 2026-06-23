@@ -18,6 +18,6 @@ func newExitError(code int, format string, args ...any) *exitError {
 
 // Auth exit codes for fullsend auth check.
 const (
-	AuthExitBlocked          = 10
-	AuthExitStaleOrUnauth    = 11
+	AuthExitBlocked       = 10
+	AuthExitStaleOrUnauth = 11
 )

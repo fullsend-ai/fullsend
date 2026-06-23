@@ -195,7 +195,7 @@ type FakeClient struct {
 	DismissedReviews       []DismissedReviewRecord
 	CommittedFiles         []CommitFilesRecord
 	CommittedFilesToBranch []CommitFilesToBranchRecord
-	DeletedComments        []int // comment IDs
+	DeletedComments        []int    // comment IDs
 	AddedLabels            []string // "owner/repo/number:label"
 	RemovedLabels          []string // "owner/repo/number:label"
 

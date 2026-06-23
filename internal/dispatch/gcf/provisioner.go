@@ -60,7 +60,7 @@ var embeddedMintFiles = map[string]string{
 	"mintcore/interfaces.go.embed":    "mintcore/interfaces.go",
 	"mintcore/jwks_verifier.go.embed": "mintcore/jwks_verifier.go",
 	"mintcore/claims.go.embed":        "mintcore/claims.go",
-	"mintcore/elevations.go.embed":  "mintcore/elevations.go",
+	"mintcore/elevations.go.embed":    "mintcore/elevations.go",
 	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
 	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
 	"mintcore/wif.go.embed":           "mintcore/wif.go",

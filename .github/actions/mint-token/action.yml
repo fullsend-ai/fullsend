@@ -57,7 +57,7 @@ runs:
         REPOS_JSON=$(echo "$REPOS" | jq -Rc 'split(",") | map(select(length > 0))')
         ELEVATIONS_JSON=$(echo "${ELEVATIONS:-}" | jq -Rc 'if length == 0 then [] else split(",") | map(select(length > 0)) end')
         BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" --argjson elevations "$ELEVATIONS_JSON" \
-          '{role: $role, repos: $repos, elevations: (if ($elevations | length) > 0 then $elevations else empty end)}')
+          '{role: $role, repos: $repos} + if ($elevations | length) > 0 then {elevations: $elevations} else {} end')
         echo "Requesting token: role=$ROLE repos=$REPOS"
         MINT_RESPONSE=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
           -H "Authorization: Bearer $OIDC_TOKEN" \

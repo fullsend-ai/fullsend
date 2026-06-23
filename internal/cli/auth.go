@@ -28,15 +28,15 @@ func newAuthCmd() *cobra.Command {
 
 func newAuthCheckCmd() *cobra.Command {
 	var (
-		gateName           string
-		repo               string
-		number             int
-		phase              string
-		changedFilesPath   string
-		triggerCommentID   int
-		jsonOut            bool
-		apply              bool
-		token              string
+		gateName         string
+		repo             string
+		number           int
+		phase            string
+		changedFilesPath string
+		triggerCommentID int
+		jsonOut          bool
+		apply            bool
+		token            string
 	)
 
 	cmd := &cobra.Command{
