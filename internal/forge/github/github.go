@@ -87,6 +87,9 @@ func (e *APIError) Unwrap() error {
 	if e.StatusCode == http.StatusUnprocessableEntity && isAlreadyExistsError(e) {
 		return forge.ErrAlreadyExists
 	}
+	if e.StatusCode == http.StatusUnprocessableEntity && isNoChangesError(e) {
+		return forge.ErrNoChanges
+	}
 	return nil
 }
 
@@ -965,6 +968,14 @@ func isAlreadyExistsError(apiErr *APIError) bool {
 		msg += " " + strings.ToLower(d.Message)
 	}
 	return strings.Contains(msg, "already exists")
+}
+
+func isNoChangesError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "no commits between")
 }
 
 // blobSHA computes the Git blob object SHA-1 for the given content.

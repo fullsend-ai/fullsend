@@ -21,6 +21,7 @@ type WorkflowsLayer struct {
 	version           string
 	vendored          bool
 	vendorCollect     VendorCollectFunc
+	direct            bool
 }
 
 var _ Layer = (*WorkflowsLayer)(nil)
@@ -40,6 +41,13 @@ func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, use
 // WithVendorCollect configures combined scaffold+vendor commits for --vendor installs.
 func (l *WorkflowsLayer) WithVendorCollect(fn VendorCollectFunc) *WorkflowsLayer {
 	l.vendorCollect = fn
+	return l
+}
+
+// WithDirect configures direct-commit mode (push to default branch, fall back
+// to PR on branch protection). The default is PR-based delivery.
+func (l *WorkflowsLayer) WithDirect(direct bool) *WorkflowsLayer {
+	l.direct = direct
 	return l
 }
 
@@ -103,21 +111,27 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	commitMsg := fmt.Sprintf("chore: update fullsend-%s scaffold", l.version)
 	if vendorAssetCount > 0 {
 		commitMsg = fmt.Sprintf("chore: update fullsend-%s scaffold with vendored assets", l.version)
-		l.ui.StepStart(fmt.Sprintf("Writing scaffold and vendored assets (%d content files) to %s/%s (%s branch)",
-			vendorAssetCount, l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
-	} else {
+		if l.direct {
+			l.ui.StepStart(fmt.Sprintf("Writing scaffold and vendored assets (%d content files) to %s/%s (%s branch)",
+				vendorAssetCount, l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
+		} else {
+			l.ui.StepStart(fmt.Sprintf("Creating scaffold PR with vendored assets (%d content files) for %s/%s (target: %s)",
+				vendorAssetCount, l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
+		}
+	} else if l.direct {
 		l.ui.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
+			l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
+	} else {
+		l.ui.StepStart(fmt.Sprintf("Creating scaffold PR for %s/%s (target: %s)",
 			l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
 	}
 	prTitle := "chore: add fullsend scaffold files"
 	prBody := fmt.Sprintf("This PR adds the fullsend scaffold files to the %s config repo.\n\n"+
-		"The default branch (%s) has branch protection rules that prevent direct pushes, "+
-		"so these files are delivered via PR instead.\n\n"+
-		"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName, cfgRepo.DefaultBranch)
+		"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName)
 
 	committed, err := CommitScaffoldFiles(ctx, l.client, l.ui,
 		l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
-		commitMsg, prTitle, prBody, files)
+		commitMsg, prTitle, prBody, files, l.direct)
 	if err != nil {
 		return err
 	}

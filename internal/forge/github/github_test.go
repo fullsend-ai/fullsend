@@ -800,6 +800,57 @@ func TestIsAlreadyExistsError(t *testing.T) {
 	}
 }
 
+func TestIsNoChangesError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name: "no commits between branches",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "PullRequest", Code: "custom", Message: "No commits between main and main"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "no commits between different branches",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "PullRequest", Code: "custom", Message: "No commits between main and fullsend/scaffold-install"},
+				},
+			},
+			want: true,
+		},
+		{
+			name:   "top-level message only",
+			apiErr: &APIError{StatusCode: 422, Message: "No commits between main and fullsend/scaffold-install"},
+			want:   true,
+		},
+		{
+			name:   "already exists is not no-changes",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isNoChangesError(tt.apiErr))
+		})
+	}
+}
+
 func TestAPIError_Unwrap(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -827,6 +878,17 @@ func TestAPIError_Unwrap(t *testing.T) {
 				},
 			},
 			wantErr: forge.ErrAlreadyExists,
+		},
+		{
+			name: "422 no commits between unwraps to ErrNoChanges",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors: []APIErrorDetail{
+					{Resource: "PullRequest", Code: "custom", Message: "No commits between main and fullsend/scaffold-install"},
+				},
+			},
+			wantErr: forge.ErrNoChanges,
 		},
 		{
 			name:    "422 non-fast-forward does not unwrap",

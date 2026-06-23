@@ -153,6 +153,7 @@ type perRepoInstallConfig struct {
 	Vendor               bool
 	FullsendBinary       string
 	FullsendSource       string
+	Direct               bool
 }
 
 // wifProviderPattern validates the full WIF provider resource name format
@@ -244,6 +245,7 @@ func newInstallCmd() *cobra.Command {
 	var skipMintCheck bool
 	var publicApps bool
 	var appSet string
+	var direct bool
 	// Per-repo flags.
 	var mintURL string
 
@@ -315,6 +317,7 @@ Inference authentication:
 					Vendor:               vendor,
 					FullsendBinary:       fullsendBinary,
 					FullsendSource:       fullsendSource,
+					Direct:               direct,
 				})
 			}
 
@@ -544,7 +547,7 @@ Inference authentication:
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendor, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendor, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, direct, allRepos)
 		},
 	}
 
@@ -567,6 +570,7 @@ Inference authentication:
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
 	// Shared flags.
 	cmd.Flags().StringVar(&mintURL, "mint-url", DefaultMintURL, "token mint URL for OIDC token exchange (default: hosted public mint)")
+	cmd.Flags().BoolVar(&direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
 
 	return cmd
 }
@@ -1001,7 +1005,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, c.Direct); err != nil {
 		return err
 	}
 
@@ -1020,22 +1024,25 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 // and configures the repository variables and secrets needed for fullsend.
 func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo string, files []forge.TreeFile,
-	repoVars, repoSecrets map[string]string) error {
+	repoVars, repoSecrets map[string]string, direct bool) error {
 
 	targetRepo, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
 		return fmt.Errorf("getting repo info: %w", err)
 	}
 	commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
-	printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
-		owner, repo, targetRepo.DefaultBranch))
-	prBody := fmt.Sprintf("This PR adds the fullsend scaffold files for per-repo installation.\n\n"+
-		"The default branch (%s) has branch protection rules that prevent direct pushes, "+
-		"so these files are delivered via PR instead.\n\n"+
-		"Merge this PR to activate fullsend workflows.", targetRepo.DefaultBranch)
+	if direct {
+		printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
+			owner, repo, targetRepo.DefaultBranch))
+	} else {
+		printer.StepStart(fmt.Sprintf("Creating scaffold PR for %s/%s (target: %s)",
+			owner, repo, targetRepo.DefaultBranch))
+	}
+	prBody := "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
+		"Merge this PR to activate fullsend workflows."
 	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
-		commitMsg, "chore: initialize fullsend per-repo installation", prBody, files); err != nil {
+		commitMsg, "chore: initialize fullsend per-repo installation", prBody, files, direct); err != nil {
 		return err
 	}
 
@@ -1216,7 +1223,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
 	}
 	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, false)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1456,7 +1463,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendor bool, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendor bool, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck, direct bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -1543,7 +1550,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, commitSHA)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, commitSHA, direct)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1792,7 +1799,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, commitSHA)
+	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, commitSHA, false)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -1826,6 +1833,7 @@ func buildLayerStack(
 	analyzeFullsendSource string,
 	dispatcher dispatch.Dispatcher,
 	commitSHA string,
+	direct bool,
 ) *layers.Stack {
 	dispatchLayer := layers.NewOIDCDispatchLayer(org, client, enrolledRepoIDs, dispatcher, printer)
 
@@ -1841,7 +1849,7 @@ func buildLayerStack(
 
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
-		workflowsLayer(org, client, printer, user, version, vendor, vendorCollect),
+		workflowsLayer(org, client, printer, user, version, vendor, vendorCollect, direct),
 		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA),
 		vendorLayer(org, client, printer, vendor, vendorFn, vendorCollect, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
@@ -1851,8 +1859,8 @@ func buildLayerStack(
 	)
 }
 
-func workflowsLayer(org string, client forge.Client, printer *ui.Printer, user, version string, vendor bool, vendorCollect layers.VendorCollectFunc) *layers.WorkflowsLayer {
-	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor)
+func workflowsLayer(org string, client forge.Client, printer *ui.Printer, user, version string, vendor bool, vendorCollect layers.VendorCollectFunc, direct bool) *layers.WorkflowsLayer {
+	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor).WithDirect(direct)
 	if vendorCollect != nil {
 		layer = layer.WithVendorCollect(vendorCollect)
 	}

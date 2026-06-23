@@ -41,6 +41,15 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
+// ErrNoChanges indicates that a change proposal could not be created
+// because there are no differences between the head and base branches.
+var ErrNoChanges = errors.New("no changes between branches")
+
+// IsNoChanges reports whether err indicates a no-diff PR creation attempt.
+func IsNoChanges(err error) bool {
+	return errors.Is(err, ErrNoChanges)
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
