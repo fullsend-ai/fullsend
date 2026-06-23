@@ -39,8 +39,10 @@ orgs control over their own policy.
 ## Decision
 
 1. **Optional `target_org` on mint requests.** When omitted, or when equal to the caller's
-   `repository_owner` (case-insensitive), behavior is unchanged from pre-0054 mint: same
-   `mintToken` path, repo-based installation lookup, **repos required**, no FOREIGN check.
+   `repository_owner` (case-insensitive), behavior uses the same `mintToken` path with no
+   FOREIGN check. When `repos` is omitted, the mint issues an installation-wide token via
+   org-level installation lookup (same as the cross-org path). Callers are authenticated via
+   WIF/OIDC; only enrolled workflows that pass mint enrollment checks can reach the handler.
 
 2. **Cross-org path** applies only when `target_org` is set and differs from the caller org:
    - Resolve the requested role's App installation on `target_org` via org-level installation lookup.
@@ -48,9 +50,9 @@ orgs control over their own policy.
      token (`actions_variables: read`).
    - Deny if installation lookup fails, the variable is missing/empty, or the OIDC caller
      (`repository` or bare `repository_owner`) is not on the allowlist.
-   - Mint a scoped installation token for the requested repos on the target org. When `repos`
-     is omitted, mint an installation-wide token (org-level installation lookup only). This
-     is intended for the `e2e` role acting on pool orgs from CI ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)).
+   - Mint an installation token for the requested repos on the target org, or installation-wide
+     when `repos` is omitted. The `e2e` role acting on pool orgs from CI is the first consumer
+     ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)).
 
 3. **Variable format.** Org-level GitHub Actions variable on the **target** org:
    - Name: `FULLSEND_FOREIGN_<ROLE>_REPOS` (uppercase role suffix, per [ADR 0014](0014-admin-install-github-apps-secrets-v1.md))
@@ -71,9 +73,10 @@ orgs control over their own policy.
   `organization_actions_variables: write` so pool tests can set repo/org variables during
   install flows; these writes are scoped to pool orgs that explicitly authorize CI via
   `FULLSEND_FOREIGN_E2E_REPOS`.
-- Installation-wide tokens (empty `repos`) are permitted only on the cross-org path after
-  FOREIGN authorization; same-org callers must always name at least one repo.
-- Target orgs opt in by installing the role App and setting the FOREIGN allowlist.
-- Same-org mint for enrolled orgs is unchanged aside from requiring `repos`: zero FOREIGN
-  API calls or permission changes for typical agent workflows.
+- Installation-wide tokens (empty `repos`) are permitted on both same-org and cross-org
+  paths. Cross-org requests additionally require FOREIGN authorization on the target org.
+  Same-org elevation relies on WIF/OIDC enrollment: only trusted workflows can call the mint.
+- Target orgs opt in by installing the role App and setting the FOREIGN allowlist (cross-org).
+- Same-org mint for enrolled orgs adds zero FOREIGN API calls; optional `repos` omission uses
+  org-level installation lookup when callers need installation-wide scope.
 - Pool org provisioning must install the e2e App and set `FULLSEND_FOREIGN_E2E_REPOS` for CI callers.

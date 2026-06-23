@@ -223,12 +223,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetOrg = callerOrg
 	}
 
-	sameOrg := strings.EqualFold(targetOrg, callerOrg)
-	if sameOrg && len(req.Repos) == 0 {
-		writeError(w, http.StatusBadRequest, "repos is required")
-		return
-	}
-
 	if len(req.Repos) == 0 {
 		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)

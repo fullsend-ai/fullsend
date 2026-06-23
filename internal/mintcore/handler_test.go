@@ -549,7 +549,7 @@ func TestHandler_InvalidRepoName(t *testing.T) {
 	}
 }
 
-func TestHandler_EmptyRepos_SameOrgRejected(t *testing.T) {
+func TestHandler_EmptyRepos_FullOrgToken(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -562,14 +562,52 @@ func TestHandler_EmptyRepos_SameOrgRejected(t *testing.T) {
 	})
 	token := env.signToken(t, nil)
 
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/orgs/test-org/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			if _, ok := body["repositories"]; ok {
+				t.Error("expected installation token request to omit repositories")
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:               "ghs_full_org_token",
+				ExpiresAt:           "2026-05-06T12:00:00Z",
+				Permissions:         map[string]string{"contents": "write", "metadata": "read"},
+				RepositorySelection: "all",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
 	body := `{"role":"coder"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	env.handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp mintResponse
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Token != "ghs_full_org_token" {
+		t.Fatalf("expected token=ghs_full_org_token, got %s", resp.Token)
+	}
+	if resp.RepoSelection != "all" {
+		t.Fatalf("expected repository_selection=all, got %s", resp.RepoSelection)
 	}
 }
 
