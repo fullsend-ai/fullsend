@@ -1,0 +1,177 @@
+name: Functional Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'eval/**'
+      - 'internal/scaffold/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'eval/**'
+      - 'internal/scaffold/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: functional-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  functional-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.6.0
+
+      - name: Install agent-eval-harness
+        # Installs from the git submodule checked out above (submodules: true)
+        run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
+
+      - name: Install yq
+        run: |
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "fullsend-eval[bot]"
+          git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
+
+      - name: Build fullsend
+        run: make go-build
+
+      - name: Add bin to PATH
+        run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
+
+      # TODO: The openshell setup below (version, CLI, gateway, Podman,
+      # gateway start) is duplicated from action.yml. Extract into a
+      # shared script (e.g. .github/scripts/setup-openshell.sh) so the
+      # version and config stay in sync across both places.
+      - name: Set OpenShell version
+        run: echo "OPENSHELL_VERSION=0.0.38" >> "${GITHUB_ENV}"
+
+      - name: Install OpenShell CLI
+        run: |
+          uv tool install "openshell==${OPENSHELL_VERSION}"
+          openshell --version
+
+      - name: Download openshell-gateway
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "${arch}" in
+            x86_64) ;;
+            aarch64|arm64) arch=aarch64 ;;
+            *) echo "::error::Unsupported architecture: ${arch}"; exit 1 ;;
+          esac
+          GATEWAY_ASSET="openshell-gateway-${arch}-unknown-linux-gnu.tar.gz"
+          GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/${GATEWAY_ASSET}"
+          curl -fsSL "${GATEWAY_URL}" -o "/tmp/${GATEWAY_ASSET}"
+          tar xzf "/tmp/${GATEWAY_ASSET}" -C "${{ runner.temp }}"
+          rm -f "/tmp/${GATEWAY_ASSET}"
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Configure rootless Podman
+        run: |
+          whoami_user="$(whoami)"
+          grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+          podman system migrate
+
+      - name: Start Podman API service
+        run: |
+          SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          if [ ! -S "${SOCKET_PATH}" ]; then
+            mkdir -p "$(dirname "${SOCKET_PATH}")"
+            podman system service --time=0 "unix://${SOCKET_PATH}" &
+            for _i in $(seq 1 30); do
+              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+              sleep 1
+            done
+            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+          fi
+
+      - name: Start openshell-gateway
+        run: |
+          set -euo pipefail
+          OPENSHELL_SSH_HANDSHAKE_SECRET="ci-$(openssl rand -hex 16)"
+          export OPENSHELL_SSH_HANDSHAKE_SECRET
+          echo "::add-mask::${OPENSHELL_SSH_HANDSHAKE_SECRET}"
+          export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dfd47683e7da4f1a4a8fa5d77f92d3696e6a41f9"
+          "${{ runner.temp }}/openshell-gateway" \
+            --bind-address 0.0.0.0 \
+            --health-port 8081 \
+            --drivers podman \
+            --disable-tls \
+            --db-url "sqlite:/tmp/gateway.db?mode=rwc" \
+            >/tmp/gateway.log 2>&1 &
+          for _i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 || {
+            echo "::error::Gateway health check failed"
+            cat /tmp/gateway.log 2>/dev/null || true
+            exit 1
+          }
+          openshell gateway add http://127.0.0.1:8080 --local --name local
+          openshell gateway select local
+
+      - name: Install validation dependencies
+        run: pip install --quiet "jsonschema>=4.18.0"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Prepare sandbox credentials
+        run: |
+          echo "HOST_GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS" >> "$GITHUB_ENV"
+          bash internal/scaffold/fullsend-repo/scripts/prepare-sandbox-credentials.sh
+
+      - name: Run functional tests
+        env:
+          EVAL_ORG: ${{ vars.EVAL_ORG }}
+          GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.EVALS_VERTEX_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
+          EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
+        run: make functional-tests
+
+      - name: Scrub secrets from eval results
+        if: always()
+        run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            eval/runs/
+            !eval/runs/**/.eval-env
+          retention-days: 30

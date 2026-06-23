@@ -31,7 +31,7 @@ harness. They reside in `config.yaml`'s `agents:` block
 ([ADR 0011](0011-admin-install-org-config-yaml-v1.md)):
 
 ```yaml
-# config.yaml (current)
+# config.yaml (before ADR-0045)
 agents:
   - role: triage
     name: fullsend-ai-triage
@@ -382,10 +382,14 @@ the org's `allowed_remote_resources` allowlist, fetched via the
 SSRF-hardened fetch layer, and cached in `.fullsend-cache/`.
 
 Relative paths in the merged result (e.g., `pre_script: scripts/pre.sh`)
-resolve against the local `.fullsend/` directory, not the base's origin.
-This works because scripts are always scaffolded locally (ADR 0038's
-"no remote executables" rule) — `base` handles declarative config while
-scripts stay local and customizable.
+resolve against the local `.fullsend/` directory when the base is a
+local file. When the base is a URL, script fields (`pre_script`,
+`post_script`, `validation_loop.script`) declared in the base harness
+are fetched from the base URL's directory, cached content-addressed,
+and rewritten to local cache paths before validation (see ADR 0038's
+`base:` composition exception). `agent_input` is excluded from URL-base
+resolution because it is a directory, not a single file. Scripts in the
+child harness always resolve against the local `.fullsend/` directory.
 
 #### Depth limit and circular detection
 
@@ -684,14 +688,12 @@ forge-specific artifact. The harness and agent definition are portable.
   duplication. Script-level factoring (shared functions sourced by
   forge-specific scripts) is a convention, not a schema concern.
 
-- **config.yaml schema versioning.** Removing `agents:` (Phase 4) changes
-  the v1 schema contract established by ADR 0011. The current
-  `OrgConfig.Agents` field uses `yaml:"agents"` without `omitempty`,
-  meaning it is part of the v1 contract. Adding `omitempty` and treating
-  absence as "discover from harness files" is likely v1-compatible for
-  Phase 3 (deprecation), but full removal in Phase 4 may warrant a v2
-  schema. Consumers that assume `Agents` is always populated need
-  auditing.
+- **config.yaml schema versioning.** Removing `agents:` (Phase 4) changed
+  the v1 schema contract established by ADR 0011. The `OrgConfig.Agents`
+  field was removed in Phase 4; `yaml.Unmarshal` silently ignores the
+  key in existing config files, so v1 compatibility is preserved.
+  Phase 3 (PR 6) added `omitempty` as a deprecation step; Phase 4
+  completed the removal. No v2 schema bump was needed.
   *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field. The
   Phase 4 plan (`docs/plans/adr-0045-forge-portable-harness-phase4.md`)
   recommends staying on v1 — removal is backward-compatible since

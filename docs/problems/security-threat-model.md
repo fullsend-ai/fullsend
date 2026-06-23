@@ -421,6 +421,42 @@ This is distinct from hallucination (generating incorrect facts). Self-report un
 
 - Review agents that assess code quality or security properties produce natural-language assessments that are, structurally, self-reports. If a review agent claims "no security issues found," the harness can validate the format of the output but cannot independently verify the claim's truth. This is where property-based testing, coverage metrics, and static analysis serve as independent verification — they check the code directly rather than trusting the reviewer's summary.
 
+## Cross-cutting concern: audit log integrity
+
+The security architecture depends on auditability (principle 4 below): every agent action is logged, attributable, and reviewable. But the audit log itself is a security-critical artifact. If an attacker (or a compromised agent) can modify the log after the fact, auditability is an illusion. This concern compounds with [agent self-report unreliability](#cross-cutting-concern-agent-self-report-unreliability): if an agent can both misrepresent its own actions and tamper with the log that would catch the misrepresentation, the combination defeats both controls.
+
+### The problem
+
+The current audit trail (`findings.jsonl` and related trace files) is append-only by convention, not by enforcement. A process with write access to the log directory can:
+
+- Delete entries that record suspicious activity
+- Modify findings to downgrade severity (e.g., change `critical` to `low`)
+- Insert fabricated entries to create a false trail
+- Truncate the log to remove evidence of a compromise window
+
+In the sandbox model ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)), the agent has write access to the workspace, which includes the audit log. The sandbox is the security boundary for credentials, but the audit log sits inside that boundary. A compromised agent that cannot exfiltrate credentials can still cover its tracks by tampering with the log.
+
+This matters most for forensics. When investigating a security incident, the first question is "what did the agent actually do?" If the log cannot be trusted, the investigation starts from zero.
+
+### Defense considerations
+
+- **Cryptographic hash chaining.** Each log entry includes a hash of the previous entry, creating a tamper-evident chain. Modifying or deleting any entry breaks the chain from that point forward. Verification is O(n) and requires no external infrastructure. This does not prevent tampering, but it makes tampering detectable. **Limitation:** hash chaining does not detect tail truncation (removing the last N entries). The remaining chain is internally consistent; it just ends earlier. Detecting tail truncation requires an external record of the expected chain length or latest hash.
+- **Write-once external sink.** Stream audit events to an append-only external store (object storage with retention policies, a log aggregation service, or a separate write-only endpoint) that the sandbox cannot modify. This prevents tampering entirely but adds infrastructure complexity and a network dependency.
+- **Post-run verification.** After each agent run, a harness-level step (outside the sandbox) verifies the audit log's integrity before the run is considered complete. If verification fails, the run is flagged for investigation regardless of whether the agent's output otherwise looks clean.
+- **Signed entries.** Each audit entry is signed with a key the agent does not control (e.g., the harness signs entries before writing, or the trace system uses a key injected at sandbox creation and revoked at sandbox teardown). This is stronger than hash chaining but more complex to implement.
+
+### Relationship to commit signing
+
+Issue [#1685](https://github.com/fullsend-ai/fullsend/issues/1685) explores using gitsign for agent-generated commits. Audit log integrity is a prerequisite concern: if the log of what the agent did during the run cannot be trusted, signing the resulting commit provides provenance for the output but not accountability for the process. Both are needed, and hash-chained audit logs are a simpler first step that does not require external signing infrastructure.
+
+### Open questions
+
+- Should hash chaining use a seed derived from the run's trace ID, or a global chain that spans runs? Per-run chains are simpler but cannot detect deletion of entire runs.
+- Is hash chaining sufficient, or does the threat model require external write-once storage?
+- Should the harness verify log integrity synchronously (blocking the run) or asynchronously (flagging for later review)?
+- How do we handle legitimate log rotation without breaking the chain?
+- What is the right granularity for hashing: individual findings, batches, or the entire log?
+
 ## Cross-cutting security principles
 
 1. **Defense in depth** — no single control should be the only thing preventing an attack

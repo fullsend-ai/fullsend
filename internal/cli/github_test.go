@@ -405,7 +405,7 @@ func TestRunGitHubStatus_BasicReport(t *testing.T) {
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, nil, "", "")
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, "", "")
 	cfgData, _ := cfg.Marshal()
 	client.FileContents["acme/.fullsend/config.yaml"] = cfgData
 	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
@@ -500,16 +500,16 @@ func TestRunGitHubUninstall_UsesHarnessDiscovery(t *testing.T) {
 	assert.NotContains(t, output, "agents: block")
 }
 
-func TestRunGitHubUninstall_FallsBackToAgentsBlock(t *testing.T) {
+func TestRunGitHubUninstall_NoHarnessFiles_FallsBackToDefaultNaming(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
 	client.FileContents = map[string][]byte{
-		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: cfg-triage\n"),
+		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\n"),
 	}
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "cfg-triage"},
+		{ID: 1, AppSlug: "fullsend-ai-triage"},
 	}
 
 	var buf strings.Builder
@@ -519,8 +519,7 @@ func TestRunGitHubUninstall_FallsBackToAgentsBlock(t *testing.T) {
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "cfg-triage")
-	assert.Contains(t, output, "agents: block")
+	assert.Contains(t, output, "fullsend-ai-triage")
 }
 
 // --- Sync-scaffold command tests ---

@@ -41,6 +41,9 @@ const (
 	// files. Shared between host-side (scanRepoContextFiles) and sandbox-side
 	// (buildScanContextCommand) scans to ensure parity.
 	maxContextScanDepth = 5
+
+	// metricsFile is the filename written to the run directory with behavioral metrics.
+	metricsFile = "metrics.json"
 )
 
 // agentWorkingDirExcludes lists directory patterns that agents may create
@@ -67,6 +70,26 @@ type statusOpts struct {
 	statusRepo string
 	statusNum  int
 	mintURL    string
+}
+
+// aggregateMetrics holds accumulated behavioral metrics across retry iterations.
+type aggregateMetrics struct {
+	NumTurns     int     `json:"num_turns"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	TokenUsage   struct {
+		Input  int `json:"input"`
+		Output int `json:"output"`
+	} `json:"token_usage"`
+	Iterations int `json:"iterations"`
+	ToolCalls  int `json:"tool_calls"`
+}
+
+func writeMetricsJSON(dir string, m aggregateMetrics) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
 }
 
 func newRunCmd() *cobra.Command {
@@ -810,6 +833,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	var lastExitCode int
 	var runCount int
+	var aggMetrics aggregateMetrics
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
@@ -855,8 +879,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
+		// Accumulate behavioral metrics across iterations.
+		aggMetrics.NumTurns += metrics.NumTurns
+		aggMetrics.TotalCostUSD += metrics.TotalCostUSD
+		aggMetrics.TokenUsage.Input += metrics.InputTokens
+		aggMetrics.TokenUsage.Output += metrics.OutputTokens
+		aggMetrics.ToolCalls += int(metrics.ToolCalls.Load())
+		aggMetrics.Iterations = iteration
+
 		if runErr != nil {
 			printer.StepFail("Agent execution failed")
+			// Write partial metrics before returning so downstream judges
+			// (e.g., max_turns, max_cost) can inspect what happened.
+			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+				printer.StepWarn("Failed to write metrics.json: " + err.Error())
+			}
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
@@ -948,6 +985,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Write aggregated behavioral metrics.
+	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+		printer.StepWarn("Failed to write metrics.json: " + err.Error())
+	}
+
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
 	// When the agent exits non-zero, parse transcript JSONL files and emit
 	// ::error:: annotations so operators can diagnose failures without
@@ -976,6 +1018,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepInfo("No sandbox security findings to extract")
 			} else {
 				printer.StepDone("Security findings extracted")
+			}
+		}
+
+		findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
+		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
+			cv, verifyErr := security.VerifyChain(findingsJSONL)
+			if verifyErr != nil {
+				printer.StepWarn("Audit log verification error: " + verifyErr.Error())
+			} else if !cv.Valid {
+				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
+				return fmt.Errorf("audit log integrity check failed: %s", cv.BrokenMsg)
+			} else if cv.Entries > 0 {
+				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
 			}
 		}
 	}

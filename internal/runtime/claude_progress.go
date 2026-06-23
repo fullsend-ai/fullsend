@@ -48,6 +48,18 @@ var allowedTools = map[string]bool{
 	"Agent": true,
 }
 
+// resultEvent represents the final NDJSON event from Claude Code's stream-json
+// output, containing execution metrics.
+type resultEvent struct {
+	Type         string  `json:"type"`
+	NumTurns     int     `json:"num_turns"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	Usage        struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
 // progress updates via the printer. It extracts tool names and safe context
 // (binary name for Bash, file path for Read/Write/Edit) without logging
@@ -81,6 +93,16 @@ func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *
 
 		if evt.Type == "assistant" {
 			parseAssistantToolUse(line, printer, start, metrics, isCI)
+		}
+
+		if evt.Type == "result" {
+			var re resultEvent
+			if err := json.Unmarshal(line, &re); err == nil {
+				metrics.NumTurns = re.NumTurns
+				metrics.TotalCostUSD = re.TotalCostUSD
+				metrics.InputTokens = re.Usage.InputTokens
+				metrics.OutputTokens = re.Usage.OutputTokens
+			}
 		}
 	}
 }

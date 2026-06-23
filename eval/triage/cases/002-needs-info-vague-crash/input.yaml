@@ -1,0 +1,10 @@
+forge: github
+fixture:
+  type: issue
+  title: "App crashes sometimes"
+  body: |
+    The app crashes. It happens randomly, maybe once a day. Sometimes
+    it works fine and other times it just stops. I think it might be
+    related to logging in but I'm not sure.
+
+    Can you fix this?

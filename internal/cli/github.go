@@ -426,15 +426,11 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	var agentCreds []layers.AgentCredentials
 	for _, role := range roles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
-	dummyAgents := make([]config.AgentEntry, len(agentCreds))
-	for i, ac := range agentCreds {
-		dummyAgents[i] = ac.AgentEntry
-	}
-	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, dummyAgents, inferenceProviderName, org)
+	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 	orgCfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -480,11 +476,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 
 		// Rebuild with real credentials.
 		agentCreds = creds
-		agents := make([]config.AgentEntry, len(agentCreds))
-		for i, ac := range agentCreds {
-			agents[i] = ac.AgentEntry
-		}
-		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
+		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 		orgCfg.Dispatch.Mode = "oidc-mint"
 
 		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA)
@@ -820,18 +812,10 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 	printer.Header("Uninstalling fullsend from " + org)
 	printer.Blank()
 
-	// Discover agent slugs: harness files first, then config.yaml agents:
-	// block, then default naming convention.
+	// Discover agent slugs from harness files, then default naming convention.
 	var agentSlugs []string
-	var parsedCfg *config.OrgConfig
-	cfgData, cfgErr := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
-	if cfgErr == nil {
-		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			parsedCfg = parsed
-		}
-	}
 
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, parsedCfg, printer)
+	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
 
 	if len(agentSlugs) == 0 {
 		for _, role := range config.DefaultAgentRoles() {

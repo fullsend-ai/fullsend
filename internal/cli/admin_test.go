@@ -581,7 +581,7 @@ func setupTestConfig(repos map[string]bool) *config.OrgConfig {
 	// Sort to ensure deterministic order despite map iteration being non-deterministic.
 	sort.Strings(repoNames)
 	sort.Strings(enabledRepos)
-	return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, nil, "", "")
+	return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, "", "")
 }
 
 func setupTestClient(org string, cfg *config.OrgConfig, orgRepos []string) *forge.FakeClient {
@@ -1084,7 +1084,6 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		[]string{"repo-a", "repo-b"},
 		nil, // nil enabledRepos → all repos are disabled in cfg
 		[]string{"triage"},
-		nil,
 		"",
 		"",
 	)
@@ -1129,7 +1128,6 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 		[]string{"repo-a", "repo-b"},
 		[]string{}, // explicitly empty → all repos are disabled
 		[]string{"triage"},
-		nil,
 		"",
 		"",
 	)
@@ -1828,7 +1826,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1853,7 +1851,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1901,7 +1899,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -2191,17 +2189,18 @@ func TestRunUninstall_UsesHarnessDiscovery(t *testing.T) {
 	assert.NotContains(t, output, "agents: block")
 }
 
-func TestRunUninstall_FallsBackToAgentsBlockWithWarning(t *testing.T) {
+func TestRunUninstall_NoHarnessFiles_FallsBackToDefaultNaming(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
 
-	// Provide config.yaml with agents: block but no harness directory.
+	// Provide config.yaml but no harness directory — discoverAgentSlugs
+	// returns nil, and runUninstall falls back to default naming.
 	client.FileContents = map[string][]byte{
-		"test-org/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: cfg-triage\n"),
+		"test-org/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\n"),
 	}
 
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "cfg-triage"},
+		{ID: 1, AppSlug: "fullsend-ai-triage"},
 	}
 
 	var buf strings.Builder
@@ -2211,8 +2210,7 @@ func TestRunUninstall_FallsBackToAgentsBlockWithWarning(t *testing.T) {
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "cfg-triage")
-	assert.Contains(t, output, "agents: block")
+	assert.Contains(t, output, "fullsend-ai-triage")
 }
 
 func TestAwaitRepoMaintenance_Success(t *testing.T) {
@@ -2610,7 +2608,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	assert.Contains(t, output, "Merge the PR")
 }
 
-func TestLoadKnownSlugs_HarnessFilesPreferred(t *testing.T) {
+func TestLoadKnownSlugs_HarnessFiles(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.DirContents["myorg/.fullsend/harness@HEAD"] = []forge.DirectoryEntry{
 		{Path: "harness/triage.yaml", Type: "file"},
@@ -2619,14 +2617,6 @@ func TestLoadKnownSlugs_HarnessFilesPreferred(t *testing.T) {
 	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("role: triage\nslug: fullsend-ai-triage\n")
 	client.FileContentsRef["myorg/.fullsend/harness/coder.yaml@HEAD"] = []byte("role: coder\nslug: fullsend-ai-coder\n")
 
-	// Also set up config.yaml agents: block — should NOT be used.
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: old-triage-slug
-    name: old-triage
-`)
-
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
@@ -2635,69 +2625,30 @@ agents:
 		"triage": "fullsend-ai-triage",
 		"coder":  "fullsend-ai-coder",
 	}, slugs)
-	assert.NotContains(t, buf.String(), "agents: block")
 }
 
-func TestLoadKnownSlugs_FallbackToAgentsBlock(t *testing.T) {
+func TestLoadKnownSlugs_NoHarnessFiles_ReturnsNil(t *testing.T) {
 	client := forge.NewFakeClient()
-	// No harness/ directory → ErrNotFound from DirContents.
-
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-  - role: coder
-    slug: fullsend-ai-coder
-    name: fullsend-ai-coder
-`)
-
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
-
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-		"coder":  "fullsend-ai-coder",
-	}, slugs)
-	assert.Contains(t, buf.String(), "agents: block")
-}
-
-func TestLoadKnownSlugs_HarnessFilesWithoutRoleSlug_FallsBack(t *testing.T) {
-	client := forge.NewFakeClient()
-	// Harness files exist but lack role/slug (legacy format).
-	client.DirContents["myorg/.fullsend/harness@HEAD"] = []forge.DirectoryEntry{
-		{Path: "harness/triage.yaml", Type: "file"},
-	}
-	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("agent: agents/triage.md\nmodel: opus\n")
-
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-`)
-
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
-
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-	}, slugs)
-	assert.Contains(t, buf.String(), "agents: block")
-}
-
-func TestLoadKnownSlugs_NeitherSource_ReturnsNil(t *testing.T) {
-	client := forge.NewFakeClient()
-	// No harness/ dir, no config.yaml.
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
 	assert.Nil(t, slugs)
-	assert.NotContains(t, buf.String(), "agents: block")
+}
+
+func TestLoadKnownSlugs_HarnessFilesWithoutRoleSlug_ReturnsNil(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.DirContents["myorg/.fullsend/harness@HEAD"] = []forge.DirectoryEntry{
+		{Path: "harness/triage.yaml", Type: "file"},
+	}
+	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("agent: agents/triage.md\nmodel: opus\n")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+
+	assert.Nil(t, slugs)
 }
 
 func TestLoadKnownSlugs_DuplicateRoles_FirstWins(t *testing.T) {
@@ -2747,55 +2698,24 @@ func TestLoadKnownSlugs_RoleWithoutSlug_WarnsAndSkips(t *testing.T) {
 	}
 	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("role: triage\n")
 
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-`)
-
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-	}, slugs)
+	assert.Nil(t, slugs)
 	assert.Contains(t, buf.String(), "both must be set")
 }
 
-func TestLoadKnownSlugs_HardError_ZeroAgents_FallsBack(t *testing.T) {
+func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["ListDirectoryContents"] = fmt.Errorf("network timeout")
-
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-`)
-
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
-
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-	}, slugs)
-	assert.Contains(t, buf.String(), "harness discovery")
-	assert.Contains(t, buf.String(), "deprecated")
-}
-
-func TestLoadKnownSlugs_MalformedConfig_ReturnsNil(t *testing.T) {
-	client := forge.NewFakeClient()
-	// No harness/ dir, malformed config.yaml.
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte("not: valid: yaml: [")
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
 	assert.Nil(t, slugs)
+	assert.Contains(t, buf.String(), "harness discovery")
 }
 
 func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
@@ -2817,4 +2737,23 @@ func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "up to date")
+}
+
+func TestToAgentCredentials(t *testing.T) {
+	ac := &appsetup.AppCredentials{
+		AppID:    42,
+		Slug:     "test-slug",
+		Name:     "test-name",
+		PEM:      "pem-data",
+		ClientID: "client-id",
+	}
+
+	cred := toAgentCredentials("triage", ac)
+
+	assert.Equal(t, "triage", cred.Role)
+	assert.Equal(t, "test-name", cred.Name)
+	assert.Equal(t, "test-slug", cred.Slug)
+	assert.Equal(t, "pem-data", cred.PEM)
+	assert.Equal(t, "client-id", cred.ClientID)
+	assert.Equal(t, 42, cred.AppID)
 }
