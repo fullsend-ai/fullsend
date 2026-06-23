@@ -26,6 +26,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Architectural Invariants](docs/problems/architectural-invariants.md) — Enforcing things that must always be true, grounded in an organization's existing architecture documentation
   - [Agent-Compatible Code](docs/problems/agent-compatible-code.md) — Language properties that affect agent effectiveness
   - [Codebase Context](docs/problems/codebase-context.md) — How agents acquire codebase understanding and how to structure org-level context
+  - [Debugging Agentic Workflows](docs/problems/debugging.md) — Fault taxonomy, provenance chain, and classification methodology for multi-agent failures
   - [Downstream/Upstream](docs/problems/downstream-upstream.md) — How downstream contributors express business priorities and how competing sources of strategic intent get reconciled
   - [Human Factors](docs/problems/human-factors.md) — Domain ownership, role shift, review fatigue, and contributor motivation
   - [Contributor Guidance](docs/problems/contributor-guidance.md) — Making contribution rules clear to both humans and machines, without requiring AI to participate
