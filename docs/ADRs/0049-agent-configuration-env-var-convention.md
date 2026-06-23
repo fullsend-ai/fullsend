@@ -71,7 +71,12 @@ documentation: config vars are behavioral knobs listed in
 ### Where config vars live in the harness
 
 Config vars are carried the same way as other agent env vars — no new schema
-fields are needed. The `.env` file and `runner_env` serve different
+fields are needed. *Note: [ADR 0055](0055-unified-env-var-delivery.md)
+introduces a unified `env:` key with `runner`/`sandbox` sub-maps that
+replaces `runner_env` and manual `.env` files. The delivery mechanism below
+still works but is deprecated in favor of `env.runner` and `env.sandbox`.*
+
+The `.env` file and `runner_env` serve different
 audiences: the `.env` file delivers vars into the sandbox for the agent at
 inference time, while `runner_env` makes vars available to pre/post scripts
 on the host. A config var needed by both must appear in both places.
