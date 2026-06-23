@@ -1,5 +1,13 @@
 version: 2
 
+git:
+  # Ignore major-version floating tags (v0, v1, ...) so they don't
+  # confuse GoReleaser's previous-tag detection for changelogs.
+  ignore_tags:
+    - v0
+    - v1
+    - v2
+
 builds:
   - main: ./cmd/fullsend/
     binary: fullsend
