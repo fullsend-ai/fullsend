@@ -1264,6 +1264,8 @@ func buildSandboxEnvLines(h *harness.Harness) []string {
 	for k := range h.Env.Sandbox {
 		if validEnvKeyRe.MatchString(k) {
 			keys = append(keys, k)
+		} else {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is not a valid POSIX identifier; skipping\n", k)
 		}
 	}
 	if len(keys) == 0 {
