@@ -50,6 +50,20 @@ if ! python3 -c "import agent_eval" 2>/dev/null; then
   exit 1
 fi
 
+# Fail fast if openshell version doesn't match the repo pin
+if command -v openshell >/dev/null 2>&1; then
+  source "${REPO_ROOT}/.github/scripts/openshell-version.sh"
+  installed="$(openshell --version | awk '{print $NF}')"
+  installed="${installed#v}"
+  if [[ "${installed}" != "${OPENSHELL_VERSION}" ]]; then
+    echo "ERROR: OpenShell version mismatch: installed ${installed}, expected ${OPENSHELL_VERSION}" >&2
+    exit 1
+  fi
+else
+  echo "ERROR: openshell is not installed" >&2
+  exit 1
+fi
+
 WORKSPACE_PY="${HARNESS_DIR}/skills/eval-run/scripts/workspace.py"
 EXECUTE_PY="${HARNESS_DIR}/skills/eval-run/scripts/execute.py"
 SCORE_PY="${HARNESS_DIR}/skills/eval-run/scripts/score.py"
