@@ -32,3 +32,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Move v0 floating tag
+        if: "!contains(github.ref_name, '-')"
+        run: |
+          set -euo pipefail
+          CURRENT=""
+          if git rev-parse v0 >/dev/null 2>&1; then
+            CURRENT=$(git rev-parse v0)
+            if ! git merge-base --is-ancestor "${CURRENT}" "${GITHUB_SHA}"; then
+              echo "::warning::v0 already points at a newer commit, skipping"
+              exit 0
+            fi
+          fi
+          git tag -f v0 "${GITHUB_SHA}"
+          if [[ -n "${CURRENT}" ]]; then
+            git push --force-with-lease="v0:${CURRENT}" origin v0
+          else
+            git push origin v0
+          fi

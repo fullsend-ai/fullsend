@@ -1140,6 +1140,824 @@ runner_env:
 	assert.Equal(t, map[string]string{"KEY1": "value1"}, h.RunnerEnv)
 }
 
+func TestURLDirPrefix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{
+			"https://raw.githubusercontent.com/org/repo/sha/harness/triage.yaml#sha256=abc123",
+			"https://raw.githubusercontent.com/org/repo/sha/harness/",
+		},
+		{
+			"https://example.com/path/to/file.yaml",
+			"https://example.com/path/to/",
+		},
+		{
+			"https://example.com/file.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+			"https://example.com/",
+		},
+		{
+			"not-a-url",
+			"",
+		},
+	}
+	for _, tt := range tests {
+		got := urlDirPrefix(tt.input)
+		assert.Equal(t, tt.want, got, "urlDirPrefix(%q)", tt.input)
+	}
+}
+
+func setupScriptTestServer(t *testing.T, harnessContent []byte, scripts map[string][]byte) (*httptest.Server, fetch.FetchPolicy) {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/harness/triage.yaml" {
+			w.WriteHeader(http.StatusOK)
+			w.Write(harnessContent)
+			return
+		}
+		if content, ok := scripts[r.URL.Path]; ok {
+			w.WriteHeader(http.StatusOK)
+			w.Write(content)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+	return server, policy
+}
+
+func TestLoadWithBase_URLBase_ScriptsFetched(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+model: opus
+pre_script: scripts/pre.sh
+post_script: scripts/post.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/pre.sh":  preScript,
+		"/harness/scripts/post.sh": postScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "agents/child.md", h.Agent)
+	assert.Equal(t, "opus", h.Model)
+
+	// Scripts resolved to local cache paths
+	assert.NotEmpty(t, h.PreScript)
+	assert.NotEmpty(t, h.PostScript)
+	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be absolute cache path")
+	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be absolute cache path")
+	assert.False(t, IsURL(h.PreScript), "pre_script should not be a URL")
+	assert.False(t, IsURL(h.PostScript), "post_script should not be a URL")
+
+	// Verify cached content
+	preContent, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, preContent)
+
+	postContent, err := os.ReadFile(h.PostScript)
+	require.NoError(t, err)
+	assert.Equal(t, postScript, postContent)
+
+	// Dependencies: 1 for base harness + 2 for scripts
+	require.Len(t, deps, 3)
+	assert.Equal(t, "base", deps[0].Field)
+	scriptDeps := deps[1:]
+	scriptFields := map[string]bool{}
+	for _, d := range scriptDeps {
+		scriptFields[d.Field] = true
+		assert.Equal(t, "script", d.Type)
+		assert.False(t, d.CacheHit)
+	}
+	assert.True(t, scriptFields["pre_script"])
+	assert.True(t, scriptFields["post_script"])
+}
+
+func TestLoadWithBase_URLBase_ValidationLoopScriptFetched(t *testing.T) {
+	validateScript := []byte("#!/bin/bash\necho validate")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 3
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/validate.sh": validateScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.True(t, filepath.IsAbs(h.ValidationLoop.Script))
+	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+
+	content, err := os.ReadFile(h.ValidationLoop.Script)
+	require.NoError(t, err)
+	assert.Equal(t, validateScript, content)
+
+	// 1 base + 1 validation script
+	require.Len(t, deps, 2)
+	assert.Equal(t, "validation_loop.script", deps[1].Field)
+	assert.Equal(t, "script", deps[1].Type)
+}
+
+func TestLoadWithBase_URLBase_ForgeScriptsFetched(t *testing.T) {
+	forgePre := []byte("#!/bin/bash\necho forge-pre")
+	forgePost := []byte("#!/bin/bash\necho forge-post")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    pre_script: scripts/gh-pre.sh
+    post_script: scripts/gh-post.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/gh-pre.sh":  forgePre,
+		"/harness/scripts/gh-post.sh": forgePost,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+
+	// After forge resolution, scripts are promoted to top level
+	assert.True(t, filepath.IsAbs(h.PreScript))
+	assert.True(t, filepath.IsAbs(h.PostScript))
+
+	preContent, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, forgePre, preContent)
+
+	// 1 base + 2 forge scripts
+	require.Len(t, deps, 3)
+	forgeScriptDeps := deps[1:]
+	for _, d := range forgeScriptDeps {
+		assert.Equal(t, "script", d.Type)
+		assert.Contains(t, d.Field, "forge.github.")
+	}
+}
+
+func TestLoadWithBase_URLBase_ChildOverridesScript(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/base-pre.sh
+post_script: scripts/base-post.sh
+`)
+	preScript := []byte("#!/bin/bash\necho base-pre")
+	postScript := []byte("#!/bin/bash\necho base-post")
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/base-pre.sh":  preScript,
+		"/harness/scripts/base-post.sh": postScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	// Child overrides pre_script; both base scripts are still fetched
+	// before merge (we can't know which fields the child overrides yet).
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+pre_script: local-pre.sh
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Child's pre_script wins
+	assert.Equal(t, "local-pre.sh", h.PreScript)
+	// Base's post_script fetched from remote
+	assert.True(t, filepath.IsAbs(h.PostScript))
+
+	// 1 base + 2 scripts: both are fetched BEFORE merge, so pre_script is
+	// fetched even though the child overrides it afterward.
+	require.Len(t, deps, 3)
+}
+
+func TestLoadWithBase_URLBase_ScriptNotInAllowlist(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/pre.sh": []byte("#!/bin/bash"),
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	// Allowlist only covers /harness/triage.yaml, not /harness/scripts/
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/harness/triage.yaml"},
+	})
+	// The allowlist check is prefix-based, so /harness/triage.yaml as prefix
+	// does NOT cover /harness/scripts/pre.sh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestLoadWithBase_URLBase_ScriptFetchFails(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/missing.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pre_script")
+}
+
+func TestLoadWithBase_URLBase_ScriptsOffline_NoCacheError(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+`)
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Pre-populate base harness in cache so it can be loaded offline
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "offline mode")
+	assert.Contains(t, err.Error(), "fullsend lock")
+}
+
+func TestLoadWithBase_URLBase_ScriptsOffline_CacheHit(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho cached-pre")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+`)
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Pre-populate base harness in cache
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+	// Pre-populate script in cache
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/scripts/pre.sh", preScript))
+	// Add URL index entry
+	scriptHash := fetch.ComputeSHA256(preScript)
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/harness/scripts/pre.sh", scriptHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	assert.True(t, filepath.IsAbs(h.PreScript))
+	content, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+
+	// Both deps should be cache hits
+	require.Len(t, deps, 2)
+	assert.True(t, deps[0].CacheHit, "base should be cache hit")
+	assert.True(t, deps[1].CacheHit, "script should be cache hit")
+}
+
+func TestLoadWithBase_URLBase_ScriptExecutablePermission(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho executable")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/pre.sh": scriptContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Verify the cached script is executable
+	info, err := os.Stat(h.PreScript)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o111 != 0, "cached script should be executable, got mode %o", info.Mode())
+}
+
+func TestLoadWithBase_URLBase_NoScripts_NoExtraFetches(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+model: sonnet
+`)
+	hash := computeHash(baseContent)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Only 1 dep for the base itself — no scripts
+	require.Len(t, deps, 1)
+	assert.Equal(t, "base", deps[0].Field)
+}
+
+func TestLoadWithBase_URLBase_AuditLogForScripts(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho pre")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/pre.sh": preScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	auditLog := filepath.Join(dir, "audit.jsonl")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		AuditLogPath:  auditLog,
+		TraceID:       "test-trace-123",
+	})
+	require.NoError(t, err)
+
+	// Verify audit log was written
+	auditData, err := os.ReadFile(auditLog)
+	require.NoError(t, err)
+	auditStr := string(auditData)
+	assert.Contains(t, auditStr, "base_script")
+	assert.Contains(t, auditStr, "test-trace-123")
+	assert.Contains(t, auditStr, "scripts/pre.sh")
+}
+
+func TestLoadWithBase_URLBase_ForgeValidationLoopScriptFetched(t *testing.T) {
+	forgeValidate := []byte("#!/bin/bash\necho forge-validate")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    validation_loop:
+      script: scripts/gh-validate.sh
+      max_iterations: 2
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/gh-validate.sh": forgeValidate,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.True(t, filepath.IsAbs(h.ValidationLoop.Script))
+	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+
+	content, err := os.ReadFile(h.ValidationLoop.Script)
+	require.NoError(t, err)
+	assert.Equal(t, forgeValidate, content)
+
+	// 1 base + 1 forge validation_loop script
+	require.Len(t, deps, 2)
+	assert.Equal(t, "forge.github.validation_loop.script", deps[1].Field)
+}
+
+func TestLoadWithBase_URLBase_AgentInputNotFetched(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+agent_input: data/input
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// agent_input is a directory at runtime — it is cleared from URL bases
+	// to prevent the relative path resolving against the child's directory
+	// where it won't exist.
+	assert.Empty(t, h.AgentInput)
+
+	// Only 1 dep for the base harness, no agent_input dep
+	require.Len(t, deps, 1)
+	assert.Equal(t, "base", deps[0].Field)
+}
+
+func TestLoadWithBase_URLBase_ForgeScriptFetchError(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    pre_script: scripts/missing-forge.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.pre_script")
+}
+
+func TestLoadWithBase_URLBase_AllScriptTypes(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+	validateScript := []byte("#!/bin/bash\necho validate")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre.sh
+post_script: scripts/post.sh
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 3
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/harness/scripts/pre.sh":      preScript,
+		"/harness/scripts/post.sh":     postScript,
+		"/harness/scripts/validate.sh": validateScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	assert.True(t, filepath.IsAbs(h.PreScript))
+	assert.True(t, filepath.IsAbs(h.PostScript))
+	require.NotNil(t, h.ValidationLoop)
+	assert.True(t, filepath.IsAbs(h.ValidationLoop.Script))
+
+	// 1 base + 3 scripts (agent_input excluded — it's a directory)
+	require.Len(t, deps, 4)
+	depFields := map[string]bool{}
+	for _, d := range deps[1:] {
+		depFields[d.Field] = true
+		assert.Equal(t, "script", d.Type)
+	}
+	assert.True(t, depFields["pre_script"])
+	assert.True(t, depFields["post_script"])
+	assert.True(t, depFields["validation_loop.script"])
+}
+
+func TestResolveBaseScripts_RejectsAbsolutePath(t *testing.T) {
+	base := &Harness{PreScript: "/etc/passwd"}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+	assert.Contains(t, err.Error(), "pre_script")
+}
+
+func TestResolveBaseScripts_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{PostScript: "../../../etc/passwd"}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "post_script")
+}
+
+func TestResolveBaseScripts_RejectsURLInScriptField(t *testing.T) {
+	base := &Harness{PreScript: "https://evil.com/malware.sh"}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not a URL")
+}
+
+func TestResolveBaseScripts_RejectsAbsoluteValidationLoopScript(t *testing.T) {
+	base := &Harness{
+		ValidationLoop: &ValidationLoop{Script: "/usr/bin/evil"},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+	assert.Contains(t, err.Error(), "validation_loop.script")
+}
+
+func TestResolveBaseScripts_RejectsAbsoluteForgeScript(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "/usr/bin/evil"},
+		},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+	assert.Contains(t, err.Error(), "forge.github.pre_script")
+}
+
+func TestResolveBaseScripts_RejectsTraversalInForgeScript(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {PostScript: "../escape.sh"},
+		},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "forge.github.post_script")
+}
+
+func TestResolveBaseScripts_RejectsAbsoluteForgeValidationLoop(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				ValidationLoop: &ValidationLoop{Script: "/usr/bin/evil"},
+			},
+		},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+	assert.Contains(t, err.Error(), "forge.gitlab.validation_loop.script")
+}
+
+func TestResolveBaseScripts_RejectsNullBytes(t *testing.T) {
+	base := &Harness{PreScript: "scripts/pre\x00.sh"}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain null bytes")
+}
+
+func TestResolveBaseScripts_RejectsQueryMarker(t *testing.T) {
+	base := &Harness{PreScript: "scripts/pre.sh?param=1"}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain query or fragment markers")
+}
+
+func TestResolveBaseScripts_RejectsFragmentMarker(t *testing.T) {
+	base := &Harness{PostScript: "scripts/post.sh#anchor"}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain query or fragment markers")
+}
+
+func TestResolveBaseScripts_ClearsAgentInput(t *testing.T) {
+	base := &Harness{AgentInput: "data/input"}
+	deps, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, base.AgentInput)
+	assert.Empty(t, deps)
+}
+
+func TestValidateBaseScriptPath_AllowsDotsInFilename(t *testing.T) {
+	err := validateBaseScriptPath("pre_script", "scripts/foo..bar.sh")
+	assert.NoError(t, err)
+}
+
+func TestResolveBaseScripts_InvalidBaseURL(t *testing.T) {
+	base := &Harness{PreScript: "scripts/pre.sh"}
+	_, err := resolveBaseScripts(context.Background(), base, "not-a-valid-url", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+func TestURLIndexPut_EmptyWorkspaceRoot(t *testing.T) {
+	err := urlIndexPut("", "https://example.com/script.sh", "abc123")
+	assert.NoError(t, err)
+}
+
+func TestURLIndexLookup_EmptyWorkspaceRoot(t *testing.T) {
+	hash, ok := urlIndexLookup("", "https://example.com/script.sh")
+	assert.False(t, ok)
+	assert.Empty(t, hash)
+}
+
 func TestLoadWithBase_RuntimeFetchFieldsNotInherited(t *testing.T) {
 	dir := t.TempDir()
 

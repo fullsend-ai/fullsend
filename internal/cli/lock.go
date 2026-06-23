@@ -636,6 +636,31 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Base composition is already resolved by LoadWithBase before
 			// resolveFromLock runs. This entry exists only for cache
 			// verification.
+		case m.field == "pre_script":
+			h.PreScript = m.localPath
+			if err := os.Chmod(m.localPath, 0o755); err != nil {
+				return nil, fmt.Errorf("setting executable permission on cached pre_script: %w", err)
+			}
+		case m.field == "post_script":
+			h.PostScript = m.localPath
+			if err := os.Chmod(m.localPath, 0o755); err != nil {
+				return nil, fmt.Errorf("setting executable permission on cached post_script: %w", err)
+			}
+		case m.field == "validation_loop.script":
+			if h.ValidationLoop != nil {
+				h.ValidationLoop.Script = m.localPath
+				if err := os.Chmod(m.localPath, 0o755); err != nil {
+					return nil, fmt.Errorf("setting executable permission on cached validation_loop.script: %w", err)
+				}
+			}
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".pre_script"):
+			// Forge scripts are resolved before forge promotion; the field
+			// name is informational — the actual path was already set during
+			// LoadWithBase. This entry exists for cache verification.
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".post_script"):
+			// Same as forge pre_script above.
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.script"):
+			// Same as forge pre_script above.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {
