@@ -6,6 +6,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ConfigRepoName is the conventional name for the org-level fullsend
@@ -282,7 +283,12 @@ type Client interface {
 	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
 
 	// Issue operations
+	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)
+	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
+	RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
+	GetLabelAppliedAt(ctx context.Context, owner, repo string, number int, label string) (time.Time, error)
+	GetCommentAuthorAssociation(ctx context.Context, owner, repo string, number, commentID int) (string, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)

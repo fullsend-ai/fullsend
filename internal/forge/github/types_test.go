@@ -57,12 +57,27 @@ func TestAgentAppConfig_Coder(t *testing.T) {
 	assert.Equal(t, "write", cfg.Permissions.Contents)
 	assert.Equal(t, "write", cfg.Permissions.PullRequests)
 	assert.Equal(t, "read", cfg.Permissions.Checks)
+	assert.Equal(t, "write", cfg.Permissions.Workflows)
 
 	assert.Contains(t, cfg.Events, "issues")
 	assert.Contains(t, cfg.Events, "issue_comment")
 	assert.Contains(t, cfg.Events, "pull_request")
 	assert.Contains(t, cfg.Events, "check_run")
 	assert.Contains(t, cfg.Events, "check_suite")
+}
+
+func TestAgentAppConfig_Coder_CoversMintcoreElevation(t *testing.T) {
+	manifest := appPermissionsAsMap(AgentAppConfig("myorg", "coder", "fullsend").Permissions)
+	elevated, err := mintcore.MergeRoleElevations("coder", []string{"workflow-change"})
+	require.NoError(t, err)
+	for key, want := range elevated {
+		if key == "metadata" {
+			continue
+		}
+		got, ok := manifest[key]
+		assert.True(t, ok, "coder manifest missing permission %q required for elevation", key)
+		assert.Equal(t, want, got, "permission %q mismatch", key)
+	}
 }
 
 func TestAgentAppConfig_Review(t *testing.T) {

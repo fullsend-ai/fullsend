@@ -14,6 +14,11 @@ inputs:
     description: URL of the token mint (typically from vars.FULLSEND_MINT_URL)
     required: true
 
+  elevations:
+    description: Comma-separated elevation gate names (e.g. workflow-change)
+    required: false
+    default: ""
+
 outputs:
   token:
     description: Scoped GitHub installation token
@@ -29,6 +34,7 @@ runs:
         MINT_URL: ${{ inputs.mint_url }}
         ROLE: ${{ inputs.role }}
         REPOS: ${{ inputs.repos }}
+        ELEVATIONS: ${{ inputs.elevations }}
       run: |
         set -euo pipefail
         if [[ -z "$MINT_URL" ]]; then
@@ -49,8 +55,9 @@ runs:
         fi
         echo "::add-mask::$OIDC_TOKEN"
         REPOS_JSON=$(echo "$REPOS" | jq -Rc 'split(",") | map(select(length > 0))')
-        BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" \
-          '{role: $role, repos: $repos}')
+        ELEVATIONS_JSON=$(echo "${ELEVATIONS:-}" | jq -Rc 'if length == 0 then [] else split(",") | map(select(length > 0)) end')
+        BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" --argjson elevations "$ELEVATIONS_JSON" \
+          '{role: $role, repos: $repos, elevations: (if ($elevations | length) > 0 then $elevations else empty end)}')
         echo "Requesting token: role=$ROLE repos=$REPOS"
         MINT_RESPONSE=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
           -H "Authorization: Bearer $OIDC_TOKEN" \

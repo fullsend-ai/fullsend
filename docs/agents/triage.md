@@ -42,6 +42,8 @@ outcome and the post-script applies the corresponding label.
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on prerequisites — existing issues/PRs or newly created upstream issues. The agent identified or created the blockers. |
 | `question` | The issue is a support request or question, not an actionable bug or feature. The agent attempted to answer it. |
+| `workflow-change-needed` | Triage identified work that requires editing `.github/workflows/`. Coding is deferred until authorization. |
+| `workflow-change-allowed` | A collaborator authorized workflow file edits. Applied manually; enables elevated mint permissions. |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.

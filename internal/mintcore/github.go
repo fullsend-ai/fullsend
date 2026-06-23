@@ -204,10 +204,10 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 
 // CreateInstallationToken exchanges a JWT for an installation access token,
 // scoped to the given repos and role-specific permissions.
-func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
-	perms := RolePermissionsFor(role)
-	if perms == nil {
-		return "", "", nil, fmt.Errorf("no permissions defined for role %q", role)
+func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, role string, repos, elevations []string) (string, string, *GrantedScope, error) {
+	perms, err := MergeRoleElevations(role, elevations)
+	if err != nil {
+		return "", "", nil, err
 	}
 	tokenReqBody := map[string]interface{}{
 		"repositories": repos,

@@ -268,6 +268,7 @@ Information is sufficient for a developer to investigate and fix.
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
+  "authorizations_required": ["workflow-change"],
   "label_actions": {
     "reason": "This API issue matches the area/api and priority/high labels based on repo conventions.",
     "actions": [
@@ -279,6 +280,12 @@ Information is sufficient for a developer to investigate and fix.
 ```
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
+
+### Workflow-change authorization
+
+When the fix requires modifying GitHub Actions workflow files (`.github/workflows/`), set `authorizations_required` to `["workflow-change"]` on a `sufficient` result. The post-script applies `workflow-change-needed` and **does not** apply `ready-to-code` until a collaborator adds `workflow-change-allowed`.
+
+When `authorizations_required` includes `workflow-change`, the `comment` field **must** include a short paragraph telling maintainers to add the `workflow-change-allowed` label before coding can begin, and how to re-trigger with `/fs-code` after authorization.
 
 ## Questioning guidelines
 

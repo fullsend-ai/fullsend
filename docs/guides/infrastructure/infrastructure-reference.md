@@ -81,11 +81,13 @@ The mint enforces minimum permission sets per role. Tokens cannot exceed these s
 |------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
 | **fullsend** | write | write | — | write | — | write | read | — | read |
 | **triage** | read | — | write | — | — | — | — | — | read |
-| **coder** | write | write | write | — | read | — | — | — | read |
+| **coder** | write | write | write | — | read | write* | — | — | read |
 | **review** | read | write | write | — | read | — | — | — | read |
 | **fix** | write | write | write | — | — | — | — | — | read |
 | **retro** | read | write | write | read | — | — | — | — | read |
 | **prioritize** | read | — | write | — | — | — | — | write | read |
+
+\* Coder `workflows: write` is included in the GitHub App manifest ceiling but mint grants it only when the enrolled workflow passes `elevations: ["workflow-change"]` after `fullsend auth check` ([ADR 0054](../../ADRs/0054-label-gated-elevated-agent-permissions.md)).
 
 ### Mint Security Controls
 

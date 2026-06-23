@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Compile-time check that FakeClient implements Client.
@@ -145,6 +146,13 @@ type FakeClient struct {
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
 	OpenIssues    map[string][]Issue        // key: "owner/repo"
+	Issues        map[string]Issue          // key: "owner/repo/number"
+
+	// LabelAppliedAt records when a label was applied (key: owner/repo/number/label).
+	LabelAppliedAt map[string]time.Time
+
+	// CommentAssociations maps comment ID to author_association for tests.
+	CommentAssociations map[int]string
 
 	// CommitFilesChanged controls the return value of both CommitFiles and
 	// CommitFilesToBranch (default true). A single field suffices because
@@ -188,6 +196,8 @@ type FakeClient struct {
 	CommittedFiles         []CommitFilesRecord
 	CommittedFilesToBranch []CommitFilesToBranchRecord
 	DeletedComments        []int // comment IDs
+	AddedLabels            []string // "owner/repo/number:label"
+	RemovedLabels          []string // "owner/repo/number:label"
 
 	// internal counters
 	proposalCounter int
@@ -784,6 +794,151 @@ func (f *FakeClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ ma
 	return nil
 }
 
+func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int) (*Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetIssue"); e != nil {
+		return nil, e
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if issue, ok := f.Issues[key]; ok {
+		copy := issue
+		copy.Labels = append([]string(nil), issue.Labels...)
+		return &copy, nil
+	}
+	for _, issue := range f.OpenIssues[owner+"/"+repo] {
+		if issue.Number == number {
+			copy := issue
+			copy.Labels = append([]string(nil), issue.Labels...)
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: issue %d", ErrNotFound, number)
+}
+
+func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, number int, labels ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueLabels"); e != nil {
+		return e
+	}
+	issue, err := f.issueLocked(owner, repo, number)
+	if err != nil {
+		return err
+	}
+	for _, label := range labels {
+		if !containsString(issue.Labels, label) {
+			issue.Labels = append(issue.Labels, label)
+		}
+		f.AddedLabels = append(f.AddedLabels, fmt.Sprintf("%s/%s/%d:%s", owner, repo, number, label))
+		if f.LabelAppliedAt == nil {
+			f.LabelAppliedAt = make(map[string]time.Time)
+		}
+		f.LabelAppliedAt[fmt.Sprintf("%s/%s/%d/%s", owner, repo, number, label)] = time.Now().UTC()
+	}
+	f.storeIssueLocked(owner, repo, number, *issue)
+	return nil
+}
+
+func (f *FakeClient) RemoveIssueLabel(_ context.Context, owner, repo string, number int, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("RemoveIssueLabel"); e != nil {
+		return e
+	}
+	issue, err := f.issueLocked(owner, repo, number)
+	if err != nil {
+		return err
+	}
+	found := false
+	filtered := issue.Labels[:0]
+	for _, l := range issue.Labels {
+		if l == label {
+			found = true
+			continue
+		}
+		filtered = append(filtered, l)
+	}
+	if !found {
+		return fmt.Errorf("%w: label %q", ErrNotFound, label)
+	}
+	issue.Labels = filtered
+	f.RemovedLabels = append(f.RemovedLabels, fmt.Sprintf("%s/%s/%d:%s", owner, repo, number, label))
+	f.storeIssueLocked(owner, repo, number, *issue)
+	return nil
+}
+
+func (f *FakeClient) GetLabelAppliedAt(_ context.Context, owner, repo string, number int, label string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetLabelAppliedAt"); e != nil {
+		return time.Time{}, e
+	}
+	if f.LabelAppliedAt != nil {
+		if ts, ok := f.LabelAppliedAt[fmt.Sprintf("%s/%s/%d/%s", owner, repo, number, label)]; ok {
+			return ts, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("%w: label %q", ErrNotFound, label)
+}
+
+func (f *FakeClient) GetCommentAuthorAssociation(_ context.Context, _, _ string, _, commentID int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetCommentAuthorAssociation"); e != nil {
+		return "", e
+	}
+	if f.CommentAssociations != nil {
+		if assoc, ok := f.CommentAssociations[commentID]; ok {
+			return assoc, nil
+		}
+	}
+	return "MEMBER", nil
+}
+
+func (f *FakeClient) issueLocked(owner, repo string, number int) (*Issue, error) {
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if issue, ok := f.Issues[key]; ok {
+		copy := issue
+		return &copy, nil
+	}
+	for _, issue := range f.OpenIssues[owner+"/"+repo] {
+		if issue.Number == number {
+			copy := issue
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: issue %d", ErrNotFound, number)
+}
+
+func (f *FakeClient) storeIssueLocked(owner, repo string, number int, issue Issue) {
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	if f.Issues == nil {
+		f.Issues = make(map[string]Issue)
+	}
+	f.Issues[key] = issue
+	repoKey := owner + "/" + repo
+	if f.OpenIssues == nil {
+		f.OpenIssues = make(map[string][]Issue)
+	}
+	for i, existing := range f.OpenIssues[repoKey] {
+		if existing.Number == number {
+			f.OpenIssues[repoKey][i] = issue
+			return
+		}
+	}
+	f.OpenIssues[repoKey] = append(f.OpenIssues[repoKey], issue)
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body string, labels ...string) (*Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -811,6 +966,7 @@ func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body str
 		f.OpenIssues = make(map[string][]Issue)
 	}
 	f.OpenIssues[key] = append(f.OpenIssues[key], issue)
+	f.storeIssueLocked(owner, repo, issue.Number, issue)
 	return &issue, nil
 }
 

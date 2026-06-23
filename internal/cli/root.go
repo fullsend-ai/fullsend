@@ -29,6 +29,7 @@ func newRootCmd() *cobra.Command {
 		Version:       version,
 	}
 	cmd.AddCommand(newAdminCmd())
+	cmd.AddCommand(newAuthCmd())
 	cmd.AddCommand(newGitHubCmd())
 	cmd.AddCommand(newInferenceCmd())
 	cmd.AddCommand(newLockCmd())
@@ -38,6 +39,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newPostReviewCmd())
 	cmd.AddCommand(newPostCommentCmd())
+	cmd.AddCommand(newLabelsCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
 	return cmd
 }

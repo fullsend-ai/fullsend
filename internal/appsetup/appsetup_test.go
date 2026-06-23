@@ -818,6 +818,38 @@ func TestSetup_StalePermissions_AllRolesChecked(t *testing.T) {
 	assert.Contains(t, permErr.Error(), "fullsend-triage")
 }
 
+func TestSetup_StalePermissions_CoderMissingWorkflowsWrite(t *testing.T) {
+	client := &forge.FakeClient{
+		AppClientIDs: map[string]string{
+			"fullsend-coder": "Iv1.coder",
+		},
+		Installations: []forge.Installation{
+			{
+				ID: 200, AppID: 20, AppSlug: "fullsend-coder",
+				Permissions: map[string]string{
+					"contents":       "write",
+					"issues":         "write",
+					"pull_requests":  "write",
+					"checks":         "read",
+					// missing: workflows
+				},
+			},
+		},
+	}
+	printer := ui.New(&discardWriter{})
+
+	setup := NewSetup(client, &fakePrompter{}, newFakeBrowser(), printer).
+		WithAppSet("fullsend").
+		WithSecretExists(func(_ string) (bool, error) { return true, nil })
+
+	_, err := setup.Run(context.Background(), "myorg", "coder")
+	require.NoError(t, err)
+
+	permErr := setup.PermissionErrors()
+	require.Error(t, permErr)
+	assert.Contains(t, permErr.Error(), "fullsend-coder")
+}
+
 func TestSetup_StalePermissions_IncludesInstallationURL(t *testing.T) {
 	client := &forge.FakeClient{
 		AppClientIDs: map[string]string{

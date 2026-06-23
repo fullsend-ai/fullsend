@@ -18,8 +18,9 @@ const maxRepos = 500
 
 // mintRequest is the JSON body sent by .fullsend agent workflows.
 type mintRequest struct {
-	Role  string   `json:"role"`
-	Repos []string `json:"repos,omitempty"`
+	Role       string   `json:"role"`
+	Repos      []string `json:"repos,omitempty"`
+	Elevations []string `json:"elevations,omitempty"`
 }
 
 // mintResponse is returned on success.
@@ -191,6 +192,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if len(req.Elevations) > 0 {
+		if _, err := MergeRoleElevations(req.Role, req.Elevations); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	ctx := r.Context()
 
 	claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
@@ -202,7 +210,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	org := strings.ToLower(claims.RepositoryOwner)
 
-	token, expiresAt, granted, err := h.mintToken(ctx, org, req.Role, req.Repos)
+	token, expiresAt, granted, err := h.mintToken(ctx, org, req.Role, req.Repos, req.Elevations)
 	if err != nil {
 		log.Printf("failed to mint token: org=%s role=%s err=%v", org, req.Role, err)
 		var me *mintError
@@ -282,7 +290,7 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	}
 }
 
-func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
+func (h *Handler) mintToken(ctx context.Context, org, role string, repos, elevations []string) (string, string, *GrantedScope, error) {
 	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
@@ -308,7 +316,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 
-	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
+	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos, elevations)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}

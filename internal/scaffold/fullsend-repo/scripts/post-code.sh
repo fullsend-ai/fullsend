@@ -223,6 +223,26 @@ if [ -n "${STRIPPED_FILES}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Workflow-change authorization (pre-push gate)
+# ---------------------------------------------------------------------------
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  AUTH_ARGS=(auth check --gate workflow-change
+    --repo "${REPO_FULL_NAME}"
+    --number "${ISSUE_NUMBER}"
+    --phase pre-push
+    --changed-files -
+    --apply
+    --token "${GH_TOKEN}")
+  if [[ -n "${TRIGGER_COMMENT_ID:-}" ]]; then
+    AUTH_ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
+  fi
+  if ! printf '%s\n' "${CHANGED_FILES}" | fullsend "${AUTH_ARGS[@]}"; then
+    echo "::error::Workflow-change authorization blocked push"
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Authoritative secret scan
 # ---------------------------------------------------------------------------
 echo "Running authoritative secret scan on agent's commit..."
@@ -399,6 +419,8 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+  fullsend labels copy --repo "${REPO_FULL_NAME}" --from "${ISSUE_NUMBER}" \
+    --to "${EXISTING_PR_NUM}" --token "${PUSH_TOKEN}" || true
   exit 0
 fi
 
@@ -469,3 +491,9 @@ rm -f "${PR_CREATE_STDERR}"
 
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+NEW_PR_NUM="$(echo "${PR_URL}" | sed -E 's|.*/pull/||')"
+if [[ -n "${NEW_PR_NUM}" ]]; then
+  fullsend labels copy --repo "${REPO_FULL_NAME}" --from "${ISSUE_NUMBER}" \
+    --to "${NEW_PR_NUM}" --token "${PUSH_TOKEN}" || true
+fi

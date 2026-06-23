@@ -87,6 +87,25 @@ if [[ "${ITERATION}" -gt "${CAP}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Workflow-change authorization (pre-run gate)
+# ---------------------------------------------------------------------------
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  AUTH_ARGS=(auth check --gate workflow-change
+    --repo "${REPO_FULL_NAME}"
+    --number "${PR_NUMBER}"
+    --phase pre-run
+    --apply
+    --token "${GH_TOKEN}")
+  if [[ -n "${TRIGGER_COMMENT_ID:-}" ]]; then
+    AUTH_ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
+  fi
+  if ! fullsend "${AUTH_ARGS[@]}"; then
+    echo "::error::Workflow-change authorization blocked — skipping fix agent"
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "Input validation passed:"

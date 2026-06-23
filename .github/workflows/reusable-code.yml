@@ -112,6 +112,31 @@ jobs:
           source_repo: ${{ inputs.source_repo }}
           install_mode: ${{ inputs.install_mode }}
 
+      - name: Check workflow-change authorization (mint)
+        id: auth-check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRIGGER_COMMENT_ID: ${{ fromJSON(inputs.event_payload).comment.id }}
+        run: |
+          set +euo pipefail
+          ARGS=(auth check --gate workflow-change
+            --repo "${{ inputs.source_repo }}"
+            --number ${{ fromJSON(inputs.event_payload).issue.number }}
+            --phase mint --apply --json)
+          if [[ -n "${TRIGGER_COMMENT_ID}" && "${TRIGGER_COMMENT_ID}" != "null" ]]; then
+            ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
+          fi
+          OUT=$(fullsend "${ARGS[@]}" 2>/dev/null)
+          RC=$?
+          ELEVATIONS=""
+          if [[ "${RC}" -eq 0 ]]; then
+            ELEVATIONS=$(echo "${OUT}" | jq -r '[.elevations[]?] | join(",")')
+          elif [[ "${RC}" -ne 10 && "${RC}" -ne 11 ]]; then
+            exit "${RC}"
+          fi
+          echo "elevations=${ELEVATIONS}" >> "${GITHUB_OUTPUT}"
+          echo "Auth check completed with exit code ${RC}"
+
       - name: Mint coder token
         id: app-token
         uses: ./.defaults/.github/actions/mint-token
@@ -119,6 +144,7 @@ jobs:
           role: coder
           repos: ${{ steps.repo-parts.outputs.name }}
           mint_url: ${{ inputs.mint_url }}
+          elevations: ${{ steps.auth-check.outputs.elevations }}
 
       - name: Checkout target repository
         uses: actions/checkout@v7
@@ -136,6 +162,8 @@ jobs:
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           COMMENT_BODY: ${{ fromJSON(inputs.event_payload).comment.body }}
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_COMMENT_ID: ${{ fromJSON(inputs.event_payload).comment.id }}
         run: bash scripts/pre-code.sh
 
       - name: Setup GCP and prepare credentials
@@ -180,6 +208,8 @@ jobs:
           PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           PUSH_TOKEN_SOURCE: github-app
           CODE_ALLOWED_TARGET_BRANCHES: ''
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TRIGGER_COMMENT_ID: ${{ fromJSON(inputs.event_payload).comment.id }}
         with:
           agent: code
           version: ${{ inputs.fullsend_version }}

@@ -10,9 +10,9 @@ Triggered when the `ready-to-code` label is applied to an issue or via `/fs-code
 
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
 
-1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
+1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue and runs the workflow-change authorization gate (`fullsend auth check --phase pre-run`) when `workflow-change-needed` is set without `workflow-change-allowed`.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has no network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, and creates the PR.
+3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, workflow-change pre-push authorization, pushes the branch, and creates the PR.
 
 This separation ensures the agent never has direct write access to the repository.
 
@@ -36,7 +36,9 @@ on issues (not PRs). The code agent is also triggered automatically when the
 
 | Label | Meaning |
 |-------|---------|
-| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. |
+| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when `workflow-change-needed` is set without authorization. |
+| `workflow-change-needed` | Workflow file edits are anticipated. A collaborator must add `workflow-change-allowed` before coding. |
+| `workflow-change-allowed` | Human authorization for workflow file edits. Enables `workflows: write` on the minted token when auth checks pass. |
 | `ready-for-review` | Applied by the code agent's post-script after pushing a PR. In per-repo installs, triggers review when applied to a PR; also marks workflow state for humans and the retro agent. |
 
 ## Configuration and extension

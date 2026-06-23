@@ -75,6 +75,14 @@
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
+    },
+    "authorizations_required": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["workflow-change"]
+      },
+      "uniqueItems": true
     }
   },
   "allOf": [

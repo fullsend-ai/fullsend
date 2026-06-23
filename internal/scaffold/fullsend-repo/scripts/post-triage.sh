@@ -79,7 +79,7 @@ remove_label() {
 # add or remove these via label_actions. This list covers labels that the
 # pipeline itself applies (pre-triage.sh resets the first five; the action
 # handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question")
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "workflow-change-needed" "workflow-change-allowed")
 
 is_control_label() {
   local label="$1"
@@ -259,6 +259,16 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "needs-info"
 
+    # When workflow edits are required, defer ready-to-code until a
+    # collaborator applies workflow-change-allowed (ADR 0054).
+    AUTH_REQUIRED=$(jq -r '.authorizations_required // [] | .[]' "${RESULT_FILE}" 2>/dev/null || true)
+    NEEDS_WORKFLOW_AUTH=false
+    if echo "${AUTH_REQUIRED}" | grep -qFx "workflow-change"; then
+      NEEDS_WORKFLOW_AUTH=true
+      echo "Workflow-change authorization required — applying workflow-change-needed"
+      add_label "workflow-change-needed"
+    fi
+
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
     # else receives the triaged label and waits for human prioritization
@@ -267,8 +277,12 @@ ${FAILED_CREATES}"
     echo "Category: ${CATEGORY}"
     case "${CATEGORY}" in
       bug|documentation|performance)
-        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-        DEFERRED_LABEL="ready-to-code"
+        if [[ "${NEEDS_WORKFLOW_AUTH}" == "true" ]]; then
+          echo "Deferring ready-to-code — workflow-change authorization required"
+        else
+          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+          DEFERRED_LABEL="ready-to-code"
+        fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."

@@ -101,6 +101,12 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   an allowlist and falls back to the repo's auto-detected default branch.
   Branch-targeting logic lives in the portable post-script, not in workflow
   YAML ([ADR 0053](ADRs/0053-agent-driven-branch-targeting.md)).
+- Authorization gates: elevated permissions (e.g. `workflows: write` for
+  `.github/workflows/` edits) require human-applied labels verified by
+  `fullsend auth check` in workflows and post-scripts. Mint mechanically
+  merges requested elevations; label policy is enforced outside mint
+  ([ADR 0054](ADRs/0054-label-gated-elevated-agent-permissions.md)).
+  Per-role app ceilings remain in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 
 **Open questions:**
 

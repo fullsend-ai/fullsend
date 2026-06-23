@@ -245,6 +245,26 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 4c. Workflow-change authorization (pre-push gate)
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ] && [[ -n "${PUSH_TOKEN:-}" ]]; then
+  AUTH_ARGS=(auth check --gate workflow-change
+    --repo "${REPO_FULL_NAME}"
+    --number "${PR_NUMBER}"
+    --phase pre-push
+    --changed-files -
+    --apply
+    --token "${PUSH_TOKEN}")
+  if [[ -n "${TRIGGER_COMMENT_ID:-}" ]]; then
+    AUTH_ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
+  fi
+  if ! printf '%s\n' "${CHANGED_FILES}" | fullsend "${AUTH_ARGS[@]}"; then
+    echo "::error::Workflow-change authorization blocked push"
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then

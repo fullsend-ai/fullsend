@@ -52,6 +52,26 @@ echo "  REPO_FULL_NAME=${REPO_FULL_NAME}"
 echo "  GITHUB_ISSUE_URL=${GITHUB_ISSUE_URL}"
 
 # ---------------------------------------------------------------------------
+# Workflow-change authorization (pre-run gate)
+# ---------------------------------------------------------------------------
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  AUTH_ARGS=(auth check --gate workflow-change
+    --repo "${REPO_FULL_NAME}"
+    --number "${ISSUE_NUMBER}"
+    --phase pre-run
+    --apply
+    --token "${GH_TOKEN}")
+  if [[ -n "${TRIGGER_COMMENT_ID:-}" ]]; then
+    AUTH_ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
+  fi
+  if ! fullsend "${AUTH_ARGS[@]}"; then
+    echo "::notice::Workflow-change authorization blocked — skipping code agent"
+    echo "skipped=true" >> "${GITHUB_OUTPUT:-/dev/null}"
+    exit 0
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Check for existing human PRs linked to this issue
 # ---------------------------------------------------------------------------
 # Skip if GH_TOKEN is not available (best-effort check).

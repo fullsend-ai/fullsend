@@ -445,6 +445,37 @@ run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
+# When workflow edits are required, apply workflow-change-needed and defer ready-to-code.
+run_test "workflow-change-needed-defers-ready-to-code" \
+  '{"action":"sufficient","reasoning":"needs workflow edit","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update CI","severity":"medium","category":"bug","problem":"CI broken","root_cause_hypothesis":"Workflow misconfigured","reproduction_steps":["step 1"],"environment":"Linux","impact":"CI","recommended_fix":"Fix workflow","proposed_test_case":"test_ci"},"comment":"## Triage Summary\n\nWorkflow authorization required.","authorizations_required":["workflow-change"]}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=workflow-change-needed --silent"
+
+# Verify ready-to-code is not applied when workflow-change authorization is required.
+run_test_workflow_auth_no_ready_to_code() {
+  local test_name="workflow-change-no-ready-to-code"
+  local json_content='{"action":"sufficient","reasoning":"needs workflow edit","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update CI","severity":"medium","category":"bug","problem":"CI broken","root_cause_hypothesis":"Workflow misconfigured","reproduction_steps":["step 1"],"environment":"Linux","impact":"CI","recommended_fix":"Fix workflow","proposed_test_case":"test_ci"},"comment":"## Triage Summary\n\nWorkflow authorization required.","authorizations_required":["workflow-change"]}'
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -qF "labels[]=ready-to-code" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — ready-to-code should not be applied"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_test_workflow_auth_no_ready_to_code
+
 # --- Summary ---
 
 echo ""

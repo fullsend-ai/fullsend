@@ -94,6 +94,10 @@ const maxRetries = 3
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doWithAccept(ctx, method, path, body, "application/vnd.github+json")
+}
+
+func (c *LiveClient) doWithAccept(ctx context.Context, method, path string, body any, accept string) (*http.Response, error) {
 	url := c.baseURL + path
 
 	var bodyData []byte
@@ -117,7 +121,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		}
 
 		req.Header.Set("Authorization", "Bearer "+c.token)
-		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Accept", accept)
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -243,7 +247,11 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 
 // get performs a GET request and checks for success.
 func (c *LiveClient) get(ctx context.Context, path string) (*http.Response, error) {
-	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	return c.getWithAccept(ctx, path, "application/vnd.github+json")
+}
+
+func (c *LiveClient) getWithAccept(ctx context.Context, path, accept string) (*http.Response, error) {
+	resp, err := c.doWithAccept(ctx, http.MethodGet, path, nil, accept)
 	if err != nil {
 		return nil, err
 	}
@@ -1617,6 +1625,113 @@ func (c *LiveClient) DispatchWorkflow(ctx context.Context, owner, repo, workflow
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// GetIssue returns a single issue or pull request by number.
+func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number))
+	if err != nil {
+		return nil, fmt.Errorf("get issue #%d: %w", number, err)
+	}
+	var result struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		HTMLURL string `json:"html_url"`
+		Labels  []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
+	}
+	return &forge.Issue{
+		Number: result.Number,
+		Title:  result.Title,
+		Body:   result.Body,
+		URL:    result.HTMLURL,
+		Labels: labelNames(result.Labels),
+	}, nil
+}
+
+// AddIssueLabels adds labels to an issue or pull request.
+func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	payload := map[string]any{"labels": labels}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number), payload)
+	if err != nil {
+		return fmt.Errorf("add labels to #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// RemoveIssueLabel removes a single label from an issue or pull request.
+func (c *LiveClient) RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	encoded := url.PathEscape(label)
+	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, number, encoded))
+}
+
+// GetLabelAppliedAt returns the timestamp when label was most recently applied.
+func (c *LiveClient) GetLabelAppliedAt(ctx context.Context, owner, repo string, number int, label string) (time.Time, error) {
+	for page := 1; page <= 100; page++ {
+		resp, err := c.getWithAccept(ctx,
+			fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100&page=%d", owner, repo, number, page),
+			"application/vnd.github.mockingbird-preview+json")
+		if err != nil {
+			return time.Time{}, fmt.Errorf("get issue timeline page %d: %w", page, err)
+		}
+		var events []struct {
+			Event     string `json:"event"`
+			CreatedAt string `json:"created_at"`
+			Label     struct {
+				Name string `json:"name"`
+			} `json:"label"`
+		}
+		if err := decodeJSON(resp, &events); err != nil {
+			return time.Time{}, fmt.Errorf("decode issue timeline page %d: %w", page, err)
+		}
+		var latest time.Time
+		for _, ev := range events {
+			if ev.Event != "labeled" || ev.Label.Name != label {
+				continue
+			}
+			ts, err := time.Parse(time.RFC3339, ev.CreatedAt)
+			if err != nil {
+				continue
+			}
+			if latest.IsZero() || ts.After(latest) {
+				latest = ts
+			}
+		}
+		if !latest.IsZero() {
+			return latest, nil
+		}
+		if len(events) < 100 {
+			break
+		}
+	}
+	return time.Time{}, fmt.Errorf("%w: label %q", forge.ErrNotFound, label)
+}
+
+// GetCommentAuthorAssociation returns the author's permission level on the repo.
+func (c *LiveClient) GetCommentAuthorAssociation(ctx context.Context, owner, repo string, _, commentID int) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID))
+	if err != nil {
+		return "", fmt.Errorf("get issue comment %d: %w", commentID, err)
+	}
+	var result struct {
+		AuthorAssociation string `json:"author_association"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return "", fmt.Errorf("decode issue comment %d: %w", commentID, err)
+	}
+	if result.AuthorAssociation == "" {
+		return "", fmt.Errorf("empty author_association for comment %d", commentID)
+	}
+	return result.AuthorAssociation, nil
 }
 
 // CreateIssue creates a new issue on a repository. Labels are best-effort:

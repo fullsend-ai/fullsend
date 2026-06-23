@@ -91,14 +91,14 @@ func TestCreateInstallationToken(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, expiresAt, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "coder", []string{"my-repo"})
+	token, expiresAt, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "coder", []string{"my-repo"}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_test_token", token)
 	assert.Equal(t, "2099-01-01T00:00:00Z", expiresAt)
 }
 
 func TestCreateInstallationToken_UnknownRole(t *testing.T) {
-	_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, "http://unused", "fake-jwt", 42, "nonexistent", []string{"repo"})
+	_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, "http://unused", "fake-jwt", 42, "nonexistent", []string{"repo"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no permissions defined")
 }

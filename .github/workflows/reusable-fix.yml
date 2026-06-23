@@ -123,6 +123,48 @@ jobs:
           source_repo: ${{ inputs.source_repo }}
           install_mode: ${{ inputs.install_mode }}
 
+      - name: Extract PR number for authorization
+        id: pr-for-auth
+        env:
+          EVENT_PAYLOAD: ${{ inputs.event_payload }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.number // .issue.number // empty')"
+          if [[ -z "${PR_NUM}" && -n "${INPUT_PR_NUMBER}" ]]; then
+            PR_NUM="${INPUT_PR_NUMBER}"
+          fi
+          if [[ -z "${PR_NUM}" || ! "${PR_NUM}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Could not extract valid PR number for authorization check"
+            exit 1
+          fi
+          echo "pr_number=${PR_NUM}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check workflow-change authorization (mint)
+        id: auth-check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRIGGER_COMMENT_ID: ${{ fromJSON(inputs.event_payload).comment.id }}
+        run: |
+          set +euo pipefail
+          ARGS=(auth check --gate workflow-change
+            --repo "${{ inputs.source_repo }}"
+            --number ${{ steps.pr-for-auth.outputs.pr_number }}
+            --phase mint --apply --json)
+          if [[ -n "${TRIGGER_COMMENT_ID}" && "${TRIGGER_COMMENT_ID}" != "null" ]]; then
+            ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
+          fi
+          OUT=$(fullsend "${ARGS[@]}" 2>/dev/null)
+          RC=$?
+          ELEVATIONS=""
+          if [[ "${RC}" -eq 0 ]]; then
+            ELEVATIONS=$(echo "${OUT}" | jq -r '[.elevations[]?] | join(",")')
+          elif [[ "${RC}" -ne 10 && "${RC}" -ne 11 ]]; then
+            exit "${RC}"
+          fi
+          echo "elevations=${ELEVATIONS}" >> "${GITHUB_OUTPUT}"
+          echo "Auth check completed with exit code ${RC}"
+
       - name: Mint coder token
         id: app-token
         uses: ./.defaults/.github/actions/mint-token
@@ -130,6 +172,7 @@ jobs:
           role: coder
           repos: ${{ steps.repo-parts.outputs.name }}
           mint_url: ${{ inputs.mint_url }}
+          elevations: ${{ steps.auth-check.outputs.elevations }}
 
       - name: Resolve bot identity
         env:
@@ -342,6 +385,8 @@ jobs:
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_COMMENT_ID: ${{ fromJSON(inputs.event_payload).comment.id }}
         run: bash scripts/pre-fix.sh
 
       - name: Setup GCP and prepare credentials
@@ -377,6 +422,8 @@ jobs:
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
           PRE_AGENT_HEAD: ${{ steps.pre-agent.outputs.head }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TRIGGER_COMMENT_ID: ${{ fromJSON(inputs.event_payload).comment.id }}
         with:
           agent: fix
           version: ${{ inputs.fullsend_version }}
