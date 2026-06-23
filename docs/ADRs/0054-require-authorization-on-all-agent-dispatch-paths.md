@@ -116,7 +116,8 @@ push access to the repository."
 
 | Event | Actor checked | Gated? |
 |-------|---------------|--------|
-| `issues.opened` / `issues.edited` | Issue opener | Yes |
+| `issues.opened` | Issue opener | Yes |
+| `issues.edited` | Event sender (editor) | Yes |
 | `pull_request_target.opened` / `synchronize` | PR author | Yes |
 | `issues.labeled` | Label applier | Already implicit (requires write access) |
 | `pull_request_target.ready_for_review` | PR author | Yes (same branch as opened/synchronize) |
