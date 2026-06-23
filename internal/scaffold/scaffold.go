@@ -200,13 +200,18 @@ func ManagedHeader(path string) string {
 
 // PrependManagedHeader prepends the managed-by header to file content.
 // If the file starts with a shebang (#!), the header is inserted after
-// the first line. Returns content unchanged if no header applies.
+// the first line. Returns content unchanged if no header applies or if
+// the header is already present (idempotent).
 func PrependManagedHeader(path string, content []byte) []byte {
 	header := ManagedHeader(path)
 	if header == "" {
 		return content
 	}
 	s := string(content)
+	// Skip if the header is already present (template files may embed it).
+	if strings.HasPrefix(s, header) {
+		return content
+	}
 	if strings.HasPrefix(s, "#!") {
 		if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 			return []byte(s[:idx+1] + header + s[idx+1:])

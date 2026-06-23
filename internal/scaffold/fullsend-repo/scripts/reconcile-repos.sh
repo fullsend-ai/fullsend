@@ -127,6 +127,14 @@ shim_with_header_b64() {
   local header
   header=$(printf '%s\n' "$remote_raw" | extract_user_header)
 
+  # Strip provenance headers that the template now includes natively.
+  # Only genuinely user-added content (e.g. license headers) is preserved.
+  if [ -n "$header" ]; then
+    header=$(printf '%s\n' "$header" | grep -v '^# This file is managed by fullsend\.' | grep -v '^# Upstream: ' || true)
+    # Remove leading/trailing blank lines left after stripping.
+    header=$(printf '%s' "$header" | sed '/./,$!d' | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }')
+  fi
+
   # Reject non-comment YAML that could inject keys (injection guard first,
   # then blank-only check — order matters so the warning fires on injected content).
   if [ -n "$header" ] && printf '%s\n' "$header" | grep -qvE '^[[:space:]]*(#|$)'; then
