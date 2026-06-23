@@ -2726,6 +2726,28 @@ func TestLoadKnownSlugs_RoleWithoutSlug_WarnsAndSkips(t *testing.T) {
 	assert.Contains(t, buf.String(), "both must be set")
 }
 
+func TestCheckTokenScopes_InstallationTokenSkipped(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.InstallationToken = true
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo", "delete_repo", "workflow"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "installation token")
+}
+
+func TestCheckTokenScopes_MissingScopes(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"repo"}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo", "delete_repo"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete_repo")
+}
+
 func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["ListDirectoryContents"] = fmt.Errorf("network timeout")

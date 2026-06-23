@@ -57,7 +57,7 @@ func newForeignAllowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client := gh.New(token)
+			client := newGitHubLiveClient(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -121,7 +121,7 @@ func newForeignListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client := gh.New(token)
+			client := newGitHubLiveClient(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -214,7 +214,7 @@ func newForeignRevokeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client := gh.New(token)
+			client := newGitHubLiveClient(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 

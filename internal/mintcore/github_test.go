@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -193,4 +194,92 @@ func TestRolePermissionsFor(t *testing.T) {
 func TestHasRole(t *testing.T) {
 	assert.True(t, HasRole("coder"))
 	assert.False(t, HasRole("nonexistent"))
+}
+
+func TestFindOrgInstallation_OrgMismatch(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(installationResponse{
+			ID: 99,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "other-org"},
+		})
+	}))
+	defer mockGH.Close()
+
+	_, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "belongs to other-org")
+}
+
+func TestGetOrgVariable(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS", r.URL.Path)
+		json.NewEncoder(w).Encode(orgVariableResponse{
+			Name:  "FULLSEND_FOREIGN_E2E_REPOS",
+			Value: "fullsend-ai/fullsend",
+		})
+	}))
+	defer mockGH.Close()
+
+	value, exists, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_policy", "pool-org", "FULLSEND_FOREIGN_E2E_REPOS")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "fullsend-ai/fullsend", value)
+}
+
+func TestGetOrgVariable_NotFound(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockGH.Close()
+
+	_, exists, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_policy", "pool-org", "FULLSEND_FOREIGN_E2E_REPOS")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestReadForeignAllowlist(t *testing.T) {
+	var tokenCalls int
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/installations/42/access_tokens") && r.Method == http.MethodPost:
+			tokenCalls++
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_policy"})
+		case r.URL.Path == "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS":
+			json.NewEncoder(w).Encode(orgVariableResponse{
+				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
+				Value: "fullsend-ai/fullsend, fullsend-ai",
+			})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockGH.Close()
+
+	got, err := ReadForeignAllowlist(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "e2e")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai"}, got)
+	assert.Equal(t, 1, tokenCalls)
+}
+
+func TestReadForeignAllowlist_EmptyVariable(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/installations/42/access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_policy"})
+		case strings.Contains(r.URL.Path, "/actions/variables/"):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer mockGH.Close()
+
+	got, err := ReadForeignAllowlist(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "e2e")
+	require.NoError(t, err)
+	assert.Nil(t, got)
 }

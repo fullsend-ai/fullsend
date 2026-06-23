@@ -1883,3 +1883,22 @@ func TestDeleteIssueComment(t *testing.T) {
 	err := client.DeleteIssueComment(context.Background(), "org", "repo", 42)
 	require.NoError(t, err)
 }
+
+func TestListOrgVariables(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/orgs/myorg/actions/variables", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 2,
+			"variables": []map[string]string{
+				{"name": "FULLSEND_FOREIGN_E2E_REPOS", "value": "fullsend-ai"},
+				{"name": "OTHER", "value": "x"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListOrgVariables(context.Background(), "myorg")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
+}

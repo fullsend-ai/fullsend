@@ -21,6 +21,15 @@ func TestParseForeignAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidateTargetOrg(t *testing.T) {
+	if err := validateTargetOrg("halfsend-01"); err != nil {
+		t.Fatalf("valid org: %v", err)
+	}
+	if err := validateTargetOrg("bad--org"); err == nil {
+		t.Fatal("expected invalid org")
+	}
+}
+
 func TestCallerAllowed(t *testing.T) {
 	list := []string{"fullsend-ai/fullsend", "konflux-ci"}
 	if !CallerAllowed(list, "fullsend-ai/fullsend", "fullsend-ai") {
