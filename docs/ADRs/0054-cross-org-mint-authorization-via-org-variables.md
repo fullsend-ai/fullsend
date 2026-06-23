@@ -1,5 +1,5 @@
 ---
-title: "51. Cross-org mint authorization via org variables"
+title: "54. Cross-org mint authorization via org variables"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -11,7 +11,7 @@ topics:
   - cross-org
 ---
 
-# 51. Cross-org mint authorization via org variables
+# 54. Cross-org mint authorization via org variables
 
 Date: 2026-06-07
 
@@ -39,8 +39,8 @@ orgs control over their own policy.
 ## Decision
 
 1. **Optional `target_org` on mint requests.** When omitted, or when equal to the caller's
-   `repository_owner` (case-insensitive), behavior is unchanged from pre-0051 mint: same
-   `mintToken` path, repo-based installation lookup, no FOREIGN check.
+   `repository_owner` (case-insensitive), behavior is unchanged from pre-0054 mint: same
+   `mintToken` path, repo-based installation lookup, **repos required**, no FOREIGN check.
 
 2. **Cross-org path** applies only when `target_org` is set and differs from the caller org:
    - Resolve the requested role's App installation on `target_org` via org-level installation lookup.
@@ -48,7 +48,9 @@ orgs control over their own policy.
      token (`actions_variables: read`).
    - Deny if installation lookup fails, the variable is missing/empty, or the OIDC caller
      (`repository` or bare `repository_owner`) is not on the allowlist.
-   - Mint a scoped installation token for the requested repos on the target org.
+   - Mint a scoped installation token for the requested repos on the target org. When `repos`
+     is omitted, mint an installation-wide token (org-level installation lookup only). This
+     is intended for the `e2e` role acting on pool orgs from CI ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)).
 
 3. **Variable format.** Org-level GitHub Actions variable on the **target** org:
    - Name: `FULLSEND_FOREIGN_<ROLE>_REPOS` (uppercase role suffix, per [ADR 0014](0014-admin-install-github-apps-secrets-v1.md))
@@ -65,6 +67,13 @@ orgs control over their own policy.
 
 - Cross-org mint requests add GitHub API calls (FOREIGN variable cached with short TTL).
 - Roles used on the cross-org path need `actions_variables: read` on their App permissions.
+- The `e2e` role additionally needs `actions_variables: write` and
+  `organization_actions_variables: write` so pool tests can set repo/org variables during
+  install flows; these writes are scoped to pool orgs that explicitly authorize CI via
+  `FULLSEND_FOREIGN_E2E_REPOS`.
+- Installation-wide tokens (empty `repos`) are permitted only on the cross-org path after
+  FOREIGN authorization; same-org callers must always name at least one repo.
 - Target orgs opt in by installing the role App and setting the FOREIGN allowlist.
-- Same-org mint for enrolled orgs is unchanged: zero new API calls or permission changes.
+- Same-org mint for enrolled orgs is unchanged aside from requiring `repos`: zero FOREIGN
+  API calls or permission changes for typical agent workflows.
 - Pool org provisioning must install the e2e App and set `FULLSEND_FOREIGN_E2E_REPOS` for CI callers.

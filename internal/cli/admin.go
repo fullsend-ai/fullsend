@@ -1193,8 +1193,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		return err
 	}
 
-	// Build config with empty agents for analysis.
-	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, nil, inferenceProviderName, org)
+	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1206,7 +1205,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	var agentCreds []layers.AgentCredentials
 	for _, role := range roles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1387,16 +1386,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		if err != nil {
 			return nil, fmt.Errorf("setting up app for role %s: %w", role, err)
 		}
-		creds = append(creds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{
-				Role: role,
-				Name: appCreds.Name,
-				Slug: appCreds.Slug,
-			},
-			PEM:      appCreds.PEM,
-			ClientID: appCreds.ClientID,
-			AppID:    appCreds.AppID,
-		})
+		creds = append(creds, toAgentCredentials(role, appCreds))
 	}
 
 	if err := setup.PermissionErrors(); err != nil {
@@ -1505,13 +1495,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	// Collect IDs for repos that will be enrolled.
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
 
-	// Build agent entries for config.
-	agents := make([]config.AgentEntry, len(agentCreds))
-	for i, ac := range agentCreds {
-		agents[i] = ac.AgentEntry
-	}
-
-	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
+	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1586,8 +1570,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 
 // runUninstall tears down the fullsend installation.
 func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string, browser appsetup.BrowserOpener, stdin io.Reader) error {
-	// Try to discover agent slugs. Prefer harness wrapper files, then
-	// fall back to config.yaml agents: block, then default naming.
+	// Try to discover agent slugs from harness wrapper files, then default naming.
 	// If the .fullsend repo is already gone (e.g., previous partial
 	// uninstall), fall back to the default naming convention so we can
 	// still guide the user to delete the apps. Without this fallback,
@@ -1596,11 +1579,9 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	var agentSlugs []string
 	var configMode string
 	var enrolledRepos []string
-	var parsedCfg *config.OrgConfig
 	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
 		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			parsedCfg = parsed
 			configMode = parsed.Dispatch.Mode
 			enrolledRepos = parsed.EnabledRepos()
 		} else {
@@ -1608,7 +1589,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		}
 	}
 
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, parsedCfg, printer)
+	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
 
 	if len(agentSlugs) == 0 {
 		// Neither harness files nor config agents found — assume default
@@ -1657,7 +1638,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 	// Build a minimal stack for uninstall.
 	// Only ConfigRepoLayer matters for uninstall since other layers are no-ops.
-	emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "", "")
+	emptyCfg := config.NewOrgConfig(nil, nil, nil, "", "")
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, emptyCfg, printer, false),
 		layers.NewWorkflowsLayer(org, client, printer, "", version, false),
@@ -1794,11 +1775,11 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	var agentCreds []layers.AgentCredentials
 	for _, role := range defaultRoles {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
-	cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, nil, "", org)
+	cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, "", org)
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -2009,6 +1990,17 @@ func loadExistingEnabledRepos(ctx context.Context, client forge.Client, org stri
 	return cfg.EnabledRepos()
 }
 
+func toAgentCredentials(role string, ac *appsetup.AppCredentials) layers.AgentCredentials {
+	return layers.AgentCredentials{
+		Role:     role,
+		Name:     ac.Name,
+		Slug:     ac.Slug,
+		PEM:      ac.PEM,
+		ClientID: ac.ClientID,
+		AppID:    ac.AppID,
+	}
+}
+
 // filterSlugsByAppSet returns a new map containing only entries whose slug
 // matches the convention for the given app set (i.e., slug == appSet + "-" + role).
 // Slugs from a previous install with a different app set must not be carried
@@ -2025,53 +2017,36 @@ func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]stri
 }
 
 // loadKnownSlugs discovers agent slugs from harness wrapper files in the
-// config repo, falling back to the config.yaml agents: block.
+// config repo.
 func loadKnownSlugs(ctx context.Context, client forge.Client, org, configRepo, ref string, printer *ui.Printer) map[string]string {
 	agents, err := harness.DiscoverRemoteAgents(ctx, client, org, configRepo, ref)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("harness discovery: %v", err))
 	}
-	if len(agents) > 0 {
-		slugs := make(map[string]string, len(agents))
-		seen := make(map[string]bool, len(agents))
-		for _, a := range agents {
-			if a.Role == "" && a.Slug == "" {
-				continue
-			}
-			if a.Role == "" || a.Slug == "" {
-				printer.StepWarn(fmt.Sprintf("harness %s has role=%q slug=%q; both must be set", a.Filename, a.Role, a.Slug))
-				continue
-			}
-			if seen[a.Role] {
-				printer.StepInfo(fmt.Sprintf("duplicate role %q in harness file %s, using first occurrence", a.Role, a.Filename))
-				continue
-			}
-			seen[a.Role] = true
-			slugs[a.Role] = a.Slug
-		}
-		if len(slugs) > 0 {
-			return slugs
-		}
+	if len(agents) == 0 {
+		return nil
 	}
-
-	slugs := loadKnownSlugsLegacy(ctx, client, org)
+	slugs := make(map[string]string, len(agents))
+	seen := make(map[string]bool, len(agents))
+	for _, a := range agents {
+		if a.Role == "" && a.Slug == "" {
+			continue
+		}
+		if a.Role == "" || a.Slug == "" {
+			printer.StepWarn(fmt.Sprintf("harness %s has role=%q slug=%q; both must be set", a.Filename, a.Role, a.Slug))
+			continue
+		}
+		if seen[a.Role] {
+			printer.StepInfo(fmt.Sprintf("duplicate role %q in harness file %s, using first occurrence", a.Role, a.Filename))
+			continue
+		}
+		seen[a.Role] = true
+		slugs[a.Role] = a.Slug
+	}
 	if len(slugs) > 0 {
-		printer.StepWarn("config.yaml agents: block is deprecated; agent identity should be in harness files with role/slug fields")
+		return slugs
 	}
-	return slugs
-}
-
-// loadKnownSlugsLegacy reads agent slugs from the config.yaml agents: block.
-func loadKnownSlugsLegacy(ctx context.Context, client forge.Client, org string) map[string]string {
-	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
-	if err != nil {
-		return nil
-	}
-	cfg, err := config.ParseOrgConfig(data)
-	if err != nil {
-		return nil
-	}
-	return cfg.AgentSlugs()
+	return nil
 }
 
 // collectEnrolledRepoIDs returns the IDs of repos whose names appear in

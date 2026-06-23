@@ -2,3 +2,7 @@
 	path = experiments
 	url = git@github.com:fullsend-ai/experiments.git
 	branch = main
+[submodule "eval/.agent-eval-harness"]
+	path = eval/.agent-eval-harness
+	url = https://github.com/ralphbean/agent-eval-harness.git
+	branch = worktree-execution-hooks

@@ -38,15 +38,5 @@ func (d Diagnostic) String() string {
 // results are meaningless on an invalid harness.
 // Returns nil when no diagnostics are found.
 func (h *Harness) Lint() []Diagnostic {
-	var diags []Diagnostic
-
-	if h.Role == "" {
-		diags = append(diags, Diagnostic{
-			Severity: SeverityWarning,
-			Field:    "role",
-			Message:  "role is not set; it will be required in a future version",
-		})
-	}
-
-	return diags
+	return nil
 }

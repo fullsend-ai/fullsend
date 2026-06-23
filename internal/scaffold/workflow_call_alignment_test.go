@@ -252,3 +252,13 @@ func TestReusableDispatchUsesFullyQualifiedPaths(t *testing.T) {
 		})
 	}
 }
+
+// TestReusableDispatchWorkflowContent validates PR-context gating in per-repo
+// reusable-dispatch.yml routing (per-org dispatch.yml unchanged).
+func TestReusableDispatchWorkflowContent(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	s := string(content)
+	assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+}

@@ -2,7 +2,7 @@
 .PHONY: help bootstrap lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test
+       e2e-test lint-eval-cases functional-tests
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -26,8 +26,10 @@ help:
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
 	@echo "  script-test          - Run shell script tests (post-triage, post-code, post-review, pre-fetch-prior-review, reconcile-repos, validate-output-schema)"
-	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
+	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: E2E_MINT_URL; local: gh auth login or GH_TOKEN)"
+	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
+	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -116,7 +118,23 @@ script-test:
 	python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py
 	python3 skills/topissues/scripts/topissues_test.py
 
-test: lint-all go-test script-test
+test: lint-all go-test script-test lint-eval-cases
 
 e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
+
+# Functional agent evals — run agents against ephemeral GitHub repos and judge results.
+# Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.
+# GH_TOKEN defaults to `gh auth token` if not set.
+FULLSEND_DIR ?= $(CURDIR)/internal/scaffold/fullsend-repo
+EVAL_AGENTS  ?= triage
+
+lint-eval-cases:
+	@for agent in $(EVAL_AGENTS); do \
+		./eval/lint-cases.sh "$$agent"; \
+	done
+
+functional-tests: lint-eval-cases
+	@for agent in $(EVAL_AGENTS); do \
+		FULLSEND_DIR="$(FULLSEND_DIR)" ./eval/run-functional.sh "$$agent"; \
+	done

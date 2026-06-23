@@ -24,6 +24,10 @@
 #
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
+#   CODE_ALLOWED_TARGET_BRANCHES
+#                     — comma-separated list of branches the agent may target,
+#                       or "*" for any. When unset, only the repo's default
+#                       branch is allowed. (default: auto-detected)
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
@@ -45,6 +49,7 @@ UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 # Setup
 # ---------------------------------------------------------------------------
 REPO_DIR="${REPO_DIR:-repo}"
+RUN_DIR="$(pwd)"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -57,7 +62,45 @@ fi
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
-TARGET_BRANCH="${TARGET_BRANCH:-main}"
+# ---------------------------------------------------------------------------
+# Resolve target branch (ADR 0053)
+#
+# Priority: agent output > allowed-list validation > auto-detect default
+# The agent writes its chosen branch to code-result.json. The post-script
+# validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
+# or "*" for any). When unset, only the auto-detected default branch is
+# allowed. Falls back to "main" if the API call fails.
+# ---------------------------------------------------------------------------
+AGENT_TARGET=""
+RESULT_FILE=""
+for dir in "${RUN_DIR}"/iteration-*/output; do
+  if [ -f "${dir}/code-result.json" ]; then
+    RESULT_FILE="${dir}/code-result.json"
+  fi
+done
+if [ -n "${RESULT_FILE}" ]; then
+  AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+fi
+if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+  echo "Error: invalid branch name from agent output: '${AGENT_TARGET}'"
+  exit 1
+fi
+
+DEFAULT_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo 'main')"
+
+if [ -n "${AGENT_TARGET}" ]; then
+  ALLOWED="${CODE_ALLOWED_TARGET_BRANCHES:-${DEFAULT_BRANCH}}"
+  if [ "${ALLOWED}" = "*" ] || echo ",${ALLOWED}," | grep -qF ",${AGENT_TARGET},"; then
+    TARGET_BRANCH="${AGENT_TARGET}"
+    echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
+  else
+    echo "Error: agent requested branch '${AGENT_TARGET}' but allowed branches are: ${ALLOWED}"
+    exit 1
+  fi
+else
+  TARGET_BRANCH="${DEFAULT_BRANCH}"
+  echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
+fi
 
 echo "::add-mask::${PUSH_TOKEN}"
 

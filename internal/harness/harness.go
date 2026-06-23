@@ -319,13 +319,14 @@ func (h *Harness) Validate() error {
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
 	}
-	if h.Role != "" {
-		if !validRoleName.MatchString(h.Role) {
-			return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
-		}
-		if strings.Contains(h.Role, "--") {
-			return fmt.Errorf("role %q must not contain double hyphens", h.Role)
-		}
+	if h.Role == "" {
+		return fmt.Errorf("role field is required")
+	}
+	if !validRoleName.MatchString(h.Role) {
+		return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
+	}
+	if strings.Contains(h.Role, "--") {
+		return fmt.Errorf("role %q must not contain double hyphens", h.Role)
 	}
 	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)

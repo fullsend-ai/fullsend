@@ -172,7 +172,7 @@ PUSH_TOKEN_SOURCE=github-app
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 REPO_FULL_NAME={org}/{repo}
 ISSUE_NUMBER={issue_num}
-TARGET_BRANCH=main
+CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
 ```

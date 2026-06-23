@@ -70,7 +70,7 @@ slice in the test code. No architectural changes are needed.
   staleness check.
 - Each pool org must install the `fullsend-ai-e2e` app and authorize CI via
   `FULLSEND_FOREIGN_E2E_REPOS` on the target org — see
-  [ADR 0051](0051-cross-org-mint-authorization-via-org-variables.md).
+  [ADR 0054](0054-cross-org-mint-authorization-via-org-variables.md).
 - CI acquires per-org tokens via cross-org mint ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155));
   local runs use a user token with pool-org admin access (`gh auth login`).
 - Pool expansion is an operational task (provision org, update one slice

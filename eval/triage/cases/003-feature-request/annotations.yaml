@@ -1,0 +1,31 @@
+# The agent should recognize this as a feature request. Features get
+# "triaged" + "feature" labels, NOT "ready-to-code" — they need human
+# prioritization before coding begins.
+state: open
+
+labels:
+  required:
+    - triaged
+    - feature
+  forbidden:
+    - ready-to-code
+    - needs-info
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This is a well-specified feature request with clear requirements,
+  rationale, and impact. A good triage should:
+
+  1. Identify this as a feature request (category: feature), not a bug.
+  2. Choose action "sufficient" — the request is clear enough to act on.
+  3. NOT apply ready-to-code. The post-script routes features to
+     "triaged" + "feature" for human prioritization.
+  4. Acknowledge the technical rationale (cursor vs offset pagination)
+     and note the downstream dependency (admin dashboard).
+
+  A score of 1 means the agent misclassified this as a bug.
+  A score of 3 means correct classification but shallow analysis.
+  A score of 5 means correct classification plus thoughtful assessment
+  of the proposed design and its trade-offs.

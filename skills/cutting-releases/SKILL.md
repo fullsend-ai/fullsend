@@ -109,29 +109,12 @@ GoReleaser takes over from here. Verify the workflow starts:
 gh run list --workflow=release.yml --limit=1
 ```
 
-### 8. Move the `v0` tag
-
-Downstream orgs reference reusable workflows via `@v0`. Use
-`AskUserQuestion` to confirm before force-pushing:
-
-> About to force-push `v0` to `<tag>`. This immediately changes what
-> all downstream `@v0` consumers resolve. Proceed?
-
-Once confirmed:
-
-```
-git tag -f v0 <tag>
-git push origin v0 --force
-```
-
-The Sandbox Images workflow (triggered by tag push) will also run.
-
-### 9. Run post-flight verification
+### 8. Run post-flight verification
 
 Read [post-flight.md](post-flight.md) in this skill's directory and
 follow the post-flight verification procedure.
 
-### 10. Install the binary locally
+### 9. Install the binary locally
 
 Use `AskUserQuestion` to ask where to install (default: `~/.local/bin/`),
 then run the install script using its repo-root-relative path:
@@ -150,4 +133,5 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **Never delete a published tag.** If a release is bad, cut a new patch or RC.
 - **The changelog** is auto-generated from conventional commit prefixes.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
-  workflows. Always move it as part of the release process (step 8).
+  workflows. It is automatically moved by the release workflow after
+  GoReleaser completes (skipped for pre-release tags).

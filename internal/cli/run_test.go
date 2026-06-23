@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -154,7 +155,7 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -178,7 +179,7 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -216,7 +217,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -247,7 +248,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -273,7 +274,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\nrole: test\n", agentHash)),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -299,7 +300,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\nrole: test\n", agentHash)),
 		0o644,
 	))
 
@@ -313,7 +314,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 
 func TestRunAgent_WithURLBase(t *testing.T) {
 	// Harness with a URL base — exercises the baseDeps logging loop.
-	baseContent := []byte("agent: agents/shared.md\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
@@ -331,7 +332,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\n", srv.URL, baseHash)),
+		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\nrole: test\n", srv.URL, baseHash)),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -1796,9 +1797,8 @@ func TestEmitDiagnosticWithContext(t *testing.T) {
 	assert.Contains(t, output, "role")
 }
 
-func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
-	// Verifies that runAgent emits a lint warning when harness has no role,
-	// but the command still proceeds (fails later at sandbox availability).
+func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
+	// Verifies that runAgent fails with a hard error when harness has no role.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -1821,45 +1821,51 @@ func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 
-	// Command fails later (no openshell), but lint warning should be emitted
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
-
-	// Verify lint warning was printed
-	output := buf.String()
-	assert.Contains(t, output, "role")
-	assert.Contains(t, output, "warning")
+	assert.Contains(t, err.Error(), "invalid harness: role field is required")
 }
 
-func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
-	// Verifies that runAgent does NOT emit a lint warning when harness has role set.
+func TestWriteMetricsJSON(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	m := aggregateMetrics{
+		NumTurns:     12,
+		TotalCostUSD: 0.58,
+		Iterations:   2,
+		ToolCalls:    34,
+	}
+	m.TokenUsage.Input = 18000
+	m.TokenUsage.Output = 5200
 
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "agents", "code.md"),
-		[]byte("You are a coding agent."),
-		0o644,
-	))
-	// Harness with role field
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: coder\n"),
-		0o644,
-	))
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
 
-	var buf bytes.Buffer
-	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-	printer := ui.New(&buf)
-	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	data, err := os.ReadFile(filepath.Join(dir, "metrics.json"))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
 
-	// Command fails later (no openshell)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
 
-	// Verify no lint warning about role
-	output := buf.String()
-	assert.NotContains(t, output, "role is not set")
+	if got.NumTurns != 12 {
+		t.Errorf("num_turns = %d, want 12", got.NumTurns)
+	}
+	if got.TotalCostUSD != 0.58 {
+		t.Errorf("total_cost_usd = %f, want 0.58", got.TotalCostUSD)
+	}
+	if got.TokenUsage.Input != 18000 {
+		t.Errorf("token_usage.input = %d, want 18000", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 5200 {
+		t.Errorf("token_usage.output = %d, want 5200", got.TokenUsage.Output)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 34 {
+		t.Errorf("tool_calls = %d, want 34", got.ToolCalls)
+	}
 }
