@@ -91,11 +91,11 @@ var thinCallerConcurrencyExpectations = map[string]stageConcurrencyExpectation{
 var reusableAgentConcurrencyExpectations = map[string]stageConcurrencyExpectation{
 	"triage": {
 		groupPrefix: "fullsend-triage-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number"},
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
 	},
 	"code": {
 		groupPrefix: "fullsend-code-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number"},
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
 	},
 	"review": {
 		groupPrefix: "fullsend-review-agent-",
@@ -111,18 +111,18 @@ var reusableAgentConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 	},
 	"prioritize": {
 		groupPrefix: "fullsend-prioritize-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number"},
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
 	},
 }
 
 var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectation{
 	"triage": {
 		groupPrefix: "fullsend-triage-",
-		groupMust:   []string{"github.repository", "github.event.issue.number"},
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
 	},
 	"code": {
 		groupPrefix: "fullsend-code-",
-		groupMust:   []string{"github.repository", "github.event.issue.number"},
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
 	},
 	"review": {
 		groupPrefix: "fullsend-review-",
@@ -138,7 +138,7 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 	},
 	"prioritize": {
 		groupPrefix: "fullsend-prioritize-",
-		groupMust:   []string{"github.repository", "github.event.issue.number"},
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
 	},
 }
 

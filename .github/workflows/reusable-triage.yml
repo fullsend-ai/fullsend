@@ -44,7 +44,7 @@ on:
         required: true
 
 concurrency:
-  group: fullsend-triage-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
+  group: fullsend-triage-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   cancel-in-progress: true
 
 jobs:

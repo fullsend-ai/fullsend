@@ -370,7 +370,7 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'triage'
     concurrency:
-      group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number }}
+      group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
     # @v0 is hardcoded — GHA does not support expressions in uses:.
     # fullsend_ai_ref controls the ref for composite actions inside stage workflows.
@@ -393,7 +393,7 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'code'
     concurrency:
-      group: fullsend-code-${{ github.repository }}-${{ github.event.issue.number }}
+      group: fullsend-code-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
     with:
@@ -478,7 +478,7 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'prioritize'
     concurrency:
-      group: fullsend-prioritize-${{ github.repository }}-${{ github.event.issue.number }}
+      group: fullsend-prioritize-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0
     with:

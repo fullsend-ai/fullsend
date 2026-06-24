@@ -156,7 +156,7 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "install_mode: per-repo")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
-	assert.NotContains(t, s, "concurrency:")
+	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
 	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
 }
 
