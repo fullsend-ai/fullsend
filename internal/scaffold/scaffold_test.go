@@ -107,10 +107,9 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	content, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
 	require.NoError(t, err)
 	s := string(content)
-	// Template embeds provenance headers; YAML document start marker follows.
-	assert.True(t, strings.HasPrefix(s, "# This file is managed by fullsend."),
-		"shim workflow must start with managed-by provenance header")
-	assert.Contains(t, s, "---\n# --- fullsend managed below - do not edit ---")
+	// ADR 43: template stays header-free; provenance headers added at deploy time.
+	assert.True(t, strings.HasPrefix(s, "---\n"), "shim workflow must start with YAML document start marker")
+	assert.Contains(t, s, "# --- fullsend managed below - do not edit ---")
 	// ADR 34: shim has 2 jobs (dispatch + stop-fix), not per-stage jobs
 	assert.Contains(t, s, "dispatch:")
 	assert.Contains(t, s, "stop-fix:")
@@ -886,19 +885,14 @@ func TestPrioritizeHarnessContent(t *testing.T) {
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
 	// yamllint document-start rule requires --- at the top of every YAML file.
-	// Walk embedded scaffold YAML/YML files and verify each starts with "---\n"
-	// or with a comment-only provenance header followed by "---\n".
+	// Walk embedded scaffold YAML/YML files and verify each starts with "---\n".
 	var checked int
 	err := WalkFullsendRepoAll(func(path string, content []byte) error {
 		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
 			return nil
 		}
-		s := string(content)
-		hasDirect := strings.HasPrefix(s, "---\n")
-		hasAfterHeader := strings.Contains(s, "\n---\n") &&
-			strings.HasPrefix(s, "# ")
-		assert.True(t, hasDirect || hasAfterHeader,
-			"%s must start with YAML document start marker (---) or comment header followed by ---", path)
+		assert.True(t, strings.HasPrefix(string(content), "---\n"),
+			"%s must start with YAML document start marker (---)", path)
 		checked++
 		return nil
 	})

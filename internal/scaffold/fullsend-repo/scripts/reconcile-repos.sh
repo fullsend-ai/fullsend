@@ -27,6 +27,9 @@ fi
 SHIM_TEMPLATE="$CONFIG_DIR/templates/shim-workflow-call.yaml"
 SHIM_PATH=".github/workflows/fullsend.yaml"
 SENTINEL="# --- fullsend managed below - do not edit ---"
+# Provenance header prepended at deploy time (ADR 43: templates stay header-free).
+PROVENANCE_HEADER="# This file is managed by fullsend. Do not edit it directly.
+# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/templates/shim-workflow-call.yaml"
 REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
 
 ENROLL_BRANCH="fullsend/onboard"
@@ -73,9 +76,12 @@ if [[ ! "$ORG" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$ && ! "$ORG" =~ ^[a-zA-Z0
 fi
 
 # shim_content_b64 returns the shim template as base64, with __ORG__
-# substituted for the actual org name (used by workflow_call templates).
+# substituted and provenance headers prepended (ADR 43: headers added
+# at deploy time, not embedded in the template).
 shim_content_b64() {
-  sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE" | base64 -w0
+  local body
+  body=$(sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE")
+  printf '%s\n%s\n' "$PROVENANCE_HEADER" "$body" | base64 -w0
 }
 
 # extract_managed_content reads stdin and prints everything from the sentinel
@@ -99,8 +105,9 @@ extract_user_header() {
   '
 }
 
-# shim_with_header_b64 builds the final shim content by prepending any
-# user-owned header from the existing remote file onto the template.
+# shim_with_header_b64 builds the final shim content by prepending provenance
+# headers and any user-owned header from the existing remote file onto the
+# template.  ADR 43: provenance headers are added at deploy time.
 # Args: $1 = base64-encoded remote file content (may be empty for new files)
 #       $2 = repo name (for diagnostic messages)
 # Prints: base64-encoded final content
@@ -111,7 +118,7 @@ shim_with_header_b64() {
   template=$(sed "s|__ORG__|${ORG}|g" "$SHIM_TEMPLATE")
 
   if [ -z "$remote_b64" ]; then
-    printf '%s\n' "$template" | base64 -w0
+    printf '%s\n%s\n' "$PROVENANCE_HEADER" "$template" | base64 -w0
     return
   fi
 
@@ -120,15 +127,16 @@ shim_with_header_b64() {
   local remote_raw
   remote_raw=$(printf '%s' "$remote_b64" | base64 -d | tr -d '\r')
   if ! printf '%s\n' "$remote_raw" | grep -qF "$SENTINEL"; then
-    printf '%s\n' "$template" | base64 -w0
+    printf '%s\n%s\n' "$PROVENANCE_HEADER" "$template" | base64 -w0
     return
   fi
 
   local header
   header=$(printf '%s\n' "$remote_raw" | extract_user_header)
 
-  # Strip provenance headers that the template now includes natively.
-  # Only genuinely user-added content (e.g. license headers) is preserved.
+  # Strip provenance headers from extracted user content — these are
+  # injected at deploy time (above) and must not be duplicated from
+  # existing deployed shims that already have them.
   if [ -n "$header" ]; then
     header=$(printf '%s\n' "$header" | grep -v '^# This file is managed by fullsend\.' | grep -v '^# Upstream: ' || true)
     # Remove leading/trailing blank lines left after stripping.
@@ -145,9 +153,9 @@ shim_with_header_b64() {
   fi
 
   if [ -n "$header" ]; then
-    printf '%s\n%s\n' "$header" "$template" | base64 -w0
+    printf '%s\n%s\n%s\n' "$PROVENANCE_HEADER" "$header" "$template" | base64 -w0
   else
-    printf '%s\n' "$template" | base64 -w0
+    printf '%s\n%s\n' "$PROVENANCE_HEADER" "$template" | base64 -w0
   fi
 }
 

@@ -208,7 +208,8 @@ func PrependManagedHeader(path string, content []byte) []byte {
 		return content
 	}
 	s := string(content)
-	// Skip if the header is already present (template files may embed it).
+	// Skip if the header is already present (e.g. reconciliation script
+	// already prepended it at deploy time).
 	if strings.HasPrefix(s, header) {
 		return content
 	}

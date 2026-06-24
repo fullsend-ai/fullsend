@@ -32,8 +32,6 @@ repos:
 EOF
 
 cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'EOF'
-# This file is managed by fullsend. Do not edit it directly.
-# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/templates/shim-workflow-call.yaml
 # --- fullsend managed below - do not edit ---
 fresh shim template
 EOF
@@ -334,7 +332,15 @@ fi
 BLOB_B64=$(jq -r '.content' "${TMPDIR}/blob-input-test-repo.json")
 BLOB_DECODED=$(printf '%s' "$BLOB_B64" | /usr/bin/base64 -d)
 
-if ! printf '%s' "$BLOB_DECODED" | head -1 | grep -q "^# Copyright 2026 Conforma"; then
+# ADR 43: provenance headers are prepended at deploy time.
+if ! printf '%s' "$BLOB_DECODED" | head -1 | grep -q "^# This file is managed by fullsend"; then
+  echo "FAIL: provenance header missing from blob content"
+  echo "Got:"
+  printf '%s\n' "$BLOB_DECODED"
+  exit 1
+fi
+
+if ! printf '%s' "$BLOB_DECODED" | grep -q "^# Copyright 2026 Conforma"; then
   echo "FAIL: user license header was not preserved in blob content"
   echo "Got:"
   printf '%s\n' "$BLOB_DECODED"
