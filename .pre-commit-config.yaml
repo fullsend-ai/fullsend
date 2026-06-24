@@ -66,6 +66,7 @@ repos:
         files: |
           (?x)^(
             \.github/workflows/
+            |\.github/actions/
             |internal/scaffold/fullsend-repo/\.github/workflows/
           )
         pass_filenames: false
