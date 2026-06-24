@@ -41,7 +41,7 @@ validation_loop:
   max_iterations: 2
 
 runner_env:
-  PUSH_TOKEN: "${PUSH_TOKEN}"
+  PUSH_TOKEN: "${PUSH_TOKEN}"  # auto-minted in CI when --mint-url is provided
   REPO_FULL_NAME: "${REPO_FULL_NAME}"
   REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```

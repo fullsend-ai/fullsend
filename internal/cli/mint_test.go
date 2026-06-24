@@ -1511,7 +1511,7 @@ func TestResolveAddRoleFromBrowser_Success(t *testing.T) {
 		func(_ context.Context, _ forge.Client, _ *ui.Printer, org string, roles []string, _ string, _ string, _ bool, _ map[string]string, _ string, _ map[string]string) ([]layers.AgentCredentials, error) {
 			assert.Equal(t, "acme-corp", org)
 			assert.Equal(t, []string{"review"}, roles)
-			return []layers.AgentCredentials{{AgentEntry: config.AgentEntry{Slug: "fullsend-ai-review"}, AppID: 424242}}, nil
+			return []layers.AgentCredentials{{Slug: "fullsend-ai-review", AppID: 424242}}, nil
 		},
 	)
 	printer := ui.New(&strings.Builder{})
@@ -1562,7 +1562,7 @@ func TestMintAddRoleCmd_BrowserRegisters(t *testing.T) {
 	withMintAddRoleHooks(t,
 		func() (string, error) { return "test-token", nil },
 		func(context.Context, forge.Client, *ui.Printer, string, []string, string, string, bool, map[string]string, string, map[string]string) ([]layers.AgentCredentials, error) {
-			return []layers.AgentCredentials{{AgentEntry: config.AgentEntry{Slug: "fullsend-ai-review"}, AppID: 55555}}, nil
+			return []layers.AgentCredentials{{Slug: "fullsend-ai-review", AppID: 55555}}, nil
 		},
 	)
 	withMintGCFClient(t, gcf.NewFakeGCFClient(

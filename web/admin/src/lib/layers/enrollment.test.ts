@@ -24,11 +24,7 @@ describe("analyzeEnrollmentLayer", () => {
   });
 
   it("installed when all enabled repos have shim", async () => {
-    const r = await analyzeEnrollmentLayer(
-      "acme",
-      mockGh({ a: "yaml", b: "yaml" }),
-      ["a", "b"],
-    );
+    const r = await analyzeEnrollmentLayer("acme", mockGh({ a: "yaml", b: "yaml" }), ["a", "b"]);
     expect(r.status).toBe("installed");
     expect(r.details).toEqual(["a enrolled", "b enrolled"]);
   });
@@ -36,18 +32,11 @@ describe("analyzeEnrollmentLayer", () => {
   it("not_installed when none enrolled", async () => {
     const r = await analyzeEnrollmentLayer("acme", mockGh({}), ["x", "y"]);
     expect(r.status).toBe("not_installed");
-    expect(r.wouldInstall).toEqual([
-      "create enrollment PR for x",
-      "create enrollment PR for y",
-    ]);
+    expect(r.wouldInstall).toEqual(["create enrollment PR for x", "create enrollment PR for y"]);
   });
 
   it("degraded when mixed", async () => {
-    const r = await analyzeEnrollmentLayer(
-      "acme",
-      mockGh({ a: "ok" }),
-      ["a", "b"],
-    );
+    const r = await analyzeEnrollmentLayer("acme", mockGh({ a: "ok" }), ["a", "b"]);
     expect(r.status).toBe("degraded");
     expect(r.details).toContain("a enrolled");
     expect(r.wouldFix).toContain("create enrollment PR for b");

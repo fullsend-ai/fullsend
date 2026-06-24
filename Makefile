@@ -2,7 +2,8 @@
 .PHONY: help bootstrap lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test e2e-playwright e2e-export-session e2e-upload-session
+       e2e-test e2e-playwright e2e-export-session e2e-upload-session \
+       lint-eval-cases functional-tests
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -30,6 +31,8 @@ help:
 	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_SESSION_FILE or E2E_GITHUB_USERNAME + E2E_GITHUB_PASSWORD)"
 	@echo "  e2e-export-session   - Login to GitHub and export a Playwright session file"
 	@echo "  e2e-upload-session   - Export session and upload it as a GitHub repo secret"
+	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
+	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -60,6 +63,10 @@ bootstrap:
 	curl -sSfL "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/lychee.tar.gz
 	echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum -c
 	tar xzf /tmp/lychee.tar.gz -C "$(BOOTSTRAP_BIN_DIR)" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+	@echo "==> Installing pinact (GitHub Actions SHA-pin checker)..."
+	curl -sSfL "https://github.com/suzuki-shunsuke/pinact/releases/download/v4.1.0/pinact_linux_amd64.tar.gz" -o /tmp/pinact.tar.gz
+	echo "8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0  /tmp/pinact.tar.gz" | sha256sum -c
+	tar xzf /tmp/pinact.tar.gz -C "$(BOOTSTRAP_BIN_DIR)" pinact
 	@echo "==> Installing pre-commit hooks..."
 	PATH="$(BOOTSTRAP_BIN_DIR):$(PATH)" pre-commit install
 	@echo ""
@@ -105,20 +112,28 @@ go-tidy:
 lint-md-links:
 	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
 
-script-test:
-	bash scripts/check-e2e-authorization-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/pre-code-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh
-	python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py
-	python3 skills/topissues/scripts/topissues_test.py
+define run-timed
+	@start=$$(date +%s); \
+	rc=0; $(1) || rc=$$?; \
+	elapsed=$$(($$(date +%s) - $$start)); \
+	printf '::debug::script-test timing: %s completed in %ds\n' '$(1)' "$$elapsed"; \
+	exit $$rc
+endef
 
-test: lint-all go-test script-test
+script-test:
+	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-code-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
+	$(call run-timed,python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py)
+	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
+
+test: lint-all go-test script-test lint-eval-cases
 
 E2E_SESSION_FILE ?= $(CURDIR)/.playwright/session.json
 
@@ -149,3 +164,19 @@ e2e-playwright:
 		echo "==> Installing Playwright Chromium..."; \
 		go run github.com/playwright-community/playwright-go/cmd/playwright install chromium; \
 	fi
+
+# Functional agent evals — run agents against ephemeral GitHub repos and judge results.
+# Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.
+# GH_TOKEN defaults to `gh auth token` if not set.
+FULLSEND_DIR ?= $(CURDIR)/internal/scaffold/fullsend-repo
+EVAL_AGENTS  ?= triage
+
+lint-eval-cases:
+	@for agent in $(EVAL_AGENTS); do \
+		./eval/lint-cases.sh "$$agent"; \
+	done
+
+functional-tests: lint-eval-cases
+	@for agent in $(EVAL_AGENTS); do \
+		FULLSEND_DIR="$(FULLSEND_DIR)" ./eval/run-functional.sh "$$agent"; \
+	done

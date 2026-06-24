@@ -83,6 +83,10 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	vendorFlag := cmd.Flags().Lookup("vendor")
 	require.NotNil(t, vendorFlag, "expected --vendor flag")
 
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
 
@@ -405,7 +409,7 @@ func TestRunGitHubStatus_BasicReport(t *testing.T) {
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, nil, "", "")
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, "", "")
 	cfgData, _ := cfg.Marshal()
 	client.FileContents["acme/.fullsend/config.yaml"] = cfgData
 	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
@@ -500,16 +504,16 @@ func TestRunGitHubUninstall_UsesHarnessDiscovery(t *testing.T) {
 	assert.NotContains(t, output, "agents: block")
 }
 
-func TestRunGitHubUninstall_FallsBackToAgentsBlock(t *testing.T) {
+func TestRunGitHubUninstall_NoHarnessFiles_FallsBackToDefaultNaming(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
 	client.FileContents = map[string][]byte{
-		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: cfg-triage\n"),
+		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\n"),
 	}
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "cfg-triage"},
+		{ID: 1, AppSlug: "fullsend-ai-triage"},
 	}
 
 	var buf strings.Builder
@@ -519,8 +523,7 @@ func TestRunGitHubUninstall_FallsBackToAgentsBlock(t *testing.T) {
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "cfg-triage")
-	assert.Contains(t, output, "agents: block")
+	assert.Contains(t, output, "fullsend-ai-triage")
 }
 
 // --- Sync-scaffold command tests ---
@@ -544,8 +547,8 @@ func TestRunGitHubSyncScaffold_CommitsFiles(t *testing.T) {
 	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme")
 	require.NoError(t, err)
 
-	// Verify at least one file was committed.
-	require.NotEmpty(t, client.CommittedFiles, "expected scaffold files to be committed")
+	// sync-scaffold uses direct mode — files are committed to the default branch.
+	require.NotEmpty(t, client.CommittedFiles, "expected scaffold files to be committed directly")
 }
 
 func TestRunGitHubSyncScaffold_VendoredMarker(t *testing.T) {
@@ -637,8 +640,9 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify scaffold files were committed.
-	require.NotEmpty(t, client.CommittedFiles)
+	// Default mode delivers via PR — verify files were committed to the scaffold branch.
+	require.NotEmpty(t, client.CommittedFilesToBranch)
+	require.NotEmpty(t, client.CreatedProposals)
 
 	// Verify repo variables were set.
 	varNames := make(map[string]string)
@@ -768,8 +772,8 @@ func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify scaffold files were committed.
-	require.NotEmpty(t, client.CommittedFiles)
+	// Default mode delivers via PR — verify files were committed to the scaffold branch.
+	require.NotEmpty(t, client.CommittedFilesToBranch)
 
 	// Verify repo variables were set.
 	varNames := make(map[string]string)

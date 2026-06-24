@@ -1,9 +1,24 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "prHourlyLimit": 1,
+  "postUpdateOptions": ["gomodTidy"],
   "git-submodules": {
     "enabled": true
   },
+  "github-actions": {
+    "fileMatch": [
+      "^internal/scaffold/.*\\.github/workflows/[^/]+\\.ya?ml$"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Ignore fullsend self-references (own reusable workflows and actions)",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["/^fullsend-ai\\//"],
+      "enabled": false
+    }
+  ],
   "customManagers": [
     {
       "customType": "regex",

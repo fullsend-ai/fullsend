@@ -19,8 +19,5 @@ export function mergeLayerStatuses(a: LayerStatus, b: LayerStatus): LayerStatus 
  */
 export function rollupOrgLayerStatus(reports: LayerReport[]): LayerStatus {
   if (reports.length === 0) return "installed";
-  return reports.reduce(
-    (acc, r) => mergeLayerStatuses(acc, r.status),
-    "installed" as LayerStatus,
-  );
+  return reports.reduce((acc, r) => mergeLayerStatuses(acc, r.status), "installed" as LayerStatus);
 }

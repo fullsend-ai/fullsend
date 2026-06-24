@@ -60,6 +60,7 @@ func TestLockAll_MultipleHarnesses(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	codeHarness := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: coder
 policy: "%s/policies/sandbox.yaml#sha256=%s"
 allowed_remote_resources:
   - "%s/"
@@ -71,6 +72,7 @@ allowed_remote_resources:
 	))
 
 	triageHarness := fmt.Sprintf(`agent: "%s/agents/triage.md#sha256=%s"
+role: triage
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -118,6 +120,7 @@ func TestLockAll_MixedURLAndLocalHarnesses(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	urlHarness := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -127,7 +130,7 @@ allowed_remote_resources:
 		0o644,
 	))
 
-	localHarness := "agent: agents/local.md\n"
+	localHarness := "agent: agents/local.md\nrole: test\n"
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "local.yaml"),
 		[]byte(localHarness),
@@ -163,7 +166,7 @@ func TestLockAll_ParseFailure(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "good.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -183,7 +186,7 @@ func TestLockAll_YMLExtension(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	localHarness := "agent: agents/code.md\n"
+	localHarness := "agent: agents/code.md\nrole: test\n"
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "review.yml"),
 		[]byte(localHarness),
@@ -306,6 +309,7 @@ func TestLockAll_PartialProgressOnFailure(t *testing.T) {
 
 	// First harness resolves successfully.
 	goodHarness := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -349,7 +353,7 @@ func TestLockAll_InvalidForgeFlag(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -364,7 +368,7 @@ func TestRunLock_InvalidForgeFlag(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -381,7 +385,7 @@ func TestLockOneAgent_YMLFallback(t *testing.T) {
 	// Only .yml extension, no .yaml.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "review.yml"),
-		[]byte("agent: agents/review.md\n"),
+		[]byte("agent: agents/review.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -396,7 +400,7 @@ func TestLockOneAgent_StalenessCheck(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	harnessContent := []byte("agent: agents/code.md\n")
+	harnessContent := []byte("agent: agents/code.md\nrole: test\n")
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
 		harnessContent,
@@ -431,12 +435,12 @@ func TestLockOneAgent_DualExtensionWarning(t *testing.T) {
 	// Create both .yaml and .yml for the same stem.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -454,7 +458,7 @@ func TestLockAll_CorruptLockFile(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -477,7 +481,7 @@ func TestLockAll_CobraDispatch(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -493,7 +497,7 @@ func TestLockCmd_SingleAgentCobraDispatch(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -515,6 +519,7 @@ func TestLockOneAgent_AllowlistViolation(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -578,6 +583,7 @@ func TestRunLock_SaveError(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -614,6 +620,7 @@ func TestLockAll_SaveError(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -650,6 +657,7 @@ func TestLockAll_WithUpdateFlag(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -696,6 +704,7 @@ func TestLockAll_AllUpToDateMessage(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -734,6 +743,7 @@ func TestLockAll_PrunesStaleEntry(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -760,7 +770,7 @@ allowed_remote_resources:
 	// Replace the harness with a local-only version (no remote deps).
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/local.md\n"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -787,6 +797,7 @@ func TestLockAll_PrunesRemovedHarness(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessYAML := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 allowed_remote_resources:
   - "%s/"
 `, srv.URL, agentHash, srv.URL)
@@ -816,7 +827,7 @@ allowed_remote_resources:
 	// Add a different local-only harness so --all has something to iterate.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "local.yaml"),
-		[]byte("agent: agents/local.md\n"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
 		0o644,
 	))
 

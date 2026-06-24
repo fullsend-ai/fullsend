@@ -2,10 +2,7 @@
  * Validates return_to against an explicit allowlist of preview origins
  * (scheme + host, no path). Caller supplies allowlist from production config.
  */
-export function assertAllowedReturnTo(
-  returnTo: string,
-  allowedOrigins: string[],
-): URL {
+export function assertAllowedReturnTo(returnTo: string, allowedOrigins: string[]): URL {
   let url: URL;
   try {
     url = new URL(returnTo);

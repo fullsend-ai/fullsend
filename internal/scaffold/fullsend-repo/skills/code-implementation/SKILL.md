@@ -178,12 +178,29 @@ From these files, determine:
   missing, but matching the repo's expected format directly is preferred.
 - **Branch conventions** — naming patterns, target branch
 
-If a `TARGET_BRANCH` environment variable is set, use it. Otherwise, determine
-the default branch:
+Determine the correct target branch from the issue context. If the issue
+references a specific branch (e.g., "set up builds on the 3.18 branch"),
+use that branch. Otherwise, determine the repo's default branch:
 
 ```bash
 git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
+
+Write your chosen branch to the structured output file so the post-script
+knows which branch to target the PR against:
+
+```bash
+mkdir -p "${FULLSEND_OUTPUT_DIR}"
+cat > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" <<RESULT
+{
+  "target_branch": "<branch-name>"
+}
+RESULT
+```
+
+Write this output early (during planning, after determining the target
+branch) so it is available even if the agent hits a timeout or error later.
+The post-script validates this against the repo's allowed branches.
 
 ### 4. Check for existing branch
 

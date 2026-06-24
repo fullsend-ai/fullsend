@@ -55,7 +55,6 @@ func TestOrgConfig_CreateIssues_OmittedWhenEmpty(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
 		Repos:  map[string]RepoConfig{},
 	}
 	data, err := cfg.Marshal()
@@ -71,7 +70,6 @@ func TestOrgConfig_CreateIssues_Marshal(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
 		Repos:  map[string]RepoConfig{},
 		CreateIssues: &CreateIssuesConfig{
 			AllowTargets: AllowTargets{
@@ -156,7 +154,7 @@ func TestOrgConfigValidate_CreateIssues_Nil(t *testing.T) {
 }
 
 func TestNewOrgConfig_CreateIssuesDefaults(t *testing.T) {
-	cfg := NewOrgConfig([]string{"repo-a"}, []string{"repo-a"}, []string{"fullsend"}, nil, "", "my-org")
+	cfg := NewOrgConfig([]string{"repo-a"}, []string{"repo-a"}, []string{"fullsend"}, "", "my-org")
 	require.NotNil(t, cfg.CreateIssues)
 	assert.Contains(t, cfg.CreateIssues.AllowTargets.Orgs, "my-org")
 	assert.Contains(t, cfg.CreateIssues.AllowTargets.Repos, "fullsend-ai/fullsend")
@@ -226,7 +224,7 @@ CreateIssues *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 Change `NewOrgConfig` signature to add `org string` parameter:
 
 ```go
-func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider, org string) *OrgConfig {
+func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) *OrgConfig {
 ```
 
 Inside the function, after the existing config construction, add:
@@ -331,32 +329,32 @@ Update each `NewOrgConfig(...)` call to pass the `org` variable as the final arg
 
 In `internal/cli/github.go:464`:
 ```go
-orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, dummyAgents, inferenceProviderName, org)
+orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 ```
 
 In `internal/cli/github.go:513`:
 ```go
-orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
+orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 ```
 
 In `internal/cli/admin.go:1174`:
 ```go
-cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, nil, inferenceProviderName, org)
+cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 ```
 
 In `internal/cli/admin.go:1502`:
 ```go
-cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, agents, inferenceProviderName, org)
+cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 ```
 
 In `internal/cli/admin.go:1640`:
 ```go
-emptyCfg := config.NewOrgConfig(nil, nil, nil, nil, "", "")
+emptyCfg := config.NewOrgConfig(nil, nil, nil, "", "")
 ```
 
 In `internal/cli/admin.go:1781`:
 ```go
-cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, nil, "", org)
+cfg := config.NewOrgConfig(repoNames, nil, defaultRoles, "", org)
 ```
 
 Update each `NewPerRepoConfig(...)` call to pass `cfg.target` (the `owner/repo` string):
@@ -376,7 +374,7 @@ Update test call sites — these typically pass `""` for the new parameters sinc
 
 In `internal/cli/admin_test.go:583`:
 ```go
-return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, nil, "", "")
+return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, "", "")
 ```
 
 In `internal/cli/admin_test.go:1082`, `1123`:
@@ -386,15 +384,15 @@ config.NewOrgConfig(..., "")
 
 In `internal/cli/github_test.go:395`:
 ```go
-cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, nil, "", "")
+cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, "", "")
 ```
 
 In `internal/config/config_test.go`, update existing tests that call `NewOrgConfig` without the org param:
 
 `TestNewOrgConfig`: add `""` as last arg.
-`TestNewOrgConfig_WithInferenceProvider`: change to `NewOrgConfig(nil, nil, nil, nil, "vertex", "")`.
-`TestNewOrgConfig_WithoutInferenceProvider`: change to `NewOrgConfig(nil, nil, nil, nil, "", "")`.
-`TestNewOrgConfig_KillSwitchDefaultFalse`: change to `NewOrgConfig(nil, nil, []string{"fullsend"}, nil, "", "")`.
+`TestNewOrgConfig_WithInferenceProvider`: change to `NewOrgConfig(nil, nil, nil, "vertex", "")`.
+`TestNewOrgConfig_WithoutInferenceProvider`: change to `NewOrgConfig(nil, nil, nil, "", "")`.
+`TestNewOrgConfig_KillSwitchDefaultFalse`: change to `NewOrgConfig(nil, nil, []string{"fullsend"}, "", "")`.
 
 In `internal/config/config_test.go`, update existing tests for `NewPerRepoConfig`:
 

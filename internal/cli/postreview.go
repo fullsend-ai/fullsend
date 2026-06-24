@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -86,6 +87,12 @@ has moved, a stale-head failure is posted instead.`,
 			if err != nil {
 				return fmt.Errorf("parsing review result: %w", err)
 			}
+
+			// Sanitize review content through the output security
+			// pipeline before posting to the forge. This redacts
+			// leaked secrets and normalizes zero-width unicode
+			// obfuscation that could bypass pattern-based redaction.
+			parsed = sanitizeReviewResult(parsed, printer)
 
 			// CLI flag takes precedence over JSON field.
 			if headSHA != "" {
@@ -525,6 +532,58 @@ func minimizeStaleReviews(ctx context.Context, client forge.Client, user string,
 		}
 	}
 	printer.StepDone("Stale reviews minimized")
+}
+
+// sanitizeReviewResult runs the security output pipeline over all
+// user-visible text fields in a ReviewResult. This catches leaked
+// secrets and zero-width–obfuscated tokens before they reach the
+// forge API.
+func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
+	pipeline := security.OutputPipeline()
+
+	// Sanitize the main body.
+	if r.Body != "" {
+		result := pipeline.Scan(r.Body)
+		if result.Sanitized != "" {
+			r.Body = result.Sanitized
+			printer.StepWarn(fmt.Sprintf("Sanitized review body (%d finding(s))", len(result.Findings)))
+			for _, f := range result.Findings {
+				printer.StepWarn(fmt.Sprintf("  %s: %s", f.Name, f.Detail))
+			}
+		}
+	}
+
+	// Sanitize finding fields — severity, category, description, and
+	// remediation are all interpolated into Markdown posted to the
+	// forge and could carry secrets from agent output.
+	for i := range r.Findings {
+		if r.Findings[i].Severity != "" {
+			result := pipeline.Scan(r.Findings[i].Severity)
+			if result.Sanitized != "" {
+				r.Findings[i].Severity = result.Sanitized
+			}
+		}
+		if r.Findings[i].Category != "" {
+			result := pipeline.Scan(r.Findings[i].Category)
+			if result.Sanitized != "" {
+				r.Findings[i].Category = result.Sanitized
+			}
+		}
+		if r.Findings[i].Description != "" {
+			result := pipeline.Scan(r.Findings[i].Description)
+			if result.Sanitized != "" {
+				r.Findings[i].Description = result.Sanitized
+			}
+		}
+		if r.Findings[i].Remediation != "" {
+			result := pipeline.Scan(r.Findings[i].Remediation)
+			if result.Sanitized != "" {
+				r.Findings[i].Remediation = result.Sanitized
+			}
+		}
+	}
+
+	return r
 }
 
 // parseReviewResult attempts to parse the body as a JSON ReviewResult.

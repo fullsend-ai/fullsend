@@ -1,17 +1,11 @@
 import type { LayerReport } from "../status/types";
-import {
-  CONFIG_REPO_NAME,
-  WORKFLOWS_MANAGED_FILES,
-} from "./constants";
+import { CONFIG_REPO_NAME, WORKFLOWS_MANAGED_FILES } from "./constants";
 import type { LayerGithub } from "./githubClient";
 
 /**
  * Read-only port of `WorkflowsLayer.Analyze` (`internal/layers/workflows.go`).
  */
-export async function analyzeWorkflowsLayer(
-  org: string,
-  gh: LayerGithub,
-): Promise<LayerReport> {
+export async function analyzeWorkflowsLayer(org: string, gh: LayerGithub): Promise<LayerReport> {
   const report: LayerReport = {
     name: "workflows",
     status: "unknown",

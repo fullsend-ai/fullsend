@@ -406,6 +406,61 @@ func TestSanitizeOutput(t *testing.T) {
 	}
 }
 
+func TestProgressParserCapturesResultMetrics(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}`,
+		`{"type":"result","num_turns":8,"total_cost_usd":0.42,"usage":{"input_tokens":12000,"output_tokens":3400}}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.ToolCalls.Load() != 2 {
+		t.Errorf("expected 2 tool calls, got %d", metrics.ToolCalls.Load())
+	}
+	if metrics.NumTurns != 8 {
+		t.Errorf("expected 8 turns, got %d", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0.42 {
+		t.Errorf("expected cost 0.42, got %f", metrics.TotalCostUSD)
+	}
+	if metrics.InputTokens != 12000 {
+		t.Errorf("expected 12000 input tokens, got %d", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 3400 {
+		t.Errorf("expected 3400 output tokens, got %d", metrics.OutputTokens)
+	}
+}
+
+func TestProgressParserNoResultEvent(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.NumTurns != 0 {
+		t.Errorf("expected 0 turns when no result event, got %d", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0 {
+		t.Errorf("expected 0 cost when no result event, got %f", metrics.TotalCostUSD)
+	}
+}
+
 func TestHeartbeatConcurrency(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)

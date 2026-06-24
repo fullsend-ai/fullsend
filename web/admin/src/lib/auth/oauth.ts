@@ -2,11 +2,7 @@ import { challengeS256, randomVerifier } from "./pkce";
 import { refreshSession } from "./session";
 import { obtainTurnstileToken } from "./turnstile";
 import { normalizeSlug } from "../orgs/installationOrgRows";
-import {
-  clearSession,
-  persistGithubAppSlugFromOAuth,
-  saveToken,
-} from "./tokenStore";
+import { clearSession, persistGithubAppSlugFromOAuth, saveToken } from "./tokenStore";
 
 const PKCE_VERIFIER_KEY = "fullsend_admin_pkce_verifier";
 const OAUTH_STATE_KEY = "fullsend_admin_oauth_state";
@@ -15,8 +11,7 @@ const OAUTH_DOC_HANDOFF_KEY = "fullsend_admin_oauth_doc_handoff";
 const INTENDED_HASH_KEY = "fullsend_admin_intended_hash";
 
 /** Returned when `AbortSignal` aborts during `completeGithubOAuthFromHandoff` (user chose another account). */
-export const SIGNING_IN_CANCELLED_MESSAGE =
-  "Signing in was cancelled." as const;
+export const SIGNING_IN_CANCELLED_MESSAGE = "Signing in was cancelled." as const;
 
 /** Clears OAuth-related `sessionStorage` so a cancelled sign-in can restart cleanly. */
 export function clearSigningInBrowserState(): void {
@@ -178,10 +173,7 @@ export function consumeOAuthParamsFromDocumentUrl(): boolean {
 
   const code = sp.get("code")?.trim() ?? "";
   const state = sp.get("state") ?? "";
-  sessionStorage.setItem(
-    OAUTH_DOC_HANDOFF_KEY,
-    JSON.stringify({ code, state }),
-  );
+  sessionStorage.setItem(OAUTH_DOC_HANDOFF_KEY, JSON.stringify({ code, state }));
 
   const clean = new URL(adminAppBasePath(), window.location.origin);
   clean.search = "";
@@ -209,9 +201,7 @@ function takeDocHandoff(): OAuthHandoff | null {
   }
 }
 
-export type OAuthCompleteResult =
-  | { ok: true }
-  | { ok: false; error: string };
+export type OAuthCompleteResult = { ok: true } | { ok: false; error: string };
 
 export type CompleteGithubOAuthOptions = {
   /** When aborted (unmount or “different account”), Turnstile + token exchange are skipped. */
@@ -241,15 +231,11 @@ async function readJsonBodyWithSignal(
   const abortPromise = new Promise<never>((_, reject) => {
     rejectAbort = reject;
   });
-  const onAbort = () =>
-    rejectAbort(new DOMException("Aborted", "AbortError"));
+  const onAbort = () => rejectAbort(new DOMException("Aborted", "AbortError"));
   signal.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const raw = await Promise.race([
-      res.json().catch(() => ({})),
-      abortPromise,
-    ]);
+    const raw = await Promise.race([res.json().catch(() => ({})), abortPromise]);
     if (signal.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
@@ -313,9 +299,7 @@ export async function completeGithubOAuthFromHandoff(
     return {
       ok: false,
       error:
-        e instanceof Error
-          ? e.message
-          : "Turnstile verification failed — try signing in again.",
+        e instanceof Error ? e.message : "Turnstile verification failed — try signing in again.",
     };
   }
 
@@ -361,10 +345,7 @@ export async function completeGithubOAuthFromHandoff(
     }
     return {
       ok: false,
-      error:
-        e instanceof Error
-          ? e.message
-          : "Failed to read token exchange response.",
+      error: e instanceof Error ? e.message : "Failed to read token exchange response.",
     };
   }
 
@@ -379,19 +360,15 @@ export async function completeGithubOAuthFromHandoff(
     return { ok: false, error: `GitHub token exchange failed: ${desc}` };
   }
 
-  const access_token =
-    typeof body.access_token === "string" ? body.access_token : "";
+  const access_token = typeof body.access_token === "string" ? body.access_token : "";
   if (!access_token) {
     clearOAuthState();
     return { ok: false, error: "Token response missing access_token." };
   }
 
-  const token_type =
-    typeof body.token_type === "string" ? body.token_type : "bearer";
-  const expires_in =
-    typeof body.expires_in === "number" ? body.expires_in : null;
-  const expiresAt =
-    expires_in != null ? Date.now() + expires_in * 1000 : null;
+  const token_type = typeof body.token_type === "string" ? body.token_type : "bearer";
+  const expires_in = typeof body.expires_in === "number" ? body.expires_in : null;
+  const expiresAt = expires_in != null ? Date.now() + expires_in * 1000 : null;
 
   saveToken({
     accessToken: access_token,
