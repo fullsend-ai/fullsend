@@ -77,6 +77,16 @@ MOCKEOF
 
   chmod +x "${mock_bin}/gh"
 
+  cat > "${mock_bin}/fullsend" <<'MOCKEOF'
+#!/usr/bin/env bash
+# Default: authorization passes so existing-PR tests reach the gh pr list path.
+if [[ "$1" == "auth" ]]; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/fullsend"
+
   echo "${mock_bin}"
 }
 
