@@ -48,27 +48,18 @@ const OAUTH_STATE_KEY = "fullsend_admin_oauth_state";
 const PKCE_VERIFIER_KEY = "fullsend_admin_pkce_verifier";
 const INTENDED_HASH_KEY = "fullsend_admin_intended_hash";
 
-function workerExpandedStateB64(
-  n: string,
-  k = "0x4AAA_sitekey",
-  g?: string,
-): string {
+function workerExpandedStateB64(n: string, k = "0x4AAA_sitekey", g?: string): string {
   const payload: { v: number; n: string; k: string; g?: string } = { v: 1, n, k };
   if (g !== undefined) payload.g = g;
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 describe("tryParseWorkerExpandedOauthState", () => {
   it("returns null for raw UUID state", () => {
-    expect(
-      tryParseWorkerExpandedOauthState("550e8400-e29b-41d4-a716-446655440000"),
-    ).toBeNull();
+    expect(tryParseWorkerExpandedOauthState("550e8400-e29b-41d4-a716-446655440000")).toBeNull();
   });
 
   it("parses worker-expanded base64url JSON state", () => {
@@ -105,9 +96,9 @@ describe("startGithubSignIn", () => {
 
   beforeEach(() => {
     sessionStorage.clear();
-    randomUUIDSpy = vi.spyOn(crypto, "randomUUID").mockReturnValue(
-      "00000000-0000-4000-8000-000000000001",
-    );
+    randomUUIDSpy = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000001");
     const assign = vi.fn();
     installLocationStub({
       origin: "https://oauth-start.test",
@@ -141,9 +132,7 @@ describe("startGithubSignIn", () => {
     expect(u.searchParams.get("code_challenge_method")).toBe("S256");
     expect(u.searchParams.get("state")).toBe(state);
     expect(u.searchParams.get("redirect_uri")).toBe(getOAuthRedirectUri());
-    expect(await challengeS256(verifier!)).toBe(
-      u.searchParams.get("code_challenge"),
-    );
+    expect(await challengeS256(verifier!)).toBe(u.searchParams.get("code_challenge"));
 
     expect(sessionStorage.getItem(INTENDED_HASH_KEY)).toBe("#/orgs");
   });
@@ -182,18 +171,15 @@ describe("consumeOAuthParamsFromDocumentUrl", () => {
     });
 
     expect(consumeOAuthParamsFromDocumentUrl()).toBe(true);
-    expect(JSON.parse(sessionStorage.getItem(OAUTH_DOC_HANDOFF_KEY)!)).toEqual(
-      { code: "ghcode", state: "rawstate" },
-    );
+    expect(JSON.parse(sessionStorage.getItem(OAUTH_DOC_HANDOFF_KEY)!)).toEqual({
+      code: "ghcode",
+      state: "rawstate",
+    });
     const expected = new URL("/admin/", "https://consume.test");
     expected.search = "";
     expected.hash = "#/";
     expect(history.replaceState).toHaveBeenCalledOnce();
-    expect(history.replaceState).toHaveBeenCalledWith(
-      null,
-      "",
-      expected.href,
-    );
+    expect(history.replaceState).toHaveBeenCalledWith(null, "", expected.href);
   });
 
   it("treats present-but-empty code as a handoff (key exists in query)", () => {
@@ -205,9 +191,10 @@ describe("consumeOAuthParamsFromDocumentUrl", () => {
     });
 
     expect(consumeOAuthParamsFromDocumentUrl()).toBe(true);
-    expect(JSON.parse(sessionStorage.getItem(OAUTH_DOC_HANDOFF_KEY)!)).toEqual(
-      { code: "", state: "" },
-    );
+    expect(JSON.parse(sessionStorage.getItem(OAUTH_DOC_HANDOFF_KEY)!)).toEqual({
+      code: "",
+      state: "",
+    });
     expect(history.replaceState).toHaveBeenCalledOnce();
   });
 });

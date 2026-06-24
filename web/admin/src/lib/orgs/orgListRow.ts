@@ -15,10 +15,7 @@ import {
   parseOrgConfigYaml,
   validateOrgConfig,
 } from "../layers/orgConfigParse";
-import {
-  computePreflight,
-  type PreflightResult,
-} from "../layers/preflight";
+import { computePreflight, type PreflightResult } from "../layers/preflight";
 import type { LayerReport, LayerStatus } from "../status/types";
 import { deployRequiredOAuthScopes } from "./deployOAuthScopes";
 
@@ -127,8 +124,7 @@ export async function analyzeOrgForOrgList(
           : [...DEFAULT_FORBIDDEN_ACTION_LINES];
       return {
         kind: "error",
-        message:
-          "Insufficient permissions to evaluate Fullsend state for this organisation.",
+        message: "Insufficient permissions to evaluate Fullsend state for this organisation.",
         forbidden: true,
         missingPermissionLines: lines,
         githubApiMessage: hints.githubApiMessage,

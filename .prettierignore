@@ -1,0 +1,12 @@
+dist/
+node_modules/
+cloudflare_site/
+*.md
+*.yaml
+*.yml
+*.go
+*.py
+hack/
+internal/
+docs/
+web/public/

@@ -51,11 +51,11 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: fullsend-ai/fullsend
           ref: ${{ inputs.fullsend_ai_ref }}
@@ -118,7 +118,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.source_repo }}
           token: ${{ steps.app-token.outputs.token }}

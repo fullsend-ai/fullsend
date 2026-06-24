@@ -1044,6 +1044,117 @@ func TestFormatFindingComment(t *testing.T) {
 	})
 }
 
+func TestSanitizeReviewResult_RedactsSecretsInBody(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Found this token: " + secret + " in the code.",
+		Action: "comment",
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Body, "ghp_FAKEtest", "secret should be redacted from body")
+	assert.Contains(t, sanitized.Body, "Found this token:", "non-secret text should remain")
+}
+
+func TestSanitizeReviewResult_RedactsSecretsInFindings(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "request-changes",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "high",
+				Category:    "security",
+				File:        "main.go",
+				Line:        10,
+				Description: "Hardcoded token: " + secret,
+				Remediation: "Remove " + secret + " and use env var.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Findings[0].Description, "ghp_FAKEtest", "secret should be redacted from finding description")
+	assert.NotContains(t, sanitized.Findings[0].Remediation, "ghp_FAKEtest", "secret should be redacted from finding remediation")
+	assert.Contains(t, sanitized.Findings[0].Description, "Hardcoded token:", "non-secret text should remain")
+}
+
+func TestSanitizeReviewResult_RedactsSecretsInSeverityAndCategory(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "request-changes",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "high " + secret,
+				Category:    "security " + secret,
+				File:        "main.go",
+				Line:        10,
+				Description: "Clean description.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Findings[0].Severity, "ghp_FAKEtest", "secret should be redacted from finding severity")
+	assert.NotContains(t, sanitized.Findings[0].Category, "ghp_FAKEtest", "secret should be redacted from finding category")
+}
+
+func TestSanitizeReviewResult_ZeroWidthObfuscatedSecret(t *testing.T) {
+	printer := ui.New(io.Discard)
+	plain := "ghp_FAKEtesttoken000000000000000000000000"
+	// Interleave zero-width non-joiner characters to obfuscate the token.
+	var obfuscated string
+	for _, c := range plain {
+		obfuscated += string(c) + "\u200c"
+	}
+	r := ReviewResult{
+		Body:   "Token: " + obfuscated,
+		Action: "comment",
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Body, "ghp_FAKEtest", "zero-width obfuscated secret should be caught after normalization")
+}
+
+func TestSanitizeReviewResult_NoSecretsPassesThrough(t *testing.T) {
+	printer := ui.New(io.Discard)
+	r := ReviewResult{
+		Body:   "Looks good! No issues found.",
+		Action: "approve",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "low",
+				Category:    "style",
+				File:        "main.go",
+				Line:        5,
+				Description: "Consider renaming variable.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.Equal(t, "Looks good! No issues found.", sanitized.Body, "clean body should pass through unchanged")
+	assert.Equal(t, "Consider renaming variable.", sanitized.Findings[0].Description, "clean finding should pass through unchanged")
+	assert.Equal(t, "low", sanitized.Findings[0].Severity, "clean severity should pass through unchanged")
+	assert.Equal(t, "style", sanitized.Findings[0].Category, "clean category should pass through unchanged")
+}
+
+func TestSanitizeReviewResult_EmptyBody(t *testing.T) {
+	printer := ui.New(io.Discard)
+	r := ReviewResult{
+		Body:   "",
+		Action: "failure",
+		Reason: "tool-failure",
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.Empty(t, sanitized.Body, "empty body should remain empty")
+}
+
 func TestPostApprovedFollowUpIssues_DisabledIsNoop(t *testing.T) {
 	// Issue creation is disabled (#1137). Verify the function is a no-op for
 	// approve actions with actionable findings.

@@ -1,105 +1,172 @@
 name: Functional Tests
 
+# PR-triggered functional tests use pull_request_target so fork PRs receive
+# secrets.  Authorization runs in a separate gate job (base checkout only)
+# before the test job checks out the PR head — same pattern as e2e.yml.
+
+permissions: {}
+
 on:
   push:
     branches: [main]
+    # SYNC-WITH: grep regex in "Check for functional-test-relevant changes" step
     paths:
       - 'eval/**'
       - 'internal/scaffold/**'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'eval/**'
-      - 'internal/scaffold/**'
+      - '.github/workflows/functional-tests.yml'
+      - '.github/scripts/**'
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
-
 concurrency:
-  group: functional-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.event_name == 'pull_request_target'
+        && format('functional-{0}', github.event.pull_request.number)
+        || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request_target'
+        || github.ref != 'refs/heads/main' }}
 
 jobs:
+  gate:
+    # Separate job so pull-requests: write stays out of the job that checks
+    # out fork head and runs tests with secrets.
+    # Never checkout github.event.pull_request.head.sha here.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
+
+      - name: Check PR authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          repository: ${{ github.repository }}
+          pr_updated_at: ${{ github.event.pull_request.updated_at }}
+          event_action: ${{ github.event.action }}
+          pr_author_association: ${{ github.event.pull_request.author_association }}
+
   functional-tests:
+    # For pull_request_target, runs only when gate sets authorized=true.
+    # Do not treat a skipped gate as authorized.
+    # This job checks out untrusted PR head code — no pull-requests: write here.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v6.0.2
+      - name: Check for functional-test-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        # SYNC-WITH: push.paths filter above
+        run: |
+          FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+            echo "::warning::Failed to fetch PR files — running functional tests as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No functional-test-relevant files changed — skipping tests"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: steps.changes.outputs.relevant != 'false'
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          # checkout@v7 blocks fork PR head checkouts on pull_request_target by default.
+          # Safe here: gate job authorizes before this job runs; no pull-requests: write.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           submodules: true
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        if: steps.changes.outputs.relevant != 'false'
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: steps.changes.outputs.relevant != 'false'
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7.6.0
+        if: steps.changes.outputs.relevant != 'false'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install agent-eval-harness
-        # Installs from the git submodule checked out above (submodules: true)
+        if: steps.changes.outputs.relevant != 'false'
         run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
 
       - name: Install yq
+        if: steps.changes.outputs.relevant != 'false'
         run: |
           curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
 
       - name: Configure git identity
+        if: steps.changes.outputs.relevant != 'false'
         run: |
           git config --global user.name "fullsend-eval[bot]"
           git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
 
       - name: Build fullsend
+        if: steps.changes.outputs.relevant != 'false'
         run: make go-build
 
       - name: Add bin to PATH
+        if: steps.changes.outputs.relevant != 'false'
         run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
 
-      # TODO: The openshell setup below (version, CLI, gateway, Podman,
-      # gateway start) is duplicated from action.yml. Extract into a
-      # shared script (e.g. .github/scripts/setup-openshell.sh) so the
-      # version and config stay in sync across both places.
-      - name: Set OpenShell version
-        run: echo "OPENSHELL_VERSION=0.0.38" >> "${GITHUB_ENV}"
+      - name: Configure OpenShell gateway
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
 
       - name: Install OpenShell CLI
-        run: |
-          uv tool install "openshell==${OPENSHELL_VERSION}"
-          openshell --version
-
-      - name: Download openshell-gateway
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          case "${arch}" in
-            x86_64) ;;
-            aarch64|arm64) arch=aarch64 ;;
-            *) echo "::error::Unsupported architecture: ${arch}"; exit 1 ;;
-          esac
-          GATEWAY_ASSET="openshell-gateway-${arch}-unknown-linux-gnu.tar.gz"
-          GATEWAY_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/${GATEWAY_ASSET}"
-          curl -fsSL "${GATEWAY_URL}" -o "/tmp/${GATEWAY_ASSET}"
-          tar xzf "/tmp/${GATEWAY_ASSET}" -C "${{ runner.temp }}"
-          rm -f "/tmp/${GATEWAY_ASSET}"
+        if: steps.changes.outputs.relevant != 'false'
+        run: .github/scripts/install-openshell.sh
 
       - name: Install Podman
+        if: steps.changes.outputs.relevant != 'false'
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
 
       - name: Configure rootless Podman
+        if: steps.changes.outputs.relevant != 'false'
         run: |
           whoami_user="$(whoami)"
           grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
           podman system migrate
 
       - name: Start Podman API service
+        if: steps.changes.outputs.relevant != 'false'
         run: |
           SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
           if [ ! -S "${SOCKET_PATH}" ]; then
@@ -112,47 +179,38 @@ jobs:
             [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
           fi
 
-      - name: Start openshell-gateway
-        run: |
-          set -euo pipefail
-          OPENSHELL_SSH_HANDSHAKE_SECRET="ci-$(openssl rand -hex 16)"
-          export OPENSHELL_SSH_HANDSHAKE_SECRET
-          echo "::add-mask::${OPENSHELL_SSH_HANDSHAKE_SECRET}"
-          export OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:dfd47683e7da4f1a4a8fa5d77f92d3696e6a41f9"
-          "${{ runner.temp }}/openshell-gateway" \
-            --bind-address 0.0.0.0 \
-            --health-port 8081 \
-            --drivers podman \
-            --disable-tls \
-            --db-url "sqlite:/tmp/gateway.db?mode=rwc" \
-            >/tmp/gateway.log 2>&1 &
-          for _i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 && break
-            sleep 2
-          done
-          curl -sf http://127.0.0.1:8081/healthz >/dev/null 2>&1 || {
-            echo "::error::Gateway health check failed"
-            cat /tmp/gateway.log 2>/dev/null || true
-            exit 1
-          }
-          openshell gateway add http://127.0.0.1:8080 --local --name local
-          openshell gateway select local
-
       - name: Install validation dependencies
+        if: steps.changes.outputs.relevant != 'false'
         run: pip install --quiet "jsonschema>=4.18.0"
 
+      - name: Check for secrets
+        if: steps.changes.outputs.relevant != 'false'
+        id: secrets-check
+        run: |
+          if [ -z "$WIF_PROVIDER" ]; then
+            echo "::warning::GCP secrets are not configured. Skipping functional tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+
       - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Prepare sandbox credentials
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         run: |
           echo "HOST_GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS" >> "$GITHUB_ENV"
           bash internal/scaffold/fullsend-repo/scripts/prepare-sandbox-credentials.sh
 
       - name: Run functional tests
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         env:
           EVAL_ORG: ${{ vars.EVAL_ORG }}
           GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
@@ -163,12 +221,12 @@ jobs:
         run: make functional-tests
 
       - name: Scrub secrets from eval results
-        if: always()
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
 
       - name: Upload eval results
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: eval-results
           path: |

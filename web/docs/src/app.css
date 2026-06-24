@@ -6,10 +6,12 @@
   --docs-link: #0969da;
 
   color-scheme: light;
+
   --docs-sidebar-width: 18rem;
   --docs-sidebar-collapsed-width: 0;
   --docs-topbar-height: 2.75rem;
   --docs-prose-max: 52rem;
+
   font-family:
     system-ui,
     -apple-system,
@@ -85,13 +87,13 @@ body {
   cursor: pointer;
 }
 
-.docs-icon-btn:hover:not(:disabled) {
-  background: var(--docs-muted-bg);
-}
-
 .docs-icon-btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.docs-icon-btn:hover:not(:disabled) {
+  background: var(--docs-muted-bg);
 }
 
 .docs-hamburger {
@@ -445,6 +447,7 @@ body {
   border-radius: 0.15rem;
 }
 
+/* stylelint-disable-next-line media-feature-range-notation -- match JS matchMedia("(max-width: 768px)") */
 @media (max-width: 768px) {
   .docs-shell-inner {
     position: relative;

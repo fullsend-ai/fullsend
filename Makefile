@@ -63,6 +63,10 @@ bootstrap:
 	curl -sSfL "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/lychee.tar.gz
 	echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum -c
 	tar xzf /tmp/lychee.tar.gz -C "$(BOOTSTRAP_BIN_DIR)" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+	@echo "==> Installing pinact (GitHub Actions SHA-pin checker)..."
+	curl -sSfL "https://github.com/suzuki-shunsuke/pinact/releases/download/v4.1.0/pinact_linux_amd64.tar.gz" -o /tmp/pinact.tar.gz
+	echo "8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0  /tmp/pinact.tar.gz" | sha256sum -c
+	tar xzf /tmp/pinact.tar.gz -C "$(BOOTSTRAP_BIN_DIR)" pinact
 	@echo "==> Installing pre-commit hooks..."
 	PATH="$(BOOTSTRAP_BIN_DIR):$(PATH)" pre-commit install
 	@echo ""

@@ -57,6 +57,20 @@ repos:
       - id: shellcheck
         args: ["-x", "-e", "SC1091,SC2001,SC2016"]
 
+  - repo: local
+    hooks:
+      - id: pinact
+        name: pinact (SHA-pin check)
+        entry: pinact run --fix=false --no-api
+        language: system
+        files: |
+          (?x)^(
+            \.github/workflows/
+            |\.github/actions/
+            |internal/scaffold/fullsend-repo/\.github/workflows/
+          )
+        pass_filenames: false
+
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.11
     hooks:
@@ -154,4 +168,11 @@ repos:
         entry: ./hack/lint-agent-docs
         language: script
         files: ^(internal/scaffold/fullsend-repo/harness/|docs/agents/)
+        pass_filenames: false
+
+      - id: lint-staged
+        name: lint-staged (web)
+        entry: npx lint-staged --allow-empty
+        language: system
+        files: ^web/(admin|docs)/src/
         pass_filenames: false

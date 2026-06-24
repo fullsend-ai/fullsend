@@ -23,9 +23,7 @@ describe("rollupOrgLayerStatus", () => {
 
   it("picks worst status", () => {
     expect(rollupOrgLayerStatus([rep("installed"), rep("degraded")])).toBe("degraded");
-    expect(rollupOrgLayerStatus([rep("not_installed"), rep("installed")])).toBe(
-      "not_installed",
-    );
+    expect(rollupOrgLayerStatus([rep("not_installed"), rep("installed")])).toBe("not_installed");
     expect(rollupOrgLayerStatus([rep("unknown"), rep("degraded")])).toBe("unknown");
   });
 });

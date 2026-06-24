@@ -42,6 +42,15 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
+// ErrNoChanges indicates that a change proposal could not be created
+// because there are no differences between the head and base branches.
+var ErrNoChanges = errors.New("no changes between branches")
+
+// IsNoChanges reports whether err indicates a no-diff PR creation attempt.
+func IsNoChanges(err error) bool {
+	return errors.Is(err, ErrNoChanges)
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
@@ -146,6 +155,13 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
+// UserIdentity holds a forge user's display name and email, used for
+// constructing Signed-off-by trailers in commit messages.
+type UserIdentity struct {
+	Name  string // display name (may equal login if no name is set)
+	Email string // primary or noreply email
+}
+
 // TreeFile represents a file to be committed via the Git Trees API.
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
@@ -245,6 +261,14 @@ type Client interface {
 
 	// Authentication
 	GetAuthenticatedUser(ctx context.Context) (string, error)
+
+	// GetAuthenticatedUserIdentity returns the display name and email of
+	// the authenticated user. This is used to construct Signed-off-by
+	// trailers for commits created via the forge API.
+	//
+	// Returns ErrNotFound when the identity cannot be determined (e.g.,
+	// GitHub App installation tokens that cannot call /user).
+	GetAuthenticatedUserIdentity(ctx context.Context) (*UserIdentity, error)
 
 	// GetTokenScopes returns the OAuth scopes granted to the current token.
 	// On GitHub, this is read from the X-OAuth-Scopes response header.

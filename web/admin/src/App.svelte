@@ -45,8 +45,7 @@
     try {
       await startGithubSignIn();
     } catch (e) {
-      oauthErr =
-        e instanceof Error ? e.message : "Sign-in failed to start.";
+      oauthErr = e instanceof Error ? e.message : "Sign-in failed to start.";
       console.error("[fullsend-admin] startGithubSignIn", e);
     }
   }
@@ -108,13 +107,7 @@
     {#if $githubUser}
       <div class="boot-identity">
         {#if $githubUser.avatarUrl}
-          <img
-            class="boot-avatar"
-            src={$githubUser.avatarUrl}
-            alt=""
-            width="48"
-            height="48"
-          />
+          <img class="boot-avatar" src={$githubUser.avatarUrl} alt="" width="48" height="48" />
         {/if}
         <div class="boot-user-text">
           <span class="boot-login">{$githubUser.login}</span>
@@ -124,9 +117,7 @@
         </div>
       </div>
     {:else}
-      <p class="boot-wait-hint">
-        Hang on while we verify this session with Cloudflare and GitHub.
-      </p>
+      <p class="boot-wait-hint">Hang on while we verify this session with Cloudflare and GitHub.</p>
     {/if}
     <button
       type="button"
@@ -140,13 +131,7 @@
   <header class="bar account-bar">
     <div class="user-cluster">
       {#if $githubUser.avatarUrl}
-        <img
-          class="user-avatar"
-          src={$githubUser.avatarUrl}
-          alt=""
-          width="32"
-          height="32"
-        />
+        <img class="user-avatar" src={$githubUser.avatarUrl} alt="" width="32" height="32" />
       {/if}
       <div class="user-text">
         <span class="user-login">{$githubUser.login}</span>
@@ -162,11 +147,7 @@
   {#if $reauthenticateSuggested}
     <div class="banner banner--warn" role="status">
       <span class="banner-msg">Your GitHub session expired or was revoked.</span>
-      <button
-        type="button"
-        class="btn banner-action"
-        onclick={() => void beginGithubSignIn()}
-      >
+      <button type="button" class="btn banner-action" onclick={() => void beginGithubSignIn()}>
         Re-authenticate
       </button>
     </div>
@@ -225,11 +206,7 @@
   {#if $reauthenticateSuggested}
     <div class="banner banner--warn banner--edge" role="status">
       <span class="banner-msg">Your GitHub session expired or was revoked.</span>
-      <button
-        type="button"
-        class="btn banner-action"
-        onclick={() => void beginGithubSignIn()}
-      >
+      <button type="button" class="btn banner-action" onclick={() => void beginGithubSignIn()}>
         Re-authenticate
       </button>
     </div>
@@ -238,18 +215,8 @@
   <div class="login-screen">
     <h1 class="login-title">Fullsend Admin</h1>
     <p class="login-sub">Sign in to manage Fullsend for your organisations.</p>
-    <button
-      type="button"
-      class="signin-github"
-      onclick={() => void beginGithubSignIn()}
-    >
-      <svg
-        class="gh-mark"
-        width="20"
-        height="20"
-        viewBox="0 0 16 16"
-        aria-hidden="true"
-      >
+    <button type="button" class="signin-github" onclick={() => void beginGithubSignIn()}>
+      <svg class="gh-mark" width="20" height="20" viewBox="0 0 16 16" aria-hidden="true">
         <path
           fill="currentColor"
           d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
@@ -273,6 +240,7 @@
     background: #f6f8fa;
     border-top: 1px solid #d8dee4;
   }
+
   .boot-spinner {
     width: 2.75rem;
     height: 2.75rem;
@@ -281,12 +249,14 @@
     border-radius: 50%;
     animation: spin 0.75s linear infinite;
   }
+
   .boot-signing-label {
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
     color: #24292f;
   }
+
   .boot-identity {
     display: flex;
     align-items: center;
@@ -295,12 +265,14 @@
     background: #fff;
     border: 1px solid #d0d7de;
     border-radius: 10px;
-    box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+    box-shadow: 0 1px 2px rgb(31 35 40 / 4%);
   }
+
   .boot-avatar {
     border-radius: 50%;
     flex-shrink: 0;
   }
+
   .boot-user-text {
     display: flex;
     flex-direction: column;
@@ -308,14 +280,17 @@
     line-height: 1.25;
     text-align: left;
   }
+
   .boot-login {
     font-weight: 700;
     font-size: 1rem;
   }
+
   .boot-display-name {
     font-size: 0.9rem;
     color: #57606a;
   }
+
   .boot-wait-hint {
     margin: 0;
     max-width: 22rem;
@@ -324,9 +299,11 @@
     line-height: 1.45;
     color: #444;
   }
+
   .boot-different-account {
     margin-top: 0.25rem;
   }
+
   @keyframes spin {
     to {
       transform: rotate(360deg);
@@ -343,10 +320,12 @@
     box-sizing: border-box;
     background: #fafafa;
   }
+
   .login-title {
     margin: 0 0 0.35rem;
     font-size: 1.5rem;
   }
+
   .login-sub {
     margin: 0 0 1.75rem;
     color: #555;
@@ -354,6 +333,7 @@
     max-width: 22rem;
     line-height: 1.45;
   }
+
   .signin-github {
     display: inline-flex;
     align-items: center;
@@ -363,20 +343,23 @@
     font-size: 1rem;
     font-weight: 600;
     background: #0d1117;
-    color: #ffffff;
+    color: #fff;
     border: 1px solid #010409;
     border-radius: 8px;
     cursor: pointer;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    box-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset;
   }
+
   .signin-github:hover {
     background: #161b22;
     border-color: #30363d;
   }
+
   .signin-github:focus-visible {
     outline: 2px solid #0969da;
     outline-offset: 2px;
   }
+
   .gh-mark {
     flex-shrink: 0;
   }
@@ -390,29 +373,35 @@
     border-bottom: 1px solid #d0d7de;
     background: #fff;
   }
+
   .spacer {
     flex: 1;
     min-width: 0.5rem;
   }
+
   .user-cluster {
     display: flex;
     align-items: center;
     gap: 0.65rem;
   }
+
   .user-avatar {
     border-radius: 50%;
     object-fit: cover;
   }
+
   .user-text {
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
     line-height: 1.2;
   }
+
   .user-login {
     font-weight: 700;
     font-size: 0.95rem;
   }
+
   .user-name {
     font-weight: 400;
     font-size: 0.85rem;
@@ -427,10 +416,12 @@
     background: #f4f4f4;
     font: inherit;
   }
+
   .btn:focus-visible {
     outline: 2px solid #0969da;
     outline-offset: 2px;
   }
+
   .btn.primary {
     background: #24292f;
     color: #fff;
@@ -446,21 +437,26 @@
     border-bottom: 1px solid #d0d7de;
     font-size: 0.92rem;
   }
+
   .banner--edge {
     max-width: 100%;
   }
+
   .banner--warn {
     background: #fff8c5;
     color: #24292f;
   }
+
   .banner--err {
     background: #ffeef0;
     color: #24292f;
   }
+
   .banner-msg {
     flex: 1;
     min-width: 12rem;
   }
+
   .banner-action.primary {
     background: #24292f;
     color: #fff;

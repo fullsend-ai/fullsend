@@ -249,7 +249,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ job.workflow_repository }}
           token: ${{ steps.oidc-mint.outputs.token }}
