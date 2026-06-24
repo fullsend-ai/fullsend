@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=414
+# lint-workflow-size: max-lines=470
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -38,6 +38,7 @@ jobs:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           ISSUE_HAS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           ISSUE_USER_LOGIN: ${{ github.event.issue.user.login }}
+          EVENT_SENDER_LOGIN: ${{ github.event.sender.login }}
           REVIEW_STATE: ${{ github.event.review.state }}
           REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
           TRIGGERING_LABEL: ${{ github.event.label.name }}
@@ -45,18 +46,48 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           STAGE=""
           TRIGGER_SOURCE=""
 
-          # Helper: check author_association is authorized (OWNER, MEMBER, COLLABORATOR)
-          is_authorized() {
-            case "${COMMENT_AUTHOR_ASSOC}" in
-              OWNER|MEMBER|COLLABORATOR) return 0 ;;
+          # Helper: check actor has write+ permission on the repo.
+          # Uses the collaborator permission API which correctly resolves org
+          # membership regardless of visibility (private vs public).
+          # See: github/gh-aw-mcpg#2862
+          has_write_permission() {
+            local username="${1:-}"
+            if [[ -z "${username}" ]]; then
+              return 1
+            fi
+            local role api_err
+            api_err=$(mktemp) || {
+              echo "::warning::Failed to create temp file for permission check of ${username}" >&2
+              return 1
+            }
+            role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
+              --jq '.role_name' 2>"${api_err}") || {
+              echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
+              rm -f "${api_err}"
+              return 1
+            }
+            rm -f "${api_err}"
+            case "${role}" in
+              admin|maintain|write) return 0 ;;
               *) return 1 ;;
             esac
+          }
+
+          # Slash command authorization (comment-triggered paths)
+          is_authorized() {
+            has_write_permission "${COMMENT_USER_LOGIN}"
+          }
+
+          # Event-level authorization (non-comment triggers)
+          is_event_actor_authorized() {
+            has_write_permission "${1:-}"
           }
 
           # Helper: check if user is the PR/issue author
@@ -86,15 +117,23 @@ jobs:
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  STAGE="triage"
+                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    STAGE="triage"
+                  fi
                   ;;
                 /fs-code)
                   if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
-                    STAGE="code"
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                      STAGE="code"
+                    fi
                   fi
                   ;;
                 /fs-review)
-                  STAGE="review"
+                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                      STAGE="review"
+                    fi
+                  fi
                   ;;
                 /fs-fix)
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
@@ -122,8 +161,9 @@ jobs:
                   fi
                   ;;
                 *)
-                  # Non-command issue_comment: auto-triage on needs-info issues
-                  # when commenter is a non-bot with association != NONE or is issue author
+                  # Intentionally weaker gate: allows external reporters to
+                  # re-trigger triage by providing clarification on needs-info
+                  # issues. Full write-permission check is not required here.
                   if has_label "needs-info" && ! has_label "feature"; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
@@ -136,13 +176,21 @@ jobs:
               ;;
 
             issues)
-              if [[ "${EVENT_ACTION}" == "opened" || "${EVENT_ACTION}" == "edited" ]]; then
-                STAGE="triage"
+              if [[ "${EVENT_ACTION}" == "opened" ]]; then
+                if is_event_actor_authorized "${ISSUE_USER_LOGIN}"; then
+                  STAGE="triage"
+                fi
+              elif [[ "${EVENT_ACTION}" == "edited" ]]; then
+                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                  STAGE="triage"
+                fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
                 if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  STAGE="review"
+                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                    STAGE="review"
+                  fi
                 fi
               fi
               ;;
@@ -150,7 +198,9 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  STAGE="review"
+                  if is_event_actor_authorized "${PR_USER_LOGIN}"; then
+                    STAGE="review"
+                  fi
                   ;;
                 closed)
                   STAGE="retro"
