@@ -104,6 +104,8 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 | `/fs-fix` | PR comment | Triggers the fix agent on the PR |
 | `/fs-fix-stop` | PR comment | Disables the fix agent for this PR |
 
+Requires write-level repository permission (admin, maintain, or write).
+
 The `/fs-fix` command accepts optional free-text instructions after the
 command. The text is passed to the agent as a human instruction, giving you
 direct control over what to fix:

@@ -166,3 +166,8 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   the same routing script. Per-org shims could also adopt
   `reusable-fullsend.yml` directly, eliminating `dispatch.yml` as a
   routing layer entirely — see ADR 0033 Open Questions.
+
+## Implementation note (#981)
+
+Per-role dispatch concurrency is configured in repository workflows; the routing
+model in this ADR is unchanged.

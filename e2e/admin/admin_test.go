@@ -143,19 +143,29 @@ func TestAdminInstallUninstall(t *testing.T) {
 		"--app-set", e2eAppSet,
 		"--enroll-all",
 		"--vendor",
-		"--direct",
 	}
 	if env.cfg.gcpProjectID != "" {
 		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
 	}
 	runCLI(t, env.binary, env.token, installArgs...)
 
-	// Verify install artifacts.
+	// Verify install artifacts that exist regardless of delivery mode.
 	_, err := env.client.GetRepo(ctx, env.org, forge.ConfigRepoName)
 	require.NoError(t, err, ".fullsend repo should exist")
 	mintURLExists, err := env.client.OrgVariableExists(ctx, env.org, "FULLSEND_MINT_URL")
 	require.NoError(t, err)
 	require.True(t, mintURLExists, "FULLSEND_MINT_URL org variable should exist")
+
+	// Register .fullsend cleanup (in case later phases fail).
+	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
+
+	// Phase 1.5: Merge the scaffold PR.
+	// Default install mode creates a PR instead of pushing directly.
+	// Merge it so scaffold files land on the default branch.
+	t.Log("=== Phase 1.5: Merge Scaffold PR ===")
+	mergeScaffoldPR(t, env)
+
+	// Verify scaffold files on the default branch after merge.
 	cfgData, err := env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, "config.yaml")
 	require.NoError(t, err, "config.yaml should exist")
 	parsedCfg, err := config.ParseOrgConfig(cfgData)
@@ -215,8 +225,12 @@ func TestAdminInstallUninstall(t *testing.T) {
 		assert.NoError(t, err, "%s should exist in .fullsend", path)
 	}
 
-	// Register .fullsend cleanup (in case later phases fail).
-	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
+	// Phase 1.75: Wait for repo-maintenance to run.
+	// Merging the scaffold PR pushes config.yaml to main, which triggers
+	// repo-maintenance.yml via its on-push handler. Verify it completes
+	// successfully — this is what creates the enrollment PR.
+	t.Log("=== Phase 1.75: Verify Repo-Maintenance Run ===")
+	awaitRepoMaintenance(t, env)
 
 	// Phase 2: Merge enrollment PR.
 	t.Log("=== Phase 2: Merge Enrollment PR ===")
@@ -267,16 +281,17 @@ func TestAdminInstallUninstall(t *testing.T) {
 
 // mergeEnrollmentPR finds and merges the enrollment PR for test-repo so the
 // shim workflow is active on the default branch.
-// The install CLI waits for repo-maintenance to complete, so the PR should
-// already exist. A few retries handle GitHub eventual consistency.
+// In PR-based install mode, enrollment is deferred: repo-maintenance triggers
+// on push when the scaffold PR is merged, so the enrollment PR may take up to
+// ~90s to appear (workflow trigger + execution + PR creation).
 func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
 	var enrollmentPR *forge.ChangeProposal
-	for attempt := range 5 {
+	for attempt := range 20 {
 		if attempt > 0 {
-			time.Sleep(3 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 		prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
 		require.NoError(t, err, "listing PRs for %s", testRepo)
@@ -325,6 +340,156 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 
 	time.Sleep(5 * time.Second)
 	t.Log("Enrollment PR merged")
+}
+
+// mergeScaffoldPR finds and merges the scaffold PR on the .fullsend config
+// repo. In default (PR-based) install mode, scaffold files land on a feature
+// branch and a PR is opened; this helper merges it so subsequent assertions
+// can verify files on the default branch.
+func mergeScaffoldPR(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	ctx := context.Background()
+
+	var scaffoldPR *forge.ChangeProposal
+	for attempt := range 5 {
+		if attempt > 0 {
+			time.Sleep(3 * time.Second)
+		}
+		prs, err := env.client.ListRepoPullRequests(ctx, env.org, forge.ConfigRepoName)
+		require.NoError(t, err, "listing PRs for %s", forge.ConfigRepoName)
+
+		for _, pr := range prs {
+			if strings.Contains(pr.Title, "scaffold files") {
+				cp := pr
+				scaffoldPR = &cp
+				break
+			}
+		}
+		if scaffoldPR != nil {
+			break
+		}
+		t.Logf("Attempt %d: scaffold PR not yet visible", attempt+1)
+	}
+	require.NotNil(t, scaffoldPR, "scaffold PR should exist for %s/%s", env.org, forge.ConfigRepoName)
+
+	t.Logf("Merging scaffold PR #%d: %s", scaffoldPR.Number, scaffoldPR.URL)
+
+	const mergeRetries = 3
+	var mergeErr error
+	for attempt := range mergeRetries {
+		mergeErr = env.client.MergeChangeProposal(ctx, env.org, forge.ConfigRepoName, scaffoldPR.Number)
+		if mergeErr == nil {
+			break
+		}
+
+		var apiErr *gh.APIError
+		if !errors.As(mergeErr, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			break
+		}
+
+		t.Logf("Merge attempt %d: 409 conflict, updating PR branch and retrying", attempt+1)
+		if updateErr := env.client.UpdatePullRequestBranch(ctx, env.org, forge.ConfigRepoName, scaffoldPR.Number); updateErr != nil {
+			t.Logf("Warning: could not update PR branch: %v", updateErr)
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+	require.NoError(t, mergeErr, "merging scaffold PR")
+
+	time.Sleep(5 * time.Second)
+	t.Log("Scaffold PR merged")
+}
+
+// awaitRepoMaintenance waits for the repo-maintenance workflow to complete on
+// the .fullsend config repo. In PR-based install mode, this workflow triggers
+// on push when the scaffold PR is merged and creates the enrollment PR.
+//
+// GitHub may take time to register the workflow file after it first appears on
+// the default branch. If the push-triggered run doesn't appear within a
+// reasonable window, we dispatch the workflow manually as a fallback.
+func awaitRepoMaintenance(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	ctx := context.Background()
+
+	const workflowFile = "repo-maintenance.yml"
+
+	// Capture before registration wait so push-triggered runs that start
+	// during the wait are not filtered out as stale.
+	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
+
+	// Wait for GitHub to register the workflow (up to 2 minutes).
+	t.Log("Waiting for repo-maintenance workflow registration...")
+	var registered bool
+	for attempt := range 24 {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		wf, err := env.client.GetWorkflow(ctx, env.org, forge.ConfigRepoName, workflowFile)
+		if err == nil && wf.State == "active" {
+			t.Logf("repo-maintenance workflow registered (attempt %d)", attempt+1)
+			registered = true
+			break
+		}
+		if attempt%5 == 4 {
+			t.Logf("Attempt %d: workflow not yet registered", attempt+1)
+		}
+	}
+	require.True(t, registered, "repo-maintenance workflow should be registered")
+	runs, err := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, workflowFile)
+	hasRecentRun := false
+	if err == nil {
+		for _, run := range runs {
+			created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if !created.Before(dispatchTime) {
+				hasRecentRun = true
+				t.Logf("Found recent workflow run: %s (%s)", run.HTMLURL, run.Status)
+				break
+			}
+		}
+	}
+	if !hasRecentRun {
+		t.Log("No recent push-triggered run found, dispatching repo-maintenance manually")
+		require.NoError(t,
+			env.client.DispatchWorkflow(ctx, env.org, forge.ConfigRepoName, workflowFile, "main", nil),
+			"dispatching repo-maintenance")
+	}
+
+	// Wait for the workflow run to complete (up to 3 minutes).
+	for attempt := range 36 {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		runs, err := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, workflowFile)
+		if err != nil {
+			t.Logf("Attempt %d: error listing workflow runs: %v", attempt+1, err)
+			continue
+		}
+
+		for _, run := range runs {
+			created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if created.Before(dispatchTime) {
+				continue
+			}
+			if run.Status == "completed" {
+				require.Equal(t, "success", run.Conclusion,
+					"repo-maintenance run should succeed (run: %s)", run.HTMLURL)
+				t.Logf("Repo-maintenance completed: %s", run.HTMLURL)
+				return
+			}
+			t.Logf("Attempt %d: repo-maintenance run %s (%s)", attempt+1, run.HTMLURL, run.Status)
+			break
+		}
+		if attempt%5 == 4 {
+			t.Logf("Attempt %d: still waiting for repo-maintenance to complete", attempt+1)
+		}
+	}
+	t.Fatal("repo-maintenance workflow did not complete within timeout")
 }
 
 func runTriageDispatchSmokeTest(t *testing.T, env *e2eEnv) {

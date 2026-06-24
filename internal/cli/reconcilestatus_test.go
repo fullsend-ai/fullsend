@@ -173,3 +173,26 @@ func TestNewReconcileStatusCmd_MintSuccessCancelled(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
+
+func TestNewReconcileStatusCmd_RejectsMalformedToken(t *testing.T) {
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "not-a-valid-token!"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "coder",
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
+}

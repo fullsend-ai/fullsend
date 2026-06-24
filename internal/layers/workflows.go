@@ -23,6 +23,8 @@ type WorkflowsLayer struct {
 	vendorCollect     VendorCollectFunc
 	direct            bool
 	signOffTrailer    string // e.g. "Signed-off-by: Name <email>"
+	upstreamRef       string // commit SHA to pin workflow refs to
+	upstreamTag       string // version tag for traceability comment
 }
 
 var _ Layer = (*WorkflowsLayer)(nil)
@@ -37,6 +39,13 @@ func NewWorkflowsLayer(org string, client forge.Client, printer *ui.Printer, use
 		version:           version,
 		vendored:          vendored,
 	}
+}
+
+// WithUpstreamRef configures SHA pinning for scaffolded workflow refs.
+func (l *WorkflowsLayer) WithUpstreamRef(ref, tag string) *WorkflowsLayer {
+	l.upstreamRef = ref
+	l.upstreamTag = tag
+	return l
 }
 
 // WithVendorCollect configures combined scaffold+vendor commits for --vendor installs.
@@ -81,7 +90,7 @@ func (l *WorkflowsLayer) RequiredScopes(op Operation) []string {
 
 func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	installFiles, err := scaffold.CollectInstallFiles(scaffold.CollectInstallFilesOptions{
-		RenderOptions: scaffold.RenderOptionsForInstall(l.vendored, false),
+		RenderOptions: scaffold.RenderOptionsForInstall(l.vendored, false, l.upstreamRef, l.upstreamTag),
 		PathPrefix:    "",
 	})
 	if err != nil {

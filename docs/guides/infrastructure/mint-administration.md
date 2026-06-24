@@ -16,7 +16,11 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
 
 ## Hosted mint
 
-The fullsend team operates a public hosted mint service. If your organization is enrolled, you can use it directly without deploying your own:
+The fullsend team operates a public hosted mint service. If your organization is enrolled, you can use it directly without deploying your own.
+
+**Platform GCP project:** The hosted mint currently runs in GCP project `it-gcp-konflux-dev-fullsend` (region `us-central1`).
+
+**Mint URL:**
 
 ```
 https://fullsend-mint-gljhbkcloq-uc.a.run.app

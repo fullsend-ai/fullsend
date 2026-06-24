@@ -1168,6 +1168,35 @@ func TestURLDirPrefix(t *testing.T) {
 	}
 }
 
+func TestURLParentDirPrefix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{
+			"https://raw.githubusercontent.com/org/repo/sha/harness/triage.yaml#sha256=abc123",
+			"https://raw.githubusercontent.com/org/repo/sha/",
+		},
+		{
+			"https://example.com/path/to/file.yaml",
+			"https://example.com/path/",
+		},
+		{
+			// File at domain root: parent of "/" is still "/"
+			"https://example.com/file.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+			"https://example.com/",
+		},
+		{
+			"not-a-url",
+			"",
+		},
+	}
+	for _, tt := range tests {
+		got := urlParentDirPrefix(tt.input)
+		assert.Equal(t, tt.want, got, "urlParentDirPrefix(%q)", tt.input)
+	}
+}
+
 func setupScriptTestServer(t *testing.T, harnessContent []byte, scripts map[string][]byte) (*httptest.Server, fetch.FetchPolicy) {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1205,9 +1234,10 @@ pre_script: scripts/pre.sh
 post_script: scripts/post.sh
 `)
 
+	// Scripts at /scripts/ (sibling to /harness/), matching real scaffold layout.
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/pre.sh":  preScript,
-		"/harness/scripts/post.sh": postScript,
+		"/scripts/pre.sh":  preScript,
+		"/scripts/post.sh": postScript,
 	})
 
 	hash := computeHash(baseContent)
@@ -1275,7 +1305,7 @@ validation_loop:
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/validate.sh": validateScript,
+		"/scripts/validate.sh": validateScript,
 	})
 
 	hash := computeHash(baseContent)
@@ -1324,8 +1354,8 @@ forge:
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/gh-pre.sh":  forgePre,
-		"/harness/scripts/gh-post.sh": forgePost,
+		"/scripts/gh-pre.sh":  forgePre,
+		"/scripts/gh-post.sh": forgePost,
 	})
 
 	hash := computeHash(baseContent)
@@ -1375,8 +1405,8 @@ post_script: scripts/base-post.sh
 	postScript := []byte("#!/bin/bash\necho base-post")
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/base-pre.sh":  preScript,
-		"/harness/scripts/base-post.sh": postScript,
+		"/scripts/base-pre.sh":  preScript,
+		"/scripts/base-post.sh": postScript,
 	})
 
 	hash := computeHash(baseContent)
@@ -1418,7 +1448,7 @@ pre_script: scripts/pre.sh
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/pre.sh": []byte("#!/bin/bash"),
+		"/scripts/pre.sh": []byte("#!/bin/bash"),
 	})
 
 	hash := computeHash(baseContent)
@@ -1432,14 +1462,14 @@ role: test
 base: `+baseURL+`
 `)
 
-	// Allowlist only covers /harness/triage.yaml, not /harness/scripts/
+	// Allowlist only covers /harness/triage.yaml, not /scripts/
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/harness/triage.yaml"},
 	})
 	// The allowlist check is prefix-based, so /harness/triage.yaml as prefix
-	// does NOT cover /harness/scripts/pre.sh
+	// does NOT cover /scripts/pre.sh
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }
@@ -1519,10 +1549,10 @@ pre_script: scripts/pre.sh
 	// Pre-populate base harness in cache
 	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
 	// Pre-populate script in cache
-	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/scripts/pre.sh", preScript))
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/scripts/pre.sh", preScript))
 	// Add URL index entry
 	scriptHash := fetch.ComputeSHA256(preScript)
-	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/harness/scripts/pre.sh", scriptHash))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/scripts/pre.sh", scriptHash))
 
 	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
 
@@ -1560,7 +1590,7 @@ pre_script: scripts/pre.sh
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/pre.sh": scriptContent,
+		"/scripts/pre.sh": scriptContent,
 	})
 
 	hash := computeHash(baseContent)
@@ -1629,7 +1659,7 @@ pre_script: scripts/pre.sh
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/pre.sh": preScript,
+		"/scripts/pre.sh": preScript,
 	})
 
 	hash := computeHash(baseContent)
@@ -1676,7 +1706,7 @@ forge:
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/gh-validate.sh": forgeValidate,
+		"/scripts/gh-validate.sh": forgeValidate,
 	})
 
 	hash := computeHash(baseContent)
@@ -1795,9 +1825,9 @@ validation_loop:
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
-		"/harness/scripts/pre.sh":      preScript,
-		"/harness/scripts/post.sh":     postScript,
-		"/harness/scripts/validate.sh": validateScript,
+		"/scripts/pre.sh":      preScript,
+		"/scripts/post.sh":     postScript,
+		"/scripts/validate.sh": validateScript,
 	})
 
 	hash := computeHash(baseContent)
@@ -1945,6 +1975,70 @@ func TestResolveBaseScripts_InvalidBaseURL(t *testing.T) {
 	_, err := resolveBaseScripts(context.Background(), base, "not-a-valid-url", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// TestLoadWithBase_URLBase_ScriptsRelativeToScaffoldRoot verifies that URL
+// base script resolution matches local resolution: scripts are relative to
+// the scaffold root (parent of harness/), not to the YAML file's directory.
+// This mirrors the real scaffold layout where harness/ and scripts/ are siblings.
+func TestLoadWithBase_URLBase_ScriptsRelativeToScaffoldRoot(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+model: opus
+pre_script: scripts/pre.sh
+post_script: scripts/post.sh
+`)
+
+	// Mount scripts at /scripts/ (sibling to /harness/), matching real layout.
+	// The YAML lives at /harness/triage.yaml, so urlDirPrefix gives /harness/.
+	// Scripts should resolve relative to / (the scaffold root), not /harness/.
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/pre.sh":  preScript,
+		"/scripts/post.sh": postScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "agents/child.md", h.Agent)
+
+	// Scripts resolved to local cache paths
+	assert.NotEmpty(t, h.PreScript, "pre_script should be resolved")
+	assert.NotEmpty(t, h.PostScript, "post_script should be resolved")
+	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be absolute cache path")
+	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be absolute cache path")
+
+	// Verify cached content matches
+	preContent, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, preContent)
+
+	postContent, err := os.ReadFile(h.PostScript)
+	require.NoError(t, err)
+	assert.Equal(t, postScript, postContent)
+
+	// Dependencies: 1 for base harness + 2 for scripts
+	require.Len(t, deps, 3)
 }
 
 func TestURLIndexPut_EmptyWorkspaceRoot(t *testing.T) {

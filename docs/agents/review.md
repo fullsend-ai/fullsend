@@ -27,8 +27,10 @@ If a prior review exists (e.g., re-review after fixes), it is injected into the 
 |---------|-------|--------|
 | `/fs-review` | PR comment | Triggers a review on the PR (per-repo installs only; standalone issues are ignored) |
 
+Requires write-level repository permission (admin, maintain, or write).
+
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft.
+synchronized (new commits pushed), or moved out of draft by a user with write-level repository permission.
 
 ## Control labels
 

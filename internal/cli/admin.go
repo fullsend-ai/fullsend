@@ -663,7 +663,8 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(vendor)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(vendor, upstreamRef, upstreamTag)
 	if err != nil {
 		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
 	}
@@ -1856,12 +1857,13 @@ func buildLayerStack(
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		dispatchLayer,
-		layers.NewEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer),
+		newEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer, direct),
 	)
 }
 
 func workflowsLayer(ctx context.Context, org string, client forge.Client, printer *ui.Printer, user, version string, vendor bool, vendorCollect layers.VendorCollectFunc, direct bool) *layers.WorkflowsLayer {
-	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor).WithDirect(direct)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor).WithDirect(direct).WithUpstreamRef(upstreamRef, upstreamTag)
 	if vendorCollect != nil {
 		layer = layer.WithVendorCollect(vendorCollect)
 	}
@@ -1873,6 +1875,14 @@ func workflowsLayer(ctx context.Context, org string, client forge.Client, printe
 		if id, err := client.GetAuthenticatedUserIdentity(ctx); err == nil {
 			layer = layer.WithSignOff(id.Name, id.Email)
 		}
+	}
+	return layer
+}
+
+func newEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledRepos []string, printer *ui.Printer, direct bool) *layers.EnrollmentLayer {
+	layer := layers.NewEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer)
+	if !direct {
+		layer = layer.WithScaffoldPending()
 	}
 	return layer
 }

@@ -220,7 +220,8 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor, upstreamRef, upstreamTag)
 	if err != nil {
 		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
 	}
@@ -981,7 +982,8 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("reading config.yaml: %w", cfgErr)
 	}
 
-	wfLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(true)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	wfLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(true).WithUpstreamRef(upstreamRef, upstreamTag)
 	if id, idErr := client.GetAuthenticatedUserIdentity(ctx); idErr == nil {
 		wfLayer = wfLayer.WithSignOff(id.Name, id.Email)
 	}

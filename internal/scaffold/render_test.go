@@ -108,6 +108,7 @@ func assertFreeOfRenderPlaceholders(t *testing.T, out string) {
 		"__REUSABLE_DISPATCH__",
 		"__UPSTREAM_REF__",
 		"__DISTRIBUTION_MODE__",
+		"__FULLSEND_AI_REF__",
 	} {
 		assert.NotContains(t, out, placeholder)
 	}
@@ -141,4 +142,48 @@ func TestRenderAllThinCallersFreeOfPlaceholders(t *testing.T) {
 			assertFreeOfRenderPlaceholders(t, string(rendered))
 		}
 	}
+}
+
+func TestRenderThinCallerPinnedSHA(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+		UpstreamRef: "abc123def456",
+		UpstreamTag: "v0.19.0",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@abc123def456")
+	assert.Contains(t, out, "# v0.19.0")
+	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderPerRepoShimPinnedSHA(t *testing.T) {
+	raw, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
+		PerRepo:     true,
+		UpstreamRef: "abc123def456",
+		UpstreamTag: "v0.19.0",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123def456")
+	assert.Contains(t, out, "# v0.19.0")
+	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderFallbackToDefaultRef(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "@v0")
+	assert.Contains(t, out, "fullsend_ai_ref: v0")
 }

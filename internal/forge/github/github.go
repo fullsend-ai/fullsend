@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,10 +35,14 @@ var _ forge.Client = (*LiveClient)(nil)
 
 // New creates a new GitHub client with the given personal access token.
 func New(token string) *LiveClient {
+	baseURL := "https://api.github.com"
+	if override := strings.TrimSpace(os.Getenv("GITHUB_API_URL")); override != "" {
+		baseURL = strings.TrimRight(override, "/")
+	}
 	return &LiveClient{
 		http:    &http.Client{Timeout: 30 * time.Second},
 		token:   token,
-		baseURL: "https://api.github.com",
+		baseURL: baseURL,
 	}
 }
 

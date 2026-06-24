@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,4 +117,138 @@ func TestAuthExitCode(t *testing.T) {
 	assert.Equal(t, AuthExitStaleOrUnauth, authExitCode(authorization.StatusStale))
 	assert.Equal(t, AuthExitStaleOrUnauth, authExitCode(authorization.StatusUnauthorizedPush))
 	assert.Equal(t, 1, authExitCode(authorization.Status("unknown")))
+}
+
+func TestNewAuthCmd_RegisteredInRoot(t *testing.T) {
+	cmd := newRootCmd()
+	names := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		names[sub.Name()] = true
+	}
+	assert.True(t, names["auth"])
+	assert.True(t, names["labels"])
+}
+
+func TestAuthCheckCmd_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "unknown gate",
+			args:    []string{"--gate", "nope", "--repo", "o/r", "--number", "1", "--phase", "pre-run", "--token", "tok"},
+			wantErr: `unknown gate "nope"`,
+		},
+		{
+			name:    "invalid phase",
+			args:    []string{"--gate", "workflow-change", "--repo", "o/r", "--number", "1", "--phase", "bad", "--token", "tok"},
+			wantErr: `--phase must be pre-run, mint, or pre-push`,
+		},
+		{
+			name:    "invalid repo",
+			args:    []string{"--gate", "workflow-change", "--repo", "bad", "--number", "1", "--phase", "pre-run", "--token", "tok"},
+			wantErr: `--repo must be in owner/repo format`,
+		},
+		{
+			name:    "invalid number",
+			args:    []string{"--gate", "workflow-change", "--repo", "o/r", "--number", "0", "--phase", "pre-run", "--token", "tok"},
+			wantErr: `--number must be a positive integer`,
+		},
+		{
+			name:    "missing changed files path",
+			args:    []string{"--gate", "workflow-change", "--repo", "o/r", "--number", "1", "--phase", "pre-push", "--changed-files", "/no/such/file", "--token", "tok"},
+			wantErr: "reading changed files",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newAuthCheckCmd()
+			cmd.SetArgs(tc.args)
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestAuthCheckCmd_BlockedViaAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":   1,
+			"html_url": "https://github.com/o/r/issues/1",
+			"labels":   []map[string]any{{"name": "workflow-change-needed"}},
+		})
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newAuthCheckCmd()
+	cmd.SetArgs([]string{
+		"--gate", "workflow-change",
+		"--repo", "o/r",
+		"--number", "1",
+		"--phase", "pre-run",
+		"--token", "test",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ec *exitError
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, AuthExitBlocked, ec.ExitCode())
+}
+
+func TestAuthCheckCmd_MintJSONViaAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/timeline"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"event":      "labeled",
+					"created_at": time.Now().Add(-time.Hour).Format(time.RFC3339),
+					"label":      map[string]string{"name": "workflow-change-allowed"},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/comments"):
+			json.NewEncoder(w).Encode([]any{})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{
+				"number":   1,
+				"html_url": "https://github.com/o/r/issues/1",
+				"labels":   []map[string]any{{"name": "workflow-change-allowed"}},
+			})
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	cmd := newAuthCheckCmd()
+	cmd.SetArgs([]string{
+		"--gate", "workflow-change",
+		"--repo", "o/r",
+		"--number", "1",
+		"--phase", "mint",
+		"--json",
+		"--token", "test",
+	})
+	require.NoError(t, cmd.Execute())
+	require.NoError(t, w.Close())
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(r)
+	require.NoError(t, err)
+
+	var payload struct {
+		Status     authorization.Status `json:"status"`
+		Elevations []string             `json:"elevations"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+	assert.Equal(t, authorization.StatusOK, payload.Status)
+	assert.Equal(t, []string{"workflow-change"}, payload.Elevations)
 }

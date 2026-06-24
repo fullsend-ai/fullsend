@@ -844,7 +844,8 @@ jobs:
       - name: Setup agent environment
         env:
           AGENT_PREFIX: RETRO_
-          RETRO_GH_TOKEN: ${{ steps.sandbox-token.outputs.token }}
+          # GH_TOKEN is auto-minted by the binary when --mint-url is provided.
+          # RETRO_GH_TOKEN was removed in favor of binary-based minting.
           RETRO_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           RETRO_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
         run: bash .github/scripts/setup-agent-env.sh

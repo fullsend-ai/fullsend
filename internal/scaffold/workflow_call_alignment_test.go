@@ -39,9 +39,107 @@ type callerWorkflow struct {
 }
 
 type callerJob struct {
-	Uses    string            `yaml:"uses"`
-	With    map[string]string `yaml:"with"`
-	Secrets map[string]string `yaml:"secrets"`
+	Uses        string            `yaml:"uses"`
+	With        map[string]string `yaml:"with"`
+	Secrets     map[string]string `yaml:"secrets"`
+	Concurrency *jobConcurrency   `yaml:"concurrency"`
+}
+
+type jobConcurrency struct {
+	Group            string `yaml:"group"`
+	CancelInProgress bool   `yaml:"cancel-in-progress"`
+}
+
+// reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
+type reusableStageWorkflow struct {
+	Concurrency *jobConcurrency  `yaml:"concurrency"`
+	On          reusableWorkflow `yaml:"on"`
+}
+
+type stageConcurrencyExpectation struct {
+	groupPrefix string
+	groupMust   []string
+}
+
+var thinCallerConcurrencyExpectations = map[string]stageConcurrencyExpectation{
+	"triage": {
+		groupPrefix: "fullsend-triage-",
+		groupMust:   []string{"inputs.source_repo", "issue.number"},
+	},
+	"code": {
+		groupPrefix: "fullsend-code-",
+		groupMust:   []string{"inputs.source_repo", "issue.number"},
+	},
+	"review": {
+		groupPrefix: "fullsend-review-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"fix": {
+		groupPrefix: "fullsend-fix-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
+	},
+	"retro": {
+		groupPrefix: "fullsend-retro-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"prioritize": {
+		groupPrefix: "fullsend-prioritize-",
+		groupMust:   []string{"inputs.source_repo", "issue.number"},
+	},
+}
+
+var reusableAgentConcurrencyExpectations = map[string]stageConcurrencyExpectation{
+	"triage": {
+		groupPrefix: "fullsend-triage-agent-",
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
+	},
+	"code": {
+		groupPrefix: "fullsend-code-agent-",
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
+	},
+	"review": {
+		groupPrefix: "fullsend-review-agent-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"fix": {
+		groupPrefix: "fullsend-fix-agent-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
+	},
+	"retro": {
+		groupPrefix: "fullsend-retro-agent-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"prioritize": {
+		groupPrefix: "fullsend-prioritize-agent-",
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
+	},
+}
+
+var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectation{
+	"triage": {
+		groupPrefix: "fullsend-triage-",
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
+	"code": {
+		groupPrefix: "fullsend-code-",
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
+	"review": {
+		groupPrefix: "fullsend-review-",
+		groupMust:   []string{"github.repository", "github.event.pull_request.number", "github.event.issue.number"},
+	},
+	"fix": {
+		groupPrefix: "fullsend-fix-",
+		groupMust:   []string{"github.repository", "github.event.pull_request.number", "github.event.issue.number"},
+	},
+	"retro": {
+		groupPrefix: "fullsend-retro-",
+		groupMust:   []string{"github.repository", "github.event.pull_request.number", "github.event.issue.number"},
+	},
+	"prioritize": {
+		groupPrefix: "fullsend-prioritize-",
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
 }
 
 // reusableWorkflowRef extracts the reusable workflow filename from a uses: reference.
@@ -61,7 +159,7 @@ func loadRenderedScaffoldCaller(path string) func(t *testing.T) []byte {
 		t.Helper()
 		raw, err := FullsendRepoFile(path)
 		require.NoError(t, err)
-		rendered, err := RenderTemplate(path, raw, RenderOptionsForInstall(false, false))
+		rendered, err := RenderTemplate(path, raw, RenderOptionsForInstall(false, false, "", ""))
 		require.NoError(t, err)
 		return rendered
 	}
@@ -225,6 +323,83 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 	s := string(content)
 	assert.True(t, strings.Contains(s, "project_number: ${{ inputs.project_number }}"),
 		"prioritize job should thread project_number from dispatch inputs")
+}
+
+// TestReusableDispatchStageConcurrency validates per-role cancel-in-progress groups
+// on all stage jobs in reusable-dispatch.yml (#981, #982, ADR 0033).
+func TestReusableDispatchStageConcurrency(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var caller callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &caller))
+
+	for stage, expect := range dispatchStageConcurrencyExpectations {
+		t.Run(stage, func(t *testing.T) {
+			job, ok := caller.Jobs[stage]
+			require.True(t, ok, "job %q should exist", stage)
+			require.NotNil(t, job.Concurrency, "job %q should declare a concurrency group", stage)
+			assert.Contains(t, job.Concurrency.Group, expect.groupPrefix)
+			for _, fragment := range expect.groupMust {
+				assert.Contains(t, job.Concurrency.Group, fragment,
+					"job %q concurrency group should reference %q", stage, fragment)
+			}
+			assert.True(t, job.Concurrency.CancelInProgress,
+				"job %q should cancel in-progress runs when a newer dispatch arrives", stage)
+		})
+	}
+}
+
+// TestReusableAgentWorkflowConcurrency validates agent-scoped cancel-in-progress
+// groups on reusable stage workflows. Groups use a distinct -agent- prefix so
+// they do not collide with dispatch/thin-caller groups on workflow_call parents.
+func TestReusableAgentWorkflowConcurrency(t *testing.T) {
+	for stage, expect := range reusableAgentConcurrencyExpectations {
+		t.Run(stage, func(t *testing.T) {
+			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			var wf reusableStageWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+			require.NotNil(t, wf.Concurrency, "reusable-%s.yml should declare workflow-level concurrency", stage)
+			assert.Contains(t, wf.Concurrency.Group, expect.groupPrefix)
+			for _, fragment := range expect.groupMust {
+				assert.Contains(t, wf.Concurrency.Group, fragment,
+					"reusable-%s.yml concurrency group should reference %q", stage, fragment)
+			}
+			assert.True(t, wf.Concurrency.CancelInProgress,
+				"reusable-%s.yml should cancel in-progress runs", stage)
+
+			callerExpect := thinCallerConcurrencyExpectations[stage]
+			assert.NotEqual(t, callerExpect.groupPrefix, expect.groupPrefix,
+				"reusable-%s.yml must use a distinct agent-scoped group prefix", stage)
+			assert.Contains(t, wf.Concurrency.Group, "-agent-",
+				"reusable-%s.yml group must be agent-scoped, not reuse dispatch/thin-caller prefix", stage)
+		})
+	}
+}
+
+// TestThinCallerStageConcurrency validates per-role cancel-in-progress groups on
+// per-org thin caller workflows in the scaffold (#981, ADR 0033).
+func TestThinCallerStageConcurrency(t *testing.T) {
+	for stage, expect := range thinCallerConcurrencyExpectations {
+		t.Run(stage, func(t *testing.T) {
+			path := fmt.Sprintf(".github/workflows/%s.yml", stage)
+			content := loadRenderedScaffoldCaller(path)(t)
+
+			var wf reusableStageWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+			require.NotNil(t, wf.Concurrency, "%s should declare workflow-level concurrency", path)
+			assert.Contains(t, wf.Concurrency.Group, expect.groupPrefix)
+			for _, fragment := range expect.groupMust {
+				assert.Contains(t, wf.Concurrency.Group, fragment,
+					"%s concurrency group should reference %q", path, fragment)
+			}
+			assert.True(t, wf.Concurrency.CancelInProgress,
+				"%s should cancel in-progress runs when a newer dispatch arrives", path)
+		})
+	}
 }
 
 // TestReusableDispatchUsesFullyQualifiedPaths validates that reusable-dispatch.yml

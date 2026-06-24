@@ -1,5 +1,5 @@
 ---
-title: "54. Label-gated elevated agent permissions"
+title: "55. Label-gated elevated agent permissions"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -11,7 +11,7 @@ topics:
   - code-agent
 ---
 
-# 54. Label-gated elevated agent permissions
+# 55. Label-gated elevated agent permissions
 
 Date: 2026-06-23
 

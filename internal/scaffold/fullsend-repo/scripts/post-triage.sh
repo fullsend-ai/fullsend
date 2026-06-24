@@ -260,7 +260,7 @@ ${FAILED_CREATES}"
     remove_label "needs-info"
 
     # When workflow edits are required, defer ready-to-code until a
-    # collaborator applies workflow-change-allowed (ADR 0054).
+    # collaborator applies workflow-change-allowed (ADR 0055).
     AUTH_REQUIRED=$(jq -r '.authorizations_required // [] | .[]' "${RESULT_FILE}" 2>/dev/null || true)
     NEEDS_WORKFLOW_AUTH=false
     if echo "${AUTH_REQUIRED}" | grep -qFx "workflow-change"; then

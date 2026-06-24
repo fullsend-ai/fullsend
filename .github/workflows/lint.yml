@@ -58,8 +58,10 @@ jobs:
           files: coverage.out
 
   commit-lint:
-    # On pull_request: lint the PR title (which becomes the merge commit
-    # subject on squash-merge). On push/merge_group: lint each commit.
+    # Lint the PR title and individual commits on pull_request.
+    # Lint each commit on push/merge_group.
+    # The merge queue uses merge (not squash), so individual commit
+    # messages matter — catch bad prefixes before the merge queue rejects them.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -78,19 +80,21 @@ jobs:
           uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
 
       - name: Lint commits
-        if: github.event_name != 'pull_request'
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
           MQ_BASE: ${{ github.event.merge_group.base_sha }}
           MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ "${EVENT_NAME}" = "push" ]; then
-            RANGE="${PUSH_BEFORE}..${PUSH_AFTER}"
-          else
-            RANGE="${MQ_BASE}..${MQ_HEAD}"
-          fi
+          case "${EVENT_NAME}" in
+            push)          RANGE="${PUSH_BEFORE}..${PUSH_AFTER}" ;;
+            merge_group)   RANGE="${MQ_BASE}..${MQ_HEAD}" ;;
+            pull_request)  RANGE="${PR_BASE}..${PR_HEAD}" ;;
+            *)             echo "Unknown event: ${EVENT_NAME}"; exit 1 ;;
+          esac
 
           FAILED=false
           for sha in $(git rev-list --no-merges "${RANGE}"); do

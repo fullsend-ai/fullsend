@@ -484,7 +484,11 @@ func mergeBaseIntoChild(base, child *Harness) {
 // because runtime treats it as a directory (uploaded recursively).
 // Returns additional dependencies for the fetched scripts.
 func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
-	baseURLDir := urlDirPrefix(baseURL)
+	// Script paths in harness YAMLs are relative to the scaffold root (the
+	// parent of the harness/ directory), not the YAML file. Use
+	// urlParentDirPrefix to match the local resolution behavior where
+	// ResolveRelativeTo is called with absFullsendDir (the workspace root).
+	baseURLDir := urlParentDirPrefix(baseURL)
 	if baseURLDir == "" {
 		return nil, fmt.Errorf("cannot determine directory from base URL")
 	}
@@ -712,6 +716,30 @@ func urlDirPrefix(rawURL string) string {
 		return ""
 	}
 	dir := path.Dir(parsed.Path)
+	if dir == "." || dir == "" {
+		return ""
+	}
+	if !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	parsed.Path = dir
+	parsed.RawPath = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+// urlParentDirPrefix returns the parent of the directory containing the URL's
+// file. Script paths in harness YAMLs are relative to the scaffold root (the
+// parent of the harness/ directory), not the YAML file itself. This matches
+// local resolution where ResolveRelativeTo uses absFullsendDir (the workspace
+// root), which is the parent of the harness/ directory.
+func urlParentDirPrefix(rawURL string) string {
+	cleanURL, _, _ := ParseIntegrityHash(rawURL)
+	parsed, err := url.Parse(cleanURL)
+	if err != nil {
+		return ""
+	}
+	dir := path.Dir(path.Dir(parsed.Path))
 	if dir == "." || dir == "" {
 		return ""
 	}

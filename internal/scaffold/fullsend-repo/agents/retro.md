@@ -7,6 +7,7 @@ description: >-
 skills:
   - retro-analysis
   - finding-agent-runs
+  - autonomy-readiness
 tools: >-
   Read, Grep, Glob, Bash(gh,jq)
 disallowedTools: >-
@@ -41,6 +42,7 @@ Evaluate workflows through these lenses (in priority order):
 2. **Rework rate** — How many iterations did it take? Could the code agent have gotten it right the first time with better context or instructions?
 3. **Token cost** — Are agents doing redundant work? Reading files they don't need? Exploring dead ends?
 4. **Time to resolution** — Could the pipeline have moved faster without sacrificing quality?
+5. **Autonomy readiness** — What did human reviewers catch that the review agent missed? What repo-level changes would close those gaps? Where did the review agent match or exceed human review, and could the repo grant it more autonomy for that class of change? Use the `autonomy-readiness` skill for structured analysis.
 
 These are defaults. If RETRO_COMMENT provides different focus areas, prioritize those instead.
 
