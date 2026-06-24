@@ -69,12 +69,18 @@ func tokenForOrg(ctx context.Context, cfg envConfig, org string) (string, error)
 // issueAuthorToken returns a user OAuth token for actions that must appear as a
 // human with repository write access. Installation tokens create issues as bots,
 // which fail ADR 0054 dispatch authorization (has_write_permission on open).
+//
+// In pull_request_target CI, the workflow file comes from the base branch until
+// this PR merges, so we also accept E2E_GITHUB_PASSWORD (legacy secret name that
+// main's e2e.yml already injects; value should be a user PAT with pool-org write).
 func issueAuthorToken(cfg envConfig) (string, error) {
-	if token := os.Getenv("E2E_ISSUE_AUTHOR_TOKEN"); token != "" {
-		return token, nil
+	for _, env := range []string{"E2E_ISSUE_AUTHOR_TOKEN", "E2E_GITHUB_PASSWORD"} {
+		if token := os.Getenv(env); token != "" {
+			return token, nil
+		}
 	}
 	if !cfg.useMint {
 		return resolveLocalToken()
 	}
-	return "", fmt.Errorf("E2E_ISSUE_AUTHOR_TOKEN not set: CI mint tokens create issues as bots, which dispatch rejects for triage")
+	return "", fmt.Errorf("no issue author token: set E2E_ISSUE_AUTHOR_TOKEN or E2E_GITHUB_PASSWORD (user PAT with write on pool org repos)")
 }
