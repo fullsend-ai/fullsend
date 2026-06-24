@@ -16,7 +16,7 @@ Date: 2026-05-19
 
 ## Status
 
-Superseded by [ADR 0054](0054-cross-org-mint-authorization-via-org-variables.md) and the e2e mint/OIDC refactor ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)). TOTP automation for Playwright login is no longer used.
+Superseded by [ADR 0055](0055-cross-org-mint-authorization-via-org-variables.md) and the e2e mint/OIDC refactor ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)). TOTP automation for Playwright login is no longer used.
 
 Extends [ADR 0010](0010-stored-session-for-e2e-browser-auth.md) (also superseded).
 

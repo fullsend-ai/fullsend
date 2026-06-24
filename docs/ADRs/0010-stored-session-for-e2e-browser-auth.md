@@ -16,7 +16,7 @@ Date: 2026-04-03
 
 ## Status
 
-Superseded by [ADR 0054](0054-cross-org-mint-authorization-via-org-variables.md) and the e2e mint/OIDC refactor ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)). Playwright session export is no longer used for CI authentication.
+Superseded by [ADR 0055](0055-cross-org-mint-authorization-via-org-variables.md) and the e2e mint/OIDC refactor ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)). Playwright session export is no longer used for CI authentication.
 
 Extended by [ADR 0039](0039-totp-automation-for-e2e-2fa.md) (also superseded).
 

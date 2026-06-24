@@ -1,5 +1,5 @@
 ---
-title: "54. Cross-org mint authorization via org variables"
+title: "55. Cross-org mint authorization via org variables"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -11,7 +11,7 @@ topics:
   - cross-org
 ---
 
-# 54. Cross-org mint authorization via org variables
+# 55. Cross-org mint authorization via org variables
 
 Date: 2026-06-07
 

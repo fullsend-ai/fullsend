@@ -3,7 +3,7 @@
 Guide for running and debugging fullsend admin e2e tests locally and in CI.
 
 Related ADRs: [0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md) (org pool),
-[0054](../../ADRs/0054-cross-org-mint-authorization-via-org-variables.md) (cross-org mint),
+[0055](../../ADRs/0055-cross-org-mint-authorization-via-org-variables.md) (cross-org mint),
 [0009](../../ADRs/0009-pull-request-target-in-shim-workflows.md) (pull_request_target security model for shims; e2e uses a separate gate pattern documented below).
 
 Historical ADRs [0010](../../ADRs/0010-stored-session-for-e2e-browser-auth.md) (browser session) and
@@ -46,7 +46,7 @@ In GitHub Actions, tests mint a cross-org installation token via the mint servic
 
 1. Workflow requests a GHA OIDC token (`id-token: write`)
 2. `mintclient.MintToken` POSTs to `E2E_MINT_URL/v1/token` with `{role: "e2e", target_org: "<pool org>"}` (repos omitted for installation-wide access)
-3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0054](../../ADRs/0054-cross-org-mint-authorization-via-org-variables.md))
+3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0055](../../ADRs/0055-cross-org-mint-authorization-via-org-variables.md))
 
 Required repository secrets:
 
