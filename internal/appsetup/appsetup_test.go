@@ -827,10 +827,10 @@ func TestSetup_StalePermissions_CoderMissingWorkflowsWrite(t *testing.T) {
 			{
 				ID: 200, AppID: 20, AppSlug: "fullsend-coder",
 				Permissions: map[string]string{
-					"contents":       "write",
-					"issues":         "write",
-					"pull_requests":  "write",
-					"checks":         "read",
+					"contents":      "write",
+					"issues":        "write",
+					"pull_requests": "write",
+					"checks":        "read",
 					// missing: workflows
 				},
 			},

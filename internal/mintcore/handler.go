@@ -230,7 +230,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)
 		}
-		requested := RolePermissionsFor(req.Role)
+		requested, mergeErr := MergeRoleElevations(req.Role, req.Elevations)
+		if mergeErr != nil {
+			requested = RolePermissionsFor(req.Role)
+		}
 		for perm, level := range granted.Permissions {
 			if reqLevel, ok := requested[perm]; !ok {
 				log.Printf("WARNING: extra permission granted: %s=%s (not requested)", perm, level)

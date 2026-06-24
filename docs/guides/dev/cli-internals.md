@@ -38,6 +38,26 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── auth                                     # Label-gated authorization checks
+│   └── check                              # Verify gate authorization for an issue/PR
+│       ├── --gate <name>                    #   Gate name (e.g. workflow-change)
+│       ├── --repo <owner/repo>              #   Target repository
+│       ├── --number <int>                   #   Issue or pull request number
+│       ├── --phase <phase>                  #   pre-run, mint, or pre-push
+│       ├── --changed-files <path|->         #   Changed files (pre-push; '-' for stdin)
+│       ├── --trigger-comment-id <int>       #   Exempt trigger comment from stale detection
+│       ├── --apply                          #   Apply labels and post sticky comment on failure
+│       └── --json                           #   Emit structured JSON on stdout
+├── labels                                   # Issue and pull request label helpers
+│   ├── ensure                               # Add or remove a label on an issue/PR
+│   │   ├── --repo <owner/repo>              #   Target repository
+│   │   ├── --number <int>                   #   Issue or pull request number
+│   │   ├── --action <add|remove>            #   Label mutation
+│   │   └── --label <name>                   #   Label name
+│   └── copy                                 # Copy labels from one issue/PR to another
+│       ├── --repo <owner/repo>              #   Target repository
+│       ├── --from-number <int>              #   Source issue/PR number
+│       └── --to-number <int>                #   Destination issue/PR number
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout

@@ -36,10 +36,11 @@ func newLabelsEnsureCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("--token or GITHUB_TOKEN required")
+				var err error
+				token, err = resolveToken()
+				if err != nil {
+					return err
+				}
 			}
 			if number <= 0 {
 				return fmt.Errorf("--number must be a positive integer, got %d", number)
@@ -79,7 +80,7 @@ func newLabelsEnsureCmd() *cobra.Command {
 	cmd.Flags().IntVar(&number, "number", 0, "issue or pull request number (required)")
 	cmd.Flags().StringVar(&action, "action", "", "add or remove (required)")
 	cmd.Flags().StringVar(&label, "label", "", "label name (required)")
-	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("action")
@@ -103,10 +104,11 @@ func newLabelsCopyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("--token or GITHUB_TOKEN required")
+				var err error
+				token, err = resolveToken()
+				if err != nil {
+					return err
+				}
 			}
 			if fromNumber <= 0 || toNumber <= 0 {
 				return fmt.Errorf("--from and --to must be positive integers")
@@ -148,7 +150,7 @@ func newLabelsCopyCmd() *cobra.Command {
 	cmd.Flags().IntVar(&fromNumber, "from", 0, "source issue or PR number (required)")
 	cmd.Flags().IntVar(&toNumber, "to", 0, "destination issue or PR number (required)")
 	cmd.Flags().StringVar(&prefix, "prefix", "workflow-change-", "copy labels with this prefix")
-	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("from")
 	_ = cmd.MarkFlagRequired("to")

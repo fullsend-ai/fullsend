@@ -46,10 +46,11 @@ func newAuthCheckCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 
 			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("--token or GITHUB_TOKEN required")
+				var err error
+				token, err = resolveToken()
+				if err != nil {
+					return err
+				}
 			}
 			if number <= 0 {
 				return fmt.Errorf("--number must be a positive integer, got %d", number)
@@ -138,7 +139,7 @@ func newAuthCheckCmd() *cobra.Command {
 	cmd.Flags().IntVar(&triggerCommentID, "trigger-comment-id", 0, "workflow trigger comment ID to exempt from stale detection")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit structured JSON result on stdout")
 	cmd.Flags().BoolVar(&apply, "apply", false, "mutate labels and post sticky comment on failure")
-	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
