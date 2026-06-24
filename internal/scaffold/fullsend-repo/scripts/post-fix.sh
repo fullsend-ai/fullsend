@@ -255,10 +255,10 @@ if [ "${NO_PUSH}" = "false" ] && [[ -n "${PUSH_TOKEN:-}" ]]; then
     --changed-files -
     --apply
     --token "${PUSH_TOKEN}")
-  if [[ -n "${TRIGGER_COMMENT_ID:-}" ]]; then
+  if [[ "${TRIGGER_COMMENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
     AUTH_ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
   fi
-  if ! printf '%s\n' "${CHANGED_FILES}" | fullsend "${AUTH_ARGS[@]}"; then
+  if ! printf '%s\n' "${BRANCH_CHANGED_FILES}" | fullsend "${AUTH_ARGS[@]}"; then
     echo "::error::Workflow-change authorization blocked push"
     exit 1
   fi

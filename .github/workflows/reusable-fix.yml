@@ -163,7 +163,7 @@ jobs:
             --repo "${{ inputs.source_repo }}"
             --number ${{ steps.pr-for-auth.outputs.pr_number }}
             --phase mint --apply --json)
-          if [[ -n "${TRIGGER_COMMENT_ID}" && "${TRIGGER_COMMENT_ID}" != "null" ]]; then
+          if [[ "${TRIGGER_COMMENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
             ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
           fi
           OUT=$(fullsend "${ARGS[@]}" 2>/dev/null)
@@ -391,6 +391,7 @@ jobs:
           echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate inputs
+        id: validate
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
@@ -402,12 +403,14 @@ jobs:
         run: bash scripts/pre-fix.sh
 
       - name: Setup GCP and prepare credentials
+        if: steps.validate.outputs.skipped != 'true'
         uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
       - name: Setup agent environment
+        if: steps.validate.outputs.skipped != 'true'
         env:
           AGENT_PREFIX: FIX_
           FIX_TARGET_REPO_DIR: target-repo
@@ -421,6 +424,7 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
+        if: steps.validate.outputs.skipped != 'true'
         uses: ./.defaults/
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}

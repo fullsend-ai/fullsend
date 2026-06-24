@@ -1738,6 +1738,7 @@ func (c *LiveClient) RemoveIssueLabel(ctx context.Context, owner, repo string, n
 
 // GetLabelAppliedAt returns the timestamp when label was most recently applied.
 func (c *LiveClient) GetLabelAppliedAt(ctx context.Context, owner, repo string, number int, label string) (time.Time, error) {
+	var latest time.Time
 	for page := 1; page <= 100; page++ {
 		resp, err := c.getWithAccept(ctx,
 			fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100&page=%d", owner, repo, number, page),
@@ -1755,7 +1756,6 @@ func (c *LiveClient) GetLabelAppliedAt(ctx context.Context, owner, repo string, 
 		if err := decodeJSON(resp, &events); err != nil {
 			return time.Time{}, fmt.Errorf("decode issue timeline page %d: %w", page, err)
 		}
-		var latest time.Time
 		for _, ev := range events {
 			if ev.Event != "labeled" || ev.Label.Name != label {
 				continue
@@ -1768,14 +1768,14 @@ func (c *LiveClient) GetLabelAppliedAt(ctx context.Context, owner, repo string, 
 				latest = ts
 			}
 		}
-		if !latest.IsZero() {
-			return latest, nil
-		}
 		if len(events) < 100 {
 			break
 		}
 	}
-	return time.Time{}, fmt.Errorf("%w: label %q", forge.ErrNotFound, label)
+	if latest.IsZero() {
+		return time.Time{}, fmt.Errorf("%w: label %q", forge.ErrNotFound, label)
+	}
+	return latest, nil
 }
 
 // GetCommentAuthorAssociation returns the author's permission level on the repo.

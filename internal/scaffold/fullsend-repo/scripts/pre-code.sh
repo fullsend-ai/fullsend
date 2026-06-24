@@ -61,7 +61,7 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
     --phase pre-run
     --apply
     --token "${GH_TOKEN}")
-  if [[ -n "${TRIGGER_COMMENT_ID:-}" ]]; then
+  if [[ "${TRIGGER_COMMENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
     AUTH_ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
   fi
   if ! fullsend "${AUTH_ARGS[@]}"; then

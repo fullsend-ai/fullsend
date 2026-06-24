@@ -2,11 +2,14 @@ package authorization
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+var agentCommandPattern = regexp.MustCompile(`(?:^|\s)/fs-[a-z][a-z0-9-]*`)
 
 // CheckStale reports whether an allowed label was invalidated by a subsequent
 // non-collaborator agent-influencing comment. triggerCommentID is exempt.
@@ -43,16 +46,16 @@ func CheckStale(ctx context.Context, client forge.Client, owner, repo string, nu
 
 // IsAgentInfluencingComment reports whether a comment could re-dispatch an agent.
 func IsAgentInfluencingComment(body string) bool {
-	return strings.Contains(body, "/fs-")
+	return agentCommandPattern.MatchString(body)
 }
 
 // IsNonCollaboratorAssociation reports whether assoc indicates the author lacks
-// write access (NONE or READ on GitHub).
+// write access on the repository.
 func IsNonCollaboratorAssociation(assoc string) bool {
 	switch strings.ToUpper(strings.TrimSpace(assoc)) {
-	case "NONE", "READ":
-		return true
-	default:
+	case "OWNER", "MEMBER", "COLLABORATOR":
 		return false
+	default:
+		return true
 	}
 }

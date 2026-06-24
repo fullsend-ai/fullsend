@@ -76,6 +76,7 @@ func TestCheckStale_NonCollaboratorComment(t *testing.T) {
 
 func TestIsAgentInfluencingComment(t *testing.T) {
 	assert.True(t, IsAgentInfluencingComment("try /fs-fix please"))
+	assert.False(t, IsAgentInfluencingComment("see https://example.com/fs-something"))
 	assert.False(t, IsAgentInfluencingComment("looks good to me"))
 }
 

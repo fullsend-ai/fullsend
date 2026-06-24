@@ -130,7 +130,7 @@ jobs:
             --repo "${{ inputs.source_repo }}"
             --number ${{ fromJSON(inputs.event_payload).issue.number }}
             --phase mint --apply --json)
-          if [[ -n "${TRIGGER_COMMENT_ID}" && "${TRIGGER_COMMENT_ID}" != "null" ]]; then
+          if [[ "${TRIGGER_COMMENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
             ARGS+=(--trigger-comment-id "${TRIGGER_COMMENT_ID}")
           fi
           OUT=$(fullsend "${ARGS[@]}" 2>/dev/null)

@@ -87,6 +87,42 @@ func TestGetLabelAppliedAt(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC), ts.UTC())
 }
 
+func TestGetLabelAppliedAt_LatestAcrossPages(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		switch page {
+		case 1:
+			events := make([]map[string]any, 100)
+			for i := range events {
+				events[i] = map[string]any{"event": "commented", "created_at": "2026-01-01T00:00:00Z"}
+			}
+			events[0] = map[string]any{
+				"event":      "labeled",
+				"created_at": "2026-06-24T10:00:00Z",
+				"label":      map[string]string{"name": "workflow-change-allowed"},
+			}
+			json.NewEncoder(w).Encode(events)
+		case 2:
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"event":      "labeled",
+					"created_at": "2026-06-25T12:00:00Z",
+					"label":      map[string]string{"name": "workflow-change-allowed"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected page %d", page)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ts, err := client.GetLabelAppliedAt(context.Background(), "o", "r", 7, "workflow-change-allowed")
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC), ts.UTC())
+}
+
 func TestGetLabelAppliedAt_NotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]map[string]any{})
