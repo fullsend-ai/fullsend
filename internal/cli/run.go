@@ -1249,12 +1249,12 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation.
 var reservedSandboxKeys = map[string]bool{
-	"PATH":                   true,
-	"FULLSEND_FETCH_URL":     true,
-	"FULLSEND_FETCH_TOKEN":   true,
-	"FULLSEND_OUTPUT_DIR":    true,
-	"FULLSEND_OUTPUT_SCHEMA": true,
-	"FULLSEND_OUTPUT_FILE":   true,
+	"PATH":                     true,
+	"FULLSEND_FETCH_URL":       true,
+	"FULLSEND_FETCH_TOKEN":     true,
+	"FULLSEND_OUTPUT_DIR":      true,
+	"FULLSEND_OUTPUT_SCHEMA":   true,
+	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
 }
 
