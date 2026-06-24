@@ -161,7 +161,7 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 
 	raw, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
-	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false, "", ""))
 	require.NoError(t, err)
 	expected := string(scaffold.PrependManagedHeader(".github/workflows/triage.yml", rendered))
 	assert.Equal(t, expected, triageContent)
@@ -235,10 +235,32 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 
 	raw, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
-	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false, "", ""))
 	require.NoError(t, err)
 	expected := string(scaffold.PrependManagedHeader(".github/workflows/repo-maintenance.yml", rendered))
 	assert.Equal(t, expected, maintenanceContent)
+}
+
+func TestWorkflowsLayer_Install_PinnedSHA(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+	layer = layer.WithUpstreamRef("abc123def456abc123def456abc123def456abcd", "v0.19.0")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	var triageContent string
+	for _, f := range client.CommittedFiles[0].Files {
+		if f.Path == ".github/workflows/triage.yml" {
+			triageContent = string(f.Content)
+			break
+		}
+	}
+	require.NotEmpty(t, triageContent, "triage.yml should have been written")
+	assert.Contains(t, triageContent, "@abc123def456abc123def456abc123def456abcd")
+	assert.Contains(t, triageContent, "# v0.19.0")
+	assert.Contains(t, triageContent, "fullsend_ai_ref: abc123def456abc123def456abc123def456abcd # v0.19.0")
+	assert.NotContains(t, triageContent, "@v0")
 }
 
 func TestWorkflowsLayer_Install_ManagedHeaders(t *testing.T) {

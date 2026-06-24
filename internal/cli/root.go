@@ -19,6 +19,17 @@ func CommitSHA() string {
 	return commitSHA
 }
 
+// resolveUpstreamRef returns the SHA and version tag for pinning scaffold
+// workflow refs. Release builds (commitSHA is a real SHA) return the SHA
+// and the corresponding version tag. Dev builds return empty strings,
+// causing the render layer to fall back to config.DefaultUpstreamRef.
+func resolveUpstreamRef() (ref, tag string) {
+	if commitSHA != "" && commitSHA != "dev" {
+		return commitSHA, "v" + version
+	}
+	return "", ""
+}
+
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "fullsend",

@@ -10,13 +10,15 @@ import (
 
 // RenderOptions controls install-time substitution for shim and thin-caller templates.
 type RenderOptions struct {
-	Vendored bool
-	PerRepo  bool
+	Vendored    bool
+	PerRepo     bool
+	UpstreamRef string // commit SHA to pin workflow refs to; empty = use DefaultUpstreamRef
+	UpstreamTag string // version tag for traceability comment (e.g. "v0.19.0")
 }
 
 // RenderOptionsForInstall builds render options from the --vendor flag.
-func RenderOptionsForInstall(vendored, perRepo bool) RenderOptions {
-	return RenderOptions{Vendored: vendored, PerRepo: perRepo}
+func RenderOptionsForInstall(vendored, perRepo bool, upstreamRef, upstreamTag string) RenderOptions {
+	return RenderOptions{Vendored: vendored, PerRepo: perRepo, UpstreamRef: upstreamRef, UpstreamTag: upstreamTag}
 }
 
 // thinStageWorkflows lists thin caller paths and their stage markers. Keep in sync
@@ -50,6 +52,8 @@ func RenderTemplate(path string, content []byte, opts RenderOptions) ([]byte, er
 		out = strings.ReplaceAll(out, "__REUSABLE_DISPATCH__", reusableDispatchUses(opts))
 	}
 
+	out = strings.ReplaceAll(out, "__FULLSEND_AI_REF__", resolvedRefWithComment(opts))
+
 	return []byte(out), nil
 }
 
@@ -71,6 +75,21 @@ func thinStageName(content string) (string, error) {
 	return "", fmt.Errorf("could not determine thin caller stage")
 }
 
+func resolvedRef(opts RenderOptions) string {
+	if opts.UpstreamRef != "" {
+		return opts.UpstreamRef
+	}
+	return config.DefaultUpstreamRef
+}
+
+func resolvedRefWithComment(opts RenderOptions) string {
+	ref := resolvedRef(opts)
+	if opts.UpstreamTag != "" && opts.UpstreamTag != ref {
+		return ref + " # " + opts.UpstreamTag
+	}
+	return ref
+}
+
 func reusableWorkflowUses(stage string, opts RenderOptions) string {
 	if opts.Vendored {
 		if opts.PerRepo {
@@ -78,14 +97,24 @@ func reusableWorkflowUses(stage string, opts RenderOptions) string {
 		}
 		return "./.github/workflows/reusable-" + stage + ".yml"
 	}
-	return config.DefaultUpstreamRepo + "/.github/workflows/reusable-" + stage + ".yml@" + config.DefaultUpstreamRef
+	ref := resolvedRef(opts)
+	uses := config.DefaultUpstreamRepo + "/.github/workflows/reusable-" + stage + ".yml@" + ref
+	if opts.UpstreamTag != "" && opts.UpstreamTag != ref {
+		uses += " # " + opts.UpstreamTag
+	}
+	return uses
 }
 
 func reusableDispatchUses(opts RenderOptions) string {
 	if opts.Vendored {
 		return "./.fullsend/.github/workflows/reusable-dispatch.yml"
 	}
-	return config.DefaultUpstreamRepo + "/.github/workflows/reusable-dispatch.yml@" + config.DefaultUpstreamRef
+	ref := resolvedRef(opts)
+	uses := config.DefaultUpstreamRepo + "/.github/workflows/reusable-dispatch.yml@" + ref
+	if opts.UpstreamTag != "" && opts.UpstreamTag != ref {
+		uses += " # " + opts.UpstreamTag
+	}
+	return uses
 }
 
 // RenderDispatchPerRepoStagePaths rewrites stage workflow paths for vendored
