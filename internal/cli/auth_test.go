@@ -252,3 +252,130 @@ func TestAuthCheckCmd_MintJSONViaAPI(t *testing.T) {
 	assert.Equal(t, authorization.StatusOK, payload.Status)
 	assert.Equal(t, []string{"workflow-change"}, payload.Elevations)
 }
+
+func TestAuthCheckCmd_ApplyBlockedPostsComment(t *testing.T) {
+	var posted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			json.NewEncoder(w).Encode(map[string]any{"login": "fullsend-bot[bot]"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/1":
+			json.NewEncoder(w).Encode(map[string]any{
+				"number":   1,
+				"html_url": "https://github.com/o/r/issues/1",
+				"labels":   []map[string]any{{"name": "workflow-change-needed"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/1/comments":
+			json.NewEncoder(w).Encode([]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/1/comments":
+			posted = true
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":       100,
+				"html_url": "https://github.com/o/r/issues/1#issuecomment-100",
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newAuthCheckCmd()
+	cmd.SetArgs([]string{
+		"--gate", "workflow-change",
+		"--repo", "o/r",
+		"--number", "1",
+		"--phase", "pre-run",
+		"--apply",
+		"--token", "test",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ec *exitError
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, AuthExitBlocked, ec.ExitCode())
+	assert.True(t, posted)
+}
+
+func TestAuthCheckCmd_MintPrintsElevations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/timeline"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"event":      "labeled",
+					"created_at": time.Now().Add(-time.Hour).Format(time.RFC3339),
+					"label":      map[string]string{"name": "workflow-change-allowed"},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/comments"):
+			json.NewEncoder(w).Encode([]any{})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{
+				"number":   1,
+				"html_url": "https://github.com/o/r/issues/1",
+				"labels":   []map[string]any{{"name": "workflow-change-allowed"}},
+			})
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	cmd := newAuthCheckCmd()
+	cmd.SetArgs([]string{
+		"--gate", "workflow-change",
+		"--repo", "o/r",
+		"--number", "1",
+		"--phase", "mint",
+		"--token", "test",
+	})
+	require.NoError(t, cmd.Execute())
+	require.NoError(t, w.Close())
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(r)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "workflow-change")
+}
+
+func TestAuthCheckCmd_PrePushUnauthorizedViaAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":   1,
+			"html_url": "https://github.com/o/r/issues/1",
+			"labels":   []map[string]any{},
+		})
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	_, err = w.WriteString(".github/workflows/ci.yml\n")
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	cmd := newAuthCheckCmd()
+	cmd.SetArgs([]string{
+		"--gate", "workflow-change",
+		"--repo", "o/r",
+		"--number", "1",
+		"--phase", "pre-push",
+		"--changed-files", "-",
+		"--token", "test",
+	})
+	err = cmd.Execute()
+	require.Error(t, err)
+	var ec *exitError
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, AuthExitStaleOrUnauth, ec.ExitCode())
+}

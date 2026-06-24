@@ -129,6 +129,17 @@ func TestApplyMutations(t *testing.T) {
 	require.NoError(t, ApplyMutations(t.Context(), client, workflowChangeGate, target, StatusOK))
 }
 
+func TestEvaluate_MintBlockedWhenNeeded(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-needed"}},
+	}
+
+	result, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhaseMint, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, StatusBlocked, result.Status)
+}
+
 func TestEvaluate_PreRunAllowedNotStale(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Issues = map[string]forge.Issue{
@@ -143,15 +154,84 @@ func TestEvaluate_PreRunAllowedNotStale(t *testing.T) {
 	assert.Equal(t, StatusOK, result.Status)
 }
 
-func TestEvaluate_MintBlockedWhenNeeded(t *testing.T) {
+func TestEvaluate_PreRunStale(t *testing.T) {
 	client := forge.NewFakeClient()
+	allowedAt := time.Now().Add(-time.Hour)
 	client.Issues = map[string]forge.Issue{
-		"o/r/1": {Number: 1, Labels: []string{"workflow-change-needed"}},
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-allowed"}},
 	}
+	client.LabelAppliedAt = map[string]time.Time{
+		"o/r/1/workflow-change-allowed": allowedAt,
+	}
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:        55,
+			Body:      "please /fs-code again",
+			CreatedAt: allowedAt.Add(time.Minute).Format(time.RFC3339),
+		}},
+	}
+	client.CommentAssociations = map[int]string{55: "FIRST_TIMER"}
+
+	result, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhasePreRun, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, StatusStale, result.Status)
+}
+
+func TestEvaluate_MintStale(t *testing.T) {
+	client := forge.NewFakeClient()
+	allowedAt := time.Now().Add(-time.Hour)
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-allowed"}},
+	}
+	client.LabelAppliedAt = map[string]time.Time{
+		"o/r/1/workflow-change-allowed": allowedAt,
+	}
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:        56,
+			Body:      "/fs-fix please",
+			CreatedAt: allowedAt.Add(time.Minute).Format(time.RFC3339),
+		}},
+	}
+	client.CommentAssociations = map[int]string{56: "CONTRIBUTOR"}
 
 	result, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhaseMint, Options{})
 	require.NoError(t, err)
-	assert.Equal(t, StatusBlocked, result.Status)
+	assert.Equal(t, StatusStale, result.Status)
+}
+
+func TestCheckStale_TriggerCommentExempt(t *testing.T) {
+	client := forge.NewFakeClient()
+	allowedAt := time.Now().Add(-time.Hour)
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:        77,
+			Body:      "/fs-code",
+			CreatedAt: allowedAt.Add(time.Minute).Format(time.RFC3339),
+		}},
+	}
+	client.CommentAssociations = map[int]string{77: "NONE"}
+
+	stale, err := CheckStale(t.Context(), client, "o", "r", 1, workflowChangeGate, allowedAt, 77)
+	require.NoError(t, err)
+	assert.False(t, stale)
+}
+
+func TestCheckStale_CollaboratorCommentIgnored(t *testing.T) {
+	client := forge.NewFakeClient()
+	allowedAt := time.Now().Add(-time.Hour)
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:        88,
+			Body:      "/fs-code",
+			CreatedAt: allowedAt.Add(time.Minute).Format(time.RFC3339),
+		}},
+	}
+	client.CommentAssociations = map[int]string{88: "MEMBER"}
+
+	stale, err := CheckStale(t.Context(), client, "o", "r", 1, workflowChangeGate, allowedAt, 0)
+	require.NoError(t, err)
+	assert.False(t, stale)
 }
 
 func TestEvaluate_PrePushStale(t *testing.T) {

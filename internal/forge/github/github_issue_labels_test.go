@@ -147,3 +147,15 @@ func TestGetCommentAuthorAssociation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "NONE", assoc)
 }
+
+func TestGetCommentAuthorAssociation_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"author_association": ""})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetCommentAuthorAssociation(context.Background(), "o", "r", 1, 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty author_association")
+}
