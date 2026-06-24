@@ -352,6 +352,73 @@ func TestGetAuthenticatedUser_BothFail(t *testing.T) {
 	assert.Contains(t, err.Error(), "get authenticated user")
 }
 
+func TestGetAuthenticatedUserIdentity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/user", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"login": "octocat",
+			"name":  "The Octocat",
+			"email": "octocat@github.com",
+			"id":    1,
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	id, err := client.GetAuthenticatedUserIdentity(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "The Octocat", id.Name)
+	assert.Equal(t, "octocat@github.com", id.Email)
+}
+
+func TestGetAuthenticatedUserIdentity_FallbackNameAndEmail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"login": "octocat",
+			"name":  nil,
+			"email": nil,
+			"id":    42,
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	id, err := client.GetAuthenticatedUserIdentity(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "octocat", id.Name, "should fall back to login when name is empty")
+	assert.Equal(t, "42+octocat@users.noreply.github.com", id.Email, "should construct noreply email")
+}
+
+func TestGetAuthenticatedUserIdentity_AppTokenFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Resource not accessible by integration",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUserIdentity(context.Background())
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err), "should wrap ErrNotFound for App tokens")
+}
+
+func TestGetAuthenticatedUserIdentity_NonPermissionError_NotErrNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Bad Request",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUserIdentity(context.Background())
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err), "should NOT wrap ErrNotFound for non-permission errors")
+}
+
 func TestGetAuthenticatedUser_AppEmptySlug(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -1347,6 +1347,52 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	return app.Slug + "[bot]", nil
 }
 
+// GetAuthenticatedUserIdentity returns the display name and email of
+// the authenticated user by calling GET /user.
+//
+// For classic PATs and OAuth tokens the endpoint returns the user's
+// profile including name, email, and numeric ID. When name is empty,
+// login is used as a fallback. When email is empty, the GitHub noreply
+// address is constructed from the user's ID and login.
+//
+// GitHub App installation tokens cannot call /user, so this method
+// returns forge.ErrNotFound for those token types.
+func (c *LiveClient) GetAuthenticatedUserIdentity(ctx context.Context) (*forge.UserIdentity, error) {
+	resp, err := c.get(ctx, "/user")
+	if err != nil {
+		// Only wrap with ErrNotFound for HTTP 403/404 responses (e.g., GitHub
+		// App installation tokens that cannot call /user). Other errors
+		// (network failures, 5xx, rate limits) are returned unwrapped so
+		// callers can distinguish permanent from transient failures.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusNotFound) {
+			return nil, fmt.Errorf("get authenticated user identity: %w: %w", forge.ErrNotFound, err)
+		}
+		return nil, fmt.Errorf("get authenticated user identity: %w", err)
+	}
+
+	var user struct {
+		Login string `json:"login"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		ID    int64  `json:"id"`
+	}
+	if err := decodeJSON(resp, &user); err != nil {
+		return nil, fmt.Errorf("decode user identity: %w", err)
+	}
+
+	name := user.Name
+	if name == "" {
+		name = user.Login
+	}
+	email := user.Email
+	if email == "" {
+		email = fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login)
+	}
+
+	return &forge.UserIdentity{Name: name, Email: email}, nil
+}
+
 // GetTokenScopes returns the OAuth scopes granted to the current token
 // by inspecting the X-OAuth-Scopes header from a lightweight API call.
 //

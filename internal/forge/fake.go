@@ -108,18 +108,19 @@ type FakeClient struct {
 	mu sync.Mutex
 
 	// Pre-populated data
-	Repos             []Repository
-	FileContents      map[string][]byte       // key: "owner/repo/path"
-	WorkflowRuns      map[string]*WorkflowRun // key: "owner/repo/workflow"
-	Workflows         map[string]*Workflow    // key: "owner/repo/workflow"
-	AuthenticatedUser string
-	OrgPlan           string // plan name returned by GetOrgPlan (default: "free")
-	Installations     []Installation
-	Secrets           map[string]bool             // key: "owner/repo/name"
-	PullRequests      map[string][]ChangeProposal // key: "owner/repo"
-	TokenScopes       []string                    // scopes returned by GetTokenScopes
-	VariablesExist    map[string]bool             // key: "owner/repo/name"
-	VariableValues    map[string]string           // key: "owner/repo/name"
+	Repos                     []Repository
+	FileContents              map[string][]byte       // key: "owner/repo/path"
+	WorkflowRuns              map[string]*WorkflowRun // key: "owner/repo/workflow"
+	Workflows                 map[string]*Workflow    // key: "owner/repo/workflow"
+	AuthenticatedUser         string                  // login returned by GetAuthenticatedUser
+	AuthenticatedUserIdentity *UserIdentity           // identity returned by GetAuthenticatedUserIdentity
+	OrgPlan                   string                  // plan name returned by GetOrgPlan (default: "free")
+	Installations             []Installation
+	Secrets                   map[string]bool             // key: "owner/repo/name"
+	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
+	TokenScopes               []string                    // scopes returned by GetTokenScopes
+	VariablesExist            map[string]bool             // key: "owner/repo/name"
+	VariableValues            map[string]string           // key: "owner/repo/name"
 
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
@@ -624,6 +625,20 @@ func (f *FakeClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 	}
 
 	return f.AuthenticatedUser, nil
+}
+
+func (f *FakeClient) GetAuthenticatedUserIdentity(_ context.Context) (*UserIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetAuthenticatedUserIdentity"); e != nil {
+		return nil, e
+	}
+
+	if f.AuthenticatedUserIdentity != nil {
+		return f.AuthenticatedUserIdentity, nil
+	}
+	return nil, fmt.Errorf("%w: no user identity configured", ErrNotFound)
 }
 
 func (f *FakeClient) GetTokenScopes(_ context.Context) ([]string, error) {

@@ -539,6 +539,55 @@ func TestManagedPathsMatchLayeredScaffold(t *testing.T) {
 	}
 }
 
+func TestWorkflowsLayer_Install_SignOffTrailer(t *testing.T) {
+	client := forge.NewFakeClient()
+	ensureFakeConfigRepo(client)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", false).
+		WithSignOff("Admin User", "admin@example.com")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	msg := client.CommittedFilesToBranch[0].Message
+	assert.Contains(t, msg, "Signed-off-by: Admin User <admin@example.com>",
+		"scaffold commit should include Signed-off-by trailer")
+}
+
+func TestWorkflowsLayer_Install_SignOff_DirectCommit(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+	layer = layer.WithSignOff("Admin User", "admin@example.com")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFiles, 1)
+	msg := client.CommittedFiles[0].Message
+	assert.Contains(t, msg, "Signed-off-by: Admin User <admin@example.com>",
+		"direct commit should include Signed-off-by trailer")
+
+	// Activation commit should also have sign-off.
+	require.Len(t, client.CreatedFiles, 1)
+	assert.Contains(t, client.CreatedFiles[0].Message, "Signed-off-by: Admin User <admin@example.com>",
+		"activation commit should include Signed-off-by trailer")
+}
+
+func TestWorkflowsLayer_Install_NoSignOff_ByDefault(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFiles, 1)
+	msg := client.CommittedFiles[0].Message
+	assert.NotContains(t, msg, "Signed-off-by",
+		"commit should not contain Signed-off-by when WithSignOff is not called")
+}
+
 func TestManagedVendoredContentPathsFromEmbed(t *testing.T) {
 	paths, err := scaffold.ManagedVendoredContentPaths("")
 	require.NoError(t, err)
