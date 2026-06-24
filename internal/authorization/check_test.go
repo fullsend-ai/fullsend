@@ -78,3 +78,52 @@ func TestIsAgentInfluencingComment(t *testing.T) {
 	assert.True(t, IsAgentInfluencingComment("try /fs-fix please"))
 	assert.False(t, IsAgentInfluencingComment("looks good to me"))
 }
+
+func TestEvaluate_PrePushAllowed(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-allowed"}},
+	}
+	client.LabelAppliedAt = map[string]time.Time{
+		"o/r/1/workflow-change-allowed": time.Now().Add(-time.Hour),
+	}
+
+	result, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhasePrePush, Options{
+		ChangedFiles: []string{".github/workflows/ci.yml"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, result.Status)
+}
+
+func TestEvaluate_PrePushNoWorkflowFiles(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{}},
+	}
+
+	result, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhasePrePush, Options{
+		ChangedFiles: []string{"README.md"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, result.Status)
+}
+
+func TestApplyMutations(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-allowed"}},
+	}
+	target := Target{Owner: "o", Repo: "r", Number: 1}
+
+	require.NoError(t, ApplyMutations(t.Context(), client, workflowChangeGate, target, StatusUnauthorizedPush))
+	issue := client.Issues["o/r/1"]
+	assert.Contains(t, issue.Labels, "workflow-change-needed")
+
+	client.Issues["o/r/2"] = forge.Issue{Number: 2, Labels: []string{"workflow-change-allowed"}}
+	require.NoError(t, ApplyMutations(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 2}, StatusStale))
+	issue = client.Issues["o/r/2"]
+	assert.NotContains(t, issue.Labels, "workflow-change-allowed")
+	assert.Contains(t, issue.Labels, "workflow-change-needed")
+
+	require.NoError(t, ApplyMutations(t.Context(), client, workflowChangeGate, target, StatusOK))
+}

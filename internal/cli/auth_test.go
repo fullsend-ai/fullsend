@@ -107,3 +107,10 @@ func splitOwnerRepo(repo string) (owner, name string, ok bool) {
 	}
 	return "", "", false
 }
+
+func TestAuthExitCode(t *testing.T) {
+	assert.Equal(t, AuthExitBlocked, authExitCode(authorization.StatusBlocked))
+	assert.Equal(t, AuthExitStaleOrUnauth, authExitCode(authorization.StatusStale))
+	assert.Equal(t, AuthExitStaleOrUnauth, authExitCode(authorization.StatusUnauthorizedPush))
+	assert.Equal(t, 1, authExitCode(authorization.Status("unknown")))
+}
