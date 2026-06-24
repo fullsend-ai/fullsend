@@ -112,18 +112,26 @@ go-tidy:
 lint-md-links:
 	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
 
+define run-timed
+	@start=$$(date +%s); \
+	rc=0; $(1) || rc=$$?; \
+	elapsed=$$(($$(date +%s) - $$start)); \
+	printf '::debug::script-test timing: %s completed in %ds\n' '$(1)' "$$elapsed"; \
+	exit $$rc
+endef
+
 script-test:
-	bash scripts/check-e2e-authorization-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/pre-code-test.sh
-	bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh
-	python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py
-	python3 skills/topissues/scripts/topissues_test.py
+	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-code-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
+	$(call run-timed,python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py)
+	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 
 test: lint-all go-test script-test lint-eval-cases
 

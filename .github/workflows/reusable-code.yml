@@ -1,5 +1,5 @@
-# Reusable code agent workflow. Called by dispatch workflows via workflow_call.
-# Runs in the caller's repo context (secrets, checkout).
+# Reusable code agent workflow. Called by thin callers in .fullsend repos
+# via workflow_call. Runs in the caller's repo context (secrets, checkout).
 #
 # Concurrency: agent-scoped cancel-in-progress group (distinct from dispatch/thin
 # caller groups so workflow_call parent runs are not cancelled).
@@ -170,7 +170,6 @@ jobs:
         if: steps.validate.outputs.skipped != 'true'
         env:
           AGENT_PREFIX: CODE_
-          CODE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CODE_TARGET_REPO_DIR: target-repo
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CODE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
@@ -184,9 +183,8 @@ jobs:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
-          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PUSH_TOKEN_SOURCE: github-app
           CODE_ALLOWED_TARGET_BRANCHES: ''
+          TARGET_BRANCH: main
         with:
           agent: code
           version: ${{ inputs.fullsend_version }}

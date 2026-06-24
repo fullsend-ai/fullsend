@@ -38,8 +38,9 @@ inputs:
     default: ""
   mint-url:
     description: >-
-      Mint service URL for on-demand status comment tokens. The binary
-      mints a fresh short-lived token before each status API call.
+      Mint service URL for on-demand GitHub App tokens. Used for both
+      status comment tokens and agent runtime tokens (GH_TOKEN,
+      PUSH_TOKEN, REVIEW_TOKEN) minted by mintAgentToken().
     default: ""
 
 runs:
@@ -375,15 +376,17 @@ runs:
           if [[ -n "${STATUS_RUN_URL}" ]]; then
             STATUS_FLAGS+=(--run-url "${STATUS_RUN_URL}")
           fi
-          if [[ -n "${MINT_URL}" ]]; then
-            STATUS_FLAGS+=(--mint-url "${MINT_URL}")
-          fi
+        fi
+        MINT_FLAGS=()
+        if [[ -n "${MINT_URL}" ]]; then
+          MINT_FLAGS+=(--mint-url "${MINT_URL}")
         fi
         fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \
-          "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
+          "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}" \
+          "${MINT_FLAGS[@]+"${MINT_FLAGS[@]}"}"
 
     - name: Finalize orphaned status comment
       if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''

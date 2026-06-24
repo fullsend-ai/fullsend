@@ -237,7 +237,7 @@ ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dis
 
 ### 2. Slash-command parser + ACL
 
-Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each.
+Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each. All slash commands and event-triggered dispatch paths require write-level repository permission (admin, maintain, or write), verified via the collaborator permission API ([ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
 
 ### 3. Label state machine guard
@@ -610,7 +610,8 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │                                                           │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
                  ║ │                                                           │ ║
-                 ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN):      │ ║
+                 ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN,       │ ║
+                 ║ │   minted by the binary via --mint-url):                   │ ║
                  ║ │   1. Verify feature branch (not main/master)              │ ║
                  ║ │   2. Protected-path check                                 │ ║
                  ║ │   3. gitleaks secret scan                                 │ ║
