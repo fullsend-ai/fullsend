@@ -121,6 +121,17 @@ func TestLegacyFlatVendoredPaths(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
 }
 
+func TestLegacyFlatVendoredPaths_PerRepoPrefix(t *testing.T) {
+	paths, err := LegacyFlatVendoredPaths(".fullsend/")
+	require.NoError(t, err)
+	// New canonical location for reusable workflows.
+	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
+	// Legacy per-repo paths included for cleanup.
+	assert.Contains(t, paths, ".fullsend/.github/workflows/reusable-triage.yml")
+	// Per-repo action.yml marker.
+	assert.Contains(t, paths, ".fullsend/action.yml")
+}
+
 func TestVendoredDefaultsInfraPathsMatchPredicate(t *testing.T) {
 	for _, p := range vendoredDefaultsInfraPaths {
 		assert.True(t, isVendoredDefaultsInfra(p), "hardcoded path %q not matched by isVendoredDefaultsInfra", p)
@@ -174,7 +185,7 @@ func TestReadVendorManifest_ParseError(t *testing.T) {
 }
 
 func TestEnumerateVendoredPathsWithoutCheckout(t *testing.T) {
-	paths, err := enumerateVendoredPaths("")
+	paths, err := enumerateVendoredPaths()
 	require.NoError(t, err)
 	assert.Contains(t, paths, ".defaults/action.yml")
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
@@ -187,7 +198,7 @@ func TestEnumerateVendoredPathsMatchesCollectInCheckout(t *testing.T) {
 		t.Skip("not in fullsend checkout")
 	}
 
-	embedPaths, err := enumerateVendoredPaths("")
+	embedPaths, err := enumerateVendoredPaths()
 	require.NoError(t, err)
 
 	files, err := CollectVendoredAssets(root, "")

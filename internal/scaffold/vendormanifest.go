@@ -156,7 +156,7 @@ var vendoredDefaultsInfraPaths = []string{
 
 // enumerateVendoredPaths returns embed-derived paths for a current --vendor install layout.
 // Reusable workflows are always under .github/workflows/ (GitHub Actions requirement).
-func enumerateVendoredPaths(workflowPrefix string) ([]string, error) {
+func enumerateVendoredPaths() ([]string, error) {
 	seen := make(map[string]struct{})
 	add := func(p string) {
 		if p != "" {
@@ -253,7 +253,7 @@ func ResolveVendoredCleanupPaths(ctx context.Context, client forge.Client, owner
 		return manifest.CleanupPaths(workflowPrefix), nil
 	}
 
-	paths, err := enumerateVendoredPaths(workflowPrefix)
+	paths, err := enumerateVendoredPaths()
 	if err != nil {
 		return nil, err
 	}

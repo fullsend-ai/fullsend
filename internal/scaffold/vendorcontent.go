@@ -59,7 +59,7 @@ func CollectVendoredAssets(root, workflowPrefix string) (InstallFiles, error) {
 
 // ManagedVendoredContentPaths returns embed-derived paths for the current vendor layout.
 func ManagedVendoredContentPaths(workflowPrefix string) ([]string, error) {
-	return enumerateVendoredPaths(workflowPrefix)
+	return enumerateVendoredPaths()
 }
 
 // LegacyFlatVendoredPaths lists pre-.defaults flat layout paths for legacy cleanup.
