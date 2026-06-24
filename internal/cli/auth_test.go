@@ -379,3 +379,67 @@ func TestAuthCheckCmd_PrePushUnauthorizedViaAPI(t *testing.T) {
 	require.ErrorAs(t, err, &ec)
 	assert.Equal(t, AuthExitStaleOrUnauth, ec.ExitCode())
 }
+
+func TestAuthCheckCmd_ApplyStaleMutatesLabels(t *testing.T) {
+	allowedAt := time.Now().Add(-time.Hour)
+	var removed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			json.NewEncoder(w).Encode(map[string]any{"login": "fullsend-bot[bot]"})
+		case strings.Contains(r.URL.Path, "/timeline"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"event":      "labeled",
+					"created_at": allowedAt.Format(time.RFC3339),
+					"label":      map[string]string{"name": "workflow-change-allowed"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/1":
+			json.NewEncoder(w).Encode(map[string]any{
+				"number":   1,
+				"html_url": "https://github.com/o/r/issues/1",
+				"labels":   []map[string]any{{"name": "workflow-change-allowed"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/1/comments":
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"id":         50,
+					"body":       "retry /fs-code",
+					"created_at": allowedAt.Add(time.Minute).Format(time.RFC3339),
+					"user":       map[string]string{"login": "outsider"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/comments/50":
+			json.NewEncoder(w).Encode(map[string]any{"author_association": "NONE"})
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/labels/workflow-change-allowed"):
+			removed = true
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/1/labels":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/1/comments":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": 101, "html_url": "https://github.com/o/r/issues/1#issuecomment-101"})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newAuthCheckCmd()
+	cmd.SetArgs([]string{
+		"--gate", "workflow-change",
+		"--repo", "o/r",
+		"--number", "1",
+		"--phase", "pre-run",
+		"--apply",
+		"--token", "test",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ec *exitError
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, AuthExitStaleOrUnauth, ec.ExitCode())
+	assert.True(t, removed)
+}

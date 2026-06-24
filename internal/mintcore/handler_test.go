@@ -782,6 +782,106 @@ func TestHandler_FullFlow(t *testing.T) {
 	}
 }
 
+func TestHandler_InvalidElevation(t *testing.T) {
+	t.Setenv("ALLOWED_ROLES", "coder")
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+
+	body := `{"role":"coder","repos":["test-repo"],"elevations":["unknown-gate"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if !strings.Contains(resp["error"], "unknown elevation gate") {
+		t.Fatalf("expected unknown elevation error, got: %s", resp["error"])
+	}
+}
+
+func TestHandler_InvalidElevationForRole(t *testing.T) {
+	t.Setenv("ALLOWED_ROLES", "triage")
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+
+	body := `{"role":"triage","repos":["test-repo"],"elevations":["workflow-change"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_FullFlowWithElevation(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	var capturedTokenReq map[string]interface{}
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			reqBody, _ := io.ReadAll(r.Body)
+			json.Unmarshal(reqBody, &capturedTokenReq)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_elevated",
+				ExpiresAt: "2026-05-06T12:00:00Z",
+				Permissions: map[string]string{
+					"contents":  "write",
+					"workflows": "write",
+				},
+				Repositories: []installationTokenRepository{
+					{FullName: "test-org/test-repo"},
+				},
+				RepositorySelection: "selected",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","repos":["test-repo"],"elevations":["workflow-change"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	perms, ok := capturedTokenReq["permissions"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected permissions in token request")
+	}
+	if perms["workflows"] != "write" {
+		t.Fatalf("expected workflows:write in token request, got %v", perms["workflows"])
+	}
+}
+
 func TestHandler_FullFlowGrantedScopeAll(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 

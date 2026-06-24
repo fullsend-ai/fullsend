@@ -258,3 +258,60 @@ func TestEvaluate_PrePushStale(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StatusStale, result.Status)
 }
+
+func TestEvaluate_PreRunAllowedWithoutLabelTimestamp(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-allowed"}},
+	}
+
+	result, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhasePreRun, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, result.Status)
+}
+
+func TestEvaluate_PreRunLabelAppliedAtError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Issues = map[string]forge.Issue{
+		"o/r/1": {Number: 1, Labels: []string{"workflow-change-allowed"}},
+	}
+	client.Errors = map[string]error{
+		"GetLabelAppliedAt": assert.AnError,
+	}
+
+	_, err := Evaluate(t.Context(), client, workflowChangeGate, Target{Owner: "o", Repo: "r", Number: 1}, PhasePreRun, Options{})
+	require.Error(t, err)
+}
+
+func TestCheckStale_SkipsCommentsBeforeAllowedAt(t *testing.T) {
+	client := forge.NewFakeClient()
+	allowedAt := time.Now()
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:        1,
+			Body:      "/fs-code",
+			CreatedAt: allowedAt.Add(-time.Minute).Format(time.RFC3339),
+		}},
+	}
+	client.CommentAssociations = map[int]string{1: "NONE"}
+
+	stale, err := CheckStale(t.Context(), client, "o", "r", 1, workflowChangeGate, allowedAt, 0)
+	require.NoError(t, err)
+	assert.False(t, stale)
+}
+
+func TestCheckStale_SkipsNonAgentComments(t *testing.T) {
+	client := forge.NewFakeClient()
+	allowedAt := time.Now().Add(-time.Hour)
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:        2,
+			Body:      "thanks!",
+			CreatedAt: allowedAt.Add(time.Minute).Format(time.RFC3339),
+		}},
+	}
+
+	stale, err := CheckStale(t.Context(), client, "o", "r", 1, workflowChangeGate, allowedAt, 0)
+	require.NoError(t, err)
+	assert.False(t, stale)
+}
