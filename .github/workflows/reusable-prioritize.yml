@@ -1,5 +1,8 @@
-# Reusable prioritize agent workflow. Called by thin callers in .fullsend repos
-# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+# Reusable prioritize agent workflow. Called by dispatch workflows via workflow_call.
+# Runs in the caller's repo context (secrets, checkout).
+#
+# Concurrency: agent-scoped cancel-in-progress group (distinct from dispatch/thin
+# caller groups so workflow_call parent runs are not cancelled).
 name: Prioritize Agent
 
 on:
@@ -42,6 +45,10 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+
+concurrency:
+  group: fullsend-prioritize-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   prioritize:

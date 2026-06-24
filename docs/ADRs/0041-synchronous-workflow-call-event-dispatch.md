@@ -138,3 +138,8 @@ re-evaluate whether a discovery mechanism is needed.
   `needs:` / concurrency review ([#504](https://github.com/fullsend-ai/fullsend/issues/504)).
 - Discovery may be revisited after [ADR 0038](0038-universal-harness-access.md)
   agent architecture changes land.
+
+## Implementation note (#981)
+
+Per-repo concurrency follow-up ([#504](https://github.com/fullsend-ai/fullsend/issues/504))
+is addressed in workflow configuration; the dispatch shape in this ADR is unchanged.

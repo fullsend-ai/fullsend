@@ -145,6 +145,21 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "curl")
 }
 
+func TestShimPerRepoTemplateContent(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.True(t, strings.HasPrefix(s, "---\n"), "per-repo shim must start with YAML document start marker")
+	assert.Contains(t, s, "dispatch:")
+	assert.Contains(t, s, "stop-fix:")
+	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
+	assert.Contains(t, s, "install_mode: per-repo")
+	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
+	assert.NotContains(t, s, "fullsend-dispatch-${{")
+	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
+	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
+}
+
 func TestShimTriggerParity(t *testing.T) {
 	// Both shim templates must declare the same event trigger types so that
 	// per-repo and workflow-call installation modes have identical behavior.
