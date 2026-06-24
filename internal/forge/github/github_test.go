@@ -404,6 +404,21 @@ func TestGetAuthenticatedUserIdentity_AppTokenFails(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err), "should wrap ErrNotFound for App tokens")
 }
 
+func TestGetAuthenticatedUserIdentity_NonPermissionError_NotErrNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Bad Request",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetAuthenticatedUserIdentity(context.Background())
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err), "should NOT wrap ErrNotFound for non-permission errors")
+}
+
 func TestGetAuthenticatedUser_AppEmptySlug(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

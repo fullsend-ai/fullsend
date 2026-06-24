@@ -1360,7 +1360,15 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 func (c *LiveClient) GetAuthenticatedUserIdentity(ctx context.Context) (*forge.UserIdentity, error) {
 	resp, err := c.get(ctx, "/user")
 	if err != nil {
-		return nil, fmt.Errorf("get authenticated user identity: %w: %w", forge.ErrNotFound, err)
+		// Only wrap with ErrNotFound for HTTP 403/404 responses (e.g., GitHub
+		// App installation tokens that cannot call /user). Other errors
+		// (network failures, 5xx, rate limits) are returned unwrapped so
+		// callers can distinguish permanent from transient failures.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusNotFound) {
+			return nil, fmt.Errorf("get authenticated user identity: %w: %w", forge.ErrNotFound, err)
+		}
+		return nil, fmt.Errorf("get authenticated user identity: %w", err)
 	}
 
 	var user struct {
