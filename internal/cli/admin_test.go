@@ -1096,6 +1096,7 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 	// When enabledRepos is nil (user chose not to change enrollment),
 	// buildLayerStack must NOT pass disabled repos to the enrollment layer.
 	stack := buildLayerStack(
+		context.Background(),
 		"test-org", nil, cfg, printer, "user",
 		false, // privateRepo
 		nil,   // enabledRepos (nil = no change)
@@ -1139,6 +1140,7 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	stack := buildLayerStack(
+		context.Background(),
 		"test-org", nil, cfg, printer, "user",
 		false,
 		[]string{}, // explicitly empty (not nil)

@@ -22,6 +22,7 @@ type WorkflowsLayer struct {
 	vendored          bool
 	vendorCollect     VendorCollectFunc
 	direct            bool
+	signOffTrailer    string // e.g. "Signed-off-by: Name <email>"
 }
 
 var _ Layer = (*WorkflowsLayer)(nil)
@@ -48,6 +49,16 @@ func (l *WorkflowsLayer) WithVendorCollect(fn VendorCollectFunc) *WorkflowsLayer
 // to PR on branch protection). The default is PR-based delivery.
 func (l *WorkflowsLayer) WithDirect(direct bool) *WorkflowsLayer {
 	l.direct = direct
+	return l
+}
+
+// WithSignOff configures a Signed-off-by trailer to append to commit
+// messages. This is used for human-driven CLI operations where DCO
+// sign-off is required. Pass an empty string to disable.
+func (l *WorkflowsLayer) WithSignOff(name, email string) *WorkflowsLayer {
+	if name != "" && email != "" {
+		l.signOffTrailer = fmt.Sprintf("Signed-off-by: %s <%s>", name, email)
+	}
 	return l
 }
 
@@ -108,9 +119,9 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting config repo info: %w", err)
 	}
-	commitMsg := fmt.Sprintf("chore: update fullsend-%s scaffold", l.version)
+	commitMsg := l.appendSignOff(fmt.Sprintf("chore: update fullsend-%s scaffold", l.version))
 	if vendorAssetCount > 0 {
-		commitMsg = fmt.Sprintf("chore: update fullsend-%s scaffold with vendored assets", l.version)
+		commitMsg = l.appendSignOff(fmt.Sprintf("chore: update fullsend-%s scaffold with vendored assets", l.version))
 		if l.direct {
 			l.ui.StepStart(fmt.Sprintf("Writing scaffold and vendored assets (%d content files) to %s/%s (%s branch)",
 				vendorAssetCount, l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
@@ -157,7 +168,7 @@ func (l *WorkflowsLayer) activateRepoMaintenance(ctx context.Context) error {
 	// files. Re-writing config.yaml unchanged triggers that push scan without changing
 	// org configuration content.
 	l.ui.StepStart("Activating repo-maintenance workflow")
-	if err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, configFilePath, "chore: activate fullsend workflows", content); err != nil {
+	if err := l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, configFilePath, l.appendSignOff("chore: activate fullsend workflows"), content); err != nil {
 		l.ui.StepFail("Failed to activate repo-maintenance workflow")
 		return fmt.Errorf("writing %s: %w", configFilePath, err)
 	}
@@ -211,6 +222,16 @@ func (l *WorkflowsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	}
 
 	return report, nil
+}
+
+// appendSignOff appends the Signed-off-by trailer to a commit message
+// if one has been configured via WithSignOff. Returns the message
+// unchanged when no trailer is set.
+func (l *WorkflowsLayer) appendSignOff(msg string) string {
+	if l.signOffTrailer == "" {
+		return msg
+	}
+	return msg + "\n\n" + l.signOffTrailer
 }
 
 func (l *WorkflowsLayer) codeownersContent() string {
