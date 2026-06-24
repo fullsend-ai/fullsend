@@ -306,6 +306,31 @@ For each selected sub-agent, assemble a context package containing:
 - `issue_context`: linked issue title, body, comments (for
   `intent-coherence`)
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
+- `scope_constraint`: exploration limit for this sub-agent (see 3e)
+
+#### 3e. Set scope constraints
+
+Based on the triage classification, assign a `scope_constraint` to
+each sub-agent's context package. This constraint is a hard limit that
+sub-agents must honor — it overrides their default exploration budget.
+
+| Change classification                                      | `scope_constraint`                                                                                                                                      |
+|------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Mechanical / value-only (digest bump, version bump, hash swap, URL update, feature flag toggle) | `"trivial: ≤5 tool calls. Read ONLY the diff and linked issue. Do NOT read project docs, surrounding files, git history, or directory listings. Return findings immediately after scope verification."` |
+| Small non-mechanical (under 20 changed lines, structural)  | `"small: ≤15 tool calls. Read the diff, linked issue, and up to 3 context files directly relevant to the change."` |
+| Standard / large                                           | `"none"` (sub-agent uses its own exploration budget)                                                                                                     |
+
+Include `scope_constraint` in each sub-agent's context package. When
+it is not `"none"`, prepend it to the sub-agent prompt as:
+
+```markdown
+## Scope constraint (HARD LIMIT — set by orchestrator)
+
+{scope_constraint}
+```
+
+This section appears before the sub-agent definition so the model sees
+the constraint first.
 
 ### 4. Dispatch sub-agents
 
@@ -313,7 +338,19 @@ For each selected sub-agent:
 
 1. Read the sub-agent definition from `sub-agents/{name}.md`
 2. Extract the `model` from frontmatter
-3. Compose the spawn prompt from three parts:
+3. Compose the spawn prompt from these parts:
+
+   **Part 0 — Scope constraint (conditional):** If `scope_constraint`
+   from step 3e is not `"none"`, prepend:
+
+   ```markdown
+   ## Scope constraint (HARD LIMIT — set by orchestrator)
+
+   {scope_constraint}
+   ```
+
+   This MUST appear before the sub-agent definition so the model sees
+   the hard limit first.
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
    sub-agent file (everything after the frontmatter)
@@ -351,6 +388,9 @@ For each selected sub-agent:
 
    ### Issue context
    <linked issue content or "no linked issue">
+
+   ### Scope constraint
+   <scope_constraint value or "none">
    ```
 
    **Part 5 — Dispatch guard flag:**
