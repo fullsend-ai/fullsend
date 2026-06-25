@@ -142,7 +142,7 @@ jobs:
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
           E2E_MINT_URL: ${{ secrets.E2E_MINT_URL }}
-          E2E_ISSUE_AUTHOR_TOKEN: ${{ secrets.E2E_ISSUE_AUTHOR_TOKEN }}
+          E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
 
       - name: Upload debug screenshots
