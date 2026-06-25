@@ -6,17 +6,21 @@
 # security-sensitive component in the pipeline.
 #
 # Security layers (defense-in-depth):
-#   1. Authoritative secret scan — final gate before any push
-#   2. Authoritative pre-commit — run repo hooks on changed files
-#   3. Branch validation — refuse to push main/master
-#   4. Token isolation — PUSH_TOKEN never enters the sandbox
+#   1. Workflow file block — reject .github/workflows/ changes
+#   2. Authoritative secret scan — final gate before any push
+#   3. Authoritative pre-commit — run repo hooks on changed files
+#   4. Branch validation — refuse to push main/master
+#   5. Token scope — coder token omits workflows:write (GitHub rejects
+#      workflow pushes server-side, but the script-level block is the
+#      primary enforcement so we don't depend on GitHub's permission model)
 #
 # Pre-commit tool deps are auto-installed from .pre-commit-tools.yaml
 # before step 2 to ensure hooks have the binaries they need.
 #
-# Protected-path enforcement lives in post-review.sh: the review agent
-# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
-# agents/). The code agent is free to propose changes to any path.
+# Protected-path enforcement for review approval lives in post-review.sh:
+# the review agent cannot approve PRs that touch sensitive paths (e.g.
+# .github/, CODEOWNERS, agents/). The code agent may propose changes to
+# non-workflow paths; human approval is required for those PRs.
 #
 # Required environment variables:
 #   PUSH_TOKEN        — token with contents:write + pull-requests:write on target repo
@@ -218,6 +222,32 @@ if [ -n "${STRIPPED_FILES}" ]; then
     echo "::notice::All changed files were agent artifacts — nothing to push"
     exit 0
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2c. Block workflow file changes (defense-in-depth)
+#
+# The coder token intentionally omits workflows:write, so GitHub should
+# reject pushes that modify .github/workflows/. This check is a
+# defense-in-depth measure: if the coder role ever gains workflows:write
+# (or GitHub changes its permission model), this gate prevents a
+# prompt-injected agent from pushing malicious workflow files that
+# execute on PR creation with access to repo secrets.
+# ---------------------------------------------------------------------------
+WORKFLOW_FILES=""
+while IFS= read -r file; do
+  [ -z "${file}" ] && continue
+  case "${file}" in
+    .github/workflows/*) WORKFLOW_FILES="${WORKFLOW_FILES}${file}"$'\n' ;;
+  esac
+done <<< "${CHANGED_FILES}"
+
+if [ -n "${WORKFLOW_FILES}" ]; then
+  echo "::error::BLOCKED — agent committed changes to .github/workflows/" >&2
+  echo "::error::Workflow file modifications require human authorship." >&2
+  echo "::error::Files blocked:" >&2
+  echo "${WORKFLOW_FILES}" | sed '/^$/d' | sed 's/::/%3A%3A/g; s/^/  /' >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

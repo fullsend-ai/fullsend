@@ -694,6 +694,85 @@ run_signoff_test "signoff-variant-casing-passes" \
 signed-off-by: bot <bot@noreply.github.com>" \
   "pass"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the workflow file detection logic from
+# post-code.sh section 2c. Given a list of changed files, returns whether
+# the push would be blocked due to .github/workflows/ changes.
+# ---------------------------------------------------------------------------
+detect_workflow_files() {
+  local changed_files="$1"
+  local workflow_files=""
+
+  while IFS= read -r file; do
+    [ -z "${file}" ] && continue
+    case "${file}" in
+      .github/workflows/*) workflow_files="${workflow_files}${file}"$'\n' ;;
+    esac
+  done <<< "${changed_files}"
+
+  if [ -n "${workflow_files}" ]; then
+    echo "blocked:workflow"
+  else
+    echo "pass"
+  fi
+}
+
+run_workflow_test() {
+  local test_name="$1"
+  local changed_files="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(detect_workflow_files "${changed_files}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  changed_files:  '${changed_files}'"
+    echo "  expected:       '${expected}'"
+    echo "  actual:         '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Workflow file detection test cases ---
+
+# .github/workflows/ file should be blocked
+run_workflow_test "workflow-file-blocked" \
+  ".github/workflows/ci.yml" \
+  "blocked:workflow"
+
+# Multiple files including a workflow should be blocked
+run_workflow_test "workflow-among-other-files-blocked" \
+  "src/main.go
+.github/workflows/deploy.yml
+README.md" \
+  "blocked:workflow"
+
+# .github/ files outside workflows/ should NOT be blocked
+run_workflow_test "github-non-workflow-passes" \
+  ".github/CODEOWNERS
+.github/pull_request_template.md" \
+  "pass"
+
+# Normal files should not be blocked
+run_workflow_test "normal-files-pass" \
+  "src/main.go
+internal/handler.go" \
+  "pass"
+
+# Empty input should pass
+run_workflow_test "empty-input-passes" \
+  "" \
+  "pass"
+
+# Deeply nested workflow file should be blocked
+run_workflow_test "nested-workflow-blocked" \
+  ".github/workflows/reusable/build.yml" \
+  "blocked:workflow"
+
 # --- Summary ---
 
 echo ""
