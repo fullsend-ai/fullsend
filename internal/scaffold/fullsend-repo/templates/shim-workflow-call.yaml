@@ -22,8 +22,10 @@ name: fullsend
 permissions:
   actions: write
   id-token: write
-  contents: read
-  pull-requests: read
+  contents: write
+  issues: write
+  packages: read
+  pull-requests: write
 
 on:
   issues:
@@ -46,6 +48,9 @@ jobs:
     uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
 
   stop-fix:
     if: >-

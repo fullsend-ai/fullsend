@@ -1,20 +1,12 @@
 # Reusable dispatch workflow for per-repo installation mode.
-# Routes events to the appropriate stage reusable workflow via conditional
-# workflow_call jobs. This is the per-repo equivalent of the per-org
-# dispatch.yml + thin caller pair.
+# Routes events to the appropriate agent stage and runs the agent inline.
 #
-# Concurrency: each stage job declares a per-role cancel-in-progress dispatch group.
-# Reusable stage workflows use distinct agent-scoped groups (fullsend-{stage}-agent-…)
-# so workflow_call parents are not cancelled. Roles operate independently — review
-# dispatches do not cancel triage, code, fix, etc.
+# Concurrency: each stage job declares an agent-scoped cancel-in-progress
+# group. Roles operate independently — review does not cancel triage, code,
+# fix, etc.
 #
-# Flow: shim (per-repo) → reusable-dispatch.yml → reusable-{stage}.yml
-# Nesting: 3 levels of workflow_call (within GitHub's 4-level limit)
-#
-# Stage workflows are referenced with fully-qualified paths
-# (fullsend-ai/fullsend/.github/workflows/reusable-{stage}.yml@v0) because
-# relative (./) paths resolve against the *caller's* repo, which breaks
-# per-repo mode where the caller is an external repo.
+# Flow: shim (per-repo) → reusable-dispatch.yml (route + agent)
+# Nesting: 2 levels of workflow_call (within GitHub's 4-level limit)
 #
 # Security: all user-controlled inputs (comment body, labels, usernames)
 # are passed via env: variables, not interpolated in run: blocks.
@@ -414,132 +406,756 @@ jobs:
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
 
+  # ---------------------------------------------------------------------------
+  # Stage jobs — inlined from former reusable-{stage}.yml workflows
+  # ---------------------------------------------------------------------------
+
   triage:
     name: Triage
     needs: route
     if: needs.route.outputs.stage == 'triage'
+    runs-on: ubuntu-latest
     concurrency:
-      group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: fullsend-triage-agent-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
-    # @v0 is hardcoded — GHA does not support expressions in uses:.
-    # fullsend_ai_ref controls the ref for composite actions inside stage workflows.
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
-    with:
-      event_type: ${{ github.event_name }}
-      source_repo: ${{ github.repository }}
-      event_payload: ${{ needs.route.outputs.event_payload }}
-      install_mode: ${{ inputs.install_mode }}
-      mint_url: ${{ inputs.mint_url }}
-      gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+
+    steps:
+      - name: Checkout config repository (per-repo mode)
+        if: inputs.install_mode == 'per-repo'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout config repository (per-org mode)
+        if: inputs.install_mode == 'per-org'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository_owner }}/.fullsend
+          ref: main
+          fetch-depth: 1
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace
+        id: workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          install_mode: ${{ inputs.install_mode }}
+          source_repo: ${{ github.repository }}
+
+      - name: Mint triage token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: triage
+          repos: ${{ steps.workspace.outputs.repo_name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: TRIAGE_
+          TRIAGE_TARGET_REPO_DIR: target-repo
+          TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run triage agent
+        uses: ./.defaults/
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        with:
+          agent: triage
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ github.repository }}
+          status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          mint-url: ${{ inputs.mint_url }}
 
   code:
     name: Code
     needs: route
     if: needs.route.outputs.stage == 'code'
+    runs-on: ubuntu-latest
     concurrency:
-      group: fullsend-code-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: fullsend-code-agent-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
-    with:
-      event_type: ${{ github.event_name }}
-      source_repo: ${{ github.repository }}
-      event_payload: ${{ needs.route.outputs.event_payload }}
-      install_mode: ${{ inputs.install_mode }}
-      mint_url: ${{ inputs.mint_url }}
-      gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace
+        id: workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          install_mode: ${{ inputs.install_mode }}
+          source_repo: ${{ github.repository }}
+
+      - name: Mint coder token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: coder
+          repos: ${{ steps.workspace.outputs.repo_name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate inputs
+        id: validate
+        env:
+          ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          COMMENT_BODY: ${{ fromJSON(needs.route.outputs.event_payload).comment.body }}
+        run: bash scripts/pre-code.sh
+
+      - name: Setup GCP and prepare credentials
+        if: steps.validate.outputs.skipped != 'true'
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Resolve bot identity
+        if: steps.validate.outputs.skipped != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          read -r BOT_LOGIN BOT_USER_ID < <(
+            gh api graphql -f query='{ viewer { login databaseId } }' \
+              | jq -r '.data.viewer | "\(.login) \(.databaseId)"'
+          )
+          GIT_BOT_EMAIL="${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
+          echo "Resolved bot identity: ${BOT_LOGIN} (${BOT_USER_ID})"
+          echo "GIT_BOT_EMAIL=${GIT_BOT_EMAIL}" >> "${GITHUB_ENV}"
+
+      - name: Setup agent environment
+        if: steps.validate.outputs.skipped != 'true'
+        env:
+          AGENT_PREFIX: CODE_
+          CODE_TARGET_REPO_DIR: target-repo
+          CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          CODE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          CODE_ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run code agent
+        if: steps.validate.outputs.skipped != 'true'
+        uses: ./.defaults/
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          CODE_ALLOWED_TARGET_BRANCHES: ''
+          TARGET_BRANCH: main
+        with:
+          agent: code
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ github.repository }}
+          status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          mint-url: ${{ inputs.mint_url }}
 
   review:
     name: Review
     needs: route
     if: needs.route.outputs.stage == 'review'
+    runs-on: ubuntu-latest
     concurrency:
-      group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: fullsend-review-agent-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
-    with:
-      event_type: ${{ github.event_name }}
-      source_repo: ${{ github.repository }}
-      event_payload: ${{ needs.route.outputs.event_payload }}
-      install_mode: ${{ inputs.install_mode }}
-      mint_url: ${{ inputs.mint_url }}
-      gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace
+        id: workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          install_mode: ${{ inputs.install_mode }}
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.workspace.outputs.repo_name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Pre-fetch prior review context
+        id: prior-review
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUM: >-
+            ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number
+             || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+        run: bash scripts/pre-fetch-prior-review.sh
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: REVIEW_
+          REVIEW_TARGET_REPO_DIR: target-repo
+          REVIEW_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          REVIEW_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run review agent
+        uses: ./.defaults/
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          GITHUB_PR_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          PRIOR_REVIEW_SHA: ${{ steps.prior-review.outputs.prior_sha }}
+          PRIOR_REVIEW_FILE: ${{ steps.prior-review.outputs.prior_review_file }}
+          PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
+        with:
+          agent: review
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ github.repository }}
+          status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          mint-url: ${{ inputs.mint_url }}
 
   fix:
     name: Fix
     needs: route
     if: needs.route.outputs.stage == 'fix'
+    runs-on: ubuntu-latest
     concurrency:
-      group: fullsend-fix-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: fullsend-fix-agent-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0
-    with:
-      event_type: ${{ github.event_name }}
-      source_repo: ${{ github.repository }}
-      event_payload: ${{ needs.route.outputs.event_payload }}
-      trigger_source: ${{ needs.route.outputs.trigger_source }}
-      install_mode: ${{ inputs.install_mode }}
-      mint_url: ${{ inputs.mint_url }}
-      gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace
+        id: workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          install_mode: ${{ inputs.install_mode }}
+          source_repo: ${{ github.repository }}
+
+      - name: Mint coder token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: coder
+          repos: ${{ steps.workspace.outputs.repo_name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Resolve bot identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          read -r BOT_LOGIN BOT_USER_ID < <(
+            gh api graphql -f query='{ viewer { login databaseId } }' \
+              | jq -r '.data.viewer | "\(.login) \(.databaseId)"'
+          )
+          GIT_BOT_EMAIL="${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
+          echo "Resolved bot identity: ${BOT_LOGIN} (${BOT_USER_ID})"
+          echo "GIT_BOT_EMAIL=${GIT_BOT_EMAIL}" >> "${GITHUB_ENV}"
+
+      - name: Block fork PRs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          # Fork PRs must not trigger the fix agent (security: prevents
+          # forked repos from running code with org-level tokens).
+          HEAD_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.repo.full_name // empty')"
+          BASE_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.repo.full_name // empty')"
+          if [[ -n "${HEAD_REPO}" && -n "${BASE_REPO}" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+            echo "::error::Fork PRs are not allowed to trigger the fix agent"
+            exit 1
+          fi
+          # Fallback for issue_comment events (payload has .issue, not .pull_request).
+          if [[ -z "${HEAD_REPO}" && -z "${BASE_REPO}" ]]; then
+            PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.issue.number // empty')"
+            if [[ -n "${PR_NUM}" ]]; then
+              IS_FORK="$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
+                --json isCrossRepository --jq '.isCrossRepository' 2>/dev/null)" || true
+              if [[ -z "${IS_FORK}" ]]; then
+                echo "::error::Could not determine if PR is from a fork — failing closed"
+                exit 1
+              fi
+              if [[ "${IS_FORK}" == "true" ]]; then
+                echo "::error::Fork PRs are not allowed to trigger the fix agent"
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Extract PR number and context
+        id: context
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+          TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          # Extract PR number from event payload.
+          PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.number // empty')"
+          if [[ -z "${PR_NUM}" ]]; then
+            PR_NUM="$(echo "${EVENT_PAYLOAD}" | jq -r '.issue.number // empty')"
+          fi
+          if [[ -z "${PR_NUM}" || ! "${PR_NUM}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Could not extract valid PR number from event"
+            exit 1
+          fi
+          echo "pr_number=${PR_NUM}" >> "${GITHUB_OUTPUT}"
+
+          # Resolve the PR head branch. For pull_request_review events the
+          # payload has .pull_request.head.ref. For /fix comment events
+          # (issue_comment) it does not — query the GitHub API instead.
+          HEAD_REF="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.ref // empty')"
+          BASE_REF="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.ref // empty')"
+          if [[ -z "${HEAD_REF}" ]]; then
+            HEAD_REF="$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+          fi
+          if [[ -z "${BASE_REF}" ]]; then
+            BASE_REF="$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" --json baseRefName --jq '.baseRefName' 2>/dev/null || echo 'main')"
+          fi
+          if [[ -z "${HEAD_REF}" ]]; then
+            echo "::error::Could not resolve PR head branch"
+            exit 1
+          fi
+          echo "head_ref=${HEAD_REF}" >> "${GITHUB_OUTPUT}"
+          echo "base_ref=${BASE_REF}" >> "${GITHUB_OUTPUT}"
+          echo "PR #${PR_NUM}: ${HEAD_REF} → ${BASE_REF}"
+
+          # Extract human instruction (from /fs-fix comment).
+          # Default to "none" so the env var is always non-empty (the fullsend
+          # binary rejects empty runner_env values). The agent checks
+          # TRIGGER_SOURCE before reading this value.
+          INSTRUCTION="none"
+          if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
+            COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
+            if [[ -n "${COMMENT_BODY}" ]]; then
+              # Strip the /fs-fix prefix to get the instruction.
+              INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
+            fi
+            if [[ -z "${INSTRUCTION}" ]]; then
+              INSTRUCTION="none"
+            fi
+          fi
+          # Use a random heredoc delimiter so a /fs-fix comment containing
+          # the literal delimiter string cannot inject GITHUB_OUTPUT values.
+          DELIM="INSTRUCTION_$(openssl rand -hex 8)"
+          {
+            echo "instruction<<${DELIM}"
+            echo "${INSTRUCTION}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
+
+          # Count previous fix-agent commits on this PR to determine iteration.
+          # Uses the API (no checkout needed) to count commits authored by the
+          # fix agent identity. Falls back to ITERATION_CAP if the query fails.
+          # Note: TOCTOU — another run could push between this count and the
+          # agent execution, allowing at most +1 overshoot. The concurrency
+          # group's cancel-in-progress mostly prevents this.
+          FIX_COMMITS="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/commits" \
+            --paginate 2>/dev/null \
+            | jq -s 'add | [.[] | select(.commit.author.name == "fullsend-fix")] | length')" \
+            || { echo "::warning::Could not count prior fix commits — defaulting to cap"; FIX_COMMITS="${ITERATION_CAP:-5}"; }
+          ITERATION=$(( FIX_COMMITS + 1 ))
+          echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
+          echo "iteration=${ITERATION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check fix eligibility
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          PR_NUM: ${{ steps.context.outputs.pr_number }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
+            PR_INFO=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
+              --json labels,author --jq '{labels: [.labels[].name], author: .author.login}') \
+              || { echo "::error::Failed to fetch PR info for #${PR_NUM}"; exit 1; }
+
+            HAS_NO_FIX=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-no-fix")')
+            if [[ "${HAS_NO_FIX}" == "true" ]]; then
+              echo "::warning::PR #${PR_NUM} has 'fullsend-no-fix' label — skipping bot-triggered fix"
+              exit 1
+            fi
+
+            PR_AUTHOR=$(echo "${PR_INFO}" | jq -r '.author')
+            if [[ ! "${PR_AUTHOR}" =~ \[bot\]$ ]]; then
+              HAS_FIX_LABEL=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-fix")')
+              if [[ "${HAS_FIX_LABEL}" != "true" ]]; then
+                echo "::warning::Human-authored PR #${PR_NUM} without 'fullsend-fix' label — skipping bot-triggered fix"
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Checkout target repository at PR HEAD
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.context.outputs.head_ref }}
+
+      - name: Record pre-agent HEAD
+        id: pre-agent
+        working-directory: target-repo
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          echo "Pre-agent HEAD: ${SHA}"
+          echo "head=${SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pre-fetch review body
+        id: review-body
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUM: ${{ steps.context.outputs.pr_number }}
+          TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
+            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and .user.login == \"${REVIEW_BOT}\")] | last | .body // \"\"" \
+            > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
+          BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
+          echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
+          MAX_REVIEW_BYTES=1048576  # 1 MB
+          if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
+            echo "::error::Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
+            exit 1
+          fi
+          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ && "${BYTE_COUNT}" -le 1 ]]; then
+            echo "::error::Bot-triggered run but review body is empty — nothing to fix"
+            exit 1
+          fi
+          echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate inputs
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
+          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+        run: bash scripts/pre-fix.sh
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: FIX_
+          FIX_TARGET_REPO_DIR: target-repo
+          FIX_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          FIX_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          FIX_PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          FIX_TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+          FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
+          FIX_REPO_FULL_NAME: ${{ github.repository }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run fix agent
+        uses: ./.defaults/
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          TARGET_BRANCH: ${{ steps.context.outputs.base_ref }}
+          TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
+          REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
+          PRE_AGENT_HEAD: ${{ steps.pre-agent.outputs.head }}
+        with:
+          agent: fix
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ github.repository }}
+          status-number: ${{ steps.context.outputs.pr_number }}
+          mint-url: ${{ inputs.mint_url }}
 
   retro:
     name: Retro
     needs: route
     if: needs.route.outputs.stage == 'retro'
+    runs-on: ubuntu-latest
     concurrency:
-      group: fullsend-retro-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: fullsend-retro-agent-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
-    with:
-      event_type: ${{ github.event_name }}
-      source_repo: ${{ github.repository }}
-      event_payload: ${{ needs.route.outputs.event_payload }}
-      install_mode: ${{ inputs.install_mode }}
-      mint_url: ${{ inputs.mint_url }}
-      gcp_region: ${{ inputs.gcp_region }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace
+        id: workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          install_mode: ${{ inputs.install_mode }}
+          source_repo: ${{ github.repository }}
+
+      - name: Mint retro token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: retro
+          repos: ${{ inputs.install_mode == 'per-repo' && steps.workspace.outputs.repo_name || format('{0},.fullsend', steps.workspace.outputs.repo_name) }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: RETRO_
+          RETRO_TARGET_REPO_DIR: target-repo
+          RETRO_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          RETRO_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run retro agent
+        uses: ./.defaults/
+        env:
+          ORIGINATING_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          RETRO_COMMENT: ${{ fromJSON(needs.route.outputs.event_payload).comment.body || '' }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          MINT_REPOS: ${{ steps.workspace.outputs.repo_name != '' && (inputs.install_mode == 'per-repo' && steps.workspace.outputs.repo_name || format('{0},.fullsend', steps.workspace.outputs.repo_name)) || '' }}
+        with:
+          agent: retro
+          version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ github.repository }}
+          status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          mint-url: ${{ inputs.mint_url }}
 
   prioritize:
     name: Prioritize
     needs: route
     if: needs.route.outputs.stage == 'prioritize'
+    runs-on: ubuntu-latest
     concurrency:
-      group: fullsend-prioritize-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: fullsend-prioritize-agent-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0
-    with:
-      event_type: ${{ github.event_name }}
-      source_repo: ${{ github.repository }}
-      event_payload: ${{ needs.route.outputs.event_payload }}
-      install_mode: ${{ inputs.install_mode }}
-      mint_url: ${{ inputs.mint_url }}
-      gcp_region: ${{ inputs.gcp_region }}
-      project_number: ${{ inputs.project_number }}
-      fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ inputs.fullsend_ai_ref }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace
+        id: workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          install_mode: ${{ inputs.install_mode }}
+          source_repo: ${{ github.repository }}
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: PRIORITIZE_
+          PRIORITIZE_ORG: ${{ github.repository_owner }}
+          PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}
+          PRIORITIZE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          PRIORITIZE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Create empty target-repo directory
+        run: mkdir -p target-repo
+
+      - name: Run prioritize agent
+        uses: ./.defaults/
+        env:
+          GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        with:
+          agent: prioritize
+          version: ${{ inputs.fullsend_version }}
+          mint-url: ${{ inputs.mint_url }}
