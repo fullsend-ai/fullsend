@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
+  "title": "NormalizedEvent",
+  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0054).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "entity", "transition", "actor", "state", "source"],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
+      "description": "Target enrolled repository (owner/name)."
+    },
+    "entity": {
+      "$ref": "#/$defs/entity"
+    },
+    "transition": {
+      "$ref": "#/$defs/transition"
+    },
+    "actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    }
+  },
+  "$defs": {
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "url"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["work_item", "change_proposal"],
+          "description": "Forge-neutral entity kind (issue vs PR/MR)."
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Entity number within repo."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$",
+          "description": "Canonical entity URL. GitLab and other forges use their native URL form until a forge-neutral URI scheme is defined."
+        },
+        "linked_change_proposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "url"],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$"
+            }
+          },
+          "description": "When transition occurs on a work_item that is also a change proposal (e.g. GitHub PR comment events)."
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "opened",
+            "updated",
+            "closed",
+            "marked_ready",
+            "label_changed",
+            "comment_added",
+            "review_submitted"
+          ]
+        },
+        "label": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "action"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "action": {
+              "type": "string",
+              "enum": ["added", "removed"]
+            }
+          }
+        },
+        "comment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["body"],
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "First whitespace-delimited token of the first line (e.g. /fs-triage)."
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 4096,
+              "description": "Full comment body, truncated to 4096 bytes for dispatch."
+            },
+            "instruction": {
+              "type": "string",
+              "maxLength": 10000,
+              "description": "Text after the command on slash-command comments (e.g. /fs-fix instruction)."
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reviewer_id"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "approved",
+                "changes_requested",
+                "commented",
+                "dismissed"
+              ]
+            },
+            "reviewer_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Forge login of the reviewer (bot accounts end with [bot] on GitHub)."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "label_changed" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["label"] }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "comment_added" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["comment"] }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "review_submitted" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["review"] }
+        }
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "is_entity_author"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Forge login or service account identifier."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["human", "bot"]
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "member",
+            "collaborator",
+            "contributor",
+            "none",
+            "external"
+          ],
+          "description": "Normalized permission level of the actor on the target repo."
+        },
+        "is_entity_author": {
+          "type": "boolean",
+          "description": "True when actor.id is the author of the work item or change proposal."
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels"],
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Snapshot of label names on the entity at event time."
+        },
+        "change_proposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "head_repo",
+            "base_repo",
+            "head_ref",
+            "base_ref",
+            "author_id",
+            "is_fork"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "head_repo": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$"
+            },
+            "base_repo": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$"
+            },
+            "head_ref": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Head branch name (Git ref) for checkout and push."
+            },
+            "base_ref": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Base branch name (Git ref) the change proposal targets."
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$",
+              "description": "Commit SHA at the change-proposal head when known (optional; adapters should populate from webhooks when available)."
+            },
+            "author_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "is_fork": {
+              "type": "boolean"
+            }
+          },
+          "description": "Required when the matched harness needs change-proposal execution context (review, fix, retro on a PR/MR). Adapters must populate branch and repo fields so dispatch can project event_payload without API round-trips."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "raw_type"],
+      "properties": {
+        "system": {
+          "type": "string",
+          "enum": ["github", "gitlab", "manual", "schedule"]
+        },
+        "raw_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Native event type (e.g. issue_comment, merge_request_event)."
+        },
+        "raw_action": {
+          "type": "string",
+          "description": "Native action when applicable (e.g. created, labeled, synchronize)."
+        }
+      }
+    }
+  }
+}

@@ -101,6 +101,10 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   an allowlist and falls back to the repo's auto-detected default branch.
   Branch-targeting logic lives in the portable post-script, not in workflow
   YAML ([ADR 0053](ADRs/0053-agent-driven-branch-targeting.md)).
+- Harness trigger expressions: each harness may declare an optional CEL
+  `trigger` boolean evaluated against a forge-neutral `NormalizedEvent`.
+  `fullsend dispatch` matches events to harnesses via input/output drivers
+  ([ADR 0054](ADRs/0054-harness-cel-dispatch.md)).
 
 **Open questions:**
 
@@ -155,6 +159,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
 **Decided:**
 
 - Event-driven stage dispatch runs synchronously via `workflow_call` to preserve run correlation in the GitHub Actions UI (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
+- Routing moves from workflow bash to harness CEL `trigger` expressions
+  evaluated by `fullsend dispatch` with pluggable input/output drivers
+  operating on a `NormalizedEvent` struct
+  ([ADR 0054](ADRs/0054-harness-cel-dispatch.md)).
 
 **Open questions:**
 
