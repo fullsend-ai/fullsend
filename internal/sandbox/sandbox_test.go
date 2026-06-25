@@ -97,11 +97,11 @@ func TestBuildProviderArgs_EmptyCredential(t *testing.T) {
 		"KEY": "${EMPTY_VAR}",
 	}
 
-	_, extraEnv, secrets := buildProviderArgs("p", "custom", credentials, nil)
+	args, extraEnv, secrets := buildProviderArgs("p", "custom", credentials, nil)
 
-	// Empty values should still be set in env (openshell may accept empty).
-	require.Len(t, extraEnv, 1)
-	assert.Equal(t, "KEY=", extraEnv[0])
+	// Empty values use inline KEY= form, not bare-key + env.
+	assert.Empty(t, extraEnv)
+	assert.Contains(t, args, "KEY=")
 
 	// Empty string is not added to secrets (nothing to redact).
 	assert.Empty(t, secrets)

@@ -14,7 +14,11 @@ A minimal harness configuration (based on actual fullsend agent harnesses):
 agent: agents/code.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/code.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github
+  - package-registries
 timeout_minutes: 35
 
 skills:
@@ -335,7 +339,11 @@ Create `.fullsend/customized/harness/code.yaml` to override the code agent's exe
 agent: agents/code.md
 model: claude-opus-4-6           # Changed from: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/code.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github
+  - package-registries
 timeout_minutes: 45              # Changed from: 35
 
 skills:

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -630,19 +631,49 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(profileStart).Seconds()))
 
 		providersDir := filepath.Join(absFullsendDir, "providers")
-		providerDefs, err := harness.LoadProviderDefs(providersDir)
+		declared := make(map[string]struct{}, len(h.Providers))
+		for _, p := range h.Providers {
+			declared[p] = struct{}{}
+		}
+		providerDefs, err := harness.LoadProviderDefs(providersDir, declared)
 		if err != nil {
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
+		created := make(map[string]struct{}, len(providerDefs))
+		var (
+			mu   sync.Mutex
+			wg   sync.WaitGroup
+			errs []error
+		)
 		for _, pd := range providerDefs {
-			providerStart := time.Now()
-			printer.StepStart("Ensuring provider: " + pd.Name)
-			if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
-				printer.StepFail("Failed to create provider " + pd.Name)
-				return fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
+			if _, ok := declared[pd.Name]; !ok {
+				continue
 			}
-			printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			created[pd.Name] = struct{}{}
+			wg.Add(1)
+			go func(pd harness.ProviderDef) {
+				defer wg.Done()
+				providerStart := time.Now()
+				printer.StepStart("Ensuring provider: " + pd.Name)
+				if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
+					printer.StepFail("Failed to create provider " + pd.Name)
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
+					mu.Unlock()
+					return
+				}
+				printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			}(pd)
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return err
+		}
+		for _, p := range h.Providers {
+			if _, ok := created[p]; !ok {
+				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
+			}
 		}
 	}
 

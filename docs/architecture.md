@@ -73,6 +73,10 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
+**Decided:**
+
+- Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0055](ADRs/0055-provider-backed-policy-composition.md)).
+
 ## Agent Harness
 
 The configuration and context layer that prepares an agent for its task. Responsible for providing skills, system prompts, codebase context, tool definitions, and behavioral instructions to the agent runtime.
@@ -600,7 +604,8 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ Loads harness/code.yaml:                                  │ ║
                  ║ │   agent: agents/code.md                                   │ ║
                  ║ │   image: ghcr.io/fullsend-ai/fullsend-code:latest         │ ║
-                 ║ │   policy: policies/code.yaml                              │ ║
+                 ║ │   policy: policies/base.yaml                              │ ║
+                 ║ │   providers: [vertex-ai, github, package-registries]      │ ║
                  ║ │   skills: [skills/code-implementation]                    │ ║
                  ║ │   pre_script: scripts/pre-code.sh                         │ ║
                  ║ │   post_script: scripts/post-code.sh                       │ ║
@@ -611,7 +616,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ ┌───────────────────────────────────────────────────────┐ │ ║
                  ║ │ │ OPENSHELL SANDBOX                                     │ │ ║
                  ║ │ │                                                       │ │ ║
-                 ║ │ │ Created with --from image, --policy code.yaml.        │ │ ║
+                 ║ │ │ Created with --from image, --policy base.yaml.        │ │ ║
                  ║ │ │ Bootstrapped via openshell upload/exec:               │ │ ║
                  ║ │ │   agent def    → /sandbox/claude-config/agents/       │ │ ║
                  ║ │ │   skills       → /sandbox/claude-config/skills/       │ │ ║

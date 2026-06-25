@@ -2,12 +2,14 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,6 +25,7 @@ const (
 	readyCtxBuffer  = 10 * time.Second
 	maxReadyTimeout = 600 * time.Second
 	transferTimeout = 5 * time.Minute
+	providerTimeout = 30 * time.Second
 
 	DefaultMaxCreateAttempts = 3
 	retryInitialBackoff      = 5 * time.Second
@@ -111,7 +114,9 @@ func inGitDir(path, root string) bool {
 func EnsureProvider(name, providerType string, credentials, config map[string]string) error {
 	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config)
 
-	cmd := exec.Command("openshell", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "openshell", args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -125,7 +130,7 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
-		return fmt.Errorf("provider create %q failed: %s", name, outStr)
+		return fmt.Errorf("provider create %q failed: %w (output: %s)", name, err, outStr)
 	}
 	return nil
 }
@@ -133,7 +138,9 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 // updateProvider runs openshell provider update for an already-existing provider.
 func updateProvider(name string, credentials, config map[string]string, extraEnv, secrets []string) error {
 	args := buildProviderUpdateArgs(name, credentials, config)
-	cmd := exec.Command("openshell", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "openshell", args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -141,7 +148,7 @@ func updateProvider(name string, credentials, config map[string]string, extraEnv
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
-		return fmt.Errorf("provider update %q failed: %s", name, outStr)
+		return fmt.Errorf("provider update %q failed: %w (output: %s)", name, err, outStr)
 	}
 	return nil
 }
@@ -150,11 +157,20 @@ func updateProvider(name string, credentials, config map[string]string, extraEnv
 // The update subcommand takes a positional name (not --name/--type).
 func buildProviderUpdateArgs(name string, credentials, config map[string]string) []string {
 	args := []string{"provider", "update", name}
-	for k := range credentials {
-		args = append(args, "--credential", k)
+	credKeys := sortedKeys(credentials)
+	for _, k := range credKeys {
+		expanded := os.ExpandEnv(credentials[k])
+		if expanded != "" {
+			args = append(args, "--credential", k)
+		} else {
+			// Empty value: use inline KEY= form to avoid env var lookup.
+			// See https://github.com/NVIDIA/OpenShell/issues/1978
+			args = append(args, "--credential", k+"=")
+		}
 	}
-	for k, v := range config {
-		expanded := os.ExpandEnv(v)
+	cfgKeys := sortedKeys(config)
+	for _, k := range cfgKeys {
+		expanded := os.ExpandEnv(config[k])
 		args = append(args, "--config", k+"="+expanded)
 	}
 	return args
@@ -171,20 +187,35 @@ func buildProviderArgs(name, providerType string, credentials, config map[string
 		"--type", providerType,
 	}
 
-	for k, v := range credentials {
-		expanded := os.ExpandEnv(v)
+	credKeys := sortedKeys(credentials)
+	for _, k := range credKeys {
+		expanded := os.ExpandEnv(credentials[k])
 		if expanded != "" {
 			secrets = append(secrets, expanded)
+			extraEnv = append(extraEnv, fmt.Sprintf("%s=%s", k, expanded))
+			args = append(args, "--credential", k)
+		} else {
+			// Empty value: use inline KEY= form to avoid env var lookup.
+			// See https://github.com/NVIDIA/OpenShell/issues/1978
+			args = append(args, "--credential", k+"=")
 		}
-		extraEnv = append(extraEnv, fmt.Sprintf("%s=%s", k, expanded))
-		args = append(args, "--credential", k)
 	}
-	for k, v := range config {
-		expanded := os.ExpandEnv(v)
+	cfgKeys := sortedKeys(config)
+	for _, k := range cfgKeys {
+		expanded := os.ExpandEnv(config[k])
 		args = append(args, "--config", k+"="+expanded)
 	}
 
 	return args, extraEnv, secrets
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // EnsureAvailable checks that the openshell binary is in PATH.
@@ -214,13 +245,40 @@ func CheckGateway() error {
 // gateway via openshell provider profile import. If the directory does not
 // exist, this is a no-op. This allows callers to import profiles from optional
 // directories without checking existence first.
+//
+// The import is made idempotent by deleting any pre-existing profiles before
+// re-importing. This handles repeated local runs where the gateway persists
+// across invocations. In CI the gateway starts fresh, so the deletes are no-ops.
+//
+// The best-effort delete derives the profile ID from the filename (e.g.
+// "fullsend-vertex-ai.yaml" → "fullsend-vertex-ai"). Profile YAML files
+// must use a filename that matches their internal id field.
 func ImportProfiles(dir string) error {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return nil
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking profiles directory %s: %w", dir, err)
 	}
-	out, err := exec.Command("openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("provider profile import from %s failed: %s", dir, strings.TrimSpace(string(out)))
+		return fmt.Errorf("reading profiles directory %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".yaml"), ".yml")
+		// Best-effort delete; ignore errors (profile may not exist yet).
+		ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+		exec.CommandContext(ctx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
+		cancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("provider profile import from %s failed: %w (output: %s)", dir, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -228,9 +286,11 @@ func ImportProfiles(dir string) error {
 // EnableProvidersV2 enables the providers_v2_enabled setting globally in the
 // openshell gateway. This is idempotent and can be called multiple times.
 func EnableProvidersV2() error {
-	out, err := exec.Command("openshell", "settings", "set", "providers_v2_enabled", "true", "--global").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "openshell", "settings", "set", "--key", "providers_v2_enabled", "--value", "true", "--global", "--yes").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to enable providers_v2: %s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("failed to enable providers_v2: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -6,7 +6,7 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/base.yaml
 providers:
   - vertex-ai
-  - github
+  - github-ro
   - github-artifacts
 
 role: retro
