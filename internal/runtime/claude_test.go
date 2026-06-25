@@ -334,3 +334,58 @@ func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "finding transcripts")
 }
+
+func TestResolveSkillDisplayName(t *testing.T) {
+	tests := []struct {
+		name     string
+		dirName  string
+		skillMD  string // empty means no SKILL.md
+		expected string
+	}{
+		{
+			name:     "frontmatter name overrides directory name",
+			dirName:  "tree",
+			skillMD:  "---\nname: architecture\n---\n# Architecture skill",
+			expected: "architecture",
+		},
+		{
+			name:     "falls back to filepath.Base when no SKILL.md",
+			dirName:  "my-skill",
+			skillMD:  "",
+			expected: "my-skill",
+		},
+		{
+			name:     "falls back when frontmatter has no name field",
+			dirName:  "tree",
+			skillMD:  "---\ndescription: some skill\n---\n# Content",
+			expected: "tree",
+		},
+		{
+			name:     "falls back when SKILL.md has no frontmatter",
+			dirName:  "tree",
+			skillMD:  "# Just a heading\nNo frontmatter here.",
+			expected: "tree",
+		},
+		{
+			name:     "local skill with matching directory name",
+			dirName:  "public-research",
+			skillMD:  "---\nname: public-research\n---\n# Public Research",
+			expected: "public-research",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), tc.dirName)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			if tc.skillMD != "" {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(dir, "SKILL.md"),
+					[]byte(tc.skillMD), 0o644))
+			}
+
+			got := resolveSkillDisplayName(dir)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}

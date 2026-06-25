@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -58,7 +59,7 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 			fmt.Sprintf("%s/skills/", configDir)); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
 		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", filepath.Base(skillPath))
+		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	var pluginDirs []string
@@ -190,6 +191,22 @@ func (ClaudeRuntime) ParseTranscriptErrors(transcriptDir string) []TranscriptErr
 
 func (ClaudeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 	emitTranscriptErrors(w, summaries)
+}
+
+// resolveSkillDisplayName returns a human-friendly name for a skill directory.
+// It reads the SKILL.md frontmatter name if available, falling back to
+// filepath.Base for local skills where the directory name is already correct.
+func resolveSkillDisplayName(skillPath string) string {
+	base := filepath.Base(skillPath)
+	data, err := os.ReadFile(filepath.Join(skillPath, "SKILL.md"))
+	if err != nil {
+		return base
+	}
+	meta, err := skill.ParseFrontmatter(data)
+	if err != nil || meta == nil || meta.Name == "" {
+		return base
+	}
+	return meta.Name
 }
 
 func buildRunCommand(params RunParams) string {

@@ -68,6 +68,7 @@ repos:
             \.github/workflows/
             |\.github/actions/
             |internal/scaffold/fullsend-repo/\.github/workflows/
+            |action\.yml$
           )
         pass_filenames: false
 

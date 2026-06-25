@@ -718,7 +718,7 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 		"push trigger must include workflow_call shim template so changes propagate to enrolled repos")
 	assert.NotContains(t, s, "templates/shim-workflow.yaml",
 		"PAT shim template reference should be removed")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@v0")
+	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
 	assert.Contains(t, s, "Checkout upstream scripts")
 	assert.Contains(t, s, "Prepare scripts")
 	assert.Contains(t, s, "customized/scripts")
@@ -799,7 +799,7 @@ func TestPrioritizeSchedulerWorkflowContent(t *testing.T) {
 	require.NotEqual(t, -1, guardIndex)
 	require.NotEqual(t, -1, projectViewIndex)
 	assert.Less(t, guardIndex, projectViewIndex, "PROJECT_NUMBER must be checked before gh project view")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@v0")
+	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
 	assert.Contains(t, s, "role: fullsend")
 	assert.Contains(t, s, "id-token: write")
 	assert.NotContains(t, s, "create-github-app-token")
