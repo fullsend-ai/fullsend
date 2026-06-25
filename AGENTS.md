@@ -38,10 +38,11 @@ When making changes to Go code under `cmd/` or `internal/`:
 
 ### Running e2e tests
 
-The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Credentials are never stored in the repo.
+The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
 
-- **CI:** Uses the hosted public mint (same default as `fullsend admin --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
-- **Local:** Run `gh auth login` (or set `GH_TOKEN` to a token with sufficient scopes) for pool-org admin operations. Mint uses `FULLSEND_MINT_URL` or the hosted default.
+- **CI (mint):** Uses the hosted public mint (same default as `fullsend admin --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
+- **CI (triage smoke test, interim):** Repository secret `E2E_GITHUB_PASSWORD` must hold a **user PAT** with write access on pool org repos — the legacy secret name is retained, but the value is a PAT, not a login password. Mint tokens create bot-authored issues that [ADR 0054](docs/ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md) dispatch rejects for auto-triage; the test opens issues as a human actor instead. Removal tracked in [#2641](https://github.com/fullsend-ai/fullsend/issues/2641).
+- **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access) for mint and triage test issues. Mint uses `FULLSEND_MINT_URL` or the hosted default.
 
 See `docs/guides/dev/e2e-testing.md` and `make help` for pool org setup and troubleshooting.
 
