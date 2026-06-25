@@ -7,7 +7,7 @@ export function secretNameForRole(role: string): string {
 }
 
 export function variableNameForRole(role: string): string {
-  return `FULLSEND_${role.toUpperCase()}_APP_ID`;
+  return `FULLSEND_${role.toUpperCase()}_CLIENT_ID`;
 }
 
 /**
