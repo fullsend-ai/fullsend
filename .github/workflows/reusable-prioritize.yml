@@ -40,6 +40,11 @@ on:
         type: string
         required: false
         default: v0
+      runner_image:
+        description: GitHub Actions runner image for agent jobs.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: true
@@ -53,7 +58,7 @@ concurrency:
 jobs:
   prioritize:
     name: Prioritize
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
       contents: read

@@ -14,6 +14,7 @@ type RenderOptions struct {
 	PerRepo     bool
 	UpstreamRef string // commit SHA to pin workflow refs to; empty = use DefaultUpstreamRef
 	UpstreamTag string // version tag for traceability comment (e.g. "v0.19.0")
+	RunnerImage string // GitHub Actions runner image; empty = use DefaultGHRunner
 }
 
 // RenderOptionsForInstall builds render options from the --vendor flag.
@@ -53,6 +54,7 @@ func RenderTemplate(path string, content []byte, opts RenderOptions) ([]byte, er
 	}
 
 	out = strings.ReplaceAll(out, "__FULLSEND_AI_REF__", resolvedRefWithComment(opts))
+	out = strings.ReplaceAll(out, "__GH_RUNNER__", resolvedRunner(opts))
 
 	return []byte(out), nil
 }
@@ -73,6 +75,13 @@ func thinStageName(content string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not determine thin caller stage")
+}
+
+func resolvedRunner(opts RenderOptions) string {
+	if opts.RunnerImage != "" {
+		return opts.RunnerImage
+	}
+	return config.DefaultGHRunner
 }
 
 func resolvedRef(opts RenderOptions) string {

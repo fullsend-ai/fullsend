@@ -37,7 +37,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -67,7 +67,7 @@ jobs:
     if: >-
       !cancelled() &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read

@@ -22,7 +22,7 @@ concurrency:
 jobs:
   dispatch:
     name: Find and dispatch issues for RICE scoring
-    runs-on: ubuntu-latest
+    runs-on: __GH_RUNNER__
     timeout-minutes: 5
     permissions:
       actions: write
