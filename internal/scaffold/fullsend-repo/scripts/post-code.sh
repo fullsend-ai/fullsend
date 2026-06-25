@@ -274,14 +274,19 @@ if [ -f .pre-commit-config.yaml ] \
    && [ -f "${RESOLVE_SCRIPT}" ] \
    && [ -f "${INSTALL_SCRIPT}" ]; then
   MANIFEST="$(mktemp)"
-  if python3 "${RESOLVE_SCRIPT}" "." > "${MANIFEST}"; then
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=(".")
+  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
     if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
       bash "${INSTALL_SCRIPT}" "${MANIFEST}"
     fi
   else
     echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
   fi
-  rm -f "${MANIFEST}"
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 

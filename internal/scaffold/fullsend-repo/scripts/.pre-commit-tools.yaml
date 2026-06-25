@@ -32,10 +32,17 @@
 #   language: node    → pre-commit handles via npm (DO NOT add)
 #   language: docker_image → pre-commit handles via docker pull (DO NOT add)
 #
-# Customization:
-#   Per-org:  place .pre-commit-tools.yaml in customized/scripts/
-#   Per-repo: place .pre-commit-tools.yaml in .fullsend/customized/scripts/
-#   The customized file completely replaces these defaults.
+# Customization (three layers, highest priority wins):
+#   L1 full replacement:
+#     Per-org:  customized/scripts/.pre-commit-tools.yaml in .fullsend config repo
+#     Per-repo: .fullsend/customized/scripts/.pre-commit-tools.yaml in target repo
+#     The customized file completely replaces these defaults.
+#   L2 additive merge:
+#     Per-repo: .pre-commit-tools.yaml at target repo root
+#     Entries are merged with upstream/org defaults. New entries extend,
+#     matching (repo, hook_id) entries override, exclude: true suppresses.
+#     Read from the base branch only (not the PR head) for security.
+#     See ADR 0056 for details.
 
 tools:
   # ── lychee (markdown link checker) ────────────────────────────────
@@ -88,9 +95,26 @@ tools:
       binary_name: actionlint
 
   # ── uv / uvx (Python package manager, needed for ty check) ───────
+  # Two match entries: hooks may use "uvx <tool>" or "uv run <tool>".
+  # Both resolve to the same install (dedup via seen_names on "uv").
   - hook_id: ty
     repo: local
     match_entry: "uvx"
+    install:
+      type: binary
+      name: uv
+      version: "0.11.14"
+      url_template: "https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.tar.gz"
+      checksums:
+        x86_64: "f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
+        aarch64: "c4958f729e216f1610632574ed927b8cf0af1bd02cb88cb30d948571727aee43"
+      strip_prefix: "uv-{triple}"
+      binary_name: uv
+      extra_binaries:
+        - uvx
+  - hook_id: uv-run
+    repo: local
+    match_entry: "uv"
     install:
       type: binary
       name: uv
@@ -110,4 +134,5 @@ tools:
 #   language: golang  → warns that Go toolchain is needed
 #   language: rust    → warns that Rust toolchain is needed
 # Hooks using python/node/docker_image/script need no registry
-# entry — pre-commit handles them natively.
+# entry — pre-commit handles them natively. For example,
+# shellcheck-py (language: python) is auto-managed by pre-commit.
