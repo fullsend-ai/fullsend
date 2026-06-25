@@ -209,6 +209,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "/fs-fix")
 	assert.Contains(t, s, "/fs-retro")
 	assert.Contains(t, s, "/fs-prioritize")
+	assert.Contains(t, s, "ready-for-triage")
 	assert.Contains(t, s, "ready-to-code")
 	assert.Contains(t, s, "ready-for-review")
 	assert.Contains(t, s, "TRIGGERING_LABEL")
