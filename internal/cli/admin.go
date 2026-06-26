@@ -2148,13 +2148,11 @@ type reposRunFunc func(ctx context.Context, client forge.Client, printer *ui.Pri
 
 // newReposSubcommand creates a repos enable or disable subcommand with shared setup logic.
 // If withYolo is true, the --yolo flag is added to skip confirmation prompts.
-// defaultDirect controls the delivery default: when true (the default for
-// enroll/unenroll), changes are pushed directly and --pr opts into PR delivery;
-// when false, changes go via PR and --direct opts into direct push.
+// By default, changes are delivered via a pull request. Use --direct to push
+// changes directly to the default branch instead.
 func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc, withYolo bool) *cobra.Command {
 	var all bool
 	var yolo bool
-	var prFlag bool
 	var directFlag bool
 
 	cmd := &cobra.Command{
@@ -2163,10 +2161,6 @@ func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc
 		Long:  long,
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if prFlag && directFlag {
-				return fmt.Errorf("--pr and --direct are mutually exclusive")
-			}
-
 			org := args[0]
 			if err := validateOrgName(org); err != nil {
 				return err
@@ -2195,18 +2189,15 @@ func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			// Default is direct push; --pr overrides to PR delivery.
-			// --direct is accepted for symmetry but is a no-op since it
-			// matches the default.
-			usePR := prFlag
+			// Default is PR delivery; --direct overrides to direct push.
+			usePR := !directFlag
 
 			return runFn(ctx, client, printer, org, repos, all, yolo, usePR)
 		},
 	}
 
 	cmd.Flags().BoolVar(&all, "all", false, allFlagHelp)
-	cmd.Flags().BoolVar(&prFlag, "pr", false, "deliver changes via a pull request instead of pushing directly")
-	cmd.Flags().BoolVar(&directFlag, "direct", false, "push changes directly to the default branch (default behavior)")
+	cmd.Flags().BoolVar(&directFlag, "direct", false, "push changes directly to the default branch instead of creating a PR")
 	if withYolo {
 		cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
 	}

@@ -930,7 +930,6 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 
 func newGitHubSyncScaffoldCmd() *cobra.Command {
 	var directFlag bool
-	var prFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "sync-scaffold <org>",
@@ -938,10 +937,6 @@ func newGitHubSyncScaffoldCmd() *cobra.Command {
 		Long:  "Re-commits scaffold files (shim and maintenance workflows) to the .fullsend repo without touching secrets, variables, or enrollment. Useful after fullsend version upgrades. Idempotent and safe to run repeatedly.\n\nBy default, changes are delivered via a pull request. Use --direct to push to the default branch instead.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if prFlag && directFlag {
-				return fmt.Errorf("--pr and --direct are mutually exclusive")
-			}
-
 			org := args[0]
 			if err := validateOrgName(org); err != nil {
 				return err
@@ -956,16 +951,11 @@ func newGitHubSyncScaffoldCmd() *cobra.Command {
 			printer := ui.New(os.Stdout)
 
 			// Default is PR delivery; --direct overrides to direct push.
-			// --pr is accepted for symmetry but is a no-op since it
-			// matches the default.
-			direct := directFlag
-
-			return runGitHubSyncScaffold(cmd.Context(), client, printer, org, direct)
+			return runGitHubSyncScaffold(cmd.Context(), client, printer, org, directFlag)
 		},
 	}
 
 	cmd.Flags().BoolVar(&directFlag, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
-	cmd.Flags().BoolVar(&prFlag, "pr", false, "deliver changes via a pull request (default behavior)")
 
 	return cmd
 }

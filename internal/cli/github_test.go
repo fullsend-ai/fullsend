@@ -600,50 +600,30 @@ func TestRunGitHubSyncScaffold_DefaultCreatesPR(t *testing.T) {
 	assert.Empty(t, client.CommittedFiles, "expected no direct commits when using PR delivery")
 }
 
-func TestGitHubSyncScaffoldCmd_HasDeliveryFlags(t *testing.T) {
+func TestGitHubSyncScaffoldCmd_HasDirectFlag(t *testing.T) {
 	cmd := newGitHubSyncScaffoldCmd()
 	directFlag := cmd.Flags().Lookup("direct")
 	require.NotNil(t, directFlag, "expected --direct flag")
 	assert.Equal(t, "false", directFlag.DefValue)
-	prFlag := cmd.Flags().Lookup("pr")
-	require.NotNil(t, prFlag, "expected --pr flag")
-	assert.Equal(t, "false", prFlag.DefValue)
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
-func TestGitHubSyncScaffoldCmd_MutualExclusiveFlags(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "sync-scaffold", "--pr", "--direct", "acme"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--pr and --direct are mutually exclusive")
-}
-
-func TestGitHubEnrollCmd_HasDeliveryFlags(t *testing.T) {
+func TestGitHubEnrollCmd_HasDirectFlag(t *testing.T) {
 	cmd := newGitHubEnrollCmd()
-	prFlag := cmd.Flags().Lookup("pr")
-	require.NotNil(t, prFlag, "expected --pr flag")
-	assert.Equal(t, "false", prFlag.DefValue)
 	directFlag := cmd.Flags().Lookup("direct")
 	require.NotNil(t, directFlag, "expected --direct flag")
 	assert.Equal(t, "false", directFlag.DefValue)
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
-func TestGitHubUnenrollCmd_HasDeliveryFlags(t *testing.T) {
+func TestGitHubUnenrollCmd_HasDirectFlag(t *testing.T) {
 	cmd := newGitHubUnenrollCmd()
-	prFlag := cmd.Flags().Lookup("pr")
-	require.NotNil(t, prFlag, "expected --pr flag")
 	directFlag := cmd.Flags().Lookup("direct")
 	require.NotNil(t, directFlag, "expected --direct flag")
-}
-
-func TestGitHubEnrollCmd_MutualExclusiveFlags(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "enroll", "--pr", "--direct", "--all", "acme"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--pr and --direct are mutually exclusive")
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
 func TestRunGitHubSetupPerOrg_DryRun(t *testing.T) {

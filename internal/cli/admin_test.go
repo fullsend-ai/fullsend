@@ -1022,22 +1022,21 @@ func TestRunDisableRepos_PRDelivery(t *testing.T) {
 	assert.Empty(t, client.CreatedFiles, "expected no direct file commits in PR mode")
 }
 
-func TestReposEnableCmd_HasDeliveryFlags(t *testing.T) {
+func TestReposEnableCmd_HasDirectFlag(t *testing.T) {
 	cmd := newEnableReposCmd()
-	prFlag := cmd.Flags().Lookup("pr")
-	require.NotNil(t, prFlag, "expected --pr flag")
-	assert.Equal(t, "false", prFlag.DefValue)
 	directFlag := cmd.Flags().Lookup("direct")
 	require.NotNil(t, directFlag, "expected --direct flag")
 	assert.Equal(t, "false", directFlag.DefValue)
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
-func TestReposDisableCmd_HasDeliveryFlags(t *testing.T) {
+func TestReposDisableCmd_HasDirectFlag(t *testing.T) {
 	cmd := newDisableReposCmd()
-	prFlag := cmd.Flags().Lookup("pr")
-	require.NotNil(t, prFlag, "expected --pr flag")
 	directFlag := cmd.Flags().Lookup("direct")
 	require.NotNil(t, directFlag, "expected --direct flag")
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
 func TestPromptEnrollment_ChooseAll(t *testing.T) {
