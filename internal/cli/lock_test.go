@@ -976,6 +976,15 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 	assert.Equal(t, fmt.Sprintf("%s/base.yaml", srv.URL), entry.Dependencies[0].URL)
 	assert.Equal(t, baseHash, entry.Dependencies[0].SHA256)
+	assert.Equal(t, "file", entry.Dependencies[0].Type)
+
+	assert.Equal(t, "agent", entry.Dependencies[1].Field)
+	assert.Equal(t, fmt.Sprintf("%s/agents/shared.md", srv.URL), entry.Dependencies[1].URL)
+	assert.Equal(t, "resource", entry.Dependencies[1].Type)
+
+	assert.Equal(t, "skills[0]", entry.Dependencies[2].Field)
+	assert.Equal(t, fmt.Sprintf("%s/skills/common/SKILL.md", srv.URL), entry.Dependencies[2].URL)
+	assert.Equal(t, "directory", entry.Dependencies[2].Type)
 }
 
 func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {

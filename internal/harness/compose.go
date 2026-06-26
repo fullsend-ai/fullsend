@@ -29,6 +29,7 @@ type Dependency struct {
 	FetchedAt time.Time
 	CacheHit  bool
 	Type      string // "file" for base harnesses
+	Warning   string // non-fatal warning about this dependency (e.g., partial skill fetch)
 }
 
 // ComposeOpts controls base composition behavior.
@@ -762,12 +763,16 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 
 // fetchBaseSkill fetches a skill directory from a URL-referenced base harness.
 // Only SKILL.md is fetched (plain HTTP has no directory listing); skills with
-// companion files (scripts/) must use forge-format URLs resolved by
-// ResolveHarness instead. The file is fetched from
+// companion files (sub-agents, scripts, meta-prompts) will be missing at
+// runtime. A warning is attached to the returned Dependency when this
+// limitation applies. Multi-file skills should use forge-format URLs resolved
+// by ResolveHarness instead. The file is fetched from
 // <baseURLDir>/<skillPath>/SKILL.md, cached as a directory via CachePutDir,
 // and the local tree directory path is returned.
 func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
 	skillFileURL := baseURLDir + skillPath + "/SKILL.md"
+
+	warn := fmt.Sprintf("skill %q was fetched from a URL base with only SKILL.md; companion files (sub-agents, scripts, meta-prompts) may be missing — use a forge-format URL for multi-file skills", skillPath)
 
 	allowedBy := matchingAllowedPrefix(skillFileURL, allowlist)
 	if allowedBy == "" {
@@ -791,6 +796,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 					FetchedAt: entry.FetchTime,
 					CacheHit:  true,
 					Type:      "directory",
+					Warning:   warn,
 				}, treePath, nil
 			}
 		}
@@ -837,6 +843,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		FetchedAt: fetchedAt,
 		CacheHit:  false,
 		Type:      "directory",
+		Warning:   warn,
 	}, treePath, nil
 }
 

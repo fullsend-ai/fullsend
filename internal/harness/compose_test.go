@@ -2245,6 +2245,7 @@ base: `+baseURL+`
 	assert.True(t, deps[1].CacheHit, "agent should be cache hit")
 	assert.True(t, deps[2].CacheHit, "skill should be cache hit")
 	assert.Equal(t, "directory", deps[2].Type)
+	assert.Contains(t, deps[2].Warning, "only SKILL.md")
 }
 
 func TestLoadWithBase_URLBase_ResourceOfflineCacheHit(t *testing.T) {
@@ -2680,6 +2681,7 @@ func TestFetchBaseSkill_PartialIndexHit(t *testing.T) {
 	assert.NotEmpty(t, localDir)
 	assert.Equal(t, "directory", dep.Type)
 	assert.False(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "only SKILL.md")
 }
 
 func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
@@ -2715,6 +2717,8 @@ func TestFetchBaseSkill_OnlySKILLMDFetched(t *testing.T) {
 		})
 	require.NoError(t, err)
 	assert.Equal(t, "directory", dep.Type)
+	assert.Contains(t, dep.Warning, "only SKILL.md")
+	assert.Contains(t, dep.Warning, "skills/common")
 
 	// Only SKILL.md is fetched — companion files (scripts/, sub-agents)
 	// are not available via plain HTTP directory listing.

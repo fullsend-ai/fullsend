@@ -228,6 +228,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepInfo(fmt.Sprintf("Base: %s (fetched)", dep.URL))
 		}
+		if dep.Warning != "" {
+			printer.StepWarn(fmt.Sprintf("Base: %s", dep.Warning))
+		}
 	}
 
 	if err := h.ResolveRelativeTo(absFullsendDir); err != nil {

@@ -28,6 +28,7 @@ type Dependency struct {
 	FetchedAt time.Time
 	CacheHit  bool
 	Type      string // "file" or "directory"
+	Warning   string // non-fatal warning about this dependency
 }
 
 // ResolveOpts controls how URL-referenced resources are resolved.
