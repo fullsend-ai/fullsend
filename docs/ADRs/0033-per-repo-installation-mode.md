@@ -291,6 +291,8 @@ Per-repo install requires only `repo` and `workflow` OAuth scopes when reusing e
 
 ### 8. Coexistence
 
+> **Note:** [ADR 0044](0044-deprecate-per-org-installation-mode.md) deprecates the per-org side of this coexistence model, promoting per-repo as the sole supported installation mode.
+
 Per-repo and per-org coexist within the same org. Some repos use the org `.fullsend` config repo (per-org), others run independently (per-repo). They use different dispatch paths, credential stores, and shim templates.
 
 To prevent per-org enrollment from overriding a per-repo installation, per-repo install sets a repository Actions variable `FULLSEND_PER_REPO_INSTALL=true`. The per-org enrollment flow checks this guard at three points:

@@ -49,6 +49,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Universal Harness Access — Phase 4 Implementation](docs/plans/universal-harness-access-phase4.md) — Phased PR breakdown for ADR-0038 Phase 4 (runtime dependency loading)
   - [Agent Execution Environment](docs/plans/agent-execution-environment.md) — Sandbox and runtime environment for agent execution
   - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
+  - [ADR-0044 Deprecate Per-Org Installation Mode](docs/plans/deprecate-per-org-install.md) — Phased removal of per-org installation mode in favor of per-repo
   - [ADR-0045 Forge-Portable Harness Schema — Phase 1](docs/plans/adr-0045-forge-portable-harness-phase1.md) — Implementation plan for ADR-0045 forge-portable harness schema (Phase 1)
   - [ADR-0045 Forge-Portable Harness Schema — Phase 2](docs/plans/adr-0045-forge-portable-harness-phase2.md) — Implementation plan for ADR-0045 Phase 2: adopt new schema fields across install, scaffold, and lock flows
   - [ADR-0045 Forge-Portable Harness Schema — Phase 3](docs/plans/adr-0045-forge-portable-harness-phase3.md) — Implementation plan for ADR-0045 Phase 3: deprecate config.yaml agents block, add Lint() diagnostics, migrate to harness-first discovery
