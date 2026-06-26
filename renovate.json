@@ -22,17 +22,15 @@
     "enabled": true
   },
   "github-actions": {
-    "fileMatch": [
-      "^internal/scaffold/.*\\.github/workflows/[^/]+\\.ya?ml$"
+    "managerFilePatterns": [
+      "/^internal/scaffold/.*\\.github/workflows/[^/]+\\.ya?ml$/"
     ]
   },
   "customManagers": [
     {
       "customType": "regex",
       "description": "Track OpenShell version pin in openshell-version.sh",
-      "fileMatch": [
-        "^\\.github/scripts/openshell-version\\.sh$"
-      ],
+      "managerFilePatterns": ["/^\\.github/scripts/openshell-version\\.sh$/"],
       "matchStrings": [
         "OPENSHELL_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\nOPENSHELL_SHA=(?<currentDigest>[0-9a-f]{40})"
       ],
