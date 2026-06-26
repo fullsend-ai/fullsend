@@ -28,6 +28,7 @@ permissions: {}
 
 jobs:
   renovate:
+    if: github.repository_owner == 'fullsend-ai'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -44,4 +45,5 @@ jobs:
           configurationFile: renovate.json
         env:
           LOG_LEVEL: info
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_DRY_RUN: ${{ inputs.dry-run || 'false' }}
