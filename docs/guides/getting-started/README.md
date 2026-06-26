@@ -1,3 +1,7 @@
+---
+order: 1
+---
+
 # Getting Started
 
 This section contains easy and to the point guides to help you

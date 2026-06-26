@@ -14,6 +14,8 @@ const (
 	DefaultUpstreamRepo = "fullsend-ai/fullsend"
 	// DefaultUpstreamRef is the default tag for layered upstream workflow calls.
 	DefaultUpstreamRef = "v0"
+	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
+	DefaultGHRunner = "ubuntu-24.04"
 )
 
 // DispatchConfig configures how agent work is dispatched.

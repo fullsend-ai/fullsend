@@ -184,6 +184,84 @@ To add a custom skill to the code agent's harness:
 
 **Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
 
+### Customizing Pre-commit Tool Dependencies
+
+Fullsend auto-detects and installs tools required by a target repo's pre-commit hooks. The resolver reads `.pre-commit-config.yaml`, matches hooks against a tools registry, and installs missing dependencies before the authoritative pre-commit check runs.
+
+Only hooks that pre-commit **cannot self-serve** need registry entries:
+- `language: system` — the tool must already be on `PATH`
+- `language: golang` — binary download is faster than Go compilation
+
+Hooks using `language: python`, `language: node`, or `language: docker_image` are handled natively by pre-commit and need no registry entry.
+
+#### Prerequisites
+
+- A `.pre-commit-config.yaml` in the target repo with hooks that use `language: system` or `language: golang`.
+- Access to commit to the target repo's base branch (L2 per-repo registries only take effect after merge).
+
+#### Three-layer resolution
+
+```
+upstream defaults (fullsend-ai/fullsend)
+  → org replacement:  customized/scripts/.pre-commit-tools.yaml  (L1)
+    → per-repo additive:  .pre-commit-tools.yaml at repo root    (L2)
+```
+
+| Layer | Location | Behavior |
+|-------|----------|----------|
+| Upstream | Provided at runtime by reusable workflow | Base registry shipped with fullsend |
+| L1 org replacement | `customized/scripts/.pre-commit-tools.yaml` in `.fullsend` config repo | **Completely replaces** upstream registry |
+| L2 per-repo additive | `.pre-commit-tools.yaml` at target repo root | **Merges** with upstream/org registry |
+
+**L1 replacement** works via the layered overlay — the file is copied over the upstream registry at runtime. Use this when your org needs a completely different set of tools.
+
+**L2 additive merge** is designed for repos that need to extend the registry with one or two entries. New entries are appended, entries matching an existing `(repo, hook_id)` key override it, and entries with `exclude: true` suppress the matching upstream entry.
+
+> **Note:** There are two per-repo customization paths with different semantics:
+> - `.fullsend/customized/scripts/.pre-commit-tools.yaml` — L1 full replacement (same overlay mechanism as other layered dirs)
+> - `.pre-commit-tools.yaml` at repo root — L2 additive merge (resolver discovers and merges)
+
+#### Adding a custom binary tool
+
+1. Create a `.pre-commit-tools.yaml` file at your repo root.
+2. Add an entry with the `hook_id`, `repo`, and `install` fields:
+
+    ```yaml
+    tools:
+      - hook_id: my-linter
+        repo: https://github.com/example/my-linter
+        install:
+          type: binary
+          name: my-linter
+          version: "1.2.3"
+          url_template: "https://github.com/example/my-linter/releases/download/v{version}/my-linter-{triple}.tar.gz"
+          checksums:
+            x86_64: "abc123..."
+            aarch64: "def456..."
+          binary_name: my-linter
+    ```
+
+3. Commit and merge to the base branch. The entry is merged with the upstream registry — all upstream tools remain available.
+
+#### Suppressing an upstream entry
+
+1. Add an entry to `.pre-commit-tools.yaml` with the matching `hook_id` and `repo`, plus `exclude: true`:
+
+    ```yaml
+    tools:
+      - hook_id: gitleaks
+        repo: https://github.com/zricethezav/gitleaks
+        exclude: true
+    ```
+
+2. Commit and merge to the base branch. The upstream tool will no longer be installed for this repo.
+
+#### Security
+
+Per-repo registries are read from the **base branch**, not from the PR's working tree. This means changes to `.pre-commit-tools.yaml` in a PR do not take effect until the PR is merged. This is intentional — the tool installation pipeline runs outside the sandbox with elevated permissions, and PR content is untrusted.
+
+See [ADR 0056](../../ADRs/0056-per-repo-precommit-tools-registry.md) for the full security rationale.
+
 ## Agent Roles
 
 Each agent role has its own identity, permissions, and purpose:

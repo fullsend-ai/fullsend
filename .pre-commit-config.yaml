@@ -91,6 +91,8 @@ repos:
           - SC2016
           - -ignore
           - '__REUSABLE_(WORKFLOW|DISPATCH)__'
+          - -ignore
+          - '__GH_RUNNER__'
 
   - repo: local
     hooks:

@@ -20,7 +20,7 @@ const PAGE_INTERNAL_PREFIX = "\0fullsend-docs-page:";
 
 export type ManifestNode =
   | { type: "dir"; name: string; children: ManifestNode[] }
-  | { type: "file"; name: string; routeKey: string; title: string };
+  | { type: "file"; name: string; routeKey: string; title: string; order?: number };
 
 type FileNode = Extract<ManifestNode, { type: "file" }>;
 
@@ -29,8 +29,8 @@ type DirNode = {
   children: Map<string, DirNode | FileNode>;
 };
 
-function buildTree(
-  paths: { routeKey: string; title: string; segments: string[] }[],
+export function buildTree(
+  paths: { routeKey: string; title: string; segments: string[]; order?: number }[],
 ): ManifestNode[] {
   const root: DirNode = { children: new Map() };
 
@@ -59,6 +59,7 @@ function buildTree(
       name: leafName,
       routeKey: p.routeKey,
       title: p.title,
+      ...(p.order != null ? { order: p.order } : {}),
     };
     if (d.children.has(leafName)) {
       const existing = d.children.get(leafName);
@@ -70,11 +71,9 @@ function buildTree(
   }
 
   function toManifest(dir: DirNode): ManifestNode[] {
-    const entries = [...dir.children.entries()].sort(([a], [b]) =>
-      a.localeCompare(b),
-    );
+    const entries = [...dir.children.entries()];
     const dirNodes: ManifestNode[] = [];
-    const fileNodes: ManifestNode[] = [];
+    const fileNodes: FileNode[] = [];
     for (const [name, ch] of entries) {
       if ("routeKey" in ch) {
         fileNodes.push(ch);
@@ -86,6 +85,13 @@ function buildTree(
         });
       }
     }
+    dirNodes.sort((a, b) => a.name.localeCompare(b.name));
+    fileNodes.sort((a, b) => {
+      const oa = a.order ?? Infinity;
+      const ob = b.order ?? Infinity;
+      if (oa !== ob) return oa - ob;
+      return a.name.localeCompare(b.name);
+    });
     return [...dirNodes, ...fileNodes];
   }
 
@@ -104,18 +110,20 @@ function isRepoDocMarkdownFile(repoRoot: string, filePath: string): boolean {
 function manifestMetaForFile(
   md: string,
   f: DocsFilePath,
-): { routeKey: string; title: string; segments: string[] } {
+): { routeKey: string; title: string; segments: string[]; order?: number } {
   const routeKey = filePathToRouteKey(f);
-  const { content } = matter(md);
+  const { data, content } = matter(md);
   const mdast = unified()
     .use(remarkParse)
     .use(remarkGfm)
     .parse(content) as MdastRoot;
   const title = extractTitle(mdast, routeKey);
+  const order = typeof data.order === "number" ? data.order : undefined;
   return {
     routeKey,
     title,
     segments: routeKey.split("/").filter(Boolean),
+    ...(order != null ? { order } : {}),
   };
 }
 

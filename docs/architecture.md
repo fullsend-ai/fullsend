@@ -362,7 +362,10 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
   [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)). The
   scaffold installs only org-specific files and a `customized/` directory for org
   overrides. Org files in `customized/` overwrite upstream defaults at runtime
-  ([ADR 0035](ADRs/0035-layered-content-resolution.md)).
+  ([ADR 0035](ADRs/0035-layered-content-resolution.md)). Per-repo
+  `.pre-commit-tools.yaml` files extend the tools registry additively (L2
+  merge) without replacing it
+  ([ADR 0056](ADRs/0056-per-repo-precommit-tools-registry.md)).
 
 ## Multi-org deployment model
 

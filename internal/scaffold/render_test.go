@@ -109,6 +109,7 @@ func assertFreeOfRenderPlaceholders(t *testing.T, out string) {
 		"__UPSTREAM_REF__",
 		"__DISTRIBUTION_MODE__",
 		"__FULLSEND_AI_REF__",
+		"__GH_RUNNER__",
 	} {
 		assert.NotContains(t, out, placeholder)
 	}
@@ -175,6 +176,45 @@ func TestRenderPerRepoShimPinnedSHA(t *testing.T) {
 	assert.Contains(t, out, "# v0.19.0")
 	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
 	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderDefaultRunner(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "runner_image: ubuntu-24.04")
+	assert.NotContains(t, out, "__GH_RUNNER__")
+}
+
+func TestRenderCustomRunner(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+		RunnerImage: "ubuntu-22.04",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "runner_image: ubuntu-22.04")
+	assert.NotContains(t, out, "ubuntu-24.04")
+	assert.NotContains(t, out, "__GH_RUNNER__")
+}
+
+func TestRenderPerRepoShimRunner(t *testing.T) {
+	raw, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
+		PerRepo: true,
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "runner_image: ubuntu-24.04")
+	assert.Contains(t, out, "runs-on: ubuntu-24.04")
+	assert.NotContains(t, out, "__GH_RUNNER__")
 }
 
 func TestRenderFallbackToDefaultRef(t *testing.T) {
