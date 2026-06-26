@@ -318,7 +318,8 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()

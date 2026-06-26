@@ -710,9 +710,12 @@ forge-specific artifact. The harness and agent definition are portable.
   `agent: agents/triage.md`) resolved? Options: (a) reject relative paths
   in URL-referenced bases (require all paths to be URLs or absolute),
   (b) resolve relative to the base URL's path prefix, (c) resolve
-  relative to the child harness's directory. Option (c) is the simplest
-  for Phase 1 and works because scripts are scaffolded locally — `base`
-  handles declarative config, scripts stay local.
+  relative to the child harness's directory. **Resolved: Option (b).**
+  `resolveBaseResources` fetches agent, policy, and skills relative to the
+  base URL's path prefix, caches them content-addressed, and rewrites the
+  fields to local cache paths. Scripts already used this approach via
+  `resolveBaseScripts`; extending it to declarative resources closes the
+  gap where inherited resources would fail `ValidateFilesExist`.
 
 - **host_files merge edge cases.** The merge rules specify
   last-writer-wins deduplication by `dest` path when base and child both

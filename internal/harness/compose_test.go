@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -471,15 +472,20 @@ allowed_remote_resources:
 
 	// Child overrides agent
 	assert.Equal(t, "agents/child.md", h.Agent)
-	// Base provides model and skills
+	// Base provides model and skills (skill resolved to cache path)
 	assert.Equal(t, "sonnet", h.Model)
-	assert.Contains(t, h.Skills, "remote-skill")
+	require.Len(t, h.Skills, 1)
+	assert.True(t, filepath.IsAbs(h.Skills[0]), "skill should be resolved to cache path")
 
-	// One dependency for the URL base
-	require.Len(t, deps, 1)
+	// Dependencies: 1 base + 1 agent resource + 1 skill
+	require.Len(t, deps, 3)
 	assert.Equal(t, "base", deps[0].Field)
 	assert.Equal(t, server.URL+"/base.yaml", deps[0].URL)
 	assert.Equal(t, hash, deps[0].SHA256)
+	assert.Equal(t, "agent", deps[1].Field)
+	assert.Equal(t, "resource", deps[1].Type)
+	assert.Equal(t, "skills[0]", deps[2].Field)
+	assert.Equal(t, "directory", deps[2].Type)
 }
 
 func TestLoadWithBase_ChainedURLBases(t *testing.T) {
@@ -530,6 +536,10 @@ skills:
 		} else if r.URL.Path == "/parent.yaml" {
 			w.WriteHeader(http.StatusOK)
 			w.Write(parentContentWithBase)
+		} else if strings.HasPrefix(r.URL.Path, "/agents/") ||
+			strings.HasSuffix(r.URL.Path, "/SKILL.md") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# test resource"))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -565,12 +575,13 @@ skills:
 	assert.Equal(t, "agents/child.md", h.Agent)
 	// Grandparent provides model
 	assert.Equal(t, "opus", h.Model)
-	// Skills concatenated: grandparent (none) + parent + child
-	assert.Contains(t, h.Skills, "parent-skill")
+	// Skills: child's "child-skill" (local) + parent's "parent-skill" (resolved to cache path)
 	assert.Contains(t, h.Skills, "child-skill")
+	require.True(t, len(h.Skills) >= 2, "should have child-skill and resolved parent-skill")
 
-	// Two dependencies for the chained URL bases
-	require.Len(t, deps, 2)
+	// Dependencies: parent base + parent agent + parent skill +
+	// grandparent base + grandparent agent
+	require.Len(t, deps, 5)
 }
 
 func TestLoadWithBase_URLBase_HashMismatch(t *testing.T) {
@@ -719,6 +730,11 @@ model: sonnet
 
 	// Pre-populate cache
 	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/base.yaml", baseContent))
+	// Pre-populate agent resource for resolveBaseResources
+	agentContent := []byte("# test agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/remote.md", agentContent))
+	agentHash := fetch.ComputeSHA256(agentContent)
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/remote.md", agentHash))
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 agent: agents/child.md
@@ -740,9 +756,10 @@ allowed_remote_resources:
 	assert.Equal(t, "agents/child.md", h.Agent)
 	assert.Equal(t, "sonnet", h.Model)
 
-	// Dependency shows cache hit
-	require.Len(t, deps, 1)
+	// Dependencies show cache hits
+	require.Len(t, deps, 2)
 	assert.True(t, deps[0].CacheHit)
+	assert.True(t, deps[1].CacheHit, "agent resource should be cache hit")
 }
 
 func TestLoadWithBase_RoleSlugInheritance(t *testing.T) {
@@ -1197,7 +1214,7 @@ func TestURLParentDirPrefix(t *testing.T) {
 	}
 }
 
-func setupScriptTestServer(t *testing.T, harnessContent []byte, scripts map[string][]byte) (*httptest.Server, fetch.FetchPolicy) {
+func setupScriptTestServer(t *testing.T, harnessContent []byte, files map[string][]byte) (*httptest.Server, fetch.FetchPolicy) {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/harness/triage.yaml" {
@@ -1205,9 +1222,18 @@ func setupScriptTestServer(t *testing.T, harnessContent []byte, scripts map[stri
 			w.Write(harnessContent)
 			return
 		}
-		if content, ok := scripts[r.URL.Path]; ok {
+		if content, ok := files[r.URL.Path]; ok {
 			w.WriteHeader(http.StatusOK)
 			w.Write(content)
+			return
+		}
+		// Serve default content for declarative resource paths so
+		// resolveBaseResources succeeds in tests focused on scripts.
+		if strings.HasPrefix(r.URL.Path, "/agents/") ||
+			strings.HasPrefix(r.URL.Path, "/policies/") ||
+			strings.HasSuffix(r.URL.Path, "/SKILL.md") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# test resource"))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -1279,18 +1305,20 @@ base: `+baseURL+`
 	require.NoError(t, err)
 	assert.Equal(t, postScript, postContent)
 
-	// Dependencies: 1 for base harness + 2 for scripts
-	require.Len(t, deps, 3)
+	// Dependencies: 1 base + 2 scripts + 1 agent resource
+	require.Len(t, deps, 4)
 	assert.Equal(t, "base", deps[0].Field)
-	scriptDeps := deps[1:]
 	scriptFields := map[string]bool{}
-	for _, d := range scriptDeps {
-		scriptFields[d.Field] = true
-		assert.Equal(t, "script", d.Type)
-		assert.False(t, d.CacheHit)
+	for _, d := range deps[1:] {
+		if d.Type == "script" {
+			scriptFields[d.Field] = true
+			assert.False(t, d.CacheHit)
+		}
 	}
 	assert.True(t, scriptFields["pre_script"])
 	assert.True(t, scriptFields["post_script"])
+	assert.Equal(t, "agent", deps[3].Field)
+	assert.Equal(t, "resource", deps[3].Type)
 }
 
 func TestLoadWithBase_URLBase_ValidationLoopScriptFetched(t *testing.T) {
@@ -1334,10 +1362,12 @@ base: `+baseURL+`
 	require.NoError(t, err)
 	assert.Equal(t, validateScript, content)
 
-	// 1 base + 1 validation script
-	require.Len(t, deps, 2)
+	// 1 base + 1 validation script + 1 agent resource
+	require.Len(t, deps, 3)
 	assert.Equal(t, "validation_loop.script", deps[1].Field)
 	assert.Equal(t, "script", deps[1].Type)
+	assert.Equal(t, "agent", deps[2].Field)
+	assert.Equal(t, "resource", deps[2].Type)
 }
 
 func TestLoadWithBase_URLBase_ForgeScriptsFetched(t *testing.T) {
@@ -1385,13 +1415,14 @@ base: `+baseURL+`
 	require.NoError(t, err)
 	assert.Equal(t, forgePre, preContent)
 
-	// 1 base + 2 forge scripts
-	require.Len(t, deps, 3)
-	forgeScriptDeps := deps[1:]
-	for _, d := range forgeScriptDeps {
+	// 1 base + 2 forge scripts + 1 agent resource
+	require.Len(t, deps, 4)
+	for _, d := range deps[1:3] {
 		assert.Equal(t, "script", d.Type)
 		assert.Contains(t, d.Field, "forge.github.")
 	}
+	assert.Equal(t, "agent", deps[3].Field)
+	assert.Equal(t, "resource", deps[3].Type)
 }
 
 func TestLoadWithBase_URLBase_ChildOverridesScript(t *testing.T) {
@@ -1435,9 +1466,9 @@ pre_script: local-pre.sh
 	// Base's post_script fetched from remote
 	assert.True(t, filepath.IsAbs(h.PostScript))
 
-	// 1 base + 2 scripts: both are fetched BEFORE merge, so pre_script is
-	// fetched even though the child overrides it afterward.
-	require.Len(t, deps, 3)
+	// 1 base + 2 scripts + 1 agent resource: all are fetched BEFORE merge,
+	// so pre_script is fetched even though the child overrides it afterward.
+	require.Len(t, deps, 4)
 }
 
 func TestLoadWithBase_URLBase_ScriptNotInAllowlist(t *testing.T) {
@@ -1550,9 +1581,14 @@ pre_script: scripts/pre.sh
 	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
 	// Pre-populate script in cache
 	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/scripts/pre.sh", preScript))
-	// Add URL index entry
+	// Add URL index entry for script
 	scriptHash := fetch.ComputeSHA256(preScript)
 	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/scripts/pre.sh", scriptHash))
+	// Pre-populate agent resource for resolveBaseResources
+	agentRes := []byte("# test agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	agentResHash := fetch.ComputeSHA256(agentRes)
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", agentResHash))
 
 	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
 
@@ -1574,10 +1610,11 @@ base: `+baseURL+`
 	require.NoError(t, err)
 	assert.Equal(t, preScript, content)
 
-	// Both deps should be cache hits
-	require.Len(t, deps, 2)
+	// All deps should be cache hits
+	require.Len(t, deps, 3)
 	assert.True(t, deps[0].CacheHit, "base should be cache hit")
 	assert.True(t, deps[1].CacheHit, "script should be cache hit")
+	assert.True(t, deps[2].CacheHit, "agent resource should be cache hit")
 }
 
 func TestLoadWithBase_URLBase_ScriptExecutablePermission(t *testing.T) {
@@ -1644,9 +1681,11 @@ base: `+baseURL+`
 	})
 	require.NoError(t, err)
 
-	// Only 1 dep for the base itself — no scripts
-	require.Len(t, deps, 1)
+	// 1 base + 1 agent resource (no scripts)
+	require.Len(t, deps, 2)
 	assert.Equal(t, "base", deps[0].Field)
+	assert.Equal(t, "agent", deps[1].Field)
+	assert.Equal(t, "resource", deps[1].Type)
 }
 
 func TestLoadWithBase_URLBase_AuditLogForScripts(t *testing.T) {
@@ -1736,8 +1775,8 @@ base: `+baseURL+`
 	require.NoError(t, err)
 	assert.Equal(t, forgeValidate, content)
 
-	// 1 base + 1 forge validation_loop script
-	require.Len(t, deps, 2)
+	// 1 base + 1 forge validation_loop script + 1 agent resource
+	require.Len(t, deps, 3)
 	assert.Equal(t, "forge.github.validation_loop.script", deps[1].Field)
 }
 
@@ -1773,9 +1812,11 @@ base: `+baseURL+`
 	// where it won't exist.
 	assert.Empty(t, h.AgentInput)
 
-	// Only 1 dep for the base harness, no agent_input dep
-	require.Len(t, deps, 1)
+	// 1 base + 1 agent resource, no agent_input dep
+	require.Len(t, deps, 2)
 	assert.Equal(t, "base", deps[0].Field)
+	assert.Equal(t, "agent", deps[1].Field)
+	assert.Equal(t, "resource", deps[1].Type)
 }
 
 func TestLoadWithBase_URLBase_ForgeScriptFetchError(t *testing.T) {
@@ -1853,16 +1894,19 @@ base: `+baseURL+`
 	require.NotNil(t, h.ValidationLoop)
 	assert.True(t, filepath.IsAbs(h.ValidationLoop.Script))
 
-	// 1 base + 3 scripts (agent_input excluded — it's a directory)
-	require.Len(t, deps, 4)
+	// 1 base + 3 scripts + 1 agent resource
+	require.Len(t, deps, 5)
 	depFields := map[string]bool{}
 	for _, d := range deps[1:] {
-		depFields[d.Field] = true
-		assert.Equal(t, "script", d.Type)
+		if d.Type == "script" {
+			depFields[d.Field] = true
+		}
 	}
 	assert.True(t, depFields["pre_script"])
 	assert.True(t, depFields["post_script"])
 	assert.True(t, depFields["validation_loop.script"])
+	assert.Equal(t, "agent", deps[4].Field)
+	assert.Equal(t, "resource", deps[4].Type)
 }
 
 func TestResolveBaseScripts_RejectsAbsolutePath(t *testing.T) {
@@ -1965,8 +2009,8 @@ func TestResolveBaseScripts_ClearsAgentInput(t *testing.T) {
 	assert.Empty(t, deps)
 }
 
-func TestValidateBaseScriptPath_AllowsDotsInFilename(t *testing.T) {
-	err := validateBaseScriptPath("pre_script", "scripts/foo..bar.sh")
+func TestValidateBaseRelPath_AllowsDotsInFilename(t *testing.T) {
+	err := validateBaseRelPath("pre_script", "scripts/foo..bar.sh")
 	assert.NoError(t, err)
 }
 
@@ -2037,8 +2081,408 @@ base: `+baseURL+`
 	require.NoError(t, err)
 	assert.Equal(t, postScript, postContent)
 
-	// Dependencies: 1 for base harness + 2 for scripts
+	// Dependencies: 1 base + 2 scripts + 1 agent resource
+	require.Len(t, deps, 4)
+}
+
+func TestLoadWithBase_URLBase_AgentAndPolicyFetched(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+policy: policies/sandbox.yaml
+role: test
+model: sonnet
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Child overrides agent, base policy is inherited
+	assert.Equal(t, "agents/child.md", h.Agent)
+	assert.True(t, filepath.IsAbs(h.Policy), "policy should be resolved to cache path")
+
+	// 1 base + 1 agent resource + 1 policy resource
 	require.Len(t, deps, 3)
+	assert.Equal(t, "base", deps[0].Field)
+
+	resourceFields := map[string]string{}
+	for _, d := range deps[1:] {
+		resourceFields[d.Field] = d.Type
+	}
+	assert.Equal(t, "resource", resourceFields["agent"])
+	assert.Equal(t, "resource", resourceFields["policy"])
+}
+
+func TestLoadWithBase_URLBase_SkillFetchedAndCachedAsDir(t *testing.T) {
+	skillContent := []byte("# Test skill\nThis is a test skill.")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+skills:
+  - skills/triage-labels
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/skills/triage-labels/SKILL.md": skillContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Skill resolved to a cache directory
+	require.Len(t, h.Skills, 1)
+	assert.True(t, filepath.IsAbs(h.Skills[0]), "skill should be resolved to cache dir")
+
+	// Verify SKILL.md exists in the cached directory
+	cachedSkillMD := filepath.Join(h.Skills[0], "SKILL.md")
+	content, err := os.ReadFile(cachedSkillMD)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, content)
+
+	// 1 base + 1 agent resource + 1 skill
+	require.Len(t, deps, 3)
+	assert.Equal(t, "agent", deps[1].Field)
+	assert.Equal(t, "resource", deps[1].Type)
+	assert.Equal(t, "skills[0]", deps[2].Field)
+	assert.Equal(t, "directory", deps[2].Type)
+	assert.False(t, deps[2].CacheHit)
+}
+
+func TestLoadWithBase_URLBase_SkillOfflineCacheHit(t *testing.T) {
+	skillContent := []byte("# Cached skill")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+skills:
+  - skills/common
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate base in cache
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	// Pre-populate agent resource
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	// Pre-populate the skill SKILL.md in cache and URL index
+	skillFileURL := "https://example.com/skills/common/SKILL.md"
+	require.NoError(t, fetch.CachePut(cacheDir, skillFileURL, skillContent))
+	skillFileHash := fetch.ComputeSHA256(skillContent)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, skillFileHash))
+
+	// Cache the skill directory tree
+	files := map[string][]byte{"SKILL.md": skillContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, skillFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	// Skill resolved from cache
+	require.Len(t, h.Skills, 1)
+	assert.True(t, filepath.IsAbs(h.Skills[0]))
+
+	// Verify content from cache
+	cachedSkillMD := filepath.Join(h.Skills[0], "SKILL.md")
+	content, err := os.ReadFile(cachedSkillMD)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, content)
+
+	// 1 base + 1 agent + 1 skill, all cache hits
+	require.Len(t, deps, 3)
+	assert.True(t, deps[0].CacheHit, "base should be cache hit")
+	assert.True(t, deps[1].CacheHit, "agent should be cache hit")
+	assert.True(t, deps[2].CacheHit, "skill should be cache hit")
+	assert.Equal(t, "directory", deps[2].Type)
+}
+
+func TestLoadWithBase_URLBase_ResourceOfflineCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+policy: policies/sandbox.yaml
+role: test
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate base
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	// Pre-populate agent resource
+	agentContent := []byte("You are a triage agent.")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentContent))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentContent)))
+
+	// Pre-populate policy resource
+	policyContent := []byte("deny: all")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/policies/sandbox.yaml", policyContent))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/policies/sandbox.yaml", fetch.ComputeSHA256(policyContent)))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/local.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	// Child overrides agent, base policy is resolved from cache
+	assert.Equal(t, "agents/local.md", h.Agent)
+	assert.True(t, filepath.IsAbs(h.Policy))
+
+	// Verify policy content from cache
+	policyData, err := os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, policyContent, policyData)
+
+	// 1 base + 1 agent + 1 policy, all cache hits
+	require.Len(t, deps, 3)
+	for _, d := range deps {
+		assert.True(t, d.CacheHit, "%s should be cache hit", d.Field)
+	}
+}
+
+func TestLoadWithBase_URLBase_SkillNotInAllowlist(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+skills:
+  - skills/restricted
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	// Allowlist only covers /harness/ and /agents/ — skills at /skills/ not covered
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/harness/", server.URL + "/agents/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+	assert.Contains(t, err.Error(), "skills[0]")
+}
+
+func TestLoadWithBase_URLBase_SkillOfflineNoCache(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+skills:
+  - skills/uncached
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate base and agent, but NOT the skill
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+	agentRes := []byte("# agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "offline mode")
+	assert.Contains(t, err.Error(), "skills[0]")
+}
+
+func TestResolveBaseResources_SkipsURLAndAbsFields(t *testing.T) {
+	base := &Harness{
+		Agent:  "https://example.com/agents/remote.md",
+		Policy: "/absolute/path/policy.yaml",
+		Skills: []string{"https://example.com/skills/foo"},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+
+	// URL and absolute path fields are skipped — no deps, no modification
+	assert.Empty(t, deps)
+	assert.Equal(t, "https://example.com/agents/remote.md", base.Agent)
+	assert.Equal(t, "/absolute/path/policy.yaml", base.Policy)
+	assert.Equal(t, "https://example.com/skills/foo", base.Skills[0])
+}
+
+func TestResolveBaseResources_RejectsAbsolutePath(t *testing.T) {
+	base := &Harness{Agent: "/etc/passwd"}
+	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	// Absolute paths are skipped (not an error — they may be set by earlier resolution)
+	assert.Equal(t, "/etc/passwd", base.Agent)
+}
+
+func TestResolveBaseResources_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{Agent: "../../etc/passwd"}
+	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "agent")
+}
+
+func TestResolveBaseResources_RejectsNullBytesInPolicy(t *testing.T) {
+	base := &Harness{Policy: "policies/test\x00.yaml"}
+	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain null bytes")
+	assert.Contains(t, err.Error(), "policy")
+}
+
+func TestResolveBaseResources_RejectsTraversalInSkill(t *testing.T) {
+	base := &Harness{Skills: []string{"../escape"}}
+	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "skills[0]")
+}
+
+func TestLoadWithBase_URLBase_ResourceNotInAllowlist(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	// Allowlist only covers /harness/ — agent at /agents/ is not covered
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/harness/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+	assert.Contains(t, err.Error(), "agent")
+}
+
+func TestLoadWithBase_URLBase_ResourceAuditLog(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+policy: policies/sandbox.yaml
+role: test
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	auditLog := filepath.Join(dir, "audit.jsonl")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		AuditLogPath:  auditLog,
+		TraceID:       "resource-audit-test",
+	})
+	require.NoError(t, err)
+
+	auditData, err := os.ReadFile(auditLog)
+	require.NoError(t, err)
+	auditStr := string(auditData)
+	assert.Contains(t, auditStr, "base_resource")
+	assert.Contains(t, auditStr, "resource-audit-test")
+	assert.Contains(t, auditStr, "agents/triage.md")
+	assert.Contains(t, auditStr, "policies/sandbox.yaml")
 }
 
 func TestURLIndexPut_EmptyWorkspaceRoot(t *testing.T) {
@@ -2050,6 +2494,234 @@ func TestURLIndexLookup_EmptyWorkspaceRoot(t *testing.T) {
 	hash, ok := urlIndexLookup("", "https://example.com/script.sh")
 	assert.False(t, ok)
 	assert.Empty(t, hash)
+}
+
+func brokenAuditPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "notadir")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+	return filepath.Join(blocker, "audit.jsonl")
+}
+
+func TestFetchBaseFile_CacheHit_AuditError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	content := []byte("# agent")
+	fileURL := "https://example.com/agents/triage.md"
+	require.NoError(t, fetch.CachePut(cacheDir, fileURL, content))
+	hash := fetch.ComputeSHA256(content)
+	require.NoError(t, urlIndexPut(cacheDir, fileURL, hash))
+
+	_, _, err := fetchBaseFile(context.Background(), "agent", "https://example.com/",
+		"agents/triage.md", []string{"https://example.com/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			AuditLogPath:  brokenAuditPath(t),
+		}, "resource", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+}
+
+func TestFetchBaseFile_OnlineFetch_AuditError(t *testing.T) {
+	content := []byte("# agent")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBaseFile(context.Background(), "agent", server.URL+"/",
+		"agents/triage.md", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+			AuditLogPath:  brokenAuditPath(t),
+		}, "resource", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+}
+
+func TestFetchBaseFile_FetchURLError(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBaseFile(context.Background(), "agent", server.URL+"/",
+		"agents/triage.md", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		}, "resource", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching")
+}
+
+func TestFetchBaseSkill_CacheHit_AuditError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	skillContent := []byte("# skill")
+	skillFileURL := "https://example.com/skills/common/SKILL.md"
+
+	require.NoError(t, fetch.CachePut(cacheDir, skillFileURL, skillContent))
+	fileHash := fetch.ComputeSHA256(skillContent)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, fileHash))
+
+	files := map[string][]byte{"SKILL.md": skillContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, skillFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, treeHash))
+
+	_, _, err = fetchBaseSkill(context.Background(), "skills[0]", "https://example.com/",
+		"skills/common", []string{"https://example.com/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+			AuditLogPath:  brokenAuditPath(t),
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+}
+
+func TestFetchBaseSkill_OnlineFetch_AuditError(t *testing.T) {
+	content := []byte("# skill")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
+		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+			AuditLogPath:  brokenAuditPath(t),
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+}
+
+func TestFetchBaseSkill_FetchURLError(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
+		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching")
+}
+
+func TestFetchBaseSkill_PartialIndexHit(t *testing.T) {
+	content := []byte("# skill")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	skillFileURL := server.URL + "/skills/common/SKILL.md"
+	require.NoError(t, fetch.CachePut(cacheDir, skillFileURL, content))
+	fileHash := fetch.ComputeSHA256(content)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, fileHash))
+	// Deliberately omit the "skill:" tree hash entry to trigger partial index hit
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
+		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		})
+	require.NoError(t, err)
+	assert.NotEmpty(t, localDir)
+	assert.Equal(t, "directory", dep.Type)
+	assert.False(t, dep.CacheHit)
+}
+
+func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
+	base := &Harness{Agent: "agents/test.md"}
+	_, err := resolveBaseResources(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+func TestFetchBaseSkill_OnlySKILLMDFetched(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/skills/common/SKILL.md" {
+			w.Write([]byte("# Common Skill\nDo the thing."))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
+		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		})
+	require.NoError(t, err)
+	assert.Equal(t, "directory", dep.Type)
+
+	// Only SKILL.md is fetched — companion files (scripts/, sub-agents)
+	// are not available via plain HTTP directory listing.
+	entries, err := os.ReadDir(localDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "SKILL.md", entries[0].Name())
 }
 
 func TestLoadWithBase_RuntimeFetchFieldsNotInherited(t *testing.T) {

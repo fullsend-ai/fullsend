@@ -196,9 +196,15 @@ func loadBaseChain(
 		}
 		deps = append(deps, scriptDeps...)
 
-		// Non-script relative paths in the base still resolve against the
-		// child's directory (agent, skills, policy are handled separately by
-		// ResolveHarness which processes URL fields).
+		// Declarative resources (agent, policy, skills) inherited from a
+		// URL base are fetched and cached locally so they don't resolve
+		// against the child's directory where they may not exist.
+		resourceDeps, err := resolveBaseResources(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base resources from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, resourceDeps...)
+
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -509,10 +515,10 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		if *f.ptr == "" {
 			continue
 		}
-		if err := validateBaseScriptPath(f.name, *f.ptr); err != nil {
+		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
 			return nil, err
 		}
-		dep, cachePath, err := fetchBaseScript(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
+		dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "script", true)
 		if err != nil {
 			return nil, err
 		}
@@ -521,10 +527,10 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 	}
 
 	if base.ValidationLoop != nil && base.ValidationLoop.Script != "" {
-		if err := validateBaseScriptPath("validation_loop.script", base.ValidationLoop.Script); err != nil {
+		if err := validateBaseRelPath("validation_loop.script", base.ValidationLoop.Script); err != nil {
 			return nil, err
 		}
-		dep, cachePath, err := fetchBaseScript(ctx, "validation_loop.script", baseURLDir, base.ValidationLoop.Script, allowlist, opts)
+		dep, cachePath, err := fetchBaseFile(ctx, "validation_loop.script", baseURLDir, base.ValidationLoop.Script, allowlist, opts, "script", true)
 		if err != nil {
 			return nil, err
 		}
@@ -547,10 +553,10 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			if *f.ptr == "" {
 				continue
 			}
-			if err := validateBaseScriptPath(f.name, *f.ptr); err != nil {
+			if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
 				return nil, err
 			}
-			dep, cachePath, err := fetchBaseScript(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
+			dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "script", true)
 			if err != nil {
 				return nil, err
 			}
@@ -559,10 +565,10 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		}
 		if fc.ValidationLoop != nil && fc.ValidationLoop.Script != "" {
 			fieldName := fmt.Sprintf("forge.%s.validation_loop.script", platform)
-			if err := validateBaseScriptPath(fieldName, fc.ValidationLoop.Script); err != nil {
+			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Script); err != nil {
 				return nil, err
 			}
-			dep, cachePath, err := fetchBaseScript(ctx, fieldName, baseURLDir, fc.ValidationLoop.Script, allowlist, opts)
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, fc.ValidationLoop.Script, allowlist, opts, "script", true)
 			if err != nil {
 				return nil, err
 			}
@@ -581,126 +587,270 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 	return deps, nil
 }
 
-func validateBaseScriptPath(field, val string) error {
+// resolveBaseResources fetches declarative resource fields (agent, policy,
+// skills) from a URL-referenced base harness. For agent and policy (single
+// files), the file is fetched, cached content-addressed, and the field is
+// rewritten to the local cache path. For skills (directories), SKILL.md is
+// fetched and cached as a directory via CachePutDir, and the field is
+// rewritten to the cache tree directory. Fields that are already URLs or
+// absolute paths are left unchanged — they will be handled by
+// ResolveHarness in the caller.
+func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	fileFields := []struct {
+		name string
+		ptr  *string
+	}{
+		{"agent", &base.Agent},
+		{"policy", &base.Policy},
+	}
+
+	for _, f := range fileFields {
+		if *f.ptr == "" || IsURL(*f.ptr) || filepath.IsAbs(*f.ptr) {
+			continue
+		}
+		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		*f.ptr = cachePath
+		deps = append(deps, dep)
+	}
+
+	for i, skill := range base.Skills {
+		if skill == "" || IsURL(skill) || filepath.IsAbs(skill) {
+			continue
+		}
+		fieldName := fmt.Sprintf("skills[%d]", i)
+		if err := validateBaseRelPath(fieldName, skill); err != nil {
+			return nil, err
+		}
+		dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill, allowlist, opts)
+		if err != nil {
+			return nil, err
+		}
+		base.Skills[i] = localDir
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
+// validateBaseRelPath validates that a relative path inherited from a URL base
+// is safe to resolve. Rejects null bytes, query/fragment markers, URLs,
+// absolute paths, and path traversal segments.
+func validateBaseRelPath(field, val string) error {
 	if strings.ContainsRune(val, 0) {
-		return fmt.Errorf("base script %s must not contain null bytes (got %q)", field, val)
+		return fmt.Errorf("base %s must not contain null bytes (got %q)", field, val)
 	}
 	if strings.ContainsAny(val, "?#") {
-		return fmt.Errorf("base script %s must not contain query or fragment markers (got %q)", field, val)
+		return fmt.Errorf("base %s must not contain query or fragment markers (got %q)", field, val)
 	}
 	if IsURL(val) {
-		return fmt.Errorf("base script %s must be a relative path, not a URL (got %q)", field, val)
+		return fmt.Errorf("base %s must be a relative path, not a URL (got %q)", field, val)
 	}
 	if filepath.IsAbs(val) {
-		return fmt.Errorf("base script %s must be a relative path, not an absolute path (got %q)", field, val)
+		return fmt.Errorf("base %s must be a relative path, not an absolute path (got %q)", field, val)
 	}
 	for _, seg := range strings.Split(val, "/") {
 		if seg == ".." {
-			return fmt.Errorf("base script %s must not contain path traversal segments (got %q)", field, val)
+			return fmt.Errorf("base %s must not contain path traversal segments (got %q)", field, val)
 		}
 	}
 	return nil
 }
 
-// fetchBaseScript fetches a single script file from a URL derived from the
-// base harness's directory and the script's relative path. The script is
-// cached content-addressed and the local cache path is returned.
-func fetchBaseScript(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
-	scriptURL := baseURLDir + relPath
+// fetchBaseFile fetches a single file from a URL derived from the base
+// harness's directory and the file's relative path. The file is cached
+// content-addressed and the local cache path is returned. When executable
+// is true, the cached file is chmod'd to 0o755. depType controls the
+// Dependency.Type and audit log FetchType ("script" or "resource").
+func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts, depType string, executable bool) (Dependency, string, error) {
+	fileURL := baseURLDir + relPath
 
-	allowedBy := matchingAllowedPrefix(scriptURL, allowlist)
+	allowedBy := matchingAllowedPrefix(fileURL, allowlist)
 	if allowedBy == "" {
-		return Dependency{}, "", fmt.Errorf("base script %s: URL %q is not in allowed_remote_resources", field, scriptURL)
+		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
 	}
 
-	// Check URL-to-hash index for cached content (supports offline mode).
-	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, scriptURL)
+	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
 	if indexHit {
 		content, entry, err := fetch.CacheGet(opts.WorkspaceRoot, hash)
 		if err == nil && content != nil {
 			cachePath, cpErr := fetch.CachePath(opts.WorkspaceRoot, hash)
 			if cpErr != nil {
-				return Dependency{}, "", fmt.Errorf("base script %s: computing cache path: %w", field, cpErr)
+				return Dependency{}, "", fmt.Errorf("base %s: computing cache path: %w", field, cpErr)
 			}
 			contentPath := filepath.Join(cachePath, "content")
 
-			if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
-				return Dependency{}, "", fmt.Errorf("base script %s: setting executable permission on cached script: %w", field, chErr)
+			if executable {
+				if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+					return Dependency{}, "", fmt.Errorf("base %s: setting executable permission on cached file: %w", field, chErr)
+				}
 			}
 
-			if aErr := auditScriptFetch(opts, scriptURL, hash, allowedBy, true, entry.FetchTime); aErr != nil {
+			if aErr := auditBaseFetch(opts, fileURL, hash, allowedBy, true, entry.FetchTime, depType); aErr != nil {
 				return Dependency{}, "", aErr
 			}
 
 			return Dependency{
 				Field:     field,
-				URL:       scriptURL,
+				URL:       fileURL,
 				LocalPath: contentPath,
 				SHA256:    hash,
 				FetchedAt: entry.FetchTime,
 				CacheHit:  true,
-				Type:      "script",
+				Type:      depType,
 			}, contentPath, nil
 		}
 	}
 
 	if opts.FetchPolicy.Offline {
-		return Dependency{}, "", fmt.Errorf("base script %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, scriptURL)
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, fileURL)
 	}
 
-	content, err := fetch.FetchURL(ctx, scriptURL, opts.FetchPolicy)
+	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
 	if err != nil {
-		return Dependency{}, "", fmt.Errorf("base script %s: fetching %s: %w", field, scriptURL, err)
+		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, fileURL, err)
 	}
 
-	if err := fetch.CachePut(opts.WorkspaceRoot, scriptURL, content); err != nil {
-		return Dependency{}, "", fmt.Errorf("base script %s: caching: %w", field, err)
+	if err := fetch.CachePut(opts.WorkspaceRoot, fileURL, content); err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching: %w", field, err)
 	}
 
 	hash = fetch.ComputeSHA256(content)
 	cachePath, err := fetch.CachePath(opts.WorkspaceRoot, hash)
 	if err != nil {
-		return Dependency{}, "", fmt.Errorf("base script %s: computing cache path: %w", field, err)
+		return Dependency{}, "", fmt.Errorf("base %s: computing cache path: %w", field, err)
 	}
 	contentPath := filepath.Join(cachePath, "content")
 
-	// Make cached script executable.
-	if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
-		return Dependency{}, "", fmt.Errorf("base script %s: setting executable permission: %w", field, chErr)
+	if executable {
+		if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: setting executable permission: %w", field, chErr)
+		}
 	}
 
-	// Store URL→hash mapping for future offline lookups.
-	if iErr := urlIndexPut(opts.WorkspaceRoot, scriptURL, hash); iErr != nil {
-		return Dependency{}, "", fmt.Errorf("base script %s: updating URL index: %w", field, iErr)
+	if iErr := urlIndexPut(opts.WorkspaceRoot, fileURL, hash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
 	}
 
 	fetchedAt := time.Now().UTC()
-	if aErr := auditScriptFetch(opts, scriptURL, hash, allowedBy, false, fetchedAt); aErr != nil {
+	if aErr := auditBaseFetch(opts, fileURL, hash, allowedBy, false, fetchedAt, depType); aErr != nil {
 		return Dependency{}, "", aErr
 	}
 
 	return Dependency{
 		Field:     field,
-		URL:       scriptURL,
+		URL:       fileURL,
 		LocalPath: contentPath,
 		SHA256:    hash,
 		FetchedAt: fetchedAt,
 		CacheHit:  false,
-		Type:      "script",
+		Type:      depType,
 	}, contentPath, nil
 }
 
-// auditScriptFetch appends a fetch audit log entry for a script fetch.
-func auditScriptFetch(opts ComposeOpts, scriptURL, hash, allowedBy string, cacheHit bool, fetchedAt time.Time) error {
+// fetchBaseSkill fetches a skill directory from a URL-referenced base harness.
+// Only SKILL.md is fetched (plain HTTP has no directory listing); skills with
+// companion files (scripts/) must use forge-format URLs resolved by
+// ResolveHarness instead. The file is fetched from
+// <baseURLDir>/<skillPath>/SKILL.md, cached as a directory via CachePutDir,
+// and the local tree directory path is returned.
+func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	skillFileURL := baseURLDir + skillPath + "/SKILL.md"
+
+	allowedBy := matchingAllowedPrefix(skillFileURL, allowlist)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, skillFileURL)
+	}
+
+	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
+	if indexHit {
+		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, "skill:"+skillFileURL)
+		if ok {
+			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+			if err == nil && treePath != "" {
+				if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, true, entry.FetchTime, "skill"); aErr != nil {
+					return Dependency{}, "", aErr
+				}
+				return Dependency{
+					Field:     field,
+					URL:       skillFileURL,
+					LocalPath: treePath,
+					SHA256:    treeHash,
+					FetchedAt: entry.FetchTime,
+					CacheHit:  true,
+					Type:      "directory",
+				}, treePath, nil
+			}
+		}
+		_ = hash
+	}
+
+	if opts.FetchPolicy.Offline {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
+	}
+
+	content, err := fetch.FetchURL(ctx, skillFileURL, opts.FetchPolicy)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, skillFileURL, err)
+	}
+
+	files := map[string][]byte{"SKILL.md": content}
+	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, skillFileURL, files)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching skill directory: %w", field, err)
+	}
+
+	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
+	}
+
+	if iErr := urlIndexPut(opts.WorkspaceRoot, skillFileURL, fetch.ComputeSHA256(content)); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
+	}
+	if iErr := urlIndexPut(opts.WorkspaceRoot, "skill:"+skillFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for skill tree: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, false, fetchedAt, "skill"); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       skillFileURL,
+		LocalPath: treePath,
+		SHA256:    treeHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "directory",
+	}, treePath, nil
+}
+
+// auditBaseFetch appends a fetch audit log entry for a base composition fetch.
+func auditBaseFetch(opts ComposeOpts, fileURL, hash, allowedBy string, cacheHit bool, fetchedAt time.Time, fetchType string) error {
 	if opts.AuditLogPath == "" {
 		return nil
 	}
 	return fetch.AppendFetchAudit(opts.AuditLogPath, fetch.FetchAuditEntry{
 		TraceID:   opts.TraceID,
 		FetchTime: fetchedAt,
-		URL:       scriptURL,
+		URL:       fileURL,
 		SHA256:    hash,
-		FetchType: "base_script",
+		FetchType: "base_" + fetchType,
 		AllowedBy: allowedBy,
 		CacheHit:  cacheHit,
 	})

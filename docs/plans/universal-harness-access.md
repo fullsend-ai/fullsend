@@ -390,7 +390,7 @@ During execution, the agent can fetch `https://github.com/fullsend-ai/library/tr
   "fetch_time": "2026-05-07T12:34:56Z",
   "url": "https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust-conventions",
   "sha256": "def456...",
-  "fetch_type": "static",  // or "runtime"
+  "fetch_type": "static",  // "static", "runtime", "base_script", "base_resource", or "base_skill"
   "allowed_by": "allowed_remote_resources[0]"
 }
 ```

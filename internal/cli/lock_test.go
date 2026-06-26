@@ -938,7 +938,9 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":              baseContent,
+		"/agents/shared.md":       []byte("# shared agent"),
+		"/skills/common/SKILL.md": []byte("# common skill"),
 	})
 
 	dir := t.TempDir()
@@ -969,8 +971,8 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	entry := lf.Lookup("urlbase")
 	require.NotNil(t, entry)
 
-	// Should have exactly one dependency: the URL base.
-	require.Len(t, entry.Dependencies, 1)
+	// Dependencies: base + agent resource + skill resource
+	require.Len(t, entry.Dependencies, 3)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 	assert.Equal(t, fmt.Sprintf("%s/base.yaml", srv.URL), entry.Dependencies[0].URL)
 	assert.Equal(t, baseHash, entry.Dependencies[0].SHA256)
@@ -983,7 +985,9 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":              baseContent,
+		"/agents/shared.md":       []byte("# shared agent"),
+		"/skills/common/SKILL.md": []byte("# common skill"),
 	})
 
 	dir := t.TempDir()
@@ -1013,7 +1017,7 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 
 	entry := lf.Lookup("urlbase-forge")
 	require.NotNil(t, entry)
-	require.Len(t, entry.Dependencies, 1)
+	require.Len(t, entry.Dependencies, 3)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 }
 
