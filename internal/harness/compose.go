@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,6 +55,14 @@ type ComposeOpts struct {
 	// OrgAllowlist is the org-level allowed_remote_resources from config.yaml.
 	// Base URLs must match a prefix in this list.
 	OrgAllowlist []string
+
+	// ForgeClient is used to fetch skill directories from URL-referenced bases.
+	// Skills are directories containing SKILL.md and optional companion files
+	// (sub-agents/, scripts/, meta-prompts/). When ForgeClient is provided,
+	// the full directory tree is fetched via the forge API. When nil, only
+	// SKILL.md is fetched (with a warning) because plain HTTP has no directory
+	// listing mechanism.
+	ForgeClient forge.Client
 
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
@@ -762,22 +771,31 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 }
 
 // fetchBaseSkill fetches a skill directory from a URL-referenced base harness.
-// Only SKILL.md is fetched (plain HTTP has no directory listing); skills with
-// companion files (sub-agents, scripts, meta-prompts) will be missing at
-// runtime. A warning is attached to the returned Dependency when this
-// limitation applies. Multi-file skills should use forge-format URLs resolved
-// by ResolveHarness instead. The file is fetched from
-// <baseURLDir>/<skillPath>/SKILL.md, cached as a directory via CachePutDir,
-// and the local tree directory path is returned.
+// When opts.ForgeClient is provided, the full directory tree is fetched via
+// the forge API (ListDirectoryContents + GetFileContentAtRef), including
+// companion files (sub-agents/, scripts/, meta-prompts/). When ForgeClient
+// is nil, only SKILL.md is fetched via plain HTTP (which has no directory
+// listing), and a warning is attached to the returned Dependency.
+//
+// The file(s) are fetched from <baseURLDir>/<skillPath>/, cached as a
+// directory via CachePutDir, and the local tree directory path is returned.
 func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
 	skillFileURL := baseURLDir + skillPath + "/SKILL.md"
-
-	warn := fmt.Sprintf("skill %q was fetched from a URL base with only SKILL.md; companion files (sub-agents, scripts, meta-prompts) may be missing — use a forge-format URL for multi-file skills", skillPath)
 
 	allowedBy := matchingAllowedPrefix(skillFileURL, allowlist)
 	if allowedBy == "" {
 		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, skillFileURL)
 	}
+
+	// When a ForgeClient is available, use the forge API to fetch the full
+	// skill directory tree (SKILL.md + all companion files). This is the
+	// preferred path that avoids the SKILL.md-only limitation.
+	if opts.ForgeClient != nil {
+		return fetchBaseSkillViaForge(ctx, field, baseURLDir, skillPath, allowlist, opts, allowedBy)
+	}
+
+	// Fallback: no ForgeClient — fetch only SKILL.md via plain HTTP.
+	warn := fmt.Sprintf("skill %q was fetched from a URL base with only SKILL.md; companion files (sub-agents, scripts, meta-prompts) may be missing — use a forge-format URL for multi-file skills", skillPath)
 
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
 	if indexHit {
@@ -845,6 +863,212 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		Type:      "directory",
 		Warning:   warn,
 	}, treePath, nil
+}
+
+// fetchBaseSkillViaForge fetches a complete skill directory from a URL-
+// referenced base using the forge API. This resolves the full directory tree
+// (SKILL.md + companion files like sub-agents/, scripts/, meta-prompts/)
+// instead of only SKILL.md. The base URL is parsed to extract owner, repo,
+// ref, and path components for forge API calls.
+func fetchBaseSkillViaForge(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts, allowedBy string) (Dependency, string, error) {
+	skillDirURL := baseURLDir + skillPath + "/"
+
+	// Check cache first using the skill directory URL as key.
+	treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, "skilltree:"+skillDirURL)
+	if indexHit {
+		treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+		if err == nil && treePath != "" {
+			if aErr := auditBaseFetch(opts, skillDirURL, treeHash, allowedBy, true, entry.FetchTime, "skill"); aErr != nil {
+				return Dependency{}, "", aErr
+			}
+			return Dependency{
+				Field:     field,
+				URL:       skillDirURL,
+				LocalPath: treePath,
+				SHA256:    treeHash,
+				FetchedAt: entry.FetchTime,
+				CacheHit:  true,
+				Type:      "directory",
+			}, treePath, nil
+		}
+	}
+
+	if opts.FetchPolicy.Offline {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillDirURL)
+	}
+
+	// Parse the base URL to extract forge coordinates (owner/repo/ref/path).
+	forgeInfo, err := parseRawGitHubContentURL(baseURLDir + skillPath)
+	if err != nil {
+		// If we can't parse the URL for forge API access, fall back to
+		// SKILL.md-only fetch so non-GitHub bases still work.
+		return fetchBaseSkillFallback(ctx, field, baseURLDir, skillPath, allowlist, opts, allowedBy)
+	}
+
+	// List all files in the skill directory via the forge API.
+	entries, err := opts.ForgeClient.ListDirectoryContents(ctx, forgeInfo.Owner, forgeInfo.Repo, forgeInfo.Path, forgeInfo.Ref, true)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: listing directory for %s: %w", field, skillDirURL, err)
+	}
+
+	// Fetch each file in the directory.
+	files := make(map[string][]byte)
+	for _, e := range entries {
+		if e.Type != "file" {
+			continue
+		}
+		var fullPath string
+		if forgeInfo.Path == "" {
+			fullPath = e.Path
+		} else {
+			fullPath = forgeInfo.Path + "/" + e.Path
+		}
+		content, fErr := opts.ForgeClient.GetFileContentAtRef(ctx, forgeInfo.Owner, forgeInfo.Repo, fullPath, forgeInfo.Ref)
+		if fErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: fetching file %s: %w", field, e.Path, fErr)
+		}
+		files[e.Path] = content
+	}
+
+	if len(files) == 0 {
+		return Dependency{}, "", fmt.Errorf("base %s: skill directory %s is empty", field, skillDirURL)
+	}
+
+	// Cache the complete directory tree.
+	treeHash, err = fetch.CachePutDir(opts.WorkspaceRoot, skillDirURL, files)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching skill directory: %w", field, err)
+	}
+
+	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
+	}
+
+	if iErr := urlIndexPut(opts.WorkspaceRoot, "skilltree:"+skillDirURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for skill tree: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, skillDirURL, treeHash, allowedBy, false, fetchedAt, "skill"); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       skillDirURL,
+		LocalPath: treePath,
+		SHA256:    treeHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "directory",
+	}, treePath, nil
+}
+
+// fetchBaseSkillFallback is the SKILL.md-only fallback used when the base URL
+// is not a recognized forge host. It fetches only SKILL.md and attaches a
+// warning about potentially missing companion files.
+func fetchBaseSkillFallback(ctx context.Context, field, baseURLDir, skillPath string, _ []string, opts ComposeOpts, allowedBy string) (Dependency, string, error) {
+	skillFileURL := baseURLDir + skillPath + "/SKILL.md"
+	warn := fmt.Sprintf("skill %q was fetched from a URL base with only SKILL.md; companion files (sub-agents, scripts, meta-prompts) may be missing — use a forge-format URL for multi-file skills", skillPath)
+
+	if opts.FetchPolicy.Offline {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
+	}
+
+	content, err := fetch.FetchURL(ctx, skillFileURL, opts.FetchPolicy)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, skillFileURL, err)
+	}
+
+	files := map[string][]byte{"SKILL.md": content}
+	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, skillFileURL, files)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching skill directory: %w", field, err)
+	}
+
+	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
+	}
+
+	if iErr := urlIndexPut(opts.WorkspaceRoot, skillFileURL, fetch.ComputeSHA256(content)); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
+	}
+	if iErr := urlIndexPut(opts.WorkspaceRoot, "skill:"+skillFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for skill tree: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, false, fetchedAt, "skill"); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       skillFileURL,
+		LocalPath: treePath,
+		SHA256:    treeHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "directory",
+		Warning:   warn,
+	}, treePath, nil
+}
+
+// parseRawGitHubContentURL parses a raw.githubusercontent.com URL into forge
+// coordinates (owner, repo, ref, path). The URL format is:
+//
+//	https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path...}
+//
+// Returns an error if the URL is not a raw.githubusercontent.com URL or
+// cannot be parsed. Trailing slashes on the path are stripped.
+func parseRawGitHubContentURL(rawURL string) (*forge.ForgeURLInfo, error) {
+	// Strip fragment (including #sha256=... integrity hashes).
+	if idx := strings.LastIndex(rawURL, "#"); idx != -1 {
+		rawURL = rawURL[:idx]
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Hostname() != "raw.githubusercontent.com" {
+		return nil, fmt.Errorf("not a raw.githubusercontent.com URL: %s", u.Hostname())
+	}
+
+	// Split path segments, filtering empty strings.
+	var segments []string
+	for _, s := range strings.Split(u.Path, "/") {
+		if s != "" {
+			segments = append(segments, s)
+		}
+	}
+
+	// Need at least 3 segments: owner, repo, ref.
+	if len(segments) < 3 {
+		return nil, fmt.Errorf("URL path too short: need at least /{owner}/{repo}/{ref}")
+	}
+
+	owner := segments[0]
+	repo := segments[1]
+	ref := segments[2]
+	var repoPath string
+	if len(segments) > 3 {
+		repoPath = strings.Join(segments[3:], "/")
+	}
+
+	// Strip trailing slash from path.
+	repoPath = strings.TrimRight(repoPath, "/")
+
+	return &forge.ForgeURLInfo{
+		Forge: "github",
+		Owner: owner,
+		Repo:  repo,
+		Path:  repoPath,
+		Ref:   ref,
+	}, nil
 }
 
 // auditBaseFetch appends a fetch audit log entry for a base composition fetch.

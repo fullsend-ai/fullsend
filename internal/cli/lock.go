@@ -193,6 +193,15 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 	}
 
+	// Create a ForgeClient for base composition so URL-referenced skills
+	// can fetch their full directory tree (SKILL.md + companion files).
+	var baseForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		baseForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		baseForgeClient = gh.New(token)
+	}
+
 	var allDeps []resolve.Dependency
 	seen := make(map[string]bool)
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
@@ -204,6 +213,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			ForgePlatform: platform,
 			OrgAllowlist:  orgAllowlist,
+			ForgeClient:   baseForgeClient,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))

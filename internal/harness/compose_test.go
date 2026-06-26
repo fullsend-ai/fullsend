@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -2750,4 +2751,264 @@ base: base.yaml
 	assert.False(t, h.AllowRuntimeFetch)
 	assert.Nil(t, h.MaxRuntimeFetches)
 	assert.Empty(t, h.AllowedRemoteResources)
+}
+
+func TestFetchBaseSkillViaForge_FetchesAllCompanionFiles(t *testing.T) {
+	// Simulate a raw.githubusercontent.com URL base pointing to a skill
+	// directory with SKILL.md and companion files (sub-agents/).
+	fakeClient := forge.NewFakeClient()
+
+	// The base URL dir corresponds to:
+	// https://raw.githubusercontent.com/testorg/testrepo/abc123/scaffold/
+	// The skill path is: skills/pr-review
+	// So the full path in the repo is: scaffold/skills/pr-review
+	baseURLDir := "https://raw.githubusercontent.com/testorg/testrepo/abc123/scaffold/"
+	skillPath := "skills/pr-review"
+
+	// Set up forge directory listing
+	fakeClient.DirContents["testorg/testrepo/scaffold/skills/pr-review@abc123"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 100},
+		{Path: "meta-prompt.md", Type: "file", Size: 50},
+		{Path: "sub-agents/correctness.md", Type: "file", Size: 200},
+		{Path: "sub-agents/security.md", Type: "file", Size: 150},
+	}
+
+	// Set up file contents for each file
+	skillContent := []byte("# PR Review Skill\nDispatch sub-agents in parallel.")
+	metaContent := []byte("# Meta Prompt\nReview guidance.")
+	correctnessContent := []byte("# Correctness\nCheck for bugs.")
+	securityContent := []byte("# Security\nCheck for vulns.")
+
+	fakeClient.FileContentsRef["testorg/testrepo/scaffold/skills/pr-review/SKILL.md@abc123"] = skillContent
+	fakeClient.FileContentsRef["testorg/testrepo/scaffold/skills/pr-review/meta-prompt.md@abc123"] = metaContent
+	fakeClient.FileContentsRef["testorg/testrepo/scaffold/skills/pr-review/sub-agents/correctness.md@abc123"] = correctnessContent
+	fakeClient.FileContentsRef["testorg/testrepo/scaffold/skills/pr-review/sub-agents/security.md@abc123"] = securityContent
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", baseURLDir,
+		skillPath, []string{"https://raw.githubusercontent.com/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fakeClient,
+		})
+	require.NoError(t, err)
+
+	// Should be a directory type with NO warning (all files fetched).
+	assert.Equal(t, "directory", dep.Type)
+	assert.Empty(t, dep.Warning, "expected no warning when forge client fetches full directory")
+	assert.False(t, dep.CacheHit)
+
+	// Verify all files were cached.
+	gotSkill, err := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, gotSkill)
+
+	gotMeta, err := os.ReadFile(filepath.Join(localDir, "meta-prompt.md"))
+	require.NoError(t, err)
+	assert.Equal(t, metaContent, gotMeta)
+
+	gotCorrectness, err := os.ReadFile(filepath.Join(localDir, "sub-agents", "correctness.md"))
+	require.NoError(t, err)
+	assert.Equal(t, correctnessContent, gotCorrectness)
+
+	gotSecurity, err := os.ReadFile(filepath.Join(localDir, "sub-agents", "security.md"))
+	require.NoError(t, err)
+	assert.Equal(t, securityContent, gotSecurity)
+}
+
+func TestFetchBaseSkillViaForge_CacheHit(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	baseURLDir := "https://raw.githubusercontent.com/testorg/testrepo/abc123/scaffold/"
+	skillPath := "skills/common"
+
+	fakeClient.DirContents["testorg/testrepo/scaffold/skills/common@abc123"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 50},
+	}
+	skillContent := []byte("# Common Skill")
+	fakeClient.FileContentsRef["testorg/testrepo/scaffold/skills/common/SKILL.md@abc123"] = skillContent
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// First fetch — populates cache.
+	dep1, _, err := fetchBaseSkill(context.Background(), "skills[0]", baseURLDir,
+		skillPath, []string{"https://raw.githubusercontent.com/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fakeClient,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep1.CacheHit)
+
+	// Second fetch — should hit cache.
+	dep2, localDir2, err := fetchBaseSkill(context.Background(), "skills[0]", baseURLDir,
+		skillPath, []string{"https://raw.githubusercontent.com/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fakeClient,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep2.CacheHit)
+	assert.Empty(t, dep2.Warning)
+
+	// Verify cached content is correct.
+	gotSkill, err := os.ReadFile(filepath.Join(localDir2, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, gotSkill)
+}
+
+func TestFetchBaseSkillViaForge_FallbackOnNonRawURL(t *testing.T) {
+	// When the base URL is not a raw.githubusercontent.com URL,
+	// fetchBaseSkillViaForge falls back to SKILL.md-only fetch.
+	fakeClient := forge.NewFakeClient()
+
+	content := []byte("# skill")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/skills/common/SKILL.md" {
+			w.Write(content)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
+		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+			ForgeClient:   fakeClient, // provided but URL is not raw.githubusercontent.com
+		})
+	require.NoError(t, err)
+
+	// Falls back to SKILL.md-only with warning.
+	assert.Equal(t, "directory", dep.Type)
+	assert.Contains(t, dep.Warning, "only SKILL.md")
+
+	// Verify only SKILL.md was fetched.
+	entries, err := os.ReadDir(localDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "SKILL.md", entries[0].Name())
+}
+
+func TestFetchBaseSkillNoForgeClient_OnlySKILLMD(t *testing.T) {
+	// Without a ForgeClient, fetchBaseSkill uses the fallback path that
+	// only fetches SKILL.md.
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/skills/common/SKILL.md" {
+			w.Write([]byte("# Common Skill\nDo the thing."))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
+		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+			// ForgeClient is nil — no forge API access.
+		})
+	require.NoError(t, err)
+	assert.Equal(t, "directory", dep.Type)
+	assert.Contains(t, dep.Warning, "only SKILL.md")
+
+	entries, err := os.ReadDir(localDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "SKILL.md", entries[0].Name())
+}
+
+func TestParseRawGitHubContentURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		want    *forge.ForgeURLInfo
+		wantErr string
+	}{
+		{
+			name: "standard raw URL",
+			url:  "https://raw.githubusercontent.com/myorg/myrepo/abc123/path/to/dir",
+			want: &forge.ForgeURLInfo{
+				Forge: "github",
+				Owner: "myorg",
+				Repo:  "myrepo",
+				Ref:   "abc123",
+				Path:  "path/to/dir",
+			},
+		},
+		{
+			name: "raw URL with trailing slash",
+			url:  "https://raw.githubusercontent.com/myorg/myrepo/abc123/path/to/dir/",
+			want: &forge.ForgeURLInfo{
+				Forge: "github",
+				Owner: "myorg",
+				Repo:  "myrepo",
+				Ref:   "abc123",
+				Path:  "path/to/dir",
+			},
+		},
+		{
+			name: "raw URL with integrity hash fragment",
+			url:  "https://raw.githubusercontent.com/myorg/myrepo/abc123/file.yaml#sha256=deadbeef",
+			want: &forge.ForgeURLInfo{
+				Forge: "github",
+				Owner: "myorg",
+				Repo:  "myrepo",
+				Ref:   "abc123",
+				Path:  "file.yaml",
+			},
+		},
+		{
+			name: "no path beyond ref",
+			url:  "https://raw.githubusercontent.com/myorg/myrepo/abc123",
+			want: &forge.ForgeURLInfo{
+				Forge: "github",
+				Owner: "myorg",
+				Repo:  "myrepo",
+				Ref:   "abc123",
+				Path:  "",
+			},
+		},
+		{
+			name:    "not raw.githubusercontent.com",
+			url:     "https://github.com/myorg/myrepo/tree/main/skills",
+			wantErr: "not a raw.githubusercontent.com URL",
+		},
+		{
+			name:    "too few segments",
+			url:     "https://raw.githubusercontent.com/myorg",
+			wantErr: "URL path too short",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseRawGitHubContentURL(tt.url)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

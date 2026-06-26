@@ -210,12 +210,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Create a ForgeClient for base composition so URL-referenced skills
+	// can fetch their full directory tree (SKILL.md + companion files).
+	// Best-effort: if no token is available, LoadWithBase falls back to
+	// SKILL.md-only fetch with a warning.
+	var baseForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		baseForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		baseForgeClient = gh.New(token)
+	}
+
 	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
 		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 		ForgePlatform: forgePlatform,
 		OrgAllowlist:  orgAllowlist,
+		ForgeClient:   baseForgeClient,
 	})
 	if err != nil {
 		printer.StepFail("Failed to load harness")
