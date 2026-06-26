@@ -19,6 +19,9 @@ import (
 func newWorkflowsLayer(t *testing.T, client *forge.FakeClient, vendored bool) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
 	ensureFakeConfigRepo(client)
+	if client.AuthenticatedUser == "" {
+		client.AuthenticatedUser = "test-org"
+	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored).WithDirect(true)
@@ -91,6 +94,7 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 
 func TestWorkflowsLayer_Install_DefaultCreatesPR(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -402,6 +406,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_BranchUpToDate(t *testing.T) {
 
 func TestWorkflowsLayer_Install_DefaultPR_NoChanges(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	client.Errors = map[string]error{
 		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
@@ -563,6 +568,7 @@ func TestManagedPathsMatchLayeredScaffold(t *testing.T) {
 
 func TestWorkflowsLayer_Install_SignOffTrailer(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)

@@ -1806,7 +1806,7 @@ func TestRunAnalyze_WithFakeClient(t *testing.T) {
 
 func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 	discovered := []forge.Repository{
 		{Name: forge.ConfigRepoName, FullName: "testorg/" + forge.ConfigRepoName},
 	}
@@ -1829,7 +1829,7 @@ func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{"myrepo": false})
 	client := setupTestClient("testorg", cfg, []string{"myrepo"})
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
@@ -1854,7 +1854,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 func TestRunInstall_DiscoversRepos(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{"myrepo": false})
 	client := setupTestClient("testorg", cfg, []string{"myrepo"})
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
@@ -1880,7 +1880,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 
 func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 	discovered := []forge.Repository{
 		{Name: "myrepo", FullName: "testorg/myrepo"},
 	}
@@ -1902,7 +1902,7 @@ func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{"myrepo": false})
 	client := setupTestClient("testorg", cfg, []string{"myrepo"})
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
@@ -2317,6 +2317,7 @@ func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
 
 func TestApplyPerRepoScaffold(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	printer := ui.New(&bytes.Buffer{})
 
@@ -2363,6 +2364,7 @@ func TestApplyPerRepoScaffold(t *testing.T) {
 
 func TestApplyPerRepoScaffold_GetRepoError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Errors["GetRepo"] = errors.New("not found")
 	printer := ui.New(&bytes.Buffer{})
 
@@ -2374,6 +2376,7 @@ func TestApplyPerRepoScaffold_GetRepoError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_CommitFilesError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = errors.New("permission denied")
 	printer := ui.New(&bytes.Buffer{})
@@ -2392,6 +2395,7 @@ func TestApplyPerRepoScaffold_CommitFilesError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	noChange := false
 	client.CommitFilesChanged = &noChange
@@ -2415,6 +2419,7 @@ func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 
 func TestApplyPerRepoScaffold_DefaultPR_NoChanges(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors = map[string]error{
 		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
@@ -2434,6 +2439,7 @@ func TestApplyPerRepoScaffold_DefaultPR_NoChanges(t *testing.T) {
 
 func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "develop"}}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -2451,6 +2457,7 @@ func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
 
 func TestApplyPerRepoScaffold_CreateVariableError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors = map[string]error{
 		"CreateOrUpdateRepoVariable": errors.New("rate limited"),
@@ -2465,6 +2472,7 @@ func TestApplyPerRepoScaffold_CreateVariableError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_CreateSecretError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors = map[string]error{
 		"CreateRepoSecret": errors.New("forbidden"),
@@ -2479,6 +2487,7 @@ func TestApplyPerRepoScaffold_CreateSecretError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranchFallback(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	var buf bytes.Buffer
@@ -2512,6 +2521,7 @@ func TestApplyPerRepoScaffold_ProtectedBranchFallback(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateBranch"] = fmt.Errorf("branch: %w", forge.ErrAlreadyExists)
@@ -2532,6 +2542,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_StillSetsVarsAndSecrets(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	printer := ui.New(&bytes.Buffer{})
@@ -2552,6 +2563,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_StillSetsVarsAndSecrets(t *testing
 
 func TestApplyPerRepoScaffold_ProtectedBranch_CreateBranchFails(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateBranch"] = fmt.Errorf("forbidden")
@@ -2569,6 +2581,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreateBranchFails(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_CommitToBranchFails(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CommitFilesToBranch"] = fmt.Errorf("server error")
@@ -2586,6 +2599,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CommitToBranchFails(t *testing.T) 
 
 func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CommitFilesToBranch"] = fmt.Errorf("%w: scaffold branch also protected", forge.ErrBranchProtected)
@@ -2604,6 +2618,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *tes
 
 func TestApplyPerRepoScaffold_ProtectedBranch_CreatePRFails(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateChangeProposal"] = fmt.Errorf("forbidden")
@@ -2621,6 +2636,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreatePRFails(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateChangeProposal"] = fmt.Errorf("pr: %w", forge.ErrAlreadyExists)
@@ -2752,6 +2768,7 @@ func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateChangeProposal"] = fmt.Errorf("PR: %w", forge.ErrAlreadyExists)
