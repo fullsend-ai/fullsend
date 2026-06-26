@@ -158,5 +158,5 @@ fullsend mint token \
 
 - [Mint service administration](../guides/infrastructure/mint-administration.md) — deployment and management guide
 - [Infrastructure reference](../guides/infrastructure/infrastructure-reference.md) — architecture details
-- [Installation guide](../reference/installation.md) — all-in-one `admin install`
+- [Operations](../guides/getting-started/operations.md) — standalone commands and IAM role breakdown
 - [CLI internals](../guides/dev/cli-internals.md) — command tree and implementation details

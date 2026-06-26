@@ -1,6 +1,6 @@
 # Infrastructure Reference
 
-This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Installation Guide](../../reference/installation.md).
+This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Getting Started guides](../getting-started/).
 
 ## Token Mint (OIDC) — GCF Cloud Function
 
@@ -186,7 +186,7 @@ During installation, the GCF provisioner creates:
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) for the full GitHub management guide.
+> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
 
 Secrets and variables are deployed at different scopes depending on the installation mode.
 
@@ -304,8 +304,8 @@ The GCF provisioner avoids redundant Cloud Function deployments by computing a S
 
 ## See Also
 
-- [Installation Guide](../../reference/installation.md) — Setup instructions (end-user and all-in-one)
+- [Getting Started](../getting-started/) — Standard per-repo installation
 - [Mint service administration](mint-administration.md) — Deploying and managing the token mint
 - [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
-- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
+- [Advanced setup](./advanced-setup.md) — Alternative installation paths and setup flags
 - [Running agents locally](../user/running-agents-locally.md) — Run agents locally (binary download, GCP credentials, per-agent env vars)

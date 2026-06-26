@@ -6,9 +6,17 @@ Practical how-to documentation for fullsend, organized by audience. For design d
 
 Guides for onboarding organizations and configuring GitHub — the first thing most users need.
 
-- [Getting Inference](getting-started/getting-inference.md)
-- [Configuring GitHub](getting-started/configuring-github.md)
-- [Organization Mode](getting-started/org-mode.md)
+- [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
+- [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
+- [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
+- [Organization Mode](getting-started/org-mode.md) — Org-wide setup with a shared `.fullsend` config repo
+
+## Operations & Advanced Setup
+
+Guides for organization owners and repository administrators who manage fullsend installations.
+
+- [Operations](getting-started/operations.md) — Enrollment, configuration updates, status checks, uninstall, and standalone commands
+- [Advanced setup](infrastructure/advanced-setup.md) — Alternative installation paths, setup flags, custom app sets, and manual WIF configuration
 
 ## Infrastructure
 

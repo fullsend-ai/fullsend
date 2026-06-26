@@ -345,4 +345,4 @@ gh api -X POST /orgs/myorg/actions/variables \
 
 - [Mint service administration](mint-administration.md) — Managing the hosted GCP mint
 - [Building custom agents](../user/building-custom-agents.md) — Creating new agents for your repos
-- [Installing fullsend](../../reference/installation.md) — End-user setup
+- [Getting Started](../getting-started/) — End-user setup

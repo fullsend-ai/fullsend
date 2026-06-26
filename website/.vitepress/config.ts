@@ -169,7 +169,8 @@ export default defineConfig({
           items: [
             { text: 'Getting Inference', link: '/guides/getting-started/getting-inference' },
             { text: 'Configuring GitHub', link: '/guides/getting-started/configuring-github' },
-            { text: 'Org Mode', link: '/guides/getting-started/org-mode' },
+            { text: 'Per-Org Mode', link: '/guides/getting-started/org-mode' },
+            { text: 'Operations', link: '/guides/getting-started/operations' },
           ],
         },
         {
@@ -209,15 +210,6 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Reference',
-          collapsed: true,
-          link: '/reference/',
-          items: [
-            { text: 'Installation', link: '/reference/installation' },
-            { text: 'GitHub Setup', link: '/reference/github-setup' },
-          ],
-        },
-        {
           text: 'Infrastructure',
           collapsed: true,
           items: [
@@ -226,6 +218,7 @@ export default defineConfig({
             { text: 'Standalone Mint', link: '/guides/infrastructure/standalone-mint' },
             { text: 'Private Repositories', link: '/guides/infrastructure/private-repositories' },
             { text: 'Distributed Tracing', link: '/guides/infrastructure/distributed-tracing' },
+            { text: 'Advanced Setup', link: '/guides/infrastructure/advanced-setup' },
           ],
         },
         {
