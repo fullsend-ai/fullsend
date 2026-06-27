@@ -14,7 +14,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
 
 | Image | Directory | Description |
 |-------|-----------|-------------|
-| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, jq, acli, gitleaks, pinact, tirith, pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model for prompt injection detection. |
+| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, jq, acli, gitleaks, tirith, pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model for prompt injection detection. |
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
 Both images are built for **linux/amd64** and **linux/arm64**.
@@ -104,7 +104,6 @@ Every binary downloaded during the build is **version-pinned** and
 | ONNX Runtime | `ORT_VERSION` + `ORT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Gitleaks | `GITLEAKS_VERSION` + `GITLEAKS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Tirith | `TIRITH_VERSION` + `TIRITH_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
-| Pinact | `PINACT_VERSION` + `PINACT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Go toolchain | `GO_VERSION` + `GO_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | ProtectAI DeBERTa model | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
 | Claude Code | Official installer script | HTTPS only (no checksum, version floats) |

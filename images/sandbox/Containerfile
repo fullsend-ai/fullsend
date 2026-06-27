@@ -7,7 +7,6 @@
 #   - acli (Atlassian CLI for Jira issue queries)
 #   - pre-commit + gitlint (repo hook runner + commit message validator)
 #   - tirith (Rust CLI for terminal security scanning hooks)
-#   - pinact (GitHub Actions SHA-pin checker for pre-commit hooks)
 #   - ONNX Runtime + ProtectAI DeBERTa-v3 model for prompt injection
 #     detection (loaded natively by fullsend via Go/hugot — no Python
 #     runtime dependency, no cold-start latency)
@@ -149,27 +148,6 @@ RUN case "$TARGETARCH" in \
     && tar xzf /tmp/tirith.tar.gz -C /usr/local/bin tirith \
     && chmod +x /usr/local/bin/tirith \
     && rm /tmp/tirith.tar.gz
-
-# ---------------------------------------------------------------------------
-# pinact — GitHub Actions SHA-pin checker for pre-commit hooks.
-# Pinned version + SHA256 checksum for supply chain safety.
-# To update: bump PINACT_VERSION and PINACT_SHA256_{AMD64,ARM64} from:
-#   https://github.com/suzuki-shunsuke/pinact/releases/download/v<VERSION>/pinact_<VERSION>_checksums.txt
-ARG PINACT_VERSION=4.1.0
-ARG PINACT_SHA256_AMD64=8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0
-ARG PINACT_SHA256_ARM64=2807669cd423a3572bc12ea4a5eab80cd2f30d5644710e0c97a08a075fdadf10
-RUN case "$TARGETARCH" in \
-      amd64) PA_SHA="$PINACT_SHA256_AMD64" ;; \
-      arm64) PA_SHA="$PINACT_SHA256_ARM64" ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL \
-      "https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_${TARGETARCH}.tar.gz" \
-      -o /tmp/pinact.tar.gz \
-    && echo "${PA_SHA}  /tmp/pinact.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/pinact.tar.gz -C /usr/local/bin pinact \
-    && chmod +x /usr/local/bin/pinact \
-    && rm /tmp/pinact.tar.gz
 
 # ---------------------------------------------------------------------------
 # Workaround for NVIDIA/OpenShell#886: the sandbox proxy does TLS
