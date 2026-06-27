@@ -70,7 +70,7 @@ var canonicalRolePermissions = map[string]map[string]string{
 		"organization_administration": "write", "pull_requests": "write",
 		"secrets": "write", "workflows": "write",
 	},
-	"loader": {"contents": "read", "metadata": "read"},
+	"reader": {"contents": "read", "metadata": "read"},
 }
 
 // RolePermissions returns a deep copy of the role-to-permissions map,

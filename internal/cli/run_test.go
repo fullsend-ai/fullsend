@@ -2494,31 +2494,31 @@ func TestHasOIDCEnv(t *testing.T) {
 	}
 }
 
-func TestMintLoaderToken_NoMintURL(t *testing.T) {
+func TestMintReaderToken_NoMintURL(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.com")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	_, err := mintLoaderToken(context.Background(), "", printer)
+	_, err := mintReaderToken(context.Background(), "", printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loader mint unavailable")
+	assert.Contains(t, err.Error(), "reader mint unavailable")
 }
 
-func TestMintLoaderToken_NoOIDCEnv(t *testing.T) {
+func TestMintReaderToken_NoOIDCEnv(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	_, err := mintReaderToken(context.Background(), "https://mint.example.com", printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "loader mint unavailable")
+	assert.Contains(t, err.Error(), "reader mint unavailable")
 }
 
-func TestMintLoaderToken_Success(t *testing.T) {
+func TestMintReaderToken_Success(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
@@ -2529,22 +2529,22 @@ func TestMintLoaderToken_Success(t *testing.T) {
 	var capturedReq mintclient.MintRequest
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		capturedReq = req
-		return &mintclient.MintResult{Token: "ghs_loader_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		return &mintclient.MintResult{Token: "ghs_reader_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
 	}
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	token, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	token, err := mintReaderToken(context.Background(), "https://mint.example.com", printer)
 	require.NoError(t, err)
-	assert.Equal(t, "ghs_loader_token", token)
-	assert.Equal(t, "loader", capturedReq.Role)
+	assert.Equal(t, "ghs_reader_token", token)
+	assert.Equal(t, "reader", capturedReq.Role)
 	assert.Equal(t, "https://mint.example.com", capturedReq.MintURL)
 	assert.Equal(t, []string{"my-repo"}, capturedReq.Repos)
-	assert.Contains(t, buf.String(), "Loader token minted")
+	assert.Contains(t, buf.String(), "Reader token minted")
 }
 
-func TestMintLoaderToken_MintError(t *testing.T) {
+func TestMintReaderToken_MintError(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
@@ -2559,12 +2559,12 @@ func TestMintLoaderToken_MintError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	_, err := mintReaderToken(context.Background(), "https://mint.example.com", printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "minting loader token")
+	assert.Contains(t, err.Error(), "minting reader token")
 }
 
-func TestMintLoaderToken_InvalidTokenPattern(t *testing.T) {
+func TestMintReaderToken_InvalidTokenPattern(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
@@ -2579,12 +2579,12 @@ func TestMintLoaderToken_InvalidTokenPattern(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	_, err := mintReaderToken(context.Background(), "https://mint.example.com", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected characters")
 }
 
-func TestMintLoaderToken_ResolveMintReposError(t *testing.T) {
+func TestMintReaderToken_ResolveMintReposError(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
 	// Neither MINT_REPOS nor REPO_FULL_NAME is set, so resolveMintRepos fails.
@@ -2594,12 +2594,12 @@ func TestMintLoaderToken_ResolveMintReposError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	_, err := mintReaderToken(context.Background(), "https://mint.example.com", printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolving mint repos for loader")
+	assert.Contains(t, err.Error(), "resolving mint repos for reader")
 }
 
-func TestMintLoaderToken_SuccessWithMasking(t *testing.T) {
+func TestMintReaderToken_SuccessWithMasking(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
@@ -2620,7 +2620,7 @@ func TestMintLoaderToken_SuccessWithMasking(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	token, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	token, err := mintReaderToken(context.Background(), "https://mint.example.com", printer)
 
 	w.Close()
 	os.Stderr = origStderr
@@ -2631,5 +2631,5 @@ func TestMintLoaderToken_SuccessWithMasking(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_masked_token", token)
 	assert.Contains(t, stderrBuf.String(), "::add-mask::ghs_masked_token")
-	assert.Contains(t, buf.String(), "Loader token minted")
+	assert.Contains(t, buf.String(), "Reader token minted")
 }

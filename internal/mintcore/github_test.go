@@ -104,7 +104,7 @@ func TestCreateInstallationToken_UnknownRole(t *testing.T) {
 }
 
 func TestRolePermissions_AllRolesPresent(t *testing.T) {
-	expectedRoles := []string{"triage", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e", "loader"}
+	expectedRoles := []string{"triage", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e", "reader"}
 	allPerms := RolePermissions()
 	for _, role := range expectedRoles {
 		perms, ok := allPerms[role]
@@ -131,12 +131,12 @@ func TestRolePermissions_E2e(t *testing.T) {
 	assert.Equal(t, "write", perms["workflows"])
 }
 
-func TestRolePermissions_Loader(t *testing.T) {
-	perms := RolePermissionsFor("loader")
+func TestRolePermissions_Reader(t *testing.T) {
+	perms := RolePermissionsFor("reader")
 	require.NotNil(t, perms)
 	assert.Equal(t, "read", perms["contents"])
 	assert.Equal(t, "read", perms["metadata"])
-	assert.Len(t, perms, 2, "loader role should have exactly 2 permissions")
+	assert.Len(t, perms, 2, "reader role should have exactly 2 permissions")
 }
 
 func TestRolePermissions_ReturnsCopy(t *testing.T) {

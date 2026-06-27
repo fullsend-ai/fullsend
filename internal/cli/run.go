@@ -210,7 +210,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// Resolve mintURL early so it is available for the loader token mint
+	// Resolve mintURL early so it is available for the reader token mint
 	// before LoadWithBase. The same value is reused for mintAgentToken later.
 	mintURL := sOpts.mintURL
 	if mintURL == "" {
@@ -220,7 +220,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var composeForgeClient forge.Client
 	if rFlags.forgeClient != nil {
 		composeForgeClient = rFlags.forgeClient
-	} else if token, loaderErr := mintLoaderToken(ctx, mintURL, printer); loaderErr == nil {
+	} else if token, readerErr := mintReaderToken(ctx, mintURL, printer); readerErr == nil {
 		composeForgeClient = gh.New(token)
 	} else if token, tokenErr := resolveToken(); tokenErr == nil {
 		composeForgeClient = gh.New(token)
@@ -2142,40 +2142,40 @@ func hasOIDCEnv() bool {
 		os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != ""
 }
 
-// mintLoaderToken mints a minimal-permission token using the "loader" role
+// mintReaderToken mints a minimal-permission token using the "reader" role
 // for resolving URL-based harness bases and skill directories before the
 // harness role is known. Returns the token string on success, or an error
 // if OIDC is unavailable or the mint fails. The token is short-lived and
 // used only for ForgeClient construction during LoadWithBase.
-func mintLoaderToken(ctx context.Context, mintURL string, printer *ui.Printer) (string, error) {
+func mintReaderToken(ctx context.Context, mintURL string, printer *ui.Printer) (string, error) {
 	if mintURL == "" || !hasOIDCEnv() {
-		return "", fmt.Errorf("loader mint unavailable: mint URL and OIDC env vars (ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN) are both required")
+		return "", fmt.Errorf("reader mint unavailable: mint URL and OIDC env vars (ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN) are both required")
 	}
 
 	repos, err := resolveMintRepos()
 	if err != nil {
-		return "", fmt.Errorf("resolving mint repos for loader: %w", err)
+		return "", fmt.Errorf("resolving mint repos for reader: %w", err)
 	}
 
-	printer.StepStart("Minting loader token (contents:read)")
+	printer.StepStart("Minting reader token (contents:read)")
 	result, err := statusMintToken(ctx, mintclient.MintRequest{
 		MintURL: mintURL,
-		Role:    "loader",
+		Role:    "reader",
 		Repos:   repos,
 	})
 	if err != nil {
-		return "", fmt.Errorf("minting loader token: %w", err)
+		return "", fmt.Errorf("minting reader token: %w", err)
 	}
 
 	if !mintTokenPattern.MatchString(result.Token) {
-		return "", fmt.Errorf("minted loader token contains unexpected characters")
+		return "", fmt.Errorf("minted reader token contains unexpected characters")
 	}
 
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 	}
 
-	printer.StepDone("Loader token minted")
+	printer.StepDone("Reader token minted")
 	return result.Token, nil
 }
 
