@@ -1,5 +1,5 @@
 ---
-order: 4
+sidebar_position: 4
 ---
 
 # Installing Fullsend in Organization Mode

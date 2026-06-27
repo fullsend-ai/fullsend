@@ -1,5 +1,6 @@
 ---
-order: 1
+sidebar_position: 1
+slug: /
 ---
 
 # Getting Started
