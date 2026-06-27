@@ -46,8 +46,17 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("creating runtime config dirs: %w", err)
 	}
 
+	// Determine the destination filename for the agent definition.
+	// When fetched from the content-addressed cache, the source basename
+	// is "content" (no .md extension), which Claude Code cannot discover.
+	// Use the logical agent name to ensure the file lands as {name}.md.
+	agentDest := filepath.Base(agentPath)
+	if name := input.AgentName(); name != "" {
+		agentDest = strings.TrimSuffix(name, ".md") + ".md"
+	}
+
 	if err := sandbox.Upload(sandboxName, agentPath,
-		fmt.Sprintf("%s/agents/", configDir)); err != nil {
+		fmt.Sprintf("%s/agents/%s", configDir, agentDest)); err != nil {
 		return fmt.Errorf("copying agent definition: %w", err)
 	}
 

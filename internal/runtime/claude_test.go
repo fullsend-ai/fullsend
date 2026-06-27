@@ -21,10 +21,12 @@ import (
 type bootstrapInput struct {
 	sandboxName string
 	agentPath   string
+	agentName   string
 }
 
 func (b bootstrapInput) SandboxName() string  { return b.sandboxName }
 func (b bootstrapInput) AgentPath() string    { return b.agentPath }
+func (b bootstrapInput) AgentName() string    { return b.agentName }
 func (b bootstrapInput) SkillDirs() []string  { return nil }
 func (b bootstrapInput) PluginDirs() []string { return nil }
 

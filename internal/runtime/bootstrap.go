@@ -6,6 +6,7 @@ package runtime
 type BootstrapInput interface {
 	SandboxName() string
 	AgentPath() string
+	AgentName() string
 	SkillDirs() []string
 	PluginDirs() []string
 }

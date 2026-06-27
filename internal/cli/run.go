@@ -663,7 +663,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
 	printer.StepStart("Bootstrapping sandbox")
-	boot := newHarnessBootstrap(h, sandboxName)
+	boot := newHarnessBootstrap(h, sandboxName, agentName)
 	if h.SecurityEnabled() {
 		// Scan all runtime content before upload so warnings surface together.
 		// Host files could change between scan and upload; the runner owns the host FS here.
