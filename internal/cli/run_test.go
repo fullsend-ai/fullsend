@@ -313,15 +313,13 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 }
 
 func TestRunAgent_WithURLBase(t *testing.T) {
-	// Harness with a URL base — exercises the baseDeps logging loop
-	// including the Warning path for skills fetched with only SKILL.md.
-	baseContent := []byte("agent: agents/shared.md\nrole: test\nskills:\n  - skills/common\n")
+	// Harness with a URL base — exercises the baseDeps logging loop.
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml":              baseContent,
-		"/agents/shared.md":       []byte("# shared agent"),
-		"/skills/common/SKILL.md": []byte("# common skill"),
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()

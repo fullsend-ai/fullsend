@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -433,8 +434,6 @@ func TestLoadWithBase_URLBase(t *testing.T) {
 agent: agents/remote.md
 role: test
 model: sonnet
-skills:
-  - remote-skill
 `)
 	hash := computeHash(baseContent)
 
@@ -472,20 +471,16 @@ allowed_remote_resources:
 
 	// Child overrides agent
 	assert.Equal(t, "agents/child.md", h.Agent)
-	// Base provides model and skills (skill resolved to cache path)
+	// Base provides model
 	assert.Equal(t, "sonnet", h.Model)
-	require.Len(t, h.Skills, 1)
-	assert.True(t, filepath.IsAbs(h.Skills[0]), "skill should be resolved to cache path")
 
-	// Dependencies: 1 base + 1 agent resource + 1 skill
-	require.Len(t, deps, 3)
+	// Dependencies: 1 base + 1 agent resource
+	require.Len(t, deps, 2)
 	assert.Equal(t, "base", deps[0].Field)
 	assert.Equal(t, server.URL+"/base.yaml", deps[0].URL)
 	assert.Equal(t, hash, deps[0].SHA256)
 	assert.Equal(t, "agent", deps[1].Field)
 	assert.Equal(t, "resource", deps[1].Type)
-	assert.Equal(t, "skills[0]", deps[2].Field)
-	assert.Equal(t, "directory", deps[2].Type)
 }
 
 func TestLoadWithBase_ChainedURLBases(t *testing.T) {
@@ -500,8 +495,6 @@ model: opus
 	parentContent := []byte(`
 agent: agents/parent.md
 role: test
-skills:
-  - parent-skill
 `)
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -509,7 +502,6 @@ skills:
 			w.WriteHeader(http.StatusOK)
 			w.Write(grandparentContent)
 		} else if r.URL.Path == "/parent.yaml" {
-			// Parent's base field will be set dynamically
 			w.WriteHeader(http.StatusOK)
 			w.Write(parentContent)
 		} else {
@@ -523,8 +515,6 @@ skills:
 agent: agents/parent.md
 role: test
 base: %s/grandparent.yaml#sha256=%s
-skills:
-  - parent-skill
 `, server.URL, grandparentHash))
 	parentHash := computeHash(parentContentWithBase)
 
@@ -536,8 +526,7 @@ skills:
 		} else if r.URL.Path == "/parent.yaml" {
 			w.WriteHeader(http.StatusOK)
 			w.Write(parentContentWithBase)
-		} else if strings.HasPrefix(r.URL.Path, "/agents/") ||
-			strings.HasSuffix(r.URL.Path, "/SKILL.md") {
+		} else if strings.HasPrefix(r.URL.Path, "/agents/") {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("# test resource"))
 		} else {
@@ -554,8 +543,6 @@ skills:
 agent: agents/child.md
 role: test
 base: `+parentURL+`
-skills:
-  - child-skill
 `)
 
 	policy := fetch.NewTestPolicy(
@@ -575,13 +562,10 @@ skills:
 	assert.Equal(t, "agents/child.md", h.Agent)
 	// Grandparent provides model
 	assert.Equal(t, "opus", h.Model)
-	// Skills: child's "child-skill" (local) + parent's "parent-skill" (resolved to cache path)
-	assert.Contains(t, h.Skills, "child-skill")
-	require.True(t, len(h.Skills) >= 2, "should have child-skill and resolved parent-skill")
 
-	// Dependencies: parent base + parent agent + parent skill +
+	// Dependencies: parent base + parent agent +
 	// grandparent base + grandparent agent
-	require.Len(t, deps, 5)
+	require.Len(t, deps, 4)
 }
 
 func TestLoadWithBase_URLBase_HashMismatch(t *testing.T) {
@@ -2154,30 +2138,17 @@ role: test
 base: `+baseURL+`
 `)
 
-	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+	// ForgeClient is required for URL-base skill resolution; without it
+	// fetchBaseSkill returns an error. The test server URL is not a
+	// raw.githubusercontent.com URL so the ForgeClient path will fail,
+	// and skill resolution will error.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
-	require.NoError(t, err)
-
-	// Skill resolved to a cache directory
-	require.Len(t, h.Skills, 1)
-	assert.True(t, filepath.IsAbs(h.Skills[0]), "skill should be resolved to cache dir")
-
-	// Verify SKILL.md exists in the cached directory
-	cachedSkillMD := filepath.Join(h.Skills[0], "SKILL.md")
-	content, err := os.ReadFile(cachedSkillMD)
-	require.NoError(t, err)
-	assert.Equal(t, skillContent, content)
-
-	// 1 base + 1 agent resource + 1 skill
-	require.Len(t, deps, 3)
-	assert.Equal(t, "agent", deps[1].Field)
-	assert.Equal(t, "resource", deps[1].Type)
-	assert.Equal(t, "skills[0]", deps[2].Field)
-	assert.Equal(t, "directory", deps[2].Type)
-	assert.False(t, deps[2].CacheHit)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GitHub token")
 }
 
 func TestLoadWithBase_URLBase_SkillOfflineCacheHit(t *testing.T) {
@@ -2245,7 +2216,6 @@ base: `+baseURL+`
 	assert.True(t, deps[1].CacheHit, "agent should be cache hit")
 	assert.True(t, deps[2].CacheHit, "skill should be cache hit")
 	assert.Equal(t, "directory", deps[2].Type)
-	assert.Contains(t, deps[2].Warning, "only SKILL.md")
 }
 
 func TestLoadWithBase_URLBase_ResourceOfflineCacheHit(t *testing.T) {
@@ -2600,88 +2570,54 @@ func TestFetchBaseSkill_CacheHit_AuditError(t *testing.T) {
 	assert.Contains(t, err.Error(), "audit")
 }
 
-func TestFetchBaseSkill_OnlineFetch_AuditError(t *testing.T) {
-	content := []byte("# skill")
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(content)
-	}))
-	t.Cleanup(server.Close)
-
-	policy := fetch.NewTestPolicy(
-		server.Client().Transport.(*http.Transport).TLSClientConfig,
-		[]string{"127.0.0.1"},
-		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
-	)
-
+func TestFetchBaseSkill_NoForgeClient_Error(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	_, _, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
-		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			FetchPolicy:   policy,
-			AuditLogPath:  brokenAuditPath(t),
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "audit")
+	assert.Contains(t, err.Error(), "GitHub token")
 }
 
-func TestFetchBaseSkill_FetchURLError(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(server.Close)
-
-	policy := fetch.NewTestPolicy(
-		server.Client().Transport.(*http.Transport).TLSClientConfig,
-		[]string{"127.0.0.1"},
-		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
-	)
-
+func TestFetchBaseSkill_ForgeClient_ListError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	_, _, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
-		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+	fc := forge.NewFakeClient()
+	fc.Errors["ListDirectoryContents"] = fmt.Errorf("API rate limited")
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			FetchPolicy:   policy,
+			ForgeClient:   fc,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fetching")
+	assert.Contains(t, err.Error(), "listing skill directory")
 }
 
-func TestFetchBaseSkill_PartialIndexHit(t *testing.T) {
-	content := []byte("# skill")
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(content)
-	}))
-	t.Cleanup(server.Close)
-
-	policy := fetch.NewTestPolicy(
-		server.Client().Transport.(*http.Transport).TLSClientConfig,
-		[]string{"127.0.0.1"},
-		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
-	)
-
+func TestFetchBaseSkill_PartialIndexHit_RequiresForgeClient(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	skillFileURL := server.URL + "/skills/common/SKILL.md"
+	skillFileURL := "https://raw.githubusercontent.com/org/repo/ref/skills/common/SKILL.md"
+	content := []byte("# skill")
 	require.NoError(t, fetch.CachePut(cacheDir, skillFileURL, content))
 	fileHash := fetch.ComputeSHA256(content)
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, fileHash))
 	// Deliberately omit the "skill:" tree hash entry to trigger partial index hit
 
-	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
-		"skills/common", []string{server.URL + "/"}, ComposeOpts{
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			FetchPolicy:   policy,
 		})
-	require.NoError(t, err)
-	assert.NotEmpty(t, localDir)
-	assert.Equal(t, "directory", dep.Type)
-	assert.False(t, dep.CacheHit)
-	assert.Contains(t, dep.Warning, "only SKILL.md")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GitHub token")
 }
 
 func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
@@ -2691,41 +2627,25 @@ func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
 
-func TestFetchBaseSkill_OnlySKILLMDFetched(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/skills/common/SKILL.md" {
-			w.Write([]byte("# Common Skill\nDo the thing."))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(server.Close)
-
-	policy := fetch.NewTestPolicy(
-		server.Client().Transport.(*http.Transport).TLSClientConfig,
-		[]string{"127.0.0.1"},
-		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
-	)
-
+func TestFetchBaseSkill_ForgeClient_AuditError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", server.URL+"/",
-		"skills/common", []string{server.URL + "/"}, ComposeOpts{
-			WorkspaceRoot: cacheDir,
-			FetchPolicy:   policy,
-		})
-	require.NoError(t, err)
-	assert.Equal(t, "directory", dep.Type)
-	assert.Contains(t, dep.Warning, "only SKILL.md")
-	assert.Contains(t, dep.Warning, "skills/common")
+	fc := forge.NewFakeClient()
+	fc.DirContents["org/repo/skills/common@ref"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 10},
+	}
+	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref"] = []byte("# skill")
 
-	// Only SKILL.md is fetched — companion files (scripts/, sub-agents)
-	// are not available via plain HTTP directory listing.
-	entries, err := os.ReadDir(localDir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	assert.Equal(t, "SKILL.md", entries[0].Name())
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+			AuditLogPath:  brokenAuditPath(t),
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
 }
 
 func TestLoadWithBase_RuntimeFetchFieldsNotInherited(t *testing.T) {
@@ -2750,4 +2670,210 @@ base: base.yaml
 	assert.False(t, h.AllowRuntimeFetch)
 	assert.Nil(t, h.MaxRuntimeFetches)
 	assert.Empty(t, h.AllowedRemoteResources)
+}
+
+func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fc := forge.NewFakeClient()
+	fc.DirContents["fullsend-ai/fullsend/skills/pr-review@abc123"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 10},
+		{Path: "meta-prompt.md", Type: "file", Size: 20},
+		{Path: "sub-agents", Type: "dir", Size: 0},
+		{Path: "sub-agents/code-review.md", Type: "file", Size: 30},
+	}
+	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/SKILL.md@abc123"] = []byte("# PR Review Skill")
+	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/meta-prompt.md@abc123"] = []byte("meta prompt content")
+	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/sub-agents/code-review.md@abc123"] = []byte("sub-agent content")
+
+	baseURLDir := "https://raw.githubusercontent.com/fullsend-ai/fullsend/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", baseURLDir,
+		"skills/pr-review", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, localDir)
+	assert.Equal(t, "directory", dep.Type)
+	assert.Empty(t, dep.Warning)
+	assert.False(t, dep.CacheHit)
+
+	// Verify all companion files exist in the cached directory.
+	skillMD, err := os.ReadFile(filepath.Join(localDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# PR Review Skill", string(skillMD))
+
+	metaPrompt, err := os.ReadFile(filepath.Join(localDir, "meta-prompt.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "meta prompt content", string(metaPrompt))
+
+	subAgent, err := os.ReadFile(filepath.Join(localDir, "sub-agents", "code-review.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "sub-agent content", string(subAgent))
+}
+
+func TestFetchBaseSkill_ForgeClient_ParseError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fc := forge.NewFakeClient()
+
+	// Non-raw URL fails ParseRawContentURL — no fallback, just error.
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://example.com/",
+		"skills/common", []string{"https://example.com/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing raw URL")
+}
+
+func TestFetchBaseSkill_ForgeClient_NoSKILLMD(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fc := forge.NewFakeClient()
+	fc.DirContents["org/repo/skills/broken@ref1"] = []forge.DirectoryEntry{
+		{Path: "meta-prompt.md", Type: "file", Size: 20},
+	}
+	fc.FileContentsRef["org/repo/skills/broken/meta-prompt.md@ref1"] = []byte("no skill file")
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref1/",
+		"skills/broken", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no SKILL.md")
+}
+
+func TestFetchBaseSkill_ForgeClient_GetFileError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fc := forge.NewFakeClient()
+	fc.DirContents["org/repo/skills/common@ref1"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 10},
+		{Path: "meta-prompt.md", Type: "file", Size: 20},
+	}
+	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref1"] = []byte("# Skill")
+	// Omit meta-prompt.md from FileContentsRef to trigger GetFileContentAtRef error.
+
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref1/",
+		"skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching file")
+	assert.Contains(t, err.Error(), "meta-prompt.md")
+}
+
+func TestFetchBaseSkill_StaleCacheInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// Pre-populate cache with a v0.22.0-style single-file entry (no FullListing).
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	// Set up ForgeClient with multi-file directory.
+	fc := forge.NewFakeClient()
+	fc.DirContents["org/repo/skills/common@ref1"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 10},
+		{Path: "meta-prompt.md", Type: "file", Size: 20},
+	}
+	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref1"] = []byte("# new skill")
+	fc.FileContentsRef["org/repo/skills/common/meta-prompt.md@ref1"] = []byte("meta")
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit, "stale cache should be bypassed")
+
+	// Verify both files exist.
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+	assert.FileExists(t, filepath.Join(localDir, "meta-prompt.md"))
+
+	// Second call should hit cache (FullListing=true, no re-fetch).
+	dep2, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep2.CacheHit, "re-fetched entry should be cached")
+}
+
+func TestFetchBaseSkill_StaleCacheOfflineServesStale(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// Pre-populate cache with a v0.22.0-style single-file entry.
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	fc := forge.NewFakeClient()
+
+	// Offline mode with a ForgeClient — should serve stale cache, not error.
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+}
+
+func TestFetchBaseSkill_ForgeClient_NarrowAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fc := forge.NewFakeClient()
+	fc.DirContents["org/repo/skills/pr-review@ref1"] = []forge.DirectoryEntry{
+		{Path: "SKILL.md", Type: "file", Size: 10},
+		{Path: "meta-prompt.md", Type: "file", Size: 20},
+	}
+	fc.FileContentsRef["org/repo/skills/pr-review/SKILL.md@ref1"] = []byte("# Skill")
+	fc.FileContentsRef["org/repo/skills/pr-review/meta-prompt.md@ref1"] = []byte("meta")
+
+	// Allowlist covers SKILL.md specifically but not the directory prefix.
+	narrowAllowlist := []string{"https://raw.githubusercontent.com/org/repo/ref1/skills/pr-review/SKILL.md"}
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref1/",
+		"skills/pr-review", narrowAllowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			ForgeClient:   fc,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }

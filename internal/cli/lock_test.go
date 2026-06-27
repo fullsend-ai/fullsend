@@ -934,13 +934,12 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	// A child harness with a URL base and no other URL references.
 	// The baseDeps conversion loop runs and the base-only-deps path is taken
 	// (skip ResolveHarness, still record deps in lock file).
-	baseContent := []byte("agent: agents/shared.md\nrole: test\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml":              baseContent,
-		"/agents/shared.md":       []byte("# shared agent"),
-		"/skills/common/SKILL.md": []byte("# common skill"),
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -971,8 +970,8 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	entry := lf.Lookup("urlbase")
 	require.NotNil(t, entry)
 
-	// Dependencies: base + agent resource + skill resource
-	require.Len(t, entry.Dependencies, 3)
+	// Dependencies: base + agent resource
+	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 	assert.Equal(t, fmt.Sprintf("%s/base.yaml", srv.URL), entry.Dependencies[0].URL)
 	assert.Equal(t, baseHash, entry.Dependencies[0].SHA256)
@@ -981,22 +980,17 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	assert.Equal(t, "agent", entry.Dependencies[1].Field)
 	assert.Equal(t, fmt.Sprintf("%s/agents/shared.md", srv.URL), entry.Dependencies[1].URL)
 	assert.Equal(t, "resource", entry.Dependencies[1].Type)
-
-	assert.Equal(t, "skills[0]", entry.Dependencies[2].Field)
-	assert.Equal(t, fmt.Sprintf("%s/skills/common/SKILL.md", srv.URL), entry.Dependencies[2].URL)
-	assert.Equal(t, "directory", entry.Dependencies[2].Type)
 }
 
 func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 	// Same as above but with a forge platform set, exercising the platform != "" branch
 	// in the base-only-deps logging path.
-	baseContent := []byte("agent: agents/shared.md\nrole: test\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml":              baseContent,
-		"/agents/shared.md":       []byte("# shared agent"),
-		"/skills/common/SKILL.md": []byte("# common skill"),
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -1026,7 +1020,7 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 
 	entry := lf.Lookup("urlbase-forge")
 	require.NotNil(t, entry)
-	require.Len(t, entry.Dependencies, 3)
+	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 }
 

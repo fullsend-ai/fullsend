@@ -197,6 +197,13 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	seen := make(map[string]bool)
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
 
+	var composeForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		composeForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		composeForgeClient = gh.New(token)
+	}
+
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -204,6 +211,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			ForgePlatform: platform,
 			OrgAllowlist:  orgAllowlist,
+			ForgeClient:   composeForgeClient,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))

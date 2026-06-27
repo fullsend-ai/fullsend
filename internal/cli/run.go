@@ -210,12 +210,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	var composeForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		composeForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		composeForgeClient = gh.New(token)
+	}
+
 	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
 		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 		ForgePlatform: forgePlatform,
 		OrgAllowlist:  orgAllowlist,
+		ForgeClient:   composeForgeClient,
 	})
 	if err != nil {
 		printer.StepFail("Failed to load harness")
