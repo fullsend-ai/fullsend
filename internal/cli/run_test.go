@@ -2563,3 +2563,73 @@ func TestMintLoaderToken_MintError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "minting loader token")
 }
+
+func TestMintLoaderToken_InvalidTokenPattern(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
+}
+
+func TestMintLoaderToken_ResolveMintReposError(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
+	// Neither MINT_REPOS nor REPO_FULL_NAME is set, so resolveMintRepos fails.
+	t.Setenv("MINT_REPOS", "")
+	t.Setenv("REPO_FULL_NAME", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving mint repos for loader")
+}
+
+func TestMintLoaderToken_SuccessWithMasking(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_masked_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	// Capture stderr for the ::add-mask:: output.
+	origStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	token, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+
+	w.Close()
+	os.Stderr = origStderr
+
+	var stderrBuf bytes.Buffer
+	stderrBuf.ReadFrom(r)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_masked_token", token)
+	assert.Contains(t, stderrBuf.String(), "::add-mask::ghs_masked_token")
+	assert.Contains(t, buf.String(), "Loader token minted")
+}
