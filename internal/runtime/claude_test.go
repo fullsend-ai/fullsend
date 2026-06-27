@@ -55,6 +55,46 @@ func testRunCommand(agentName, model, repoDir string, pluginDirs []string, debug
 	})
 }
 
+func TestAgentDestName(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentName string
+		agentPath string
+		expected  string
+	}{
+		{
+			name:      "uses agent name without .md suffix",
+			agentName: "review",
+			agentPath: "/cache/abc123/content",
+			expected:  "review.md",
+		},
+		{
+			name:      "strips .md suffix to avoid duplication",
+			agentName: "review.md",
+			agentPath: "/cache/abc123/content",
+			expected:  "review.md",
+		},
+		{
+			name:      "falls back to basename when agent name is empty",
+			agentName: "",
+			agentPath: "/path/to/agents/code.md",
+			expected:  "code.md",
+		},
+		{
+			name:      "fallback with cache path returns content basename",
+			agentName: "",
+			agentPath: "/cache/abc123/content",
+			expected:  "content",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentDestName(tc.agentName, tc.agentPath)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
 func TestBuildRunCommand_Basic(t *testing.T) {
 	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
 	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")

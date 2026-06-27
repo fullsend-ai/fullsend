@@ -46,16 +46,9 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("creating runtime config dirs: %w", err)
 	}
 
-	// Determine the destination filename for the agent definition.
-	// When fetched from the content-addressed cache, the source basename
-	// is "content" (no .md extension), which Claude Code cannot discover.
-	// Use the logical agent name to ensure the file lands as {name}.md.
-	agentDest := filepath.Base(agentPath)
-	if name := input.AgentName(); name != "" {
-		agentDest = strings.TrimSuffix(name, ".md") + ".md"
-	}
+	agentDest := agentDestName(input.AgentName(), agentPath)
 
-	if err := sandbox.Upload(sandboxName, agentPath,
+	if err := sandbox.UploadFile(sandboxName, agentPath,
 		fmt.Sprintf("%s/agents/%s", configDir, agentDest)); err != nil {
 		return fmt.Errorf("copying agent definition: %w", err)
 	}
@@ -455,6 +448,17 @@ func buildPluginConfigs(plugins []string, pluginsBase, mktBase, marketplace, ver
 		result = append(result, pluginConfigEntry{path: entry.path, data: data})
 	}
 	return result, nil
+}
+
+// agentDestName returns the sandbox filename for the agent definition.
+// When agentName is non-empty it produces {name}.md; otherwise it falls
+// back to the source file's basename (the cache basename "content" has
+// no .md extension, so the fallback only works for local files).
+func agentDestName(agentName, agentPath string) string {
+	if agentName != "" {
+		return strings.TrimSuffix(agentName, ".md") + ".md"
+	}
+	return filepath.Base(agentPath)
 }
 
 // Ensure ClaudeRuntime implements Runtime and TranscriptHandler.

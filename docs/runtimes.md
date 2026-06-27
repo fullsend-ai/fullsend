@@ -30,7 +30,7 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | Interface | Responsibility |
 |-----------|----------------|
 | `runtime.Runtime` | Name, config dir, env exports, bootstrap, run loop, per-iteration artifact cleanup |
-| `runtime.BootstrapInput` | Portable paths for agent/skills/plugins to upload |
+| `runtime.BootstrapInput` | Portable agent name/path, skill dirs, and plugin dirs to upload |
 | `runtime.ClaudeHooksBootstrap` | Optional — Claude-only sandbox security hooks |
 | `runtime.TranscriptHandler` | Extract transcripts/debug logs; parse errors for CI annotations |
 
@@ -44,7 +44,7 @@ The sandbox has two key directories that map to Claude Code's config levels:
 /sandbox/
 ├── claude-config/                   ← CLAUDE_CONFIG_DIR (personal level)
 │   ├── agents/
-│   │   └── review.md                   Agent definition (--agent loads from here)
+│   │   └── <name>.md                   Agent definition (filename derived from AgentName())
 │   ├── skills/
 │   │   ├── code-review/SKILL.md        Built-in skills (personal level — wins on collision)
 │   │   ├── pr-review/SKILL.md
