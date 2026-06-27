@@ -2471,3 +2471,94 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
+
+func TestHasOIDCEnv(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		token    string
+		expected bool
+	}{
+		{"both set", "https://token.actions.githubusercontent.com", "tok", true},
+		{"url empty", "", "tok", false},
+		{"token empty", "https://token.actions.githubusercontent.com", "", false},
+		{"both empty", "", "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", tc.url)
+			t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", tc.token)
+			assert.Equal(t, tc.expected, hasOIDCEnv())
+		})
+	}
+}
+
+func TestMintLoaderToken_NoMintURL(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err := mintLoaderToken(context.Background(), "", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loader mint unavailable")
+}
+
+func TestMintLoaderToken_NoOIDCEnv(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loader mint unavailable")
+}
+
+func TestMintLoaderToken_Success(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var capturedReq mintclient.MintRequest
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		capturedReq = req
+		return &mintclient.MintResult{Token: "ghs_loader_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	token, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_loader_token", token)
+	assert.Equal(t, "loader", capturedReq.Role)
+	assert.Equal(t, "https://mint.example.com", capturedReq.MintURL)
+	assert.Contains(t, buf.String(), "Loader token minted")
+}
+
+func TestMintLoaderToken_MintError(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-tok")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint service unavailable")
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err := mintLoaderToken(context.Background(), "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "minting loader token")
+}

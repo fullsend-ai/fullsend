@@ -354,7 +354,6 @@ runs:
       if: inputs.agent != '__install_only__'
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github_token }}
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}

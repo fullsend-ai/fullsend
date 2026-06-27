@@ -210,9 +210,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Resolve mintURL early so it is available for the loader token mint
+	// before LoadWithBase. The same value is reused for mintAgentToken later.
+	mintURL := sOpts.mintURL
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+
 	var composeForgeClient forge.Client
 	if rFlags.forgeClient != nil {
 		composeForgeClient = rFlags.forgeClient
+	} else if token, loaderErr := mintLoaderToken(ctx, mintURL, printer); loaderErr == nil {
+		composeForgeClient = gh.New(token)
 	} else if token, tokenErr := resolveToken(); tokenErr == nil {
 		composeForgeClient = gh.New(token)
 	}
@@ -342,10 +351,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Mint agent token when a mint URL and harness role are both available.
 	// Runs before env expansion so minted tokens flow into RunnerEnv and
 	// host_files via os.Getenv automatically.
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
 	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, printer)
 	if err != nil {
 		return fmt.Errorf("agent token minting failed: %w", err)
@@ -2125,6 +2130,51 @@ type tokenVar struct {
 var roleTokenVars = map[string][]tokenVar{
 	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
 	"review": {{Name: "REVIEW_TOKEN"}},
+}
+
+// hasOIDCEnv reports whether the GitHub Actions OIDC environment variables
+// are present. These are set automatically when the job declares
+// id-token: write permission.
+func hasOIDCEnv() bool {
+	return os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" &&
+		os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != ""
+}
+
+// mintLoaderToken mints a minimal-permission token using the "loader" role
+// for resolving URL-based harness bases and skill directories before the
+// harness role is known. Returns the token string on success, or an error
+// if OIDC is unavailable or the mint fails. The token is short-lived and
+// used only for ForgeClient construction during LoadWithBase.
+func mintLoaderToken(ctx context.Context, mintURL string, printer *ui.Printer) (string, error) {
+	if mintURL == "" || !hasOIDCEnv() {
+		return "", fmt.Errorf("loader mint unavailable: no mint URL or OIDC env")
+	}
+
+	repos, err := resolveMintRepos()
+	if err != nil {
+		return "", fmt.Errorf("resolving mint repos for loader: %w", err)
+	}
+
+	printer.StepStart("Minting loader token (contents:read)")
+	result, err := statusMintToken(ctx, mintclient.MintRequest{
+		MintURL: mintURL,
+		Role:    "loader",
+		Repos:   repos,
+	})
+	if err != nil {
+		return "", fmt.Errorf("minting loader token: %w", err)
+	}
+
+	if !mintTokenPattern.MatchString(result.Token) {
+		return "", fmt.Errorf("minted loader token contains unexpected characters")
+	}
+
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+	}
+
+	printer.StepDone("Loader token minted")
+	return result.Token, nil
 }
 
 // mintAgentToken mints a GitHub App installation token for the agent's role
