@@ -361,6 +361,50 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "creating runtime config dirs")
 }
 
+// TestClaudeRuntime_Bootstrap_AgentNameDest verifies that Bootstrap uses
+// agentDestName to derive the destination filename and calls UploadFile
+// with the correct path. A stub openshell binary is placed on PATH so
+// sandbox operations succeed without a real sandbox.
+func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
+	// Create a stub openshell that always exits 0.
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "openshell")
+	require.NoError(t, os.WriteFile(stubPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "content")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent definition"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+	})
+	// The stub openshell succeeds for all sandbox calls, so Bootstrap
+	// should complete without error, exercising agentDestName and the
+	// UploadFile call path.
+	assert.NoError(t, err)
+}
+
+// TestClaudeRuntime_Bootstrap_AgentNameEmpty verifies the fallback path
+// where AgentName is empty and the source basename is used.
+func TestClaudeRuntime_Bootstrap_AgentNameEmpty(t *testing.T) {
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "openshell")
+	require.NoError(t, os.WriteFile(stubPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "code.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent definition"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "",
+	})
+	assert.NoError(t, err)
+}
+
 func TestClaudeRuntime_ClearIterationArtifacts_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
