@@ -24,13 +24,19 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
 
       - name: Install JS dependencies
         run: npm ci
 
       - name: Build web SPAs
         run: npm run build
+
+      - name: Build documentation site
+        working-directory: website
+        run: npm ci && npm run build
 
       - name: Prepare deploy bundle
         run: |
@@ -43,7 +49,7 @@ jobs:
           mkdir -p _bundle/public/admin
           cp -a web/dist/admin/. _bundle/public/admin/
           mkdir -p _bundle/public/docs
-          cp -a web/dist/docs/. _bundle/public/docs/
+          cp -a website/dist/. _bundle/public/docs/
           mkdir -p _bundle/worker
           cp -a cloudflare_site/worker/. _bundle/worker/
 
