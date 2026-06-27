@@ -1,4 +1,4 @@
 node_modules/
-build/
-.docusaurus/
-.playwright-cli/
+dist/
+.vitepress/cache/
+.vitepress/.temp/
