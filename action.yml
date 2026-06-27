@@ -25,7 +25,8 @@ inputs:
     default: ""
   github_token:
     description: >-
-      GitHub token for authenticated API calls (avoids 60 req/hour unauthenticated rate limit).
+      GitHub token used by setup steps (detect version, download binary, clone repos).
+      Not passed to the fullsend run step, which self-mints a scoped loader token via OIDC.
     default: ${{ github.token }}
   run-url:
     description: URL of the CI/CD run for status comments (optional).

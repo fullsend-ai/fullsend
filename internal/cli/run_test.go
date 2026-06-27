@@ -2540,6 +2540,7 @@ func TestMintLoaderToken_Success(t *testing.T) {
 	assert.Equal(t, "ghs_loader_token", token)
 	assert.Equal(t, "loader", capturedReq.Role)
 	assert.Equal(t, "https://mint.example.com", capturedReq.MintURL)
+	assert.Equal(t, []string{"my-repo"}, capturedReq.Repos)
 	assert.Contains(t, buf.String(), "Loader token minted")
 }
 

@@ -309,6 +309,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if h.HasURLSkills() {
 				if rFlags.forgeClient != nil {
 					forgeClient = rFlags.forgeClient
+				} else if composeForgeClient != nil {
+					forgeClient = composeForgeClient
 				} else {
 					token, tokenErr := resolveToken()
 					if tokenErr != nil {
@@ -2147,7 +2149,7 @@ func hasOIDCEnv() bool {
 // used only for ForgeClient construction during LoadWithBase.
 func mintLoaderToken(ctx context.Context, mintURL string, printer *ui.Printer) (string, error) {
 	if mintURL == "" || !hasOIDCEnv() {
-		return "", fmt.Errorf("loader mint unavailable: no mint URL or OIDC env")
+		return "", fmt.Errorf("loader mint unavailable: mint URL and OIDC env vars (ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN) are both required")
 	}
 
 	repos, err := resolveMintRepos()
