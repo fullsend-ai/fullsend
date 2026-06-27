@@ -394,6 +394,9 @@ SandboxWorkspace    = "/sandbox/workspace"
 SandboxClaudeConfig = "/sandbox/claude-config"
 ```
 
+For sandbox workspace layout, agent rule layering, and security scanning
+details, see [Agent runtimes](../../runtimes.md).
+
 ### Key Sandbox Operations
 
 | Operation | CLI Command | Purpose |

@@ -1,3 +1,8 @@
+---
+sidebar_position: 1
+slug: /
+---
+
 # Getting Started
 
 This section contains easy and to the point guides to help you

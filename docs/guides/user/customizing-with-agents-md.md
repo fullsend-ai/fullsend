@@ -87,6 +87,52 @@ Your repo has a complex domain model and triage often miscategorizes issues:
 - The `api/` directory is auto-generated from protobuf — never modify it directly.
 ```
 
+## How AGENTS.md interacts with agent definitions
+
+Fullsend agents have two layers of instructions, loaded through different
+mechanisms:
+
+1. **Agent definition** — the system prompt loaded via `--agent <name>`.
+   Fullsend controls this. It defines the agent's role, task, allowed tools,
+   model, and which built-in skills to load. Repos cannot modify it.
+
+2. **Project instructions** — `CLAUDE.md` and `AGENTS.md` auto-loaded from
+   the working directory. Your repo controls these. They provide conventions,
+   architecture context, and domain knowledge.
+
+These layers **compose** — they don't compete. The agent definition sets
+*what* the agent does (review code, implement a feature). Your AGENTS.md
+sets *how* it should work in your repo (test commands, code style, domain
+context). If AGENTS.md contradicts the agent definition, the agent definition
+takes precedence.
+
+### What AGENTS.md can do
+
+- Guide agent behavior within its defined role (coding conventions, test
+  strategy, architecture rules)
+- Reference repo skills by name — the agent will invoke them if they exist
+  in `.claude/skills/`
+- Provide domain context that helps the agent make better decisions
+
+### What AGENTS.md cannot do
+
+- Override the agent definition's tool restrictions (e.g., the review agent
+  cannot write files regardless of what AGENTS.md says)
+- Remove or replace built-in skills — use
+  [`customized/skills/`](customizing-with-skills.md#overriding-built-in-skills)
+  for that
+- Change the agent's model or execution parameters
+
+### Injection handling
+
+When the target repo has no AGENTS.md, fullsend injects an org-level default
+from the config repo. When the repo has AGENTS.md but no CLAUDE.md, fullsend
+injects a bridge CLAUDE.md that points to AGENTS.md. Both injected files are
+hidden from git so agents don't accidentally commit them.
+
+All repo context files (AGENTS.md, CLAUDE.md, SKILL.md) are scanned for
+prompt injection before the agent starts.
+
 ## What not to do
 
 - **Don't write agent-specific instructions.** All agents read the same

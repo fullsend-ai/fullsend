@@ -1,6 +1,6 @@
 # Triage Agent
 
-<img src="icons/triage.png" alt="Triage agent icon" width="80">
+![Triage agent icon](icons/triage.png)
 
 Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a structured triage decision that determines whether the issue is ready for implementation.
 

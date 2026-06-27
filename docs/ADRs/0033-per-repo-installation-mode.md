@@ -371,3 +371,4 @@ Ordered by the project's threat priority (external injection > insider > drift >
 - [ADR 0031: Reusable workflows](0031-reusable-workflows-for-action-installed-distribution.md) — publishes stage reusable workflows and composite actions
 - [ADR 0034: Centralized event routing](0034-centralized-shim-routing-via-dispatch.md) — routing logic in `dispatch.yml`, replicated as `reusable-dispatch.yml` for per-repo
 - ADR 0035: Layered content resolution — upstream defaults sparse-checked at runtime, overrides via `customized/` (per-org) or `.fullsend/` (per-repo)
+- [ADR 0057: Repos management](0057-repos-management.md) — addresses bulk operations, enrollment inventory, and drift detection gaps for per-repo at scale

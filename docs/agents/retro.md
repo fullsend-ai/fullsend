@@ -1,6 +1,6 @@
 # Retro Agent
 
-<img src="icons/retro.png" alt="Retro agent icon" width="80">
+![Retro agent icon](icons/retro.png)
 
 Performs retrospectives on agent workflows — analyzes what happened, identifies improvement opportunities, and proposes changes as structured GitHub issues.
 

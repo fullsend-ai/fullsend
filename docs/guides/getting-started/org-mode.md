@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # Installing Fullsend in Organization Mode
 
 The goal of this document is that you install Fullsend for your whole
