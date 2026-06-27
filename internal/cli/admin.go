@@ -1339,7 +1339,11 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 	// of app-set B. Without this, nonflux-triage (app-set "nonflux") would
 	// prevent fullsend-ai-triage (app-set "fullsend-ai") from being detected
 	// and installed.
-	knownSlugs := filterSlugsByAppSet(loadKnownSlugs(ctx, client, org, forge.ConfigRepoName, "HEAD", printer), appSet)
+	discoveredSlugs, slugErr := loadKnownSlugs(ctx, client, org, forge.ConfigRepoName, "HEAD", printer)
+	if slugErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not discover known slugs: %v; proceeding with shared apps only", slugErr))
+	}
+	knownSlugs := filterSlugsByAppSet(discoveredSlugs, appSet)
 	for role, slug := range filterSlugsByAppSet(sharedSlugs, appSet) {
 		knownSlugs[role] = slug
 	}
@@ -1596,7 +1600,17 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		}
 	}
 
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
+	// Agent slugs discovered from harness files only (ADR-0045 Phase 4).
+	agentSlugs, discoveryErr := discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
+
+	if discoveryErr != nil && len(agentSlugs) == 0 {
+		// Discovery failed with a transient error and no slugs were found.
+		// Falling back to defaults here would be dangerous: we'd proceed to
+		// delete the .fullsend repo, destroying the harness files needed for
+		// future discovery retries. Apps with non-default slugs would be
+		// orphaned.
+		return fmt.Errorf("cannot discover agent slugs: %w; aborting uninstall to avoid orphaning apps", discoveryErr)
+	}
 
 	if len(agentSlugs) == 0 {
 		// Neither harness files nor config agents found — assume default
@@ -2044,14 +2058,25 @@ func filterSlugsByAppSet(slugs map[string]string, appSet string) map[string]stri
 }
 
 // loadKnownSlugs discovers agent slugs from harness wrapper files in the
+// config repo and returns a role→slug map.
+//
+// When DiscoverRemoteAgents returns a non-nil error and no usable agents are
+// found, the error is propagated so callers can distinguish "no harness files
+// exist" from "discovery failed due to a transient error."
+//
 // config repo.
-func loadKnownSlugs(ctx context.Context, client forge.Client, org, configRepo, ref string, printer *ui.Printer) map[string]string {
+func loadKnownSlugs(ctx context.Context, client forge.Client, org, configRepo, ref string, printer *ui.Printer) (map[string]string, error) {
 	agents, err := harness.DiscoverRemoteAgents(ctx, client, org, configRepo, ref)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("harness discovery: %v", err))
 	}
 	if len(agents) == 0 {
-		return nil
+		// No usable agents. If discovery itself failed, propagate the error
+		// so callers can distinguish "no harness files" from "transient failure."
+		if err != nil {
+			return nil, fmt.Errorf("harness discovery failed: %w", err)
+		}
+		return nil, nil
 	}
 	slugs := make(map[string]string, len(agents))
 	seen := make(map[string]bool, len(agents))
@@ -2071,9 +2096,9 @@ func loadKnownSlugs(ctx context.Context, client forge.Client, org, configRepo, r
 		slugs[a.Role] = a.Slug
 	}
 	if len(slugs) > 0 {
-		return slugs
+		return slugs, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // collectEnrolledRepoIDs returns the IDs of repos whose names appear in

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func TestDiscoverAgentSlugs_HarnessFirst(t *testing.T) {
+func TestDiscoverAgentSlugs_HarnessDiscovery(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.DirContents = map[string][]forge.DirectoryEntry{
 		"acme/.fullsend/harness@main": {
@@ -28,8 +29,9 @@ func TestDiscoverAgentSlugs_HarnessFirst(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	slugs := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
+	slugs, err := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
 
+	require.NoError(t, err)
 	require.Len(t, slugs, 2)
 	assert.Contains(t, slugs, "acme-triage")
 	assert.Contains(t, slugs, "acme-coder")
@@ -49,8 +51,9 @@ func TestDiscoverAgentSlugs_HarnessWithoutSlug_DerivesFromRole(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	slugs := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
+	slugs, err := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
 
+	require.NoError(t, err)
 	require.Len(t, slugs, 1)
 	assert.Equal(t, "fullsend-ai-triage", slugs[0])
 }
@@ -61,8 +64,9 @@ func TestDiscoverAgentSlugs_NeitherSource_ReturnsNil(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	slugs := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
+	slugs, err := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
 
+	assert.NoError(t, err)
 	assert.Nil(t, slugs)
 }
 
@@ -82,8 +86,9 @@ func TestDiscoverAgentSlugs_DeduplicatesSlugs(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	slugs := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
+	slugs, err := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
 
+	require.NoError(t, err)
 	require.Len(t, slugs, 1)
 	assert.Equal(t, "acme-coder", slugs[0])
 }
@@ -104,9 +109,28 @@ func TestDiscoverAgentSlugs_PartialError_UsesValidAgents(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	slugs := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
+	slugs, err := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
 
+	// Partial error with valid agents: returns slugs, no error propagated.
+	require.NoError(t, err)
 	require.Len(t, slugs, 1)
 	assert.Equal(t, "acme-triage", slugs[0])
 	assert.Contains(t, buf.String(), "some harness files could not be read")
+}
+
+func TestDiscoverAgentSlugs_TransientError_ReturnsError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"ListDirectoryContents": fmt.Errorf("network timeout"),
+	}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	slugs, err := discoverAgentSlugs(context.Background(), client, "acme", ".fullsend", "main", "fullsend-ai", printer)
+
+	assert.Nil(t, slugs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness discovery failed")
+	assert.Contains(t, err.Error(), "network timeout")
 }
