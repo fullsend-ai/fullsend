@@ -25,7 +25,7 @@ Installing fullsend into an org involves multiple concerns with ordering depende
 
 Each installation concern is a `Layer` implementing `Install`, `Uninstall`, and `Analyze`. Layers are composed into an ordered `Stack`. Install runs layers forward; uninstall runs them in reverse; analyze runs them forward and collects reports.
 
-The current stack order is: config-repo → workflows → secrets → inference → dispatch-token → enrollment.
+The current stack order is: config-repo → workflows → harness-wrappers → vendor-binary → secrets → inference → dispatch-token → enrollment.
 
 Each layer is idempotent — re-running install skips already-completed work. Uninstall collects all errors rather than stopping on the first, so partial teardown still makes progress. Each layer declares the OAuth scopes it needs via `RequiredScopes`, enabling a preflight check that fails early when the token lacks required permissions.
 

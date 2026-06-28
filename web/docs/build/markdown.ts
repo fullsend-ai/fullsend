@@ -71,6 +71,9 @@ function resolvedPathToRouteKey(resolvedPosix: string): string {
   return resolvedPosix;
 }
 
+const GITHUB_BLOB_BASE =
+  "https://github.com/fullsend-ai/fullsend/blob/main/";
+
 function remarkRewriteMdLinks(repoRoot: string, sourceFile: DocsFilePath) {
   return (tree: MdastRoot) => {
     visit(tree, "link", (node) => {
@@ -82,9 +85,23 @@ function remarkRewriteMdLinks(repoRoot: string, sourceFile: DocsFilePath) {
       const [pathPart, fragEncoded] = url.split("#", 2);
       const routeKeyDir = path.posix.dirname(filePathToRouteKey(sourceFile));
       const baseDir = routeKeyDir === "." ? "" : routeKeyDir;
+      // resolvedPosix is relative to docs/ — may start with ../ when the link escapes docs/
       const resolvedPosix = path.posix.normalize(
         path.posix.join(baseDir, pathPart),
       );
+
+      // Link escapes docs/ — rewrite to a GitHub blob URL if within repo root
+      if (resolvedPosix.startsWith("../")) {
+        const repoRelPosix = path.posix.normalize(
+          path.posix.join("docs", resolvedPosix),
+        );
+        if (!repoRelPosix.startsWith("../")) {
+          const frag = fragEncoded ? `#${fragEncoded}` : "";
+          node.url = `${GITHUB_BLOB_BASE}${repoRelPosix}${frag}`;
+        }
+        return;
+      }
+
       /** Paths are repo-relative to `docs/`; strip accidental `docs/` prefix from links. */
       const docRel = resolvedPosix.replace(/^docs\//, "");
 

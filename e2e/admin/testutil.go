@@ -5,6 +5,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -50,10 +51,10 @@ const (
 var orgPool = []string{
 	"halfsend-01",
 	"halfsend-02",
-	// "halfsend-03", // not yet enrolled in mint
-	// "halfsend-04", // not yet enrolled in mint
-	// "halfsend-05", // not yet enrolled in mint
-	// "halfsend-06", // not yet enrolled in mint
+	"halfsend-03",
+	"halfsend-04",
+	"halfsend-05",
+	"halfsend-06",
 }
 
 // acquireOrg scans the pool for an unlocked org and acquires its lock.
@@ -74,6 +75,16 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
+			// Only attempt stale lock recovery for 422 errors (repo
+			// likely exists). Rate limits, auth failures, and network
+			// errors would just waste more API quota.
+			var apiErr *gh.APIError
+			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				logf("[org-pool] 422 on %s — will check for stale lock", org)
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, nil
+				}
+			}
 			continue
 		}
 		if acquired {
@@ -108,6 +119,13 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
+				var apiErr *gh.APIError
+				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+					logf("[org-pool] 422 on %s — will check for stale lock", org)
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, nil
+					}
+				}
 				continue
 			}
 			if acquired {
@@ -242,20 +260,20 @@ func buildCLIBinary(t *testing.T) string {
 }
 
 // runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
-// The working directory is set to the module root so that --vendor-fullsend-binary
-// can find ./cmd/fullsend/ (same as a user running from the repo root).
+// By default the working directory is the module root. Use runCLIFromDir to
+// run from a subdirectory (GOMOD discovery makes this work for vendoring).
 func runCLI(t *testing.T, binary, token string, args ...string) string {
-	t.Helper()
-	t.Logf("[cli] fullsend %s", strings.Join(args, " "))
+	return runCLIFromDir(t, binary, token, moduleRoot(t), args...)
+}
 
-	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
-	if err != nil {
-		t.Fatalf("finding module root for runCLI: %v", err)
-	}
+// runCLIFromDir runs the CLI with cwd set to dir.
+func runCLIFromDir(t *testing.T, binary, token, dir string, args ...string) string {
+	t.Helper()
+	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
 
 	cmd := exec.Command(binary, args...)
-	cmd.Dir = strings.TrimSpace(string(modRoot))
-	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
 	out, runErr := cmd.CombinedOutput()
 	output := string(out)
 	t.Logf("[cli] output:\n%s", output)
@@ -263,6 +281,35 @@ func runCLI(t *testing.T, binary, token string, args ...string) string {
 		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), runErr, output)
 	}
 	return output
+}
+
+// tryRunCLI is like runCLI but returns an error instead of calling t.Fatalf.
+// Use this when the caller needs to retry on transient failures (e.g., GitHub
+// propagation delays after repo creation).
+func tryRunCLI(t *testing.T, binary, token string, args ...string) (string, error) {
+	t.Helper()
+	dir := moduleRoot(t)
+	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
+
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[cli] output:\n%s", output)
+	if runErr != nil {
+		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output, nil
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root: %v", err)
+	}
+	return strings.TrimSpace(string(modRoot))
 }
 
 // retryOnNotFound retries an operation up to maxAttempts times with linear

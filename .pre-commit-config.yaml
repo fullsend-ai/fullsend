@@ -9,7 +9,7 @@ repos:
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: detect-private-key
-        exclude: "internal/layers/secrets_test\\.go$|internal/security/scanner_test\\.go$|internal/dispatch/gcf/provisioner_test\\.go$|tests/.*test_.*\\.py$"
+        exclude: "internal/layers/secrets_test\\.go$|internal/security/scanner_test\\.go$|internal/dispatch/gcf/provisioner_test\\.go$|internal/cli/mint_test\\.go$|tests/.*test_.*\\.py$"
       - id: check-added-large-files
         args: ["--maxkb=1000"]
       - id: check-merge-conflict
@@ -51,6 +51,27 @@ repos:
     hooks:
       - id: gitleaks
 
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ["-x", "-e", "SC1091,SC2001,SC2016"]
+
+  - repo: local
+    hooks:
+      - id: pinact
+        name: pinact (SHA-pin check)
+        entry: pinact run --fix=false --no-api
+        language: system
+        files: |
+          (?x)^(
+            \.github/workflows/
+            |\.github/actions/
+            |internal/scaffold/fullsend-repo/\.github/workflows/
+            |action\.yml$
+          )
+        pass_filenames: false
+
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.11
     hooks:
@@ -68,14 +89,31 @@ repos:
           - property "workflow_repository" is not defined
           - -ignore
           - SC2016
+          - -ignore
+          - '__REUSABLE_(WORKFLOW|DISPATCH)__'
+          - -ignore
+          - '__GH_RUNNER__'
 
   - repo: local
     hooks:
+      - id: go-fmt
+        name: gofmt
+        entry: gofmt -w
+        language: system
+        types: [go]
+
       - id: go-vet
         name: go vet
         entry: go vet ./...
         language: system
         types: [go]
+        pass_filenames: false
+
+      - id: lint-mint-embed-sync
+        name: lint mint embed sync
+        entry: ./hack/lint-mint-embed-sync
+        language: script
+        files: ^(internal/mint/|internal/mintcore/|internal/dispatch/gcf/mintsrc/)
         pass_filenames: false
 
       - id: lint-adr-status
@@ -107,6 +145,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: lint-docs-links
+        name: lint docs link scope
+        entry: ./hack/lint-docs-links
+        language: script
+        files: ^docs/.*\.md$
+        pass_filenames: true
+
       - id: lint-md-links
         name: lint markdown links
         entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
@@ -126,4 +171,11 @@ repos:
         entry: ./hack/lint-agent-docs
         language: script
         files: ^(internal/scaffold/fullsend-repo/harness/|docs/agents/)
+        pass_filenames: false
+
+      - id: lint-staged
+        name: lint-staged (web)
+        entry: npx lint-staged --allow-empty
+        language: system
+        files: ^web/(admin|docs)/src/
         pass_filenames: false

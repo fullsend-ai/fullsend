@@ -14,13 +14,13 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
           cache: npm
@@ -37,6 +37,7 @@ jobs:
           set -euo pipefail
           mkdir -p _bundle/public
           cp web/public/index.html _bundle/public/index.html
+          cp web/public/graph.html _bundle/public/graph.html
           mkdir -p _bundle/public/assets
           cp -a web/dist/assets/. _bundle/public/assets/
           mkdir -p _bundle/public/admin
@@ -46,7 +47,7 @@ jobs:
           mkdir -p _bundle/worker
           cp -a cloudflare_site/worker/. _bundle/worker/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: site
           path: _bundle/

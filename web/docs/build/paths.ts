@@ -40,7 +40,7 @@ export function listDocMarkdownFiles(
   return out;
 }
 
-/** `docs/guides/admin/installation.md` → `guides/admin/installation` */
+/** `docs/guides/getting-started/installation.md` → `guides/getting-started/installation` */
 export function filePathToRouteKey(repoRelativeMd: DocsFilePath): string {
   const withoutPrefix = repoRelativeMd.slice("docs/".length);
   if (!withoutPrefix.endsWith(".md")) {
@@ -49,7 +49,7 @@ export function filePathToRouteKey(repoRelativeMd: DocsFilePath): string {
   return withoutPrefix.slice(0, -".md".length);
 }
 
-/** `guides/admin/installation` → `/docs/guides/admin/installation` */
+/** `guides/getting-started/installation` → `/docs/guides/getting-started/installation` */
 export function routeKeyToUrl(routeKey: string): string {
   const k = routeKey.replace(/^\/+/, "");
   return `/docs/${k}`;

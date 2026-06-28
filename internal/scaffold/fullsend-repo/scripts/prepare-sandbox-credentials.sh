@@ -33,7 +33,7 @@ if [[ "$CRED_TYPE" == "external_account" ]]; then
   SANDBOX_CREDS="$RUNNER_TEMP/sandbox-gcp-credentials.json"
   jq '{
     type, audience, subject_token_type, token_url,
-    credential_source: { file: "/tmp/workspace/.gcp-oidc-token", format: .credential_source.format }
+    credential_source: { file: "/sandbox/workspace/.gcp-oidc-token", format: .credential_source.format }
   } + (if .service_account_impersonation_url then
     {service_account_impersonation_url}
   else {} end)' "$CRED_CONFIG" > "$SANDBOX_CREDS"
@@ -42,8 +42,10 @@ if [[ "$CRED_TYPE" == "external_account" ]]; then
   printf '%s' "$OIDC_AUTH" > "$OIDC_AUTH_FILE"
   chmod 600 "$OIDC_AUTH_FILE"
 
-  echo "GOOGLE_APPLICATION_CREDENTIALS=$SANDBOX_CREDS" >> "$GITHUB_ENV"
-  echo "GCP_OIDC_TOKEN_FILE=$OIDC_DEST" >> "$GITHUB_ENV"
-  echo "FULLSEND_GCP_OIDC_URL=$OIDC_URL" >> "$GITHUB_ENV"
-  echo "FULLSEND_GCP_OIDC_AUTH_FILE=$OIDC_AUTH_FILE" >> "$GITHUB_ENV"
+  {
+    echo "GOOGLE_APPLICATION_CREDENTIALS=$SANDBOX_CREDS"
+    echo "GCP_OIDC_TOKEN_FILE=$OIDC_DEST"
+    echo "FULLSEND_GCP_OIDC_URL=$OIDC_URL"
+    echo "FULLSEND_GCP_OIDC_AUTH_FILE=$OIDC_AUTH_FILE"
+  } >> "$GITHUB_ENV"
 fi

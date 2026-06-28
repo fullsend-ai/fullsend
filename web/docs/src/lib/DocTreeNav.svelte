@@ -2,6 +2,7 @@
   import type { ManifestNode } from "virtual:fullsend-docs";
   import DocTreeNav from "./DocTreeNav.svelte";
   import { highlightSegments } from "./filterTree";
+  import { formatDocHash } from "./hashRoute";
   import { navigateToRouteKey } from "./routing";
 
   interface Props {
@@ -105,7 +106,7 @@
                 </svg>
               {/if}
             </span>
-            <span class="doc-tree-folder-label">{#each highlightSegments(node.name, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
+            <span class="doc-tree-folder-label">{#each highlightSegments(node.name, filterQuery) as seg, i (i)}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
           </button>
           {#if expanded}
             <div id={subId} class="doc-tree-folder-children">
@@ -121,12 +122,12 @@
           {/if}
         </div>
       {:else}
-        <button
-          type="button"
+        <a
+          href={formatDocHash(node.routeKey)}
           class="doc-tree-link"
           class:doc-tree-link--active={node.routeKey === activeRouteKey}
           data-doc-tree-route={node.routeKey}
-          onclick={() => navigateToRouteKey(node.routeKey)}
+          onclick={(e: MouseEvent) => { e.preventDefault(); navigateToRouteKey(node.routeKey); }}
         >
           <span class="doc-tree-chevron-slot" aria-hidden="true"></span>
           <span class="doc-tree-doc-glyph" aria-hidden="true">
@@ -137,8 +138,8 @@
               />
             </svg>
           </span>
-          <span class="doc-tree-link-text">{#each highlightSegments(node.title, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
-        </button>
+          <span class="doc-tree-link-text">{#each highlightSegments(node.title, filterQuery) as seg, i (i)}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
+        </a>
       {/if}
     </li>
   {/each}

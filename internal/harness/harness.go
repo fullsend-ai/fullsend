@@ -2,19 +2,26 @@ package harness
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 var (
 	validAgentName  = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	validModelName  = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
 	validPluginName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	envVarRef      = regexp.MustCompile(`\$\{([^}]+)\}`)
+	// validRoleName mirrors mintcore.RolePattern — duplicated to avoid coupling harness→mintcore.
+	validRoleName = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+	validSlugName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+	envVarRef     = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
 // HostFile describes a file on the host that must be copied into the sandbox
@@ -117,8 +124,8 @@ type SandboxHooks struct {
 	SecretRedactPostTool    *bool                `yaml:"secret_redact_posttool,omitempty"`    // default: true
 	UnicodePostTool         *bool                `yaml:"unicode_posttool,omitempty"`          // default: true
 	ContextSuppressPostTool *bool                `yaml:"context_suppress_posttool,omitempty"` // default: true
-	CanaryPreTool           *bool                `yaml:"canary_pretool,omitempty"`              // default: true
-	CanaryPostTool          *bool                `yaml:"canary_posttool,omitempty"`              // default: true
+	CanaryPreTool           *bool                `yaml:"canary_pretool,omitempty"`            // default: true
+	CanaryPostTool          *bool                `yaml:"canary_posttool,omitempty"`           // default: true
 	ToolAllowlistPreTool    *ToolAllowlistConfig `yaml:"tool_allowlist_pretool,omitempty"`
 }
 
@@ -188,25 +195,32 @@ type ValidationLoop struct {
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
-	Agent          string            `yaml:"agent"`
-	Doc            string            `yaml:"doc,omitempty"` // source-repo-only; not resolved at runtime, used by lint-agent-docs
-	Description    string            `yaml:"description,omitempty"`
-	Image          string            `yaml:"image,omitempty"`
-	Policy         string            `yaml:"policy,omitempty"`
-	Skills         []string          `yaml:"skills,omitempty"`
-	Plugins        []string          `yaml:"plugins,omitempty"`
-	Providers      []string          `yaml:"providers,omitempty"`
-	HostFiles      []HostFile        `yaml:"host_files,omitempty"`
-	APIServers     []APIServer       `yaml:"api_servers,omitempty"`
-	Model          string            `yaml:"model,omitempty"`
-	PreScript      string            `yaml:"pre_script,omitempty"`
-	PostScript     string            `yaml:"post_script,omitempty"`
-	AgentInput     string            `yaml:"agent_input,omitempty"`
-	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
-	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
-	TimeoutMinutes        int             `yaml:"timeout_minutes,omitempty"`
-	SandboxTimeoutSeconds int             `yaml:"sandbox_timeout_seconds,omitempty"`
-	Security              *SecurityConfig `yaml:"security,omitempty"`
+	Agent                  string                  `yaml:"agent"`
+	Doc                    string                  `yaml:"doc,omitempty"` // source-repo-only; not resolved at runtime, used by lint-agent-docs
+	Description            string                  `yaml:"description,omitempty"`
+	Role                   string                  `yaml:"role,omitempty"`
+	Slug                   string                  `yaml:"slug,omitempty"`
+	Base                   string                  `yaml:"base,omitempty"`
+	Image                  string                  `yaml:"image,omitempty"`
+	Policy                 string                  `yaml:"policy,omitempty"`
+	Skills                 []string                `yaml:"skills,omitempty"`
+	Plugins                []string                `yaml:"plugins,omitempty"`
+	Providers              []string                `yaml:"providers,omitempty"`
+	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
+	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
+	Model                  string                  `yaml:"model,omitempty"`
+	PreScript              string                  `yaml:"pre_script,omitempty"`
+	PostScript             string                  `yaml:"post_script,omitempty"`
+	AgentInput             string                  `yaml:"agent_input,omitempty"`
+	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
+	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
+	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
+	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
+	Security               *SecurityConfig         `yaml:"security,omitempty"`
+	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
+	AllowRuntimeFetch      bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
+	MaxRuntimeFetches      *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
+	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -228,18 +242,94 @@ func Load(path string) (*Harness, error) {
 	return &h, nil
 }
 
+// LoadOpts configures forge-aware harness loading.
+type LoadOpts struct {
+	ForgePlatform string
+}
+
+// LoadWithOpts reads a harness YAML file and applies forge resolution before
+// validation. The pipeline is: Unmarshal → validateForge → ResolveForge →
+// Validate. validateForge runs first to reject malformed forge maps before
+// ResolveForge consumes (nils out) the map. When ForgePlatform is empty,
+// ResolveForge is a no-op but validateForge still runs.
+func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
+	h, err := LoadRaw(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.validateForge(); err != nil {
+		return nil, fmt.Errorf("invalid harness: %w", err)
+	}
+
+	if err := h.ResolveForge(opts.ForgePlatform); err != nil {
+		return nil, fmt.Errorf("resolving forge config: %w", err)
+	}
+
+	if err := h.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid harness: %w", err)
+	}
+
+	return h, nil
+}
+
+// parseRaw unmarshals raw YAML bytes into a Harness without validation or
+// forge resolution. Use this when you already have the bytes (e.g. from a
+// forge API call); use LoadRaw for filesystem-based loading.
+func parseRaw(data []byte) (*Harness, error) {
+	var h Harness
+	if err := yaml.Unmarshal(data, &h); err != nil {
+		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	}
+	return &h, nil
+}
+
+// LoadRaw reads and unmarshals a harness YAML file without calling Validate
+// or ResolveForge. Used by base composition to load base harnesses without
+// consuming their forge maps before merging, and by the lock command to
+// discover forge keys without resolving them.
+func LoadRaw(path string) (*Harness, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading harness file: %w", err)
+	}
+	return parseRaw(data)
+}
+
 // Validate checks that required fields are present.
 func (h *Harness) Validate() error {
+	// Base field must be consumed by LoadWithBase before validation.
+	// If it's still set, the harness was loaded via Load/LoadWithOpts which
+	// don't process base composition — a silent misconfiguration.
+	if h.Base != "" {
+		return fmt.Errorf("base field is set but harness was not loaded with LoadWithBase; use LoadWithBase to enable base composition")
+	}
 	if h.Agent == "" {
 		return fmt.Errorf("agent field is required")
 	}
 	// Agent name (filename without .md) must be safe for shell interpolation.
-	agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
-	if !validAgentName.MatchString(agentBase) {
-		return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
+	// Skip name validation when agent is a URL — the resolver will replace it
+	// with a local cache path before it reaches the shell.
+	if !IsURL(h.Agent) {
+		agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
+		if !validAgentName.MatchString(agentBase) {
+			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
+		}
 	}
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
+	}
+	if h.Role == "" {
+		return fmt.Errorf("role field is required")
+	}
+	if !validRoleName.MatchString(h.Role) {
+		return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
+	}
+	if strings.Contains(h.Role, "--") {
+		return fmt.Errorf("role %q must not contain double hyphens", h.Role)
+	}
+	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
+		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
 	for i, p := range h.Plugins {
 		pluginBase := filepath.Base(p)
@@ -267,6 +357,25 @@ func (h *Harness) Validate() error {
 	if err := h.validateSecurity(); err != nil {
 		return err
 	}
+	if err := h.ValidateResourceTypes(); err != nil {
+		return err
+	}
+	if h.AllowRuntimeFetch && len(h.AllowedRemoteResources) == 0 {
+		return fmt.Errorf("allow_runtime_fetch requires at least one entry in allowed_remote_resources")
+	}
+	if h.MaxRuntimeFetches != nil {
+		if !h.AllowRuntimeFetch {
+			return fmt.Errorf("max_runtime_fetches requires allow_runtime_fetch to be true")
+		}
+		if *h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000 {
+			return fmt.Errorf("max_runtime_fetches must be between 1 and 1000, got %d", *h.MaxRuntimeFetches)
+		}
+	}
+	if err := h.validateForge(); err != nil {
+		return err
+	}
+	// ValidateAllowedRemoteResources requires the org allowlist and is called
+	// by the integration layer, not here.
 	return nil
 }
 
@@ -321,7 +430,7 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
 
 	resolve := func(field, p string) (string, error) {
-		if p == "" || filepath.IsAbs(p) {
+		if p == "" || filepath.IsAbs(p) || IsURL(p) {
 			return p, nil
 		}
 		resolved := filepath.Join(baseDir, p)
@@ -416,11 +525,13 @@ func (h *Harness) ValidateRunnerEnv() error {
 }
 
 // ValidateFilesExist checks that all file paths referenced by the harness
-// exist on disk. Call after ResolveRelativeTo so paths are absolute.
-// Pre/post scripts run on the host and must be file paths (no inline args).
+// exist on disk. Callers must invoke ResolveRelativeTo first (to make
+// paths absolute), then resolve.ResolveHarness (to replace any URL
+// references with local cache paths). The IsURL guard inside is
+// defense-in-depth in case the ordering is violated.
 func (h *Harness) ValidateFilesExist() error {
 	check := func(label, path string) error {
-		if path == "" {
+		if path == "" || IsURL(path) {
 			return nil
 		}
 		if _, err := os.Stat(path); err != nil {
@@ -489,4 +600,240 @@ func (h *Harness) Scripts() []string {
 		scripts = append(scripts, h.ValidationLoop.Script)
 	}
 	return scripts
+}
+
+// ValidateAllowedRemoteResources checks that each entry in AllowedRemoteResources
+// is a valid HTTPS URL ending with "/" and is covered by at least one entry in the
+// org-level allowlist. Org allowlist entries are also validated: each must be a
+// valid HTTPS URL ending with "/" and must not contain double-encoded sequences.
+func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
+	for i, orgEntry := range orgAllowlist {
+		if !IsURL(orgEntry) {
+			return fmt.Errorf("org allowlist[%d]: %q is not a valid HTTPS URL", i, orgEntry)
+		}
+		if !strings.HasSuffix(orgEntry, "/") {
+			return fmt.Errorf("org allowlist[%d]: %q must end with /", i, orgEntry)
+		}
+		if strings.Contains(strings.ToLower(orgEntry), "%25") {
+			return fmt.Errorf("org allowlist[%d]: %q contains double-encoded sequence", i, orgEntry)
+		}
+	}
+	for i, entry := range h.AllowedRemoteResources {
+		if !IsURL(entry) {
+			return fmt.Errorf("allowed_remote_resources[%d]: %q is not a valid HTTPS URL", i, entry)
+		}
+		if !strings.HasSuffix(entry, "/") {
+			return fmt.Errorf("allowed_remote_resources[%d]: %q must end with /", i, entry)
+		}
+		if strings.Contains(strings.ToLower(entry), "%25") {
+			return fmt.Errorf("allowed_remote_resources[%d]: %q contains double-encoded sequence", i, entry)
+		}
+		normEntry, entryOK := normalizeURLPath(strings.ToLower(entry))
+		if !entryOK {
+			return fmt.Errorf("allowed_remote_resources[%d]: %q cannot be normalized", i, entry)
+		}
+		covered := false
+		for _, orgEntry := range orgAllowlist {
+			normOrg, orgOK := normalizeURLPath(strings.ToLower(orgEntry))
+			if !orgOK {
+				continue
+			}
+			if strings.HasPrefix(normEntry, normOrg) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return fmt.Errorf("allowed_remote_resources[%d]: %q is not covered by the org allowlist", i, entry)
+		}
+	}
+	return nil
+}
+
+// ValidateResourceTypes checks that executable fields (pre_script, post_script,
+// validation_loop.script, host_files[].src, api_servers[].script) are local paths
+// and not URLs, and that declarative fields (agent, policy, skills[]) that are URLs
+// include an integrity hash (#sha256=...).
+func (h *Harness) ValidateResourceTypes() error {
+	// Executable fields must be local paths, not URLs.
+	execFields := []struct {
+		name  string
+		value string
+	}{
+		{"pre_script", h.PreScript},
+		{"post_script", h.PostScript},
+		{"agent_input", h.AgentInput},
+	}
+	for _, f := range execFields {
+		if f.value != "" && IsURL(f.value) {
+			return fmt.Errorf("%s must be a local path, not a URL", f.name)
+		}
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.Script != "" && IsURL(h.ValidationLoop.Script) {
+		return fmt.Errorf("validation_loop.script must be a local path, not a URL")
+	}
+	for i, hf := range h.HostFiles {
+		if IsURL(hf.Src) {
+			return fmt.Errorf("host_files[%d].src must be a local path, not a URL", i)
+		}
+	}
+	for i, as := range h.APIServers {
+		if IsURL(as.Script) {
+			return fmt.Errorf("api_servers[%d].script must be a local path, not a URL", i)
+		}
+	}
+
+	// Declarative fields: if a URL, must include integrity hash.
+	// Check URL fields require integrity hashes.
+	// Note: "base" is included as defense-in-depth. In normal flow, Validate()
+	// rejects non-empty base before reaching here, and LoadWithBase clears base
+	// before calling Validate. This check catches edge cases where
+	// ValidateResourceTypes is called standalone.
+	declFields := []struct {
+		name  string
+		value string
+	}{
+		{"agent", h.Agent},
+		{"policy", h.Policy},
+		{"base", h.Base},
+	}
+	for _, f := range declFields {
+		if f.value != "" && IsURL(f.value) {
+			if _, _, hasHash := ParseIntegrityHash(f.value); !hasHash {
+				return fmt.Errorf("%s URL must include #sha256=... integrity hash", f.name)
+			}
+		}
+	}
+	for i, s := range h.Skills {
+		if IsURL(s) {
+			if _, _, hasHash := ParseIntegrityHash(s); !hasHash {
+				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
+			}
+			cleanURL, _, _ := ParseIntegrityHash(s)
+			if _, err := forge.ParseForgeURL(cleanURL); err != nil {
+				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+const defaultMaxRuntimeFetches = 10 // must match fetchsvc.DefaultMaxFetches
+
+// EffectiveMaxRuntimeFetches returns the configured max runtime fetches,
+// or defaultMaxRuntimeFetches (10) when the field is omitted.
+func (h *Harness) EffectiveMaxRuntimeFetches() int {
+	if h.MaxRuntimeFetches == nil {
+		return defaultMaxRuntimeFetches
+	}
+	return *h.MaxRuntimeFetches
+}
+
+// HasURLSkills reports whether any skill field contains a URL. Used to determine
+// whether a forge client is needed for resolution.
+func (h *Harness) HasURLSkills() bool {
+	for _, s := range h.Skills {
+		if IsURL(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasURLReferences reports whether any declarative field (agent, policy, skills)
+// contains a URL. Used to skip remote resource validation and resolution when
+// the harness references only local paths.
+func (h *Harness) HasURLReferences() bool {
+	if IsURL(h.Agent) || IsURL(h.Policy) {
+		return true
+	}
+	for _, s := range h.Skills {
+		if IsURL(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesAllowedPrefix reports whether rawURL starts with any entry in
+// AllowedRemoteResources (case-insensitive). The URL path is percent-decoded
+// and normalized (resolving ".." and "." segments) before prefix matching to
+// prevent path-traversal bypasses via both literal and encoded dot segments.
+// Returns false if the URL contains "%25" (double-encoded percent sign) or
+// cannot be parsed.
+func (h *Harness) MatchesAllowedPrefix(rawURL string) bool {
+	return h.MatchingAllowedPrefix(rawURL) != ""
+}
+
+// MatchingAllowedPrefix returns the first AllowedRemoteResources entry that
+// matches rawURL, or "" if none match. It applies the same normalization as
+// MatchesAllowedPrefix.
+func (h *Harness) MatchingAllowedPrefix(rawURL string) string {
+	lower := strings.ToLower(rawURL)
+	if strings.Contains(lower, "%25") {
+		return ""
+	}
+	normalized, ok := normalizeURLPath(lower)
+	if !ok {
+		return ""
+	}
+	for _, prefix := range h.AllowedRemoteResources {
+		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
+		if !prefixOK {
+			continue
+		}
+		if strings.HasPrefix(normalized, normPrefix) {
+			return prefix
+		}
+	}
+	return ""
+}
+
+// MatchingAllowedPrefixInList checks if a URL matches any prefix in the given allowlist.
+// Returns the matching prefix or "" if none match. Standalone version of MatchingAllowedPrefix.
+func MatchingAllowedPrefixInList(rawURL string, allowlist []string) string {
+	lower := strings.ToLower(rawURL)
+	if strings.Contains(lower, "%25") {
+		return ""
+	}
+	normalized, ok := normalizeURLPath(lower)
+	if !ok {
+		return ""
+	}
+	for _, prefix := range allowlist {
+		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
+		if !prefixOK {
+			continue
+		}
+		if strings.HasPrefix(normalized, normPrefix) {
+			return prefix
+		}
+	}
+	return ""
+}
+
+// normalizeURLPath parses a URL, percent-decodes and cleans its path, and
+// returns the reconstructed URL string. Returns false if parsing fails.
+func normalizeURLPath(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+	unescaped, err := url.PathUnescape(parsed.Path)
+	if err != nil {
+		return "", false
+	}
+	if strings.ContainsRune(unescaped, '\\') {
+		return "", false
+	}
+	rawPath := parsed.Path
+	parsed.Path = path.Clean(unescaped)
+	parsed.RawPath = ""
+	if parsed.Path == "." {
+		parsed.Path = "/"
+	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(parsed.Path, "/") {
+		parsed.Path += "/"
+	}
+	return parsed.String(), true
 }

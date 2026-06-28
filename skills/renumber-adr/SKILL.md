@@ -128,4 +128,4 @@ After all renames and reference updates:
   collides, renumber all of them before updating references (so cross-references
   among the new ADRs are correct).
 - **Do not modify ADR content** beyond the number in the title and heading.
-  ADR content is immutable once accepted; this skill only fixes numbering.
+  Substantial ADR content is not rewritten once accepted; this skill only fixes numbering.

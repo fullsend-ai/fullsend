@@ -28,7 +28,7 @@ See [applied docs](applied/) for organization-specific architecture repo example
 
 ### 1. At review time (per-PR enforcement)
 
-Review sub-agents — particularly the correctness and intent alignment agents — can check PRs against declared invariants:
+Review sub-agents — particularly the correctness and intent & coherence sub-agents — can check PRs against declared invariants:
 
 - Does this change violate the dependency flow described in the architecture overview?
 - Does it contradict an ADR? (e.g., an ADR defines a trusted component model — a PR that bypasses it should be flagged)

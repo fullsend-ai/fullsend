@@ -1,0 +1,252 @@
+name: Functional Tests
+
+# PR-triggered functional tests use pull_request_target so fork PRs receive
+# secrets.  Authorization runs in a separate gate job (base checkout only)
+# before the test job checks out the PR head — same pattern as e2e.yml.
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    # SYNC-WITH: grep regex in "Check for functional-test-relevant changes" step
+    paths:
+      - 'eval/**'
+      - 'internal/scaffold/**'
+      - '.github/workflows/functional-tests.yml'
+      - '.github/scripts/**'
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request_target'
+        && format('functional-{0}', github.event.pull_request.number)
+        || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request_target'
+        || github.ref != 'refs/heads/main' }}
+
+jobs:
+  gate:
+    # Separate job so pull-requests: write stays out of the job that checks
+    # out fork head and runs tests with secrets.
+    # Never checkout github.event.pull_request.head.sha here.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
+
+      - name: Check PR authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          repository: ${{ github.repository }}
+          pr_updated_at: ${{ github.event.pull_request.updated_at }}
+          event_action: ${{ github.event.action }}
+          pr_author_association: ${{ github.event.pull_request.author_association }}
+
+  functional-tests:
+    # For pull_request_target, runs only when gate sets authorized=true.
+    # Do not treat a skipped gate as authorized.
+    # This job checks out untrusted PR head code — no pull-requests: write here.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check for functional-test-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # SYNC-WITH: push.paths filter above
+        run: |
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch merge group files — running functional tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running functional tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+              echo "::warning::Failed to fetch PR files — running functional tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+          if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No functional-test-relevant files changed — skipping tests"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          # checkout@v7 blocks fork PR head checkouts on pull_request_target by default.
+          # Safe here: gate job authorizes before this job runs; no pull-requests: write.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          submodules: true
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.changes.outputs.relevant != 'false'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install agent-eval-harness
+        if: steps.changes.outputs.relevant != 'false'
+        run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
+
+      - name: Install yq
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Configure git identity
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          git config --global user.name "fullsend-eval[bot]"
+          git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
+
+      - name: Build fullsend
+        if: steps.changes.outputs.relevant != 'false'
+        run: make go-build
+
+      - name: Add bin to PATH
+        if: steps.changes.outputs.relevant != 'false'
+        run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
+
+      - name: Configure OpenShell gateway
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+
+      - name: Install OpenShell CLI
+        if: steps.changes.outputs.relevant != 'false'
+        run: .github/scripts/install-openshell.sh
+
+      - name: Install Podman
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Configure rootless Podman
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          whoami_user="$(whoami)"
+          grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+          podman system migrate
+
+      - name: Start Podman API service
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          if [ ! -S "${SOCKET_PATH}" ]; then
+            mkdir -p "$(dirname "${SOCKET_PATH}")"
+            podman system service --time=0 "unix://${SOCKET_PATH}" &
+            for _i in $(seq 1 30); do
+              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+              sleep 1
+            done
+            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+          fi
+
+      - name: Install validation dependencies
+        if: steps.changes.outputs.relevant != 'false'
+        run: pip install --quiet "jsonschema>=4.18.0"
+
+      - name: Check for secrets
+        if: steps.changes.outputs.relevant != 'false'
+        id: secrets-check
+        run: |
+          if [ -z "$WIF_PROVIDER" ]; then
+            echo "::warning::GCP secrets are not configured. Skipping functional tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+
+      - name: Authenticate to GCP
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Prepare sandbox credentials
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        run: |
+          echo "HOST_GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS" >> "$GITHUB_ENV"
+          bash internal/scaffold/fullsend-repo/scripts/prepare-sandbox-credentials.sh
+
+      - name: Run functional tests
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        env:
+          EVAL_ORG: ${{ vars.EVAL_ORG }}
+          GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.EVALS_VERTEX_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
+          EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
+        run: make functional-tests
+
+      - name: Scrub secrets from eval results
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
+
+      - name: Upload eval results
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-results
+          path: |
+            eval/runs/
+            !eval/runs/**/.eval-env
+          retention-days: 30

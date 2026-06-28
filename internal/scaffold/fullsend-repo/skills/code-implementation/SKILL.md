@@ -178,12 +178,29 @@ From these files, determine:
   missing, but matching the repo's expected format directly is preferred.
 - **Branch conventions** — naming patterns, target branch
 
-If a `TARGET_BRANCH` environment variable is set, use it. Otherwise, determine
-the default branch:
+Determine the correct target branch from the issue context. If the issue
+references a specific branch (e.g., "set up builds on the 3.18 branch"),
+use that branch. Otherwise, determine the repo's default branch:
 
 ```bash
 git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
+
+Write your chosen branch to the structured output file so the post-script
+knows which branch to target the PR against:
+
+```bash
+mkdir -p "${FULLSEND_OUTPUT_DIR}"
+cat > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" <<RESULT
+{
+  "target_branch": "<branch-name>"
+}
+RESULT
+```
+
+Write this output early (during planning, after determining the target
+branch) so it is available even if the agent hits a timeout or error later.
+The post-script validates this against the repo's allowed branches.
 
 ### 4. Check for existing branch
 
@@ -315,6 +332,10 @@ Before writing code, form a concrete plan:
       values rather than referencing constants, so a symbol-only search misses them.
    3. Evaluate each match — some may be intentional (e.g., testing the non-default
       case) while others are stale assumptions that need updating.
+9. **Verify API contracts per code path** — if the fix removes, empties,
+   or changes a parameter sent to an external API, check the API documentation or
+   test each code path that uses the function. Different operations
+   (e.g., approve vs request-changes) often have different required fields.
 
 When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
@@ -474,7 +495,8 @@ authoritative pre-commit check on the runner before pushing.
 echo "::notice::STEP 9c: Tests and linters"
 ```
 
-You MUST run the test suite that covers the code you changed.
+You MUST run both **tests** and **linters** on the code you changed.
+Both are mandatory — do not skip either one.
 
 **Run targeted tests** — only test the packages/modules you changed:
 
@@ -500,33 +522,51 @@ Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
 first to save time and context budget.
 
-Also run linters. Determine which lint command to use by reading the
-Makefile, CONTRIBUTING.md, or existing CI workflows.
+**Run the repo's lint command** — this is the lint command you identified
+in step 3 from `CLAUDE.md`, `CONTRIBUTING.md`, `Makefile`, or CI config.
+You MUST run it now. Linting is separate from pre-commit (9b) — even if
+pre-commit passed or was skipped, you still run the lint command here.
 
 ```bash
-make lint        # or: golangci-lint run, eslint, ruff, etc.
+# Use the exact lint command discovered in step 3. Examples:
+make lint                                         # Go repos with Makefile
+golangci-lint run ./...                           # Go without Makefile
+uv run ruff check src/ tests/                     # Python with ruff
+npm run lint                                      # JS/TS repos
+eslint src/                                       # JS/TS without npm script
 ```
 
-**If tests fail due to missing tools or infrastructure** (not due to your
-code): try the Makefile's setup targets first (`make deps`, `make setup`,
-etc.). If the tool genuinely cannot be installed in the sandbox, note
-this in your commit message body so reviewers know what was not verified:
+If the repo specifies multiple lint/format commands (e.g.,
+`ruff format && ruff check && pytest`), run all of them — not just the
+test command. Lint violations like `SIM401` or `UP038` require you to
+understand the error and rewrite your code, the same way you handle test
+failures.
+
+**If tests or linters fail due to missing tools or infrastructure** (not
+due to your code): try the Makefile's setup targets first (`make deps`,
+`make setup`, etc.). If the tool genuinely cannot be installed in the
+sandbox, note this in your commit message body so reviewers know what was
+not verified:
 
 > Note: <suite-name> tests could not run (<reason>). <other-suite>
 > tests passed. Manual verification of <suite-name> is required.
 
-**Do NOT silently skip tests and commit as if everything passed.** If you
-cannot run the relevant test suite, you must disclose that.
+**Do NOT silently skip tests or linters and commit as if everything
+passed.** If you cannot run the relevant test suite or lint command, you
+must disclose that.
 
-**If tests fail due to your code:**
+**If tests or linters fail due to your code:**
 
 1. Read the failure output carefully. Understand the root cause.
 2. Fix the issue in your implementation. Do not weaken or skip tests.
-3. Re-run secret scan (9a) and then tests (9c). This consumes one retry
-   iteration. **Do NOT re-run pre-commit (9b) during retries** — you
-   already used your 2 pre-commit runs. The post-script handles
-   pre-commit authoritatively on the runner.
-4. Repeat until tests pass or the retry limit is reached.
+   For lint errors, fix the specific reported violation — do not
+   refactor unrelated code or disable the lint rule.
+3. Re-run secret scan (9a), then tests and linters (9c). This consumes
+   one retry iteration. **Do NOT re-run pre-commit (9b) during
+   retries** — you already used your 2 pre-commit runs. The post-script
+   handles pre-commit authoritatively on the runner.
+4. Repeat until both tests and linters pass or the retry limit is
+   reached.
 
 The retry limit is read from the `MAX_RETRIES` environment variable
 (default: 1 if unset). The harness may also enforce a hard timeout
@@ -534,7 +574,7 @@ independently — if the harness kills the session, your retry count is
 irrelevant. Prefer committing with a disclosed issue over burning time
 on additional retry iterations.
 
-If the retry limit is reached and tests still fail, do not commit. Stop.
+If the retry limit is reached and tests or linters still fail, do not commit. Stop.
 
 **9d. Self-review**
 
@@ -590,6 +630,13 @@ scan-secrets --staged
 This is not a repeat of 9a — it scans what you *actually staged*, which may
 differ from what you named. If the scan fails, do not commit.
 
+**NEVER use `git commit -s` or add `Signed-off-by` trailers.** DCO is a
+human attestation of personhood and legal authority to contribute — agents
+are not people. The DCO app already waives the check for bot authors, so
+the trailer is unnecessary. Including it causes gitlint
+`body-max-line-length` failures because the bot noreply email makes the
+trailer ~90 characters.
+
 **10c. Commit**
 
 The commit message must:
@@ -635,12 +682,12 @@ Hard-wrap guidelines when a limit is configured:
 - URLs that exceed the limit may remain on one line (gitlint usually
   allows this via `ignore-body-lines`)
 - `Closes #N` and similar trailers: keep on one line
-- **`Signed-off-by:`** — `git commit -s` auto-generates this from
-  `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL`. If the resulting line
-  exceeds the body-max-line-length, gitlint CI will reject the commit.
-  Before committing, check: if the `Signed-off-by` trailer would exceed
-  the limit, omit the `-s` flag and write a shorter trailer manually, or
-  omit it entirely if the repo does not require DCO sign-off
+- **`Signed-off-by:`** — do NOT use `git commit -s`. The DCO is a
+  human attestation of personhood and legal authority to contribute.
+  No human is present to make that certification in an autonomous
+  agent session. Your commits use the GitHub App bot identity, which
+  the DCO app auto-exempts. The human who merges the PR accepts
+  responsibility for the contribution
 
 The commit body should:
 - Explain **what** changed and **why** (not just "fix bug")
@@ -649,7 +696,7 @@ The commit body should:
 - Note any trade-offs, assumptions, or edge cases
 
 ```bash
-git commit -s -m "<type>(#<number>): <short-description>
+git commit -m "<type>(#<number>): <short-description>
 
 <What changed and why. Hard-wrap at the limit from
 .gitlint if one is configured. Write substantive
@@ -669,16 +716,13 @@ is blocked by `disallowedTools`):
 
 ```bash
 git reset --soft HEAD~1
-git commit -s -m "<fixed title>
+git commit -m "<fixed title>
 
 <fixed body — respect ALL line-length rules>"
 gitlint --commit HEAD
 ```
 
 Common gitlint failures:
-- **B1 body-max-line-length** on `Signed-off-by:` — the auto-generated
-  trailer is too long. Recommit without `-s` and either add a shorter
-  sign-off manually or omit it if the repo doesn't require DCO.
 - **T1 title-max-length** — shorten the title.
 - **B1 body-max-line-length** on prose — re-wrap the offending line.
 

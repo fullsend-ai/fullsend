@@ -39,13 +39,23 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 		}
 	}
 
-	// 3. Ensure test-repo exists (needed for enrollment testing).
+	// 3. Ensure test-repo exists and has at least one commit (needed for
+	// enrollment testing). An empty repo (no commits) causes the
+	// reconcile-repos script to fail with "Could not get default branch tree".
 	_, err = client.GetRepo(ctx, org, testRepo)
 	if forge.IsNotFound(err) {
 		t.Logf("[cleanup] Creating missing %s repo", testRepo)
 		if _, createErr := client.CreateRepo(ctx, org, testRepo, "E2E test repo", false); createErr != nil {
 			t.Logf("[cleanup] Warning: could not create %s: %v", testRepo, createErr)
 		}
+	}
+	if _, getErr := client.GetFileContent(ctx, org, testRepo, "README.md"); forge.IsNotFound(getErr) {
+		t.Logf("[cleanup] Seeding %s with initial commit (repo is empty)", testRepo)
+		if seedErr := client.CreateFile(ctx, org, testRepo, "README.md", "chore: initialize repo for e2e testing", []byte("# test-repo\n\nE2E test repository.\n")); seedErr != nil {
+			t.Logf("[cleanup] Warning: could not seed %s: %v", testRepo, seedErr)
+		}
+	} else if getErr != nil {
+		t.Logf("[cleanup] Warning: could not check README in %s: %v", testRepo, getErr)
 	}
 
 	// 4. Delete stale enrollment and unenrollment branches from test-repo.

@@ -1,4 +1,5 @@
-# lint-workflow-size: max-lines=390
+---
+# lint-workflow-size: max-lines=470
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -17,11 +18,12 @@ permissions: {}
 
 jobs:
   dispatch:
-    runs-on: ubuntu-latest
+    runs-on: __GH_RUNNER__
     permissions:
       actions: write
       contents: read
       id-token: write
+      pull-requests: read
     steps:
       - name: Determine stage
         id: route
@@ -36,6 +38,7 @@ jobs:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           ISSUE_HAS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           ISSUE_USER_LOGIN: ${{ github.event.issue.user.login }}
+          EVENT_SENDER_LOGIN: ${{ github.event.sender.login }}
           REVIEW_STATE: ${{ github.event.review.state }}
           REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
           TRIGGERING_LABEL: ${{ github.event.label.name }}
@@ -43,18 +46,48 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           STAGE=""
           TRIGGER_SOURCE=""
 
-          # Helper: check author_association is authorized (OWNER, MEMBER, COLLABORATOR)
-          is_authorized() {
-            case "${COMMENT_AUTHOR_ASSOC}" in
-              OWNER|MEMBER|COLLABORATOR) return 0 ;;
+          # Helper: check actor has write+ permission on the repo.
+          # Uses the collaborator permission API which correctly resolves org
+          # membership regardless of visibility (private vs public).
+          # See: github/gh-aw-mcpg#2862
+          has_write_permission() {
+            local username="${1:-}"
+            if [[ -z "${username}" ]]; then
+              return 1
+            fi
+            local role api_err
+            api_err=$(mktemp) || {
+              echo "::warning::Failed to create temp file for permission check of ${username}" >&2
+              return 1
+            }
+            role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
+              --jq '.role_name' 2>"${api_err}") || {
+              echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
+              rm -f "${api_err}"
+              return 1
+            }
+            rm -f "${api_err}"
+            case "${role}" in
+              admin|maintain|write) return 0 ;;
               *) return 1 ;;
             esac
+          }
+
+          # Slash command authorization (comment-triggered paths)
+          is_authorized() {
+            has_write_permission "${COMMENT_USER_LOGIN}"
+          }
+
+          # Event-level authorization (non-comment triggers)
+          is_event_actor_authorized() {
+            has_write_permission "${1:-}"
           }
 
           # Helper: check if user is the PR/issue author
@@ -77,22 +110,30 @@ jobs:
           # Extract the first word of the comment as the command
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
-            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | awk '{print $1}')"
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"
           fi
 
           case "${EVENT_NAME}" in
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  STAGE="triage"
+                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    STAGE="triage"
+                  fi
                   ;;
                 /fs-code)
                   if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
-                    STAGE="code"
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                      STAGE="code"
+                    fi
                   fi
                   ;;
                 /fs-review)
-                  STAGE="review"
+                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                      STAGE="review"
+                    fi
+                  fi
                   ;;
                 /fs-fix)
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
@@ -105,7 +146,7 @@ jobs:
                 /fs-retro|/fullsend)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     if [[ "${COMMAND}" == "/fullsend" ]]; then
-                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | awk '{print $2}')"
+                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
                       if [[ "${SECOND_WORD}" == "retro" ]]; then
                         STAGE="retro"
                       fi
@@ -120,8 +161,9 @@ jobs:
                   fi
                   ;;
                 *)
-                  # Non-command issue_comment: auto-triage on needs-info issues
-                  # when commenter is a non-bot with association != NONE or is issue author
+                  # Intentionally weaker gate: allows external reporters to
+                  # re-trigger triage by providing clarification on needs-info
+                  # issues. Full write-permission check is not required here.
                   if has_label "needs-info" && ! has_label "feature"; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
@@ -134,13 +176,21 @@ jobs:
               ;;
 
             issues)
-              if [[ "${EVENT_ACTION}" == "opened" || "${EVENT_ACTION}" == "edited" ]]; then
-                STAGE="triage"
+              if [[ "${EVENT_ACTION}" == "opened" ]]; then
+                if is_event_actor_authorized "${ISSUE_USER_LOGIN}"; then
+                  STAGE="triage"
+                fi
+              elif [[ "${EVENT_ACTION}" == "edited" ]]; then
+                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                  STAGE="triage"
+                fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
                 if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  STAGE="review"
+                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                    STAGE="review"
+                  fi
                 fi
               fi
               ;;
@@ -148,7 +198,9 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  STAGE="review"
+                  if is_event_actor_authorized "${PR_USER_LOGIN}"; then
+                    STAGE="review"
+                  fi
                   ;;
                 closed)
                   STAGE="retro"
@@ -192,8 +244,29 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
+      - name: Check for existing PRs
+        id: pr-check
+        if: steps.route.outputs.stage == 'code'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BOT_LOGIN="fullsend-ai[bot]"
+          CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+          MENTIONING_PRS="$(gh pr list --repo "${SOURCE_REPO}" --state open \
+            --search "${ISSUE_NUMBER} in:title,body" \
+            --json number,author \
+            --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[].number" \
+            2>/dev/null || true)"
+          if [[ -n "${MENTIONING_PRS}" ]]; then
+            echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Mint dispatch token via OIDC
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         id: oidc-mint
         env:
           MINT_URL: ${{ vars.FULLSEND_MINT_URL }}
@@ -225,14 +298,14 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
-        if: steps.route.outputs.stage != ''
-        uses: actions/checkout@v6
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ job.workflow_repository }}
           token: ${{ steps.oidc-mint.outputs.token }}
 
       - name: Validate routed stage
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         env:
           STAGE: ${{ steps.route.outputs.stage }}
           TRIGGER_SOURCE: ${{ steps.route.outputs.trigger_source }}
@@ -252,7 +325,7 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           KILL_SWITCH=$(yq '.kill_switch // false' config.yaml)
@@ -264,14 +337,14 @@ jobs:
 
       - name: Check role is enabled
         id: role-check
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
           set -euo pipefail
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code) STAGE_ROLE="coder" ;;
+            code|fix) STAGE_ROLE="coder" ;;
             retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
 
@@ -285,24 +358,25 @@ jobs:
       - name: Block fork PRs for fix stage
         if: steps.route.outputs.stage == 'fix' && steps.role-check.outputs.skipped != 'true' && github.event.issue.pull_request
         env:
-          GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          HEAD_REPO=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name' 2>/dev/null || true)
-          BASE_REPO=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" --jq '.base.repo.full_name' 2>/dev/null || true)
-          if [[ -z "$HEAD_REPO" || -z "$BASE_REPO" ]]; then
-            echo "::error::Cannot determine fork status — blocking fix agent (fail-closed)"
+          REPOS=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" \
+            --jq '[.head.repo.full_name, .base.repo.full_name] | @tsv' 2>/dev/null) || {
+            echo "::error::Could not determine PR repos — blocking fix for safety"
             exit 1
-          fi
+          }
+          HEAD_REPO=$(printf '%s' "$REPOS" | cut -f1)
+          BASE_REPO=$(printf '%s' "$REPOS" | cut -f2)
           if [[ "$HEAD_REPO" != "$BASE_REPO" ]]; then
             echo "::error::Fork PR detected (head=$HEAD_REPO, base=$BASE_REPO) — fix agent blocked"
             exit 1
           fi
 
       - name: Find and trigger agent workflows for stage
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true'
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
           STAGE: ${{ steps.route.outputs.stage }}
@@ -319,7 +393,7 @@ jobs:
           EVENT_PAYLOAD=$(jq -c '{
             issue: (.issue // null | if . then {number, html_url} else null end),
             pull_request: (.pull_request // null | if . then {number, html_url,
-              head: {ref: .head.ref, repo: {full_name: .head.repo.full_name}},
+              head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
               base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}} else null end),
             comment: (.comment // null | if . then {body: .body[:4096]} else null end)
           }' "$GITHUB_EVENT_PATH")

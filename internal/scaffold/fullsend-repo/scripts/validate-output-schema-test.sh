@@ -66,12 +66,16 @@ run_test "valid-duplicate" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"Duplicate of #10."}' \
   "true"
 
-run_test "valid-blocked-issue" \
-  '{"action":"blocked","reasoning":"upstream dependency","blocked_by":"https://github.com/org/repo/issues/99","comment":"Blocked on upstream."}' \
+run_test "valid-question" \
+  '{"action":"question","reasoning":"this is a support question","comment":"Based on the docs, Python 4 is not supported. Would you like to open a feature request?"}' \
   "true"
 
-run_test "valid-blocked-pr" \
-  '{"action":"blocked","reasoning":"waiting on PR","blocked_by":"https://github.com/org/repo/pull/55","comment":"Blocked on a PR."}' \
+run_test "valid-prerequisites-existing" \
+  '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"https://github.com/org/repo/issues/99"}],"create":[]},"comment":"Blocked on upstream."}' \
+  "true"
+
+run_test "valid-prerequisites-create" \
+  '{"action":"prerequisites","reasoning":"needs upstream issue","prerequisites":{"existing":[],"create":[{"repo":"org/upstream","title":"Add X","body":"Need X."}]},"comment":"Blocked on upstream."}' \
   "true"
 
 # --- Conditional requirement failures ---
@@ -88,12 +92,16 @@ run_test "sufficient-missing-triage-summary" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"comment":"Done."}' \
   "false"
 
-run_test "blocked-missing-blocked-by" \
-  '{"action":"blocked","reasoning":"upstream dependency","comment":"Blocked."}' \
+run_test "prerequisites-missing-prerequisites-field" \
+  '{"action":"prerequisites","reasoning":"upstream dependency","comment":"Blocked."}' \
   "false"
 
-run_test "blocked-malformed-url" \
-  '{"action":"blocked","reasoning":"upstream dependency","blocked_by":"not-a-url","comment":"Blocked."}' \
+run_test "prerequisites-both-arrays-empty" \
+  '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[],"create":[]},"comment":"Blocked."}' \
+  "false"
+
+run_test "prerequisites-malformed-url-in-existing" \
+  '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"not-a-url"}],"create":[]},"comment":"Blocked."}' \
   "false"
 
 # --- FULLSEND_OUTPUT_FILE override ---
@@ -265,7 +273,7 @@ run_test_output() {
   if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
     echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
     echo "  actual output:"
-    cat "${TMPDIR}/stdout.log" | head -10
+    head -10 "${TMPDIR}/stdout.log"
     passed=false
   fi
 
@@ -284,7 +292,7 @@ run_test_output "additional-properties-shows-allowed" \
 run_test_output "additional-properties-lists-known-keys" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
-  "action, blocked_by, clarity_scores, comment, duplicate_of, label_actions, reasoning, triage_summary"
+  "action, clarity_scores, comment, duplicate_of, label_actions, prerequisites, reasoning, triage_summary"
 
 run_test_output "valid-output-no-allowed-line" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \

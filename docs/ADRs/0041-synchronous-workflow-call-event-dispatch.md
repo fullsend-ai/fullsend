@@ -1,6 +1,6 @@
 ---
 title: "41. Synchronous workflow_call for event-driven agent dispatch"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-infrastructure
   - operational-observability
@@ -17,7 +17,7 @@ Date: 2026-05-20
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -30,6 +30,10 @@ API call, not when the agent finishes. GitHub Actions does not link the
 dispatched run to the caller in the UI — operators see unrelated top-level runs
 in `.fullsend` with no parent workflow, which makes it hard to answer “is the
 agent still running?” from a PR or issue and hard to debug failures.
+
+While the `workflow_dispatch` API can return run details (run ID/URLs), it does
+not provide a native caller→callee run relationship in the Actions UI, and
+closing the loop still requires extra plumbing (posting links, polling, etc.).
 
 Operational pain is documented across multiple issues:
 
@@ -63,6 +67,8 @@ converge on the same property for the **event-driven** path.
 Cross-repo shim → `.fullsend` is already `workflow_call` ([ADR 0029](0029-central-token-mint-secretless-fullsend.md),
 [ADR 0034](0034-centralized-shim-routing-via-dispatch.md)). This ADR targets
 only **in-config-repo** dispatch from `dispatch.yml` to agent stages.
+
+This decision assumes the token mint model from [ADR 0029](0029-central-token-mint-secretless-fullsend.md): stage workflows obtain credentials via OIDC exchange rather than relying on config-repo secrets being visible to the enrolled-repo caller context.
 
 [ADR 0026](0026-stage-based-dispatch-for-agent-workflow-decoupling.md) Option C
 introduced runtime `# fullsend-stage:` scanning so org-specific agent workflows
@@ -108,8 +114,8 @@ convention. Do not add compile-time sync tooling as a substitute.
 `workflow_dispatch` remains allowed for **non-event** entry points only (e.g.
 `repo-maintenance.yml`, manual prioritize, admin/CLI triggers).
 
-Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to stay within four
-`workflow_call` nesting levels.
+Prefer `dispatch.yml` → `reusable-*.yml@*` where possible to reduce
+`workflow_call` nesting depth (GitHub currently allows up to ten levels).
 
 After agent architecture is revised to support [ADR 0038](0038-universal-harness-access.md),
 re-evaluate whether a discovery mechanism is needed.
@@ -132,3 +138,8 @@ re-evaluate whether a discovery mechanism is needed.
   `needs:` / concurrency review ([#504](https://github.com/fullsend-ai/fullsend/issues/504)).
 - Discovery may be revisited after [ADR 0038](0038-universal-harness-access.md)
   agent architecture changes land.
+
+## Implementation note (#981)
+
+Per-repo concurrency follow-up ([#504](https://github.com/fullsend-ai/fullsend/issues/504))
+is addressed in workflow configuration; the dispatch shape in this ADR is unchanged.

@@ -1,6 +1,6 @@
 ---
 title: "12. Normative v1 Git-tracked files under `.fullsend` for admin install"
-status: Proposed
+status: Accepted
 relates_to:
   - governance
   - codebase-context
@@ -17,7 +17,7 @@ Date: 2026-04-05
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

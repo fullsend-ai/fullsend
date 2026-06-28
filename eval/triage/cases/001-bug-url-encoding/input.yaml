@@ -1,0 +1,36 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login fails with 500 when email contains +"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    When I try to log in with an email address that contains a `+` character
+    (e.g. `user+tag@example.com`), the server returns a 500 Internal Server Error.
+
+    **Expected behavior:**
+    Login should succeed. The `+` character is valid in email addresses per RFC 5321.
+
+    **Steps to reproduce:**
+    1. Go to the login page
+    2. Enter `user+tag@example.com` as the email
+    3. Enter any valid password
+    4. Click "Sign In"
+    5. Observe 500 error
+
+    **Environment:**
+    - Browser: Chrome 125
+    - OS: macOS 14.5
+    - Deployment: production (app.example.com)
+
+    **Additional context:**
+    The `+` is likely not being URL-encoded before being passed to the backend
+    auth endpoint. This is a common issue with query parameter encoding.
+
+    Stack trace from server logs:
+    ```
+    ValueError: invalid email format
+      at validate_email (auth/validators.py:42)
+      at login_handler (auth/views.py:118)
+    ```

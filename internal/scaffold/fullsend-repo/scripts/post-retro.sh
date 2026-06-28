@@ -6,7 +6,7 @@
 #
 # Required env vars:
 #   ORIGINATING_URL — HTML URL of the originating PR or issue
-#   GH_TOKEN        — GitHub token with issues:write scope (no pull_requests:write needed)
+#   GH_TOKEN        — GitHub token with issues:write and pull_requests:write scope
 #
 # The agent writes its result to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
@@ -26,7 +26,7 @@ for dir in iteration-*/output; do
 done
 
 if [[ -z "${RESULT_FILE}" ]]; then
-  echo "ERROR: agent-result.json not found in any iteration output directory"
+  echo "ERROR: agent-result.json not found in any iteration output directory" >&2
   exit 1
 fi
 
@@ -34,14 +34,14 @@ echo "Reading retro result from: ${RESULT_FILE}"
 
 # Validate JSON is parseable.
 if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
-  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
 
 # Extract repo and number from ORIGINATING_URL.
 # Accepts both /issues/N and /pull/N.
 if [[ ! "${ORIGINATING_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
-  echo "ERROR: ORIGINATING_URL does not match expected pattern: ${ORIGINATING_URL}"
+  echo "ERROR: ORIGINATING_URL does not match expected pattern: ${ORIGINATING_URL}" >&2
   exit 1
 fi
 ORIGINATING_REPO=$(echo "${ORIGINATING_URL}" | sed -E 's#https://github.com/##; s#/(issues|pull)/.*##')
@@ -57,16 +57,16 @@ echo "Found ${PROPOSAL_COUNT} proposal(s)"
 for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
   TR=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
   if [[ ! "${TR}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
-    echo "ERROR: proposal[$i].target_repo is not a valid owner/repo: ${TR}"
+    echo "ERROR: proposal[$i].target_repo is not a valid owner/repo: ${TR}" >&2
     exit 1
   fi
   TI=$(jq -r ".proposals[$i].title // empty" "${RESULT_FILE}")
   if [[ -z "${TI}" ]]; then
-    echo "ERROR: proposal[$i].title is missing or empty"
+    echo "ERROR: proposal[$i].title is missing or empty" >&2
     exit 1
   fi
   jq -e ".proposals[$i] | .what_happened and .what_could_go_better and .proposed_change and .validation_criteria" "${RESULT_FILE}" >/dev/null 2>&1 || {
-    echo "ERROR: proposal[$i] is missing required fields"
+    echo "ERROR: proposal[$i] is missing required fields" >&2
     exit 1
   }
 done
@@ -98,7 +98,7 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     --repo "${TARGET_REPO}" \
     --title "${TITLE}" \
     --body "${BODY}" 2>&1); then
-    echo "ERROR: failed to create issue in ${TARGET_REPO}: ${ISSUE_URL}"
+    echo "ERROR: failed to create issue in ${TARGET_REPO} (gh issue create --repo ${TARGET_REPO}): ${ISSUE_URL}" >&2
     exit 1
   fi
 
@@ -108,12 +108,12 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
 done
 
 # Post summary comment on the originating PR/issue.
-# Uses REST API (not gh issue comment) because the GraphQL addComment mutation
-# requires pull_requests:write for PRs. The REST issues endpoint only needs
-# issues:write, which the retro role already has.
+# Uses REST API (not gh issue comment) for consistency. Note: despite being
+# an "issues" endpoint, GitHub requires pull_requests:write when the target
+# number is a PR. See https://github.com/orgs/community/discussions/26644
 SUMMARY=$(jq -r '.summary // empty' "${RESULT_FILE}")
 if [[ -z "${SUMMARY}" ]]; then
-  echo "ERROR: .summary is missing or empty in agent result"
+  echo "ERROR: .summary is missing or empty in agent result" >&2
   exit 1
 fi
 
@@ -124,8 +124,43 @@ else
 fi
 
 echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
-jq -nc --arg body "${COMMENT}" '{body: $body}' | gh api \
+# Note: we handle 401/403 inline rather than relying on github-api-csma.sh
+# because the intent is different. CSMA retries rate-limited requests; here
+# we want graceful degradation when the token permanently lacks permission
+# to comment on a specific repo. Retrying a 403 permission error is futile.
+COMMENT_OUTPUT=""
+COMMENT_EXIT=0
+COMMENT_OUTPUT=$(jq -nc --arg body "${COMMENT}" '{body: $body}' | gh api \
   "repos/${ORIGINATING_REPO}/issues/${ORIGINATING_NUMBER}/comments" \
-  --input -
+  --input - 2>&1) || COMMENT_EXIT=$?
+
+if [[ ${COMMENT_EXIT} -ne 0 ]]; then
+  # Treat 401/403 as non-fatal — the token lacks permission to comment on
+  # this repo, but the core deliverables (analysis + proposal issues) are
+  # already complete. See #2305.
+  # The grep pattern matches gh CLI's "HTTP 4xx" error format. If a future
+  # gh version changes the format, the match will fail-closed (treating the
+  # error as fatal), which is the safer default.
+  if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)"; then
+    # Sanitize before interpolating into GHA workflow command to prevent
+    # injecting ::set-output or ::save-state directives via crafted responses.
+    SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+    echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
+  else
+    # Sanitize before echoing to prevent GHA workflow command injection
+    # (same pattern as the 401/403 branch above).
+    SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+    echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${SAFE_OUTPUT}"
+    exit 1
+  fi
+fi
 
 echo "Post-retro complete."

@@ -60,17 +60,15 @@ describe("probeGitHubAppInstallReadiness", () => {
     const octokit = {
       rest: {
         repos: {
-          listForOrg: vi
-            .fn()
-            .mockRejectedValue(
-              new RequestError("Forbidden", 403, {
-                request: {
-                  method: "GET",
-                  headers: {},
-                  url: "https://api.github.com/orgs/acme/repos",
-                },
-              }),
-            ),
+          listForOrg: vi.fn().mockRejectedValue(
+            new RequestError("Forbidden", 403, {
+              request: {
+                method: "GET",
+                headers: {},
+                url: "https://api.github.com/orgs/acme/repos",
+              },
+            }),
+          ),
         },
       },
     } as unknown as Octokit;

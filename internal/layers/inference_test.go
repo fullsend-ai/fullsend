@@ -23,10 +23,12 @@ type fakeProvider struct {
 	err         error
 }
 
-func (f *fakeProvider) Name() string                                          { return f.name }
-func (f *fakeProvider) SecretNames() []string                                 { return f.secretNames }
-func (f *fakeProvider) Provision(_ context.Context) (map[string]string, error) { return f.secrets, f.err }
-func (f *fakeProvider) Variables() map[string]string                          { return f.variables }
+func (f *fakeProvider) Name() string          { return f.name }
+func (f *fakeProvider) SecretNames() []string { return f.secretNames }
+func (f *fakeProvider) Provision(_ context.Context) (map[string]string, error) {
+	return f.secrets, f.err
+}
+func (f *fakeProvider) Variables() map[string]string { return f.variables }
 
 func newInferenceLayer(t *testing.T, client *forge.FakeClient, provider inference.Provider) (*InferenceLayer, *bytes.Buffer) {
 	t.Helper()

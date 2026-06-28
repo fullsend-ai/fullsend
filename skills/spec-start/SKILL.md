@@ -42,7 +42,7 @@ You **must** complete these in order. Treat them as a single uninterrupted pass�
 5. **Write the design** — in sections scaled to complexity (see **Presenting the design** below), **directly into** `spec.md` (no separate "chat" design pass).
 6. **Write Q&A** — `qna.md` as a flat list of `## Q-NN` entries (see **`qna.md` format**). Include **example `###` answer headings only under `Q-01`**; other questions stay bullet-only until real discussion adds answers.
 7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see **Spec self-review** below). Fix issues inline before finishing.
-8. **Stop** — do not auto-invoke planning or implementation skills. Optionally note that a follow-up session may produce an implementation plan once reviewers have read `qna.md` (and any review artifacts other skills add later, such as `comments.md`).
+8. **Stop** — do not auto-invoke planning or implementation skills. Optionally note that a follow-up session may produce an implementation plan once reviewers have read `qna.md` (and any review artifacts other skills add later, such as `comments.md`). When reviewers add `comments.md`, use **`spec-refine`** to fold that feedback into `spec.md` and `qna.md`.
 
 ## Process flow (headless)
 
@@ -123,7 +123,7 @@ Within it, for this skill’s initial pass, you **must** create these files (eac
 
 You **may** add **optional** files in the same directory when visualization helps (for example `architecture.svg`, `state-machine.png`, or other assets). Reference them from `spec.md` or `qna.md` with paths that work in a GitHub-style file view (repo-relative paths from the repo root, or paths relative to the topic directory—pick one convention per topic and use it consistently).
 
-**Do not** create, edit, or seed `comments.md`. That avoids accidental commits of review scratch space before another workflow defines it. A **separate skill** may later add and process `comments.md` (and define its format) in the same topic directory.
+**Do not** create, edit, or seed `comments.md`. That avoids accidental commits of review scratch space before another workflow defines it. **`spec-refine`** processes an optional `comments.md` reviewers add in the same topic directory (see that skill for format and workflow).
 
 Other future artifacts for the same topic (appendices, `plan.md`, exports, `comments.md` once owned elsewhere) should live **in the same directory** so one topic stays in one place.
 
@@ -234,4 +234,4 @@ Commit only if the user or automation **explicitly** asked to commit. Otherwise 
 
 ## Aftercare (message to user)
 
-In the final reply, list the **topic directory path**, summarize the **recommended approach** in one paragraph, and surface the **top three** `## Q-NN` items from `qna.md` that most need reviewer attention (for example **Kind:** `open`, or high blast-radius assumptions). If you added optional diagram or image files, list them too so reviewers know what to open.
+In the final reply, list the **topic directory path**, summarize the **recommended approach** in one paragraph, and surface the **top three** `## Q-NN` items from `qna.md` that most need reviewer attention (for example **Kind:** `open`, or high blast-radius assumptions). If you added optional diagram or image files, list them too so reviewers know what to open. After `comments.md` exists, **`spec-refine`** is the skill that merges review feedback back into `spec.md` / `qna.md`.

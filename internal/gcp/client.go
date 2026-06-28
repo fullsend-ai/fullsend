@@ -21,7 +21,8 @@ type Client struct {
 	httpClient *http.Client
 	// tokenFunc is the function used to obtain access tokens.
 	// It defaults to ADC but can be overridden for testing.
-	tokenFunc func(ctx context.Context) (string, error)
+	tokenFunc    func(ctx context.Context) (string, error)
+	QuotaProject string
 }
 
 // NewClient creates a new Client with default settings.
@@ -85,6 +86,9 @@ func (c *Client) DoRequest(ctx context.Context, method, url, body string) (*http
 	req.Header.Set("Authorization", "Bearer "+token)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.QuotaProject != "" {
+		req.Header.Set("x-goog-user-project", c.QuotaProject)
 	}
 
 	return c.httpClient.Do(req)

@@ -1,6 +1,6 @@
 ---
 title: "2. Initial Fullsend Design"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-architecture
   - autonomy-spectrum
@@ -21,7 +21,7 @@ Date: 2026-03-23
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -159,6 +159,11 @@ It **does not** read the **issue comment thread** for intake decisions—no scan
 1. **`pull_request_target`** event — PR **opened**, **synchronize** (push to the PR branch), or **ready_for_review** (draft → ready). This is the primary trigger.
 2. **`ready-for-review`** label **added** to the issue (or linked PR—policy per repo). Available for manual dispatch.
 3. **`/review`** in a comment.
+
+> **Note (2026-06):** In per-repo mode, triggers 2 and 3 (`ready-for-review`
+> label, `/fs-review` slash command) dispatch only when the issue has an
+> associated pull request (`issue.pull_request` present). Per-org `dispatch.yml`
+> is unchanged pending follow-up.
 
 **When a review run starts** (initial review, **`/review`**, or **push-triggered re-review**): **remove** **`ready-for-review`** **and** **`ready-for-merge`**. A new round **supersedes** any prior merge verdict until the coordinator finishes this round—otherwise **`ready-for-merge`** could describe an **old** head after the author **pushed** new commits, which is **unsafe** for bots and humans. Reviewers evaluate the **current** PR head; the coordinator applies outcomes using the algorithm below. (**`requires-manual-review`** is **not** removed here by default—humans may still need to resolve an earlier split verdict unless **repo policy** clears it when enqueueing a new round.)
 

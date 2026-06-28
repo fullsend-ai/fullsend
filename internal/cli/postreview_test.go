@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
+	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
@@ -141,6 +141,18 @@ func TestPostStaleHeadNotice(t *testing.T) {
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "stale-head")
 	assert.Contains(t, comments[0].Body, "old_sha_123")
+
+	// Verify the error carries StaleHeadExitCode for post-review.sh.
+	var she *staleHeadError
+	require.ErrorAs(t, err, &she, "error should be *staleHeadError")
+	assert.Equal(t, StaleHeadExitCode, she.ExitCode())
+}
+
+func TestStaleHeadError_ExitCode(t *testing.T) {
+	err := &staleHeadError{reviewedSHA: "aaa", currentSHA: "bbb"}
+	assert.Equal(t, StaleHeadExitCode, err.ExitCode())
+	assert.Contains(t, err.Error(), "aaa")
+	assert.Contains(t, err.Error(), "bbb")
 }
 
 func TestPostFailureNotice_WithBody(t *testing.T) {
@@ -262,7 +274,7 @@ func TestSubmitFormalReview_DismissesOnCommentVerdict(t *testing.T) {
 
 	require.Len(t, fc.DismissedReviews, 1, "COMMENT verdict must still dismiss stale CHANGES_REQUESTED")
 	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
-	assert.Empty(t, fc.CreatedReviews, "COMMENT events skip formal review submission")
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings skips formal review")
 }
 
 func TestSubmitFormalReview_DryRun(t *testing.T) {
@@ -370,7 +382,7 @@ func TestSubmitFormalReview_PassesCommitSHA(t *testing.T) {
 
 	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "deadbeef1234", "", nil, false, printer)
 	require.NoError(t, err)
-	assert.Empty(t, fc.CreatedReviews, "COMMENT events should skip formal review")
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings should skip formal review")
 }
 
 func TestSubmitFormalReview_EmptyCommitSHA(t *testing.T) {
@@ -434,14 +446,73 @@ func TestSubmitFormalReview_RejectSubmitsRequestChanges(t *testing.T) {
 	assert.Contains(t, fc.CreatedReviews[0].Body, commentURL)
 }
 
-func TestSubmitFormalReview_CommentSkipped(t *testing.T) {
+func TestSubmitFormalReview_CommentSkippedWithoutFindings(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-bot"
 	printer := ui.New(io.Discard)
 
 	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", nil, false, printer)
 	require.NoError(t, err)
-	assert.Empty(t, fc.CreatedReviews, "COMMENT events should skip formal review")
+	assert.Empty(t, fc.CreatedReviews, "COMMENT events with no inline findings should skip formal review")
+}
+
+func TestSubmitFormalReview_CommentSubmittedWithInlineFindings(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{
+			Severity:    "medium",
+			Category:    "logic-error",
+			File:        "internal/service.go",
+			Line:        42,
+			Description: "Nil pointer dereference possible.",
+		},
+	}
+
+	commentURL := "https://github.com/acme/repo/pull/1#issuecomment-99"
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", commentURL, findings, false, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedReviews, 1)
+	review := fc.CreatedReviews[0]
+	assert.Equal(t, "COMMENT", review.Event)
+	assert.Contains(t, review.Body, commentURL)
+	assert.Contains(t, review.Body, "[review comment]")
+	require.Len(t, review.Comments, 1)
+	assert.Equal(t, "internal/service.go", review.Comments[0].Path)
+	assert.Equal(t, 42, review.Comments[0].Line)
+}
+
+func TestSubmitFormalReview_CommentSkippedWhenFindingsFilteredOut(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "other.go", Patch: "@@ -1,5 +1,10 @@ package other"},
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{
+			Severity:    "low",
+			Category:    "style",
+			File:        "not-in-diff.go",
+			Line:        10,
+			Description: "File not in PR diff.",
+		},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", findings, false, printer)
+	require.NoError(t, err)
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline-eligible findings should skip formal review")
 }
 
 func TestDismissStaleRequestChanges(t *testing.T) {
@@ -518,15 +589,15 @@ func TestDismissStaleRequestChanges(t *testing.T) {
 			wantDismissed: 0,
 		},
 		{
-			name:     "multiple CR reviews dismisses most recent only",
+			name:     "multiple CR reviews dismisses all",
 			user:     "bot",
 			newEvent: "COMMENT",
 			reviews: []forge.PullRequestReview{
 				{ID: 100, User: "bot", State: "CHANGES_REQUESTED"},
 				{ID: 200, User: "bot", State: "CHANGES_REQUESTED"},
 			},
-			wantDismissed: 1,
-			wantReviewID:  200,
+			wantDismissed: 2,
+			wantReviewID:  100,
 		},
 		{
 			name:     "dismiss API error is non-fatal",
@@ -556,6 +627,38 @@ func TestDismissStaleRequestChanges(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSubmitFormalReview_DismissesAllStaleRequestChanges(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "CHANGES_REQUESTED", Body: "fix this"},
+			{ID: 200, NodeID: "PRR_200", User: "someone-else", State: "CHANGES_REQUESTED", Body: "human review"},
+			{ID: 300, NodeID: "PRR_300", User: "fullsend-bot", State: "CHANGES_REQUESTED", Body: "still broken"},
+			{ID: 400, NodeID: "PRR_400", User: "fullsend-bot", State: "CHANGES_REQUESTED", Body: "try again"},
+			{ID: 500, NodeID: "PRR_500", User: "fullsend-bot", State: "COMMENTED", Body: "note"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", nil, false, printer)
+	require.NoError(t, err)
+
+	// All 3 CHANGES_REQUESTED reviews by the bot should be dismissed.
+	require.Len(t, fc.DismissedReviews, 3)
+	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
+	assert.Equal(t, 300, fc.DismissedReviews[1].ReviewID)
+	assert.Equal(t, 400, fc.DismissedReviews[2].ReviewID)
+
+	// The other user's review must not be dismissed.
+	for _, d := range fc.DismissedReviews {
+		assert.NotEqual(t, 200, d.ReviewID)
+	}
+
+	// COMMENT events skip formal review submission.
+	assert.Empty(t, fc.CreatedReviews)
 }
 
 func TestSubmitFormalReview_AuthErrorSkipsCleanup(t *testing.T) {
@@ -723,9 +826,9 @@ func TestFindingsToReviewComments(t *testing.T) {
 		{File: "c.go", Line: 20, Severity: "critical", Category: "security", Description: "Desc C", Remediation: "Fix it"},
 	}
 
-	comments, fileFiltered, lineFiltered := findingsToReviewComments(findings, nil)
+	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, nil)
 	assert.Equal(t, 0, fileFiltered)
-	assert.Equal(t, 0, lineFiltered)
+	assert.Equal(t, 0, fileLevelFallback)
 	require.Len(t, comments, 2)
 
 	assert.Equal(t, "a.go", comments[0].Path)
@@ -751,14 +854,18 @@ func TestFindingsToReviewComments_FiltersByDiffHunks(t *testing.T) {
 		"also-changed.go": {{1, 10}},
 	}
 
-	comments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
 	assert.Equal(t, 1, fileFiltered)
-	assert.Equal(t, 1, lineFiltered)
-	require.Len(t, comments, 2)
+	assert.Equal(t, 1, fileLevelFallback, "low-severity out-of-hunk finding should fall back to file-level")
+	require.Len(t, comments, 3)
 	assert.Equal(t, "changed.go", comments[0].Path)
 	assert.Equal(t, 10, comments[0].Line)
-	assert.Equal(t, "also-changed.go", comments[1].Path)
-	assert.Equal(t, 3, comments[1].Line)
+	// The out-of-hunk low finding now falls back to file-level.
+	assert.Equal(t, "changed.go", comments[1].Path)
+	assert.Equal(t, 0, comments[1].Line)
+	assert.Contains(t, comments[1].Body, "Line 50", "file-level fallback should include original line number")
+	assert.Equal(t, "also-changed.go", comments[2].Path)
+	assert.Equal(t, 3, comments[2].Line)
 }
 
 func TestFindingsToReviewComments_EmptyPatchSkipsLineFiltering(t *testing.T) {
@@ -774,14 +881,69 @@ func TestFindingsToReviewComments_EmptyPatchSkipsLineFiltering(t *testing.T) {
 		"changed.go": {{5, 15}},
 	}
 
-	comments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
 	assert.Equal(t, 0, fileFiltered)
-	assert.Equal(t, 1, lineFiltered, "only the out-of-hunk finding on changed.go should be filtered")
-	require.Len(t, comments, 3)
+	assert.Equal(t, 1, fileLevelFallback, "out-of-hunk info finding on changed.go should fall back to file-level")
+	require.Len(t, comments, 4)
 	assert.Equal(t, "binary.png", comments[0].Path)
 	assert.Equal(t, "large.go", comments[1].Path)
 	assert.Equal(t, "changed.go", comments[2].Path)
 	assert.Equal(t, 10, comments[2].Line)
+	// The info finding outside the hunk now falls back to file-level.
+	assert.Equal(t, "changed.go", comments[3].Path)
+	assert.Equal(t, 0, comments[3].Line)
+	assert.Contains(t, comments[3].Body, "Line 50", "file-level fallback should include original line number")
+}
+
+func TestFindingsToReviewComments_AllSeveritiesPassThrough(t *testing.T) {
+	findings := []ReviewFinding{
+		{File: "a.go", Line: 10, Severity: "info", Category: "docs", Description: "Info finding with location"},
+		{File: "a.go", Line: 15, Severity: "Info", Category: "docs", Description: "Info finding case insensitive"},
+		{File: "a.go", Line: 20, Severity: "low", Category: "style", Description: "Low finding"},
+		{File: "a.go", Line: 25, Severity: "medium", Category: "bug", Description: "Medium finding"},
+	}
+
+	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, nil)
+	assert.Equal(t, 0, fileFiltered)
+	assert.Equal(t, 0, fileLevelFallback)
+	require.Len(t, comments, 4, "all findings should pass through regardless of severity")
+	assert.Contains(t, comments[0].Body, "Info finding with location")
+	assert.Contains(t, comments[1].Body, "Info finding case insensitive")
+	assert.Contains(t, comments[2].Body, "Low finding")
+	assert.Contains(t, comments[3].Body, "Medium finding")
+}
+
+func TestFindingsToReviewComments_AllSeveritiesFallbackToFileLevel(t *testing.T) {
+	findings := []ReviewFinding{
+		{File: "changed.go", Line: 10, Severity: "high", Category: "bug", Description: "In hunk"},
+		{File: "changed.go", Line: 50, Severity: "medium", Category: "logic-error", Description: "Medium outside hunk"},
+		{File: "changed.go", Line: 60, Severity: "critical", Category: "security", Description: "Critical outside hunk"},
+		{File: "changed.go", Line: 70, Severity: "low", Category: "style", Description: "Low outside hunk"},
+		{File: "changed.go", Line: 75, Severity: "info", Category: "docs", Description: "Info outside hunk"},
+		{File: "changed.go", Line: 80, Severity: "High", Category: "bug", Description: "High outside hunk case insensitive"},
+	}
+	diffHunks := map[string][][2]int{
+		"changed.go": {{5, 15}},
+	}
+
+	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
+	assert.Equal(t, 0, fileFiltered)
+	assert.Equal(t, 5, fileLevelFallback, "all out-of-hunk findings should fall back to file-level")
+	require.Len(t, comments, 6)
+
+	// First comment: in-hunk high finding with line number.
+	assert.Equal(t, "changed.go", comments[0].Path)
+	assert.Equal(t, 10, comments[0].Line)
+
+	// Remaining: file-level fallback comments for all out-of-hunk findings.
+	expectedLines := []int{50, 60, 70, 75, 80}
+	for i, desc := range []string{"Medium outside hunk", "Critical outside hunk", "Low outside hunk", "Info outside hunk", "High outside hunk case insensitive"} {
+		idx := i + 1
+		assert.Equal(t, "changed.go", comments[idx].Path)
+		assert.Equal(t, 0, comments[idx].Line, "file-level comment should have Line=0")
+		assert.Contains(t, comments[idx].Body, desc)
+		assert.Contains(t, comments[idx].Body, fmt.Sprintf("Line %d", expectedLines[i]), "file-level fallback should include original line number")
+	}
 }
 
 func TestSubmitFormalReview_FiltersByPRFileDiffs(t *testing.T) {
@@ -806,11 +968,16 @@ func TestSubmitFormalReview_FiltersByPRFileDiffs(t *testing.T) {
 	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
 	require.NoError(t, err)
 	require.Len(t, fc.CreatedReviews, 1)
-	require.Len(t, fc.CreatedReviews[0].Comments, 2, "file-filtered and line-filtered findings should be omitted")
+	require.Len(t, fc.CreatedReviews[0].Comments, 3, "file-not-in-diff finding omitted; out-of-hunk finding falls back to file-level")
 	assert.Equal(t, "changed.go", fc.CreatedReviews[0].Comments[0].Path)
-	assert.Equal(t, "also-changed.go", fc.CreatedReviews[0].Comments[1].Path)
-	assert.Contains(t, out.String(), "1 finding(s) omitted: file not in PR diff")
-	assert.Contains(t, out.String(), "1 finding(s) omitted: line not in any diff hunk")
+	assert.Equal(t, 10, fc.CreatedReviews[0].Comments[0].Line)
+	// Out-of-hunk low finding falls back to file-level comment.
+	assert.Equal(t, "changed.go", fc.CreatedReviews[0].Comments[1].Path)
+	assert.Equal(t, 0, fc.CreatedReviews[0].Comments[1].Line)
+	assert.Contains(t, fc.CreatedReviews[0].Comments[1].Body, "Line 50", "file-level fallback should include original line number")
+	assert.Equal(t, "also-changed.go", fc.CreatedReviews[0].Comments[2].Path)
+	assert.Contains(t, out.String(), "1 inline comment(s) omitted (file not in PR diff) — findings still count toward verdict")
+	assert.Contains(t, out.String(), "1 finding(s) posted as file-level comment(s) (line outside diff hunk)")
 }
 
 func TestSubmitFormalReview_ListPRFileDiffsErrorFallsBack(t *testing.T) {
@@ -875,6 +1042,117 @@ func TestFormatFindingComment(t *testing.T) {
 		assert.Contains(t, body, "Consider renaming.")
 		assert.NotContains(t, body, "Suggested fix:")
 	})
+}
+
+func TestSanitizeReviewResult_RedactsSecretsInBody(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Found this token: " + secret + " in the code.",
+		Action: "comment",
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Body, "ghp_FAKEtest", "secret should be redacted from body")
+	assert.Contains(t, sanitized.Body, "Found this token:", "non-secret text should remain")
+}
+
+func TestSanitizeReviewResult_RedactsSecretsInFindings(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "request-changes",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "high",
+				Category:    "security",
+				File:        "main.go",
+				Line:        10,
+				Description: "Hardcoded token: " + secret,
+				Remediation: "Remove " + secret + " and use env var.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Findings[0].Description, "ghp_FAKEtest", "secret should be redacted from finding description")
+	assert.NotContains(t, sanitized.Findings[0].Remediation, "ghp_FAKEtest", "secret should be redacted from finding remediation")
+	assert.Contains(t, sanitized.Findings[0].Description, "Hardcoded token:", "non-secret text should remain")
+}
+
+func TestSanitizeReviewResult_RedactsSecretsInSeverityAndCategory(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "request-changes",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "high " + secret,
+				Category:    "security " + secret,
+				File:        "main.go",
+				Line:        10,
+				Description: "Clean description.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Findings[0].Severity, "ghp_FAKEtest", "secret should be redacted from finding severity")
+	assert.NotContains(t, sanitized.Findings[0].Category, "ghp_FAKEtest", "secret should be redacted from finding category")
+}
+
+func TestSanitizeReviewResult_ZeroWidthObfuscatedSecret(t *testing.T) {
+	printer := ui.New(io.Discard)
+	plain := "ghp_FAKEtesttoken000000000000000000000000"
+	// Interleave zero-width non-joiner characters to obfuscate the token.
+	var obfuscated string
+	for _, c := range plain {
+		obfuscated += string(c) + "\u200c"
+	}
+	r := ReviewResult{
+		Body:   "Token: " + obfuscated,
+		Action: "comment",
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Body, "ghp_FAKEtest", "zero-width obfuscated secret should be caught after normalization")
+}
+
+func TestSanitizeReviewResult_NoSecretsPassesThrough(t *testing.T) {
+	printer := ui.New(io.Discard)
+	r := ReviewResult{
+		Body:   "Looks good! No issues found.",
+		Action: "approve",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "low",
+				Category:    "style",
+				File:        "main.go",
+				Line:        5,
+				Description: "Consider renaming variable.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.Equal(t, "Looks good! No issues found.", sanitized.Body, "clean body should pass through unchanged")
+	assert.Equal(t, "Consider renaming variable.", sanitized.Findings[0].Description, "clean finding should pass through unchanged")
+	assert.Equal(t, "low", sanitized.Findings[0].Severity, "clean severity should pass through unchanged")
+	assert.Equal(t, "style", sanitized.Findings[0].Category, "clean category should pass through unchanged")
+}
+
+func TestSanitizeReviewResult_EmptyBody(t *testing.T) {
+	printer := ui.New(io.Discard)
+	r := ReviewResult{
+		Body:   "",
+		Action: "failure",
+		Reason: "tool-failure",
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.Empty(t, sanitized.Body, "empty body should remain empty")
 }
 
 func TestPostApprovedFollowUpIssues_DisabledIsNoop(t *testing.T) {

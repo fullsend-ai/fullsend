@@ -4,17 +4,20 @@ description: >
   Use when the user wants to tag a release, cut a release candidate, or ship a
   new version. Also use when asking about release process, versioning, or how
   GoReleaser is configured.
-allowed-tools: Read, Grep, Glob, AskUserQuestion, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(git checkout:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
+allowed-tools: Read, Grep, Glob, AskUserQuestion, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(git checkout:*), Bash(git fetch:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
 ---
 
 # Cutting Releases
 
 Releases are driven by annotated git tags. When a tag matching `v*` is pushed,
-the `.github/workflows/release.yml` workflow runs GoReleaser, which builds
-binaries, generates a changelog, and creates the GitHub release. The release
-title comes from the tag annotation via `name_template` in `.goreleaser.yml`.
+`.github/workflows/release.yml` runs GoReleaser to build binaries, generate a
+changelog, and create the GitHub release.
 
 ## Process
+
+Before starting step 1, read
+[pre-flight.md](pre-flight.md) in this skill's directory and complete
+the pre-flight audit. Do not proceed until the user confirms GO.
 
 Follow these steps in order.
 
@@ -23,7 +26,7 @@ Follow these steps in order.
 Releases should be cut from `main`. Verify you are on `main` and up to date:
 
 ```
-git checkout main && git pull
+git checkout main && git pull --tags --force
 ```
 
 ### 2. Determine the version
@@ -61,9 +64,9 @@ Use `AskUserQuestion` to ask:
 > Any special title for this release? (e.g. "MVP Release Candidate 1")
 > Leave blank to use just the version tag.
 
-The answer becomes the tag subject line. If blank, do **not** use the version
-as the subject — leave the subject empty so that GoReleaser's `name_template`
-renders just the tag without duplication.
+The answer becomes the tag subject line. If blank, use the tag name itself as
+the subject so that GoReleaser's `name_template` guard (`ne .TagSubject .Tag`)
+suppresses it, producing a clean release title without duplication.
 
 ### 5. Gather changes since last tag
 
@@ -71,26 +74,28 @@ renders just the tag without duplication.
 git log --oneline <previous-tag>..HEAD
 ```
 
-Summarize the changes into categories (features, fixes, refactors). Exclude
-commits that start with `docs:`, `test:`, or `chore:` — GoReleaser filters
-these from the changelog anyway.
+Summarize changes into categories (features, fixes, refactors). Exclude
+`docs:`, `test:`, `chore:`, `ci:`, `build:` commits — GoReleaser filters these anyway.
 
 ### 6. Create the annotated tag
 
 Build the tag message:
 
 - **Line 1 (subject):** The custom title from step 4, if one was given.
-  If no custom title, **omit the subject line** — start the annotation
-  body directly with the highlights. This avoids duplicating the version
-  in the release title.
+  If no custom title, **use the tag name itself** (e.g. `v0.9.0`) — git's
+  `%(contents:subject)` skips leading blank lines, so a blank first line
+  still picks up the first category header as `.TagSubject`. Using the tag
+  name as subject ensures `.TagSubject == .Tag`, which the goreleaser guard
+  suppresses, producing a clean release title with no suffix.
+- **Line 2:** Blank.
 - **Lines 3+:** Summary of highlights organized by category.
 
 ```
 git tag -a v0.X.0 -m "<message>"
 ```
 
-The first line of the annotation flows into the GitHub release title via
-GoReleaser's `name_template: "{{ .Tag }}{{ if and .TagSubject (ne .TagSubject .Tag) }}: {{ .TagSubject }}{{ end }}"`.
+The first line of the annotation becomes the release title suffix via
+GoReleaser's `name_template` (see `.goreleaser.yml`).
 
 ### 7. Push the tag
 
@@ -104,33 +109,29 @@ GoReleaser takes over from here. Verify the workflow starts:
 gh run list --workflow=release.yml --limit=1
 ```
 
-### 8. Verify the release
+### 8. Run post-flight verification
 
-Once the workflow completes, confirm the release was created:
-
-```
-gh release view <tag>
-```
-
-Check that the title, changelog, and binary assets look correct.
+Read [post-flight.md](post-flight.md) in this skill's directory and
+follow the post-flight verification procedure.
 
 ### 9. Install the binary locally
 
-Ask the user where to install (default: `~/.local/bin/`), then run
-the install script from this skill's base directory:
+Use `AskUserQuestion` to ask where to install (default: `~/.local/bin/`),
+then run the install script using its repo-root-relative path:
 
 ```bash
-bash <base-dir>/scripts/install-binary.sh <tag> [install-dir]
+bash skills/cutting-releases/scripts/install-binary.sh <tag> [install-dir]
 ```
 
-The script downloads the release archive, verifies its SHA-256 checksum
-against the release's `checksums.txt`, and installs the binary as
-`fullsend-<tag>` so multiple versions can coexist.
+The script downloads the archive, verifies its SHA-256 checksum, and
+installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 
 ## Notes
 
 - **Pre-releases:** Tags with `-rc.N`, `-alpha.N`, or `-beta.N` suffixes are
   automatically marked as pre-releases by GoReleaser.
 - **Never delete a published tag.** If a release is bad, cut a new patch or RC.
-- **The changelog** is auto-generated from commit messages. Conventional commit
-  prefixes (`feat:`, `fix:`, etc.) produce clean changelogs.
+- **The changelog** is auto-generated from conventional commit prefixes.
+- **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
+  workflows. It is automatically moved by the release workflow after
+  GoReleaser completes (skipped for pre-release tags).

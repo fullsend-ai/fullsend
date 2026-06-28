@@ -1,0 +1,158 @@
+---
+# Known pre-commit hook tool dependencies.
+#
+# Used by resolve-precommit-tools.py to auto-detect which system tools
+# a target repo's .pre-commit-config.yaml requires. The resolver reads
+# the target repo's config, matches hook repos and IDs against this
+# registry, and produces a JSON manifest that install-precommit-tools.sh
+# consumes.
+#
+# Structure:
+#   Each entry maps a pre-commit hook repo URL to its hooks and the
+#   tools they need. Tools are categorized by install method:
+#     binary — downloaded from a release URL with SHA256 verification
+#     apt    — installed via apt-get on Ubuntu-based runners
+#     pip    — installed via pip
+#     npm    — installed via npm
+#
+#   Binary entries must include pinned versions and per-arch checksums
+#   for supply-chain safety. Use the same version+checksum pattern as
+#   images/code/Containerfile and the post-scripts.
+#
+# Adding a new tool:
+#   1. Find the hook repo URL and hook ID in .pre-commit-config.yaml
+#   2. Add an entry below with the tools it needs
+#   3. For binary downloads: pin version, provide checksums for amd64+arm64
+#   4. Run resolve-precommit-tools.py against a test repo to verify
+#
+# Only add entries for hooks that pre-commit cannot self-serve:
+#   language: system  → tool must already be on PATH (NEEDS registry entry)
+#   language: golang  → binary download is faster than Go compilation (optional)
+#   language: python  → pre-commit handles via pip/venv (DO NOT add)
+#   language: node    → pre-commit handles via npm (DO NOT add)
+#   language: docker_image → pre-commit handles via docker pull (DO NOT add)
+#
+# Customization (three layers, highest priority wins):
+#   L1 full replacement:
+#     Per-org:  customized/scripts/.pre-commit-tools.yaml in .fullsend config repo
+#     Per-repo: .fullsend/customized/scripts/.pre-commit-tools.yaml in target repo
+#     The customized file completely replaces these defaults.
+#   L2 additive merge:
+#     Per-repo: .pre-commit-tools.yaml at target repo root
+#     Entries are merged with upstream/org defaults. New entries extend,
+#     matching (repo, hook_id) entries override, exclude: true suppresses.
+#     Read from the base branch only (not the PR head) for security.
+#     See ADR 0056 for details.
+
+tools:
+  # ── lychee (markdown link checker) ────────────────────────────────
+  - hook_id: lint-md-links
+    repo: local
+    match_entry: "lychee"
+    install:
+      type: binary
+      name: lychee
+      version: "0.24.2"
+      url_template: "https://github.com/lycheeverse/lychee/releases/download/lychee-v{version}/lychee-{triple}.tar.gz"
+      checksums:
+        x86_64: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+        aarch64: "91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
+      strip_prefix: "lychee-{triple}"
+      binary_name: lychee
+
+  # ── gitleaks (secret scanning) ────────────────────────────────────
+  # Post-scripts install gitleaks independently as a security gate.
+  # This entry exists only so the resolver recognizes gitleaks hooks
+  # and does NOT emit a "not in registry" warning. The skip_install
+  # flag prevents double-installing alongside the post-script copy.
+  - hook_id: gitleaks
+    repo: https://github.com/zricethezav/gitleaks
+    install:
+      type: binary
+      name: gitleaks
+      skip_install: true
+
+  # ── actionlint (GitHub Actions linter) ────────────────────────────
+  # The upstream hook uses language: golang, so pre-commit CAN compile
+  # it from source (~2 min). This entry downloads the pre-built binary
+  # (~3 sec) to keep the authoritative pre-commit check fast.
+  # actionlint releases use "amd64"/"arm64" instead of the Rust-style
+  # triple or gitleaks-style "x64". The goarch_override field lets the
+  # installer substitute the correct arch string for this tool only.
+  - hook_id: actionlint
+    repo: https://github.com/rhysd/actionlint
+    install:
+      type: binary
+      name: actionlint
+      version: "1.7.11"
+      url_template: "https://github.com/rhysd/actionlint/releases/download/v{version}/actionlint_{version}_linux_{goarch}.tar.gz"
+      goarch_override:
+        x86_64: "amd64"
+        aarch64: "arm64"
+      checksums:
+        x86_64: "900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a"
+        aarch64: "21bc0dfb57a913fe175298c2a9e906ee630f747cb66d0a934d0d4b69f4ee1235"
+      binary_name: actionlint
+
+  # ── pinact (GitHub Actions SHA-pin checker) ────────────────────────
+  # The upstream hook uses language: system, so the binary must be on
+  # PATH. Like actionlint, pinact releases use "amd64"/"arm64" instead
+  # of the Rust-style triple, so goarch_override maps the arch strings.
+  - hook_id: pinact
+    repo: local
+    match_entry: "pinact"
+    install:
+      type: binary
+      name: pinact
+      version: "4.1.0"
+      url_template: "https://github.com/suzuki-shunsuke/pinact/releases/download/v{version}/pinact_linux_{goarch}.tar.gz"
+      goarch_override:
+        x86_64: "amd64"
+        aarch64: "arm64"
+      checksums:
+        x86_64: "8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0"
+        aarch64: "2807669cd423a3572bc12ea4a5eab80cd2f30d5644710e0c97a08a075fdadf10"
+      binary_name: pinact
+
+  # ── uv / uvx (Python package manager, needed for ty check) ───────
+  # Two match entries: hooks may use "uvx <tool>" or "uv run <tool>".
+  # Both resolve to the same install (dedup via seen_names on "uv").
+  - hook_id: ty
+    repo: local
+    match_entry: "uvx"
+    install:
+      type: binary
+      name: uv
+      version: "0.11.14"
+      url_template: "https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.tar.gz"
+      checksums:
+        x86_64: "f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
+        aarch64: "c4958f729e216f1610632574ed927b8cf0af1bd02cb88cb30d948571727aee43"
+      strip_prefix: "uv-{triple}"
+      binary_name: uv
+      extra_binaries:
+        - uvx
+  - hook_id: uv-run
+    repo: local
+    match_entry: "uv"
+    install:
+      type: binary
+      name: uv
+      version: "0.11.14"
+      url_template: "https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.tar.gz"
+      checksums:
+        x86_64: "f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
+        aarch64: "c4958f729e216f1610632574ed927b8cf0af1bd02cb88cb30d948571727aee43"
+      strip_prefix: "uv-{triple}"
+      binary_name: uv
+      extra_binaries:
+        - uvx
+
+# Language fallbacks — when a hook is not in the registry above,
+# the resolver uses the hook's `language` field to emit warnings:
+#   language: system  → warns that the tool must be pre-installed
+#   language: golang  → warns that Go toolchain is needed
+#   language: rust    → warns that Rust toolchain is needed
+# Hooks using python/node/docker_image/script need no registry
+# entry — pre-commit handles them natively. For example,
+# shellcheck-py (language: python) is auto-managed by pre-commit.

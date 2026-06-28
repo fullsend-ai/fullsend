@@ -11,21 +11,21 @@ import path from "node:path";
 
 describe("paths", () => {
   it("filePathToRouteKey strips docs/ and .md", () => {
-    expect(filePathToRouteKey("docs/guides/admin/installation.md")).toBe(
-      "guides/admin/installation",
+    expect(filePathToRouteKey("docs/guides/getting-started/installation.md")).toBe(
+      "guides/getting-started/installation",
     );
     expect(filePathToRouteKey("docs/README.md")).toBe("README");
   });
 
   it("routeKeyToUrl", () => {
-    expect(routeKeyToUrl("guides/admin/installation")).toBe(
-      "/docs/guides/admin/installation",
+    expect(routeKeyToUrl("guides/getting-started/installation")).toBe(
+      "/docs/guides/getting-started/installation",
     );
   });
 
   it("pathnameToRouteKey", () => {
-    expect(pathnameToRouteKey("/docs/guides/admin/installation")).toBe(
-      "guides/admin/installation",
+    expect(pathnameToRouteKey("/docs/guides/getting-started/installation")).toBe(
+      "guides/getting-started/installation",
     );
     expect(pathnameToRouteKey("/docs/")).toBe("");
   });

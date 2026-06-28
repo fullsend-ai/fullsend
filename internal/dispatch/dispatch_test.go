@@ -20,7 +20,7 @@ func (s *stubDispatcher) Name() string { return "stub" }
 func (s *stubDispatcher) Provision(_ context.Context) (map[string]string, error) {
 	return nil, nil
 }
-func (s *stubDispatcher) StoreAgentPEM(_ context.Context, _, _ string, _ []byte) error {
+func (s *stubDispatcher) StoreAgentPEM(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
 func (s *stubDispatcher) OrgSecretNames() []string   { return nil }

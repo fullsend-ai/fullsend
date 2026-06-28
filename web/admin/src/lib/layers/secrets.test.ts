@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LayerGithub } from "./githubClient";
 import { analyzeSecretsLayer, secretNameForRole, variableNameForRole } from "./secrets";
 
-function mockGh(opts: {
-  secrets?: Set<string>;
-  variables?: Set<string>;
-}): LayerGithub {
+function mockGh(opts: { secrets?: Set<string>; variables?: Set<string> }): LayerGithub {
   const secrets = opts.secrets ?? new Set();
   const variables = opts.variables ?? new Set();
   return {

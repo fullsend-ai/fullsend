@@ -29,18 +29,11 @@ func newTestServer(t *testing.T, handler http.Handler) (*httptest.Server, FetchP
 	hostPort := strings.TrimPrefix(srv.URL, "https://")
 	hostname, port, _ := net.SplitHostPort(hostPort)
 
-	// The httptest server listens on 127.0.0.1 which is loopback, so we
-	// must skip the internal-IP check for integration tests.
-	policy := FetchPolicy{
-		AllowedDomains: []string{hostname},
-		AllowedPorts:   []string{port},
-		MaxSizeBytes:   1024,
-		Timeout:        5 * time.Second,
-		tlsConfig:      srv.TLS.Clone(),
-		skipIPCheck:    true,
-	}
-	// Skip TLS verification — httptest servers use self-signed certificates.
-	policy.tlsConfig.InsecureSkipVerify = true
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+
+	policy := NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+	policy.MaxSizeBytes = 1024
 
 	return srv, policy
 }

@@ -7,16 +7,16 @@ import {
 
 describe("parseDocHash", () => {
   it("parses file route only", () => {
-    expect(parseDocHash("#/guides/admin/installation")).toEqual({
+    expect(parseDocHash("#/guides/getting-started/installation")).toEqual({
       kind: "file",
-      routeKey: "guides/admin/installation",
+      routeKey: "guides/getting-started/installation",
     });
   });
 
   it("parses directory route with trailing slash", () => {
-    expect(parseDocHash("#/guides/admin/")).toEqual({
+    expect(parseDocHash("#/guides/getting-started/")).toEqual({
       kind: "dir",
-      dirPath: "guides/admin",
+      dirPath: "guides/getting-started",
     });
   });
 
@@ -51,7 +51,7 @@ describe("formatDocDirHash", () => {
 
 describe("formatDocHash", () => {
   it("round-trips file routes", () => {
-    const k = "guides/admin/installation";
+    const k = "guides/getting-started/installation";
     expect(parseDocHash(formatDocHash(k))).toEqual({
       kind: "file",
       routeKey: k,

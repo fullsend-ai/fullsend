@@ -75,6 +75,8 @@ Run **`scan-secrets`** on changed paths if available; run **pre-commit** on thos
 
 Some runner scripts append **`Closes #N`** to PR bodies automatically. Harness authors should prefer **`Refs`** for spec-only PRs when they control templates.
 
+After the PR is open, do **not** auto-invoke **`spec-refine-github`** unless the session asks for a refine pass. When reviewers leave PR or issue comments (or request changes), use **`spec-refine-github`** to ingest that feedback and update `spec.md` / `qna.md` on the same branch (see that skill for harness vs local push rules).
+
 ## Aftercare
 
-Mirror `spec-start`: list topic path, summarize the recommended approach, surface top open questions. If harness mode, also paste the suggested PR title and body.
+Mirror `spec-start`: list topic path, summarize the recommended approach, surface top open questions. If harness mode, also paste the suggested PR title and body. After review on the PR, **`spec-refine-github`** is the follow-up skill that merges feedback back into `spec.md` / `qna.md`.

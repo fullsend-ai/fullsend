@@ -11,12 +11,12 @@ describe("collectDirPaths", () => {
         children: [
           {
             type: "dir",
-            name: "admin",
+            name: "getting-started",
             children: [
               {
                 type: "file",
                 name: "installation",
-                routeKey: "guides/admin/installation",
+                routeKey: "guides/getting-started/installation",
                 title: "Install",
               },
             ],
@@ -24,6 +24,6 @@ describe("collectDirPaths", () => {
         ],
       },
     ];
-    expect(collectDirPaths(tree)).toEqual(new Set(["guides", "guides/admin"]));
+    expect(collectDirPaths(tree)).toEqual(new Set(["guides", "guides/getting-started"]));
   });
 });

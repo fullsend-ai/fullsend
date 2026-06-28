@@ -73,6 +73,41 @@ func TestFakeClient_CreateFileOnBranch(t *testing.T) {
 	assert.Equal(t, "feature", fc.CreatedFiles[0].Branch)
 }
 
+func TestFakeClient_DeleteFiles(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		FileContents: map[string][]byte{
+			"owner/repo/a.txt": []byte("a"),
+			"owner/repo/b.txt": []byte("b"),
+		},
+	}
+
+	deleted, err := fc.DeleteFiles(ctx, "owner", "repo", "cleanup", []string{"a.txt", "missing.txt", "b.txt"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, deleted)
+	assert.Len(t, fc.DeletedFiles, 2)
+	_, ok := fc.FileContents["owner/repo/a.txt"]
+	assert.False(t, ok)
+}
+
+func TestFakeClient_GetWorkflow(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Workflows: map[string]*Workflow{
+			"owner/repo/ci.yml": {Name: "CI", Path: ".github/workflows/ci.yml", State: "active"},
+		},
+	}
+
+	wf, err := fc.GetWorkflow(ctx, "owner", "repo", "ci.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "CI", wf.Name)
+
+	wf, err = fc.GetWorkflow(ctx, "owner", "repo", "other.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "other.yml", wf.Name)
+	assert.Equal(t, "active", wf.State)
+}
+
 func TestFakeClient_GetFileContent(t *testing.T) {
 	ctx := context.Background()
 
@@ -159,6 +194,27 @@ func TestFakeClient_GetAuthenticatedUser(t *testing.T) {
 	user, err := fc.GetAuthenticatedUser(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "test-bot", user)
+}
+
+func TestFakeClient_GetAuthenticatedUserIdentity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns configured identity", func(t *testing.T) {
+		fc := &FakeClient{
+			AuthenticatedUserIdentity: &UserIdentity{Name: "Test User", Email: "test@example.com"},
+		}
+		id, err := fc.GetAuthenticatedUserIdentity(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "Test User", id.Name)
+		assert.Equal(t, "test@example.com", id.Email)
+	})
+
+	t.Run("returns ErrNotFound when not configured", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.GetAuthenticatedUserIdentity(ctx)
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
 }
 
 func TestFakeClient_Secrets(t *testing.T) {
@@ -418,6 +474,11 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"ListRepoPullRequests", func(fc *FakeClient) error { _, err := fc.ListRepoPullRequests(ctx, "o", "r"); return err }},
 		{"GetAuthenticatedUser", func(fc *FakeClient) error { _, err := fc.GetAuthenticatedUser(ctx); return err }},
+		{"GetAuthenticatedUserIdentity", func(fc *FakeClient) error {
+			fc.AuthenticatedUserIdentity = &UserIdentity{Name: "n", Email: "e"}
+			_, err := fc.GetAuthenticatedUserIdentity(ctx)
+			return err
+		}},
 		{"CreateRepoSecret", func(fc *FakeClient) error { return fc.CreateRepoSecret(ctx, "o", "r", "n", "v") }},
 		{"RepoSecretExists", func(fc *FakeClient) error { _, err := fc.RepoSecretExists(ctx, "o", "r", "n"); return err }},
 		{"CreateOrUpdateRepoVariable", func(fc *FakeClient) error {
@@ -456,6 +517,24 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
+		}},
+		{"SetOrgVariableRepos", func(fc *FakeClient) error {
+			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
+		}},
+		{"GetOrgVariableRepos", func(fc *FakeClient) error {
+			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
+			return err
+		}},
+		{"DeleteIssueComment", func(fc *FakeClient) error {
+			return fc.DeleteIssueComment(ctx, "o", "r", 1)
+		}},
+		{"ListDirectoryContents", func(fc *FakeClient) error {
+			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			return err
+		}},
+		{"GetFileContentAtRef", func(fc *FakeClient) error {
+			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			return err
 		}},
 	}
 
@@ -508,6 +587,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
 			_, _ = fc.ListRepoPullRequests(ctx, "o", "r")
 			_, _ = fc.GetAuthenticatedUser(ctx)
+			_, _ = fc.GetAuthenticatedUserIdentity(ctx)
 			_ = fc.CreateRepoSecret(ctx, "o", "r", "n", "v")
 			_, _ = fc.RepoSecretExists(ctx, "o", "r", "secret")
 			_ = fc.CreateOrUpdateRepoVariable(ctx, "o", "r", "n", "v")
@@ -522,6 +602,11 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgVariableExists(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
+			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
+			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
+			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
+			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 		}(i)
 	}
 

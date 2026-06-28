@@ -22,6 +22,8 @@ The prioritize agent fetches the issue and all its context, then evaluates it ac
 |---------|-------|--------|
 | `/fs-prioritize` | Issue comment | Runs RICE scoring on the issue |
 
+Requires write-level repository permission (admin, maintain, or write).
+
 The `/fs-prioritize` command does not accept arguments. It scores the issue
 using the current content, comments, and any available `customer-research`
 skill data.
@@ -54,6 +56,10 @@ your-repo/
 This gives the prioritize agent concrete data to distinguish between "one user
 wants this" (Reach 0.25) and "three strategic accounts have filed support cases
 about it" (Reach 2.0), instead of guessing from the issue text alone.
+
+### Variables
+
+None.
 
 ## Source
 

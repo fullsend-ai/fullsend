@@ -1,3 +1,4 @@
+---
 # lint-workflow-size: max-lines=220
 name: Prioritize Scheduler
 
@@ -8,6 +9,11 @@ on:
   # schedule:
   #   - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      wip_limit:
+        description: "Max number of prioritize jobs to dispatch (overrides PRIORITIZE_WIP_LIMIT variable)"
+        required: false
+        type: number
 
 concurrency:
   group: fullsend-prioritize-scheduler
@@ -16,7 +22,7 @@ concurrency:
 jobs:
   dispatch:
     name: Find and dispatch issues for RICE scoring
-    runs-on: ubuntu-latest
+    runs-on: __GH_RUNNER__
     timeout-minutes: 5
     permissions:
       actions: write
@@ -25,11 +31,11 @@ jobs:
 
     steps:
       - name: Checkout .fullsend repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Mint fullsend token
         id: app-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@v0
+        uses: fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__
         with:
           role: fullsend
           repos: .fullsend
@@ -40,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ORG: ${{ github.repository_owner }}
           PROJECT_NUMBER: ${{ vars.FULLSEND_PROJECT_NUMBER }}
-          WIP_LIMIT: ${{ vars.PRIORITIZE_WIP_LIMIT || '5' }}
+          WIP_LIMIT: ${{ inputs.wip_limit || vars.PRIORITIZE_WIP_LIMIT || '5' }}
           STALE_THRESHOLD: ${{ vars.PRIORITIZE_STALE_THRESHOLD || '7d' }}
         run: |
           set -euo pipefail

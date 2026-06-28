@@ -52,7 +52,10 @@ Also look for **blocking relationships** — open issues or PRs that must be res
 - The issue describes a feature that depends on infrastructure or API changes tracked in another issue
 - The issue references an upstream library, service, or repository that has a known open bug
 - A PR is already in flight that would conflict with or must land before work on this issue
+- An open PR already addresses this issue, even partially — the work is already in progress
 - The issue's fix requires a design decision that is being discussed in another issue
+
+**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue — even partially — treat it as a prerequisite. Use `action: "prerequisites"` with the PR URL in the `existing` array. Do not emit `action: "sufficient"` when an open PR covers the reported problem; dispatching a second implementation would create duplicates. Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
 
 If the issue mentions other repositories, libraries, or upstream projects, search those too:
 
@@ -63,18 +66,29 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 If a cross-repo search fails or returns an error (e.g., due to access restrictions), note this in your reasoning as an information gap rather than concluding no blocking work exists.
 
-### 2c. Check existing blockers
+### 2c. Check existing prerequisites
 
-If the issue already has a `blocked` label, check whether the previously identified blocker (linked in prior triage comments) is still open. Fetch the full context of the blocking issue or PR to understand its current state:
+If the issue already has a `blocked` label, check whether the previously identified prerequisites (linked in prior triage comments) are still open. Fetch the full context of each prerequisite issue or PR to understand its current state:
 
 ```
-# For blocking issues:
-gh issue view BLOCKING_URL --json state,title,body,comments,labels
-# For blocking PRs:
-gh pr view BLOCKING_URL --json state,title,body,comments,labels,mergedAt
+# For prerequisite issues:
+gh issue view PREREQUISITE_URL --json state,title,body,comments,labels
+# For prerequisite PRs:
+gh pr view PREREQUISITE_URL --json state,title,body,comments,labels,mergedAt
 ```
 
-Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Review the blocker's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the blocker has been closed or merged, the block may be resolved — proceed with a fresh assessment.
+Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Review the prerequisite's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the prerequisite has been closed or merged, the dependency may be resolved — proceed with a fresh assessment.
+
+### 2d. Review prior triage analysis
+
+Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
+
+If a prior triage comment exists, **accumulate — do not replace:**
+
+- **Preserve all previously identified problems.** Treat every cause documented in the prior analysis as an established finding. Do not silently drop any of them. If you believe a previously identified cause is no longer valid (e.g., already fixed, confirmed misdiagnosis), document this explicitly in `reasoning` — a cause removed without explanation is a regression in analysis quality.
+- **Incorporate human-identified problems.** When an issue author or contributor adds a comment that says "the real issue is X", "you also missed Y", or otherwise points to a problem not in the prior analysis, treat it with the same evidentiary weight as a clear error message. If you cannot independently verify the claim, include it as a hypothesis — do not omit it.
+- **Your new analysis must be a superset** of the prior analysis. Identified problems accumulate across triage runs; the count of documented problems can only go up, not down (unless a cause is explicitly refuted with reasoning).
+- **Re-triaging is about incorporating new information**, not restarting from scratch. If a human comment triggered this re-run, focus your analysis on what that comment changes or adds. Then confirm all previously documented problems are still represented.
 
 ## Step 3: Assess information sufficiency
 
@@ -84,16 +98,38 @@ Use this phased approach to evaluate the issue:
 - What component or feature is affected?
 - Is this a regression, new bug, or misunderstanding?
 - Is there any version or timeline information?
+- **Is this a question?** If the issue is asking for information rather than reporting a defect or requesting a change, use the `question` action instead of proceeding to deeper investigation. Questions typically use interrogative phrasing and describe no concrete problem or desired behavior change.
 
 ### Phase 2 — Deep investigation
 - Are exact error messages or logs provided?
 - Are reproduction steps present and specific (not vague)?
 - Is the environment described (OS, browser, version, configuration)?
 
+### Question classification
+
+Before forming any clarifying question, classify it:
+
+**User-facing questions** — the reporter can answer from their own experience:
+- What behavior did you observe vs. expect?
+- What OS, version, or configuration are you using?
+- Can you share the exact error message or log?
+- Does this happen every time or intermittently?
+
+**Implementation-facing questions** — require knowledge of how the project works internally:
+- Which document format should be used (ADR, problem doc, etc.)?
+- How should a given feature be architected?
+- Which internal component owns this behavior?
+- What is the project's convention for X?
+
+**Rule:** Implementation-facing questions must NOT be directed at the reporter. Instead:
+1. Attempt to self-resolve using the repository context gathered in Step 2 (README, CLAUDE.md, AGENTS.md, docs/, ADRs, CONTRIBUTING.md).
+2. If self-resolution succeeds, incorporate the answer into your analysis without asking anyone.
+3. If self-resolution fails (the answer is genuinely not in the repo), flag it in `reasoning` as an open architectural question for maintainers — but still attempt to proceed with the best available information. Only use `action: "insufficient"` if the gap materially prevents triage.
+
 ### Phase 3 — Hypothesis formation and dependency analysis
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
-- **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue is blocked regardless of how clear the problem description is.
+- **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
 
 ### Clarity scoring
 
@@ -110,11 +146,32 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 
 **Resolution threshold: overall clarity >= 0.80**
 
-**Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with information gaps. The `sufficient` action means there are zero open questions that could affect implementation. When in doubt, ask.
+**Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open *user-facing* questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with user-facing information gaps. The `sufficient` action means there are zero open user-facing questions that could affect implementation. When in doubt, ask. Implementation-facing questions that cannot be self-resolved from repository context should be noted in `reasoning` but do not require `action: "insufficient"` unless they materially prevent triage — see the question classification rules above.
+
+**Anti-premature-prerequisites rule (HARD CONSTRAINT):** If your assessment identifies unresolved prerequisites — dependencies on work in other repos or unmerged changes that must land first — you MUST use `action: "prerequisites"`. Do NOT emit `action: "sufficient"` when prerequisites exist. The `sufficient` action means there are zero blockers and zero open questions.
 
 ## Step 4: Decide and write result
 
 Based on your assessment, choose exactly one action and write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
+
+### Action: `question`
+
+The issue is a support request or question rather than a bug report, feature request, or other actionable work item. The reporter is asking for information, not requesting a change.
+
+Detect question-style issues by looking for:
+- Interrogative phrasing ("Why don't we…?", "Does X support…?", "How do I…?")
+- No described defect, missing feature, or requested change
+- The reporter seeking to understand existing behavior rather than change it
+
+When you identify a question, attempt to answer it using the repository context gathered in Step 2. Then ask the reporter whether the question has been answered or whether they want to convert the issue into a feature request.
+
+```json
+{
+  "action": "question",
+  "reasoning": "Brief explanation of why this is a question rather than a bug or feature request",
+  "comment": "Your answer to the question, followed by a prompt asking whether the reporter wants to convert this into a feature request or close the issue. Be helpful and specific — use repository context to give a substantive answer rather than a generic response."
+}
+```
 
 ### Action: `insufficient`
 
@@ -131,7 +188,7 @@ Information is missing that would change the triage outcome. Ask ONE focused, sp
     "impact": 0.0,
     "overall": 0.0
   },
-  "comment": "Your clarifying question, written as a professional GitHub comment. Address the reporter as a person. Ask ONE question — the most diagnostic question that would move clarity scores the most. Be specific about what you need."
+  "comment": "Your clarifying question, written as a professional GitHub comment. Address the reporter as a person. Ask ONE question — the most diagnostic question that would move clarity scores the most. Be specific about what you need. The question must be user-facing (something the reporter can answer from their own experience). Never ask about internal project conventions, document formats, or architecture decisions — those are implementation-facing questions that must be self-resolved from repository context."
 }
 ```
 
@@ -148,18 +205,36 @@ This issue describes the same problem as an existing open issue.
 }
 ```
 
-### Action: `blocked`
+### Action: `prerequisites`
 
-Progress on this issue is blocked by another issue or PR — either in this repository or a different one. The blocking issue must be resolved before work on this issue can proceed. Do NOT apply `ready-to-code` for blocked issues.
+Progress on this issue depends on work that must happen first — either in this repository or another. Use this action when you identify specific blocking dependencies: existing issues/PRs that must be resolved, or upstream work that needs a tracking issue created.
 
-Only use `blocked` when you can identify a specific open issue or PR that must be resolved first. If you suspect a dependency but cannot find a concrete blocking issue, use `insufficient` to ask the reporter whether there is a blocking dependency and to provide its URL.
+**HARD CONSTRAINT:** Never emit `sufficient` if unresolved prerequisites exist. Use `prerequisites` instead.
+
+The `prerequisites` object contains two arrays:
+
+- `existing` — issues or PRs that already exist and block this work. Include the full HTML URL.
+- `create` — issues that need to be filed in other repos before this work can proceed. Include the target `repo` (owner/name format), a `title`, and a `body`. Write the body for the target repo's audience — include enough technical context for upstream maintainers to understand what is needed. Use your judgment on whether to include a back-reference to the originating issue; sometimes it provides helpful context, sometimes it leaks internal details.
+
+At least one of the two arrays must have entries.
 
 ```json
 {
-  "action": "blocked",
-  "reasoning": "Brief explanation of why this issue is blocked and what the dependency is",
-  "blocked_by": "https://github.com/org/repo/issues/99",
-  "comment": "A professional comment explaining the blocking dependency. Link to the blocking issue or PR and explain why this issue cannot proceed until it is resolved. Be specific about the dependency — what does the blocking issue provide or unblock?"
+  "action": "prerequisites",
+  "reasoning": "Brief explanation of the dependencies and why this issue cannot proceed",
+  "prerequisites": {
+    "existing": [
+      { "url": "https://github.com/org/repo/issues/99" }
+    ],
+    "create": [
+      {
+        "repo": "org/upstream-lib",
+        "title": "Add support for X",
+        "body": "Technical description of what is needed and why, written for the upstream repo's maintainers."
+      }
+    ]
+  },
+  "comment": "A professional comment explaining the blocking dependencies. Link to existing blockers and describe what new issues need to be created upstream. Be specific about why each dependency must be resolved before this issue can proceed."
 }
 ```
 
@@ -213,6 +288,7 @@ Information is sufficient for a developer to investigate and fix.
 - Reference prior comments: "You mentioned X earlier — can you elaborate on [specific aspect]?"
 - Be empathetic but efficient. Acknowledge the reporter's experience, then ask your question.
 - Do NOT ask questions whose answers would not change your triage outcome.
+- **Only direct user-facing questions to the reporter.** Never ask the reporter about internal project conventions, document formats, architecture decisions, or implementation details. If you have an implementation-facing question, apply the self-resolve rule from the question classification section above.
 
 ## Output rules
 

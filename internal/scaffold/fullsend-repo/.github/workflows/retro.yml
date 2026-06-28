@@ -1,3 +1,4 @@
+---
 # fullsend-stage: retro
 name: Retro
 
@@ -25,14 +26,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  debounce:
+    runs-on: __GH_RUNNER__
+    permissions: {}
+    steps:
+      - run: sleep 60
+
   retro:
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
+    needs: debounce
+    uses: __REUSABLE_WORKFLOW__
     with:
       event_type: ${{ inputs.event_type }}
       source_repo: ${{ inputs.source_repo }}
       event_payload: ${{ inputs.event_payload }}
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      install_mode: per-org
+      fullsend_ai_ref: __FULLSEND_AI_REF__
+      runner_image: __GH_RUNNER__
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

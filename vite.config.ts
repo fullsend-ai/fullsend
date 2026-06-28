@@ -18,7 +18,9 @@ function spaFallbackPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, _res, next) => {
         const url = req.url?.split("?")[0] ?? "";
-        if (url.startsWith("/admin/") && !path.extname(url)) {
+        if (url === "/") {
+          req.url = "/index.html";
+        } else if (url.startsWith("/admin/") && !path.extname(url)) {
           req.url = "/admin/index.html";
         } else if (url.startsWith("/docs/") && !path.extname(url)) {
           req.url = "/docs/index.html";
@@ -72,20 +74,16 @@ function apiProxy(): ProxyOptions {
         console.info("[vite-proxy] → Worker", req.method, req.url);
       });
       proxy.on("proxyRes", (proxyRes, req) => {
-        console.info(
-          "[vite-proxy] ← Worker",
-          proxyRes.statusCode,
-          req.url,
-        );
+        console.info("[vite-proxy] ← Worker", proxyRes.statusCode, req.url);
       });
     },
   };
 }
 
-export default defineConfig(() => ({
+export default defineConfig(({ command }) => ({
   root: webRoot,
   base: "/",
-  publicDir: false,
+  publicDir: command === "serve" ? path.join(webRoot, "public") : false,
   plugins: [
     svelte({
       configFile: path.join(webRoot, "admin/svelte.config.js"),

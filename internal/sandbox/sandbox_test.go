@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,8 +22,8 @@ func TestEnsureAvailable_OpenshellNotInPath(t *testing.T) {
 }
 
 func TestConstants(t *testing.T) {
-	assert.Equal(t, "/tmp/workspace", SandboxWorkspace)
-	assert.Equal(t, "/tmp/claude-config", SandboxClaudeConfig)
+	assert.Equal(t, "/sandbox/workspace", SandboxWorkspace)
+	assert.Equal(t, "/sandbox/claude-config", SandboxClaudeConfig)
 }
 
 func TestBuildProviderArgs_BareKeyCredentials(t *testing.T) {
@@ -125,6 +126,23 @@ func TestExec_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	_, _, _, err := Exec("test-sandbox", "echo hello", 10*time.Second)
+	assert.Error(t, err)
+}
+
+func TestExecContext_CancelledContext(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, err := ExecContext(ctx, "test-sandbox", "echo hello", 10*time.Second)
+	assert.Error(t, err)
+}
+
+func TestExecStreamReader_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	_, _, _, err := ExecStreamReader(context.Background(), "test-sandbox", "echo hello", 10*time.Second, os.Stderr)
 	assert.Error(t, err)
 }
 
@@ -378,10 +396,179 @@ func TestEffectiveReadyTimeout_EnvVarCappedAtMax(t *testing.T) {
 	assert.Equal(t, maxReadyTimeout, got)
 }
 
+func TestUploadFile_OpenshellNotInPath(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "test.txt")
+	require.NoError(t, os.WriteFile(f, []byte("hello"), 0o644))
+
+	t.Setenv("PATH", "")
+
+	err := UploadFile("test-sandbox", f, "/sandbox/workspace/test.txt")
+	assert.Error(t, err)
+}
+
 func TestUploadDir_OpenshellNotInPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "")
 
-	err := UploadDir("test-sandbox", dir, "/tmp/workspace/repo")
+	err := UploadDir("test-sandbox", dir, "/sandbox/workspace/repo")
 	assert.Error(t, err)
+}
+
+func TestUploadDir_TarIncludesCopyfileDisable(t *testing.T) {
+	// Create a temp dir with a file, run UploadDir (which will fail because
+	// openshell is unavailable), but first intercept the tar step by providing
+	// a tar wrapper that records its environment.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644))
+
+	// Create a fake tar that writes its COPYFILE_DISABLE env var to a file.
+	binDir := t.TempDir()
+	envFile := filepath.Join(binDir, "copyfile_env")
+	fakeTar := filepath.Join(binDir, "tar")
+	script := "#!/bin/sh\necho \"$COPYFILE_DISABLE\" > " + envFile + "\n"
+	require.NoError(t, os.WriteFile(fakeTar, []byte(script), 0o755))
+
+	t.Setenv("PATH", binDir)
+	// Will fail at the Upload step (no openshell), but tar runs first.
+	_ = UploadDir("test-sandbox", dir, "/tmp/workspace/repo")
+
+	data, err := os.ReadFile(envFile)
+	require.NoError(t, err, "fake tar should have written env file")
+	assert.Equal(t, "1", strings.TrimSpace(string(data)), "COPYFILE_DISABLE should be set to 1")
+}
+
+func TestSanitizeDownload_RemovesAppleDoubleInGitDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create .git/objects/pack/ with a normal file and an AppleDouble file.
+	packDir := filepath.Join(dir, ".git", "objects", "pack")
+	require.NoError(t, os.MkdirAll(packDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packDir, "pack-abc.idx"), []byte("idx"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(packDir, "._pack-abc.idx"), []byte("apple"), 0o644))
+
+	// Create an AppleDouble file outside .git/ — should NOT be removed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "._regular.txt"), []byte("ok"), 0o644))
+
+	err := sanitizeDownload(dir)
+	require.NoError(t, err)
+
+	// Normal pack file survives.
+	_, err = os.Stat(filepath.Join(packDir, "pack-abc.idx"))
+	assert.NoError(t, err, "normal pack file should survive")
+
+	// AppleDouble file inside .git/ should be removed.
+	_, err = os.Stat(filepath.Join(packDir, "._pack-abc.idx"))
+	assert.True(t, os.IsNotExist(err), "._* file inside .git/ should be removed")
+
+	// AppleDouble file outside .git/ should survive.
+	_, err = os.Stat(filepath.Join(dir, "._regular.txt"))
+	assert.NoError(t, err, "._* file outside .git/ should survive")
+}
+
+func TestInGitDir(t *testing.T) {
+	root := "/repo"
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/repo/.git/objects/pack/file.idx", true},
+		{"/repo/.git/config", true},
+		{"/repo/sub/.git/hooks/pre-commit", true},
+		{"/repo/src/main.go", false},
+		{"/repo/._file.txt", false},
+	}
+	for _, tt := range tests {
+		got := inGitDir(tt.path, root)
+		assert.Equal(t, tt.want, got, "inGitDir(%q, %q)", tt.path, root)
+	}
+}
+
+func TestBuildProviderUpdateArgs(t *testing.T) {
+	t.Setenv("MY_TOKEN", "tok123")
+
+	credentials := map[string]string{"TOKEN": "${MY_TOKEN}"}
+	config := map[string]string{"BASE_URL": "https://example.com"}
+
+	args := buildProviderUpdateArgs("myprovider", credentials, config)
+
+	assert.Equal(t, "provider", args[0])
+	assert.Equal(t, "update", args[1])
+	assert.Equal(t, "myprovider", args[2])
+	assert.Contains(t, args, "--credential")
+	assert.Contains(t, args, "TOKEN")
+	assert.Contains(t, args, "--config")
+	assert.Contains(t, args, "BASE_URL=https://example.com")
+
+	// Secret value must not appear in args.
+	for _, arg := range args {
+		assert.NotContains(t, arg, "tok123", "secret must not appear in update args")
+	}
+}
+
+// TestEnsureProvider_AlreadyExists_FallsBackToUpdate uses a fake openshell
+// script: first invocation exits 1 with AlreadyExists, second exits 0.
+func TestEnsureProvider_AlreadyExists_FallsBackToUpdate(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a fake openshell that prints AlreadyExists on create, succeeds on update.
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  exit 0
+else
+  echo "unexpected subcommand: $2" >&2
+  exit 1
+fi
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "tok"}, nil)
+	assert.NoError(t, err)
+}
+
+// TestEnsureProvider_OtherError propagates non-AlreadyExists failures.
+func TestEnsureProvider_OtherError(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+echo "status: PermissionDenied" >&2
+exit 1
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider("github", "github", nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "provider create")
+}
+
+// TestEnsureProvider_AlreadyExists_UpdateAlsoFails verifies error propagation
+// and secret redaction when create returns AlreadyExists and update also fails.
+func TestEnsureProvider_AlreadyExists_UpdateAlsoFails(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo "gateway unavailable supersecret" >&2
+  exit 1
+fi
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "supersecret"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider update")
+	assert.NotContains(t, err.Error(), "supersecret", "secret must be redacted in update error")
+	assert.Contains(t, err.Error(), "***")
 }

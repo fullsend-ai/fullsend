@@ -37,7 +37,7 @@ remove pre-existing dead code the issue does not mention.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/). The commit
 subject must start with a type prefix (`feat`, `fix`, `refactor`, `docs`,
-`test`, `chore`, `ci`, `perf`) followed by an optional scope and colon:
+`test`, `chore`, `ci`, `perf`, `build`) followed by an optional scope and colon:
 
 ```
 <type>(<scope>): <short description>

@@ -6,6 +6,7 @@ web/admin/dist
 .dev.vars
 .wrangler
 .worktrees/
+.fullsend-cache/
 __pycache__/
 *.pyc
 .venv/
@@ -13,9 +14,11 @@ __pycache__/
 _site/
 bin/
 .playwright/
+.playwright-mcp/
 .claude/settings.local.json
 .vscode/
 *.env
 .env.*
 !.env.example
 .transcripts/
+eval/runs/

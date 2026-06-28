@@ -137,6 +137,7 @@
   function syncRouteFromLocation(): void {
     const legacy = legacyPathnameDocRest();
     if (legacy !== null) {
+      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- imperative one-shot, not reactive state
       const u = new URL(window.location.href);
       u.pathname = "/docs/";
       u.hash = formatDocHash(legacy);
@@ -321,9 +322,13 @@
     loading = true;
 
     void loadPage(key)
-      .then((p) => {
+      .then(async (p) => {
         if (pageRouteKey === key) {
           page = p;
+          if (!slug && mainEl) {
+            await tick();
+            mainEl.scrollTop = 0;
+          }
         }
       })
       .catch(() => {
@@ -485,7 +490,7 @@
             />
           </svg>
         </button>
-        <span class="docs-brand">Fullsend docs</span>
+        <a class="docs-brand" href="/">Fullsend</a>
       </header>
 
       <div class="docs-main-wrap">
@@ -495,6 +500,7 @@
               class="doc-body"
               data-frontmatter={JSON.stringify(page.frontmatter)}
             >
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -- rendered markdown from build-time pipeline -->
               {@html page.html}
             </article>
           {:else if pageRouteKey && loading}

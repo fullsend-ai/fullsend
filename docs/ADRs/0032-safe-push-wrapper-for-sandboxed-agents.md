@@ -1,6 +1,6 @@
 ---
 title: "32. safe-push wrapper binary for sandboxed agents"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -19,7 +19,7 @@ Date: 2026-05-07
 
 ## Status
 
-Proposed (extends [ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md))
+Accepted (extends [ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md))
 
 ## Context
 

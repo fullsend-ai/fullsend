@@ -291,8 +291,8 @@ Replace `SSHStreamReader` (lines 259-284) with:
 // ExecStreamReader runs a command inside a sandbox, returning an io.ReadCloser for
 // stdout so the caller can parse structured output. Stderr is forwarded to the
 // given writer. The caller must read stdout to completion, then call cmd.Wait().
-func ExecStreamReader(sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "exec",
@@ -751,7 +751,7 @@ In `runAgentWithProgress` (line 820):
 stdout, cmd, cancel, err := sandbox.SSHStreamReader(sshConfigPath, sandboxName, claudeCmd, timeout, os.Stderr)
 
 // After:
-stdout, cmd, cancel, err := sandbox.ExecStreamReader(sandboxName, claudeCmd, timeout, os.Stderr)
+stdout, cmd, cancel, err := sandbox.ExecStreamReader(ctx, sandboxName, claudeCmd, timeout, os.Stderr)
 ```
 
 Also update the error message on line 839:

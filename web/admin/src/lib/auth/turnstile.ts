@@ -1,8 +1,5 @@
 type TurnstileApi = {
-  render: (
-    container: string | HTMLElement,
-    params: Record<string, unknown>,
-  ) => string;
+  render: (container: string | HTMLElement, params: Record<string, unknown>) => string;
   execute: (container: string | HTMLElement) => void;
   remove: (widgetId: string) => void;
 };
@@ -23,18 +20,15 @@ function loadTurnstileScript(): Promise<void> {
       ? Promise.resolve()
       : new Promise((resolve, reject) => {
           existing.addEventListener("load", () => resolve(), { once: true });
-          existing.addEventListener(
-            "error",
-            () => reject(new Error("Turnstile script failed")),
-            { once: true },
-          );
+          existing.addEventListener("error", () => reject(new Error("Turnstile script failed")), {
+            once: true,
+          });
         });
   }
 
   return new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src =
-      "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
     // Dynamically appended scripts default to async=true; Turnstile errors if async/defer is set
     // when using turnstile.ready(). We use onload + render/execute instead and force async off.
     s.async = false;
@@ -49,10 +43,7 @@ function loadTurnstileScript(): Promise<void> {
 }
 
 /** Abort `out` when either input signal aborts (used to combine user cancel + deadline). */
-function mergeAbortSignals(
-  a?: AbortSignal,
-  b?: AbortSignal,
-): AbortSignal | undefined {
+function mergeAbortSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
   if (!a && !b) return undefined;
   if (!a) return b;
   if (!b) return a;
@@ -96,6 +87,7 @@ export async function obtainTurnstileToken(
     return await obtainTurnstileTokenWithSignal(siteKey, merged);
   } catch (e) {
     if (deadline.signal.aborted && !userSignal?.aborted) {
+      // eslint-disable-next-line preserve-caught-error -- TODO: attach cause once callers handle it
       throw new Error("Turnstile token timed out");
     }
     throw e;

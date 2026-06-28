@@ -57,14 +57,7 @@ Writes code to address an issue. This is the most mature capability of current A
 
 Code review is decomposed into multiple specialized sub-agents rather than handled by a single monolithic reviewer. This is an architectural necessity, not an optimization — see [code-review.md](code-review.md) for the full argument (context window limits, defense in depth, specialization).
 
-The current decomposition:
-
-- **Correctness agent** — logic errors, edge cases, test adequacy
-- **Intent alignment agent** — does the change match authorized intent, is it correctly tiered
-- **Platform security agent** — threats to Konflux itself (RBAC, auth, data exposure)
-- **Content security agent** — threats to Konflux users via CI/CD content
-- **Injection defense agent** — prompt injection patterns targeting other agents
-- **Style/conventions agent** — repo-specific patterns (may be folded into pre-PR self-review)
+The list showing current decomposition is maintained in [code-review.md](code-review.md).
 
 Each sub-agent operates under zero trust — they don't rely on other sub-agents' judgments. See [code-review.md](code-review.md) for how sub-agent findings compose into a merge decision.
 
@@ -222,7 +215,7 @@ The multi-agent framework space is expanding rapidly, with new entries appearing
 - How do we test the interaction model? Can we simulate adversarial scenarios (injection attempts, unauthorized changes, agent disagreements) in a sandbox repo?
 - How does the two-phase review model work in practice? Does the code agent run all six sub-agents locally, or a subset? Is the pre-PR review a lighter version? (Depends on [agent-infrastructure.md](agent-infrastructure.md) — what compute is available where.)
 - What's the iteration limit before human escalation? Too low and humans get pulled in constantly. Too high and the system wastes resources on unresolvable conflicts.
-- How do we handle agent-generated PR content that is itself an injection vector? A code agent's code, commit messages, and PR description are all consumed by review agents. The injection defense agent needs to evaluate this content, but how do we prevent the injection defense agent itself from being influenced by it?
+- How do we handle agent-generated PR content that is itself an injection vector? A code agent's code, commit messages, and PR description are all consumed by review agents. The security sub-agent needs to evaluate this content, but how do we prevent the security sub-agent itself from being influenced by it?
 - How does the triage agent determine whether a bug pattern is mechanical enough for broad remediation vs. context-dependent enough to require per-instance analysis? Can this classification itself be expressed as a heuristic, or does it always require LLM judgment?
 - What's the threshold for derivative issue accumulation before the quality/drift detection agent should recommend consolidation into a pattern-level fix? Is it a count (e.g., 10+ derivatives for the same pattern), a density (e.g., more than N% of files in a package), or a cost measure?
 - When the triage agent creates derivative issues, how should the priority agent handle them — batch all at the same priority as the original, deprioritize as "known technical debt," or evaluate each independently?

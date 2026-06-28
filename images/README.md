@@ -14,7 +14,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
 
 | Image | Directory | Description |
 |-------|-----------|-------------|
-| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, rsync, jq, gitleaks, tirith, pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model for prompt injection detection. |
+| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, jq, acli, gitleaks, tirith, pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model for prompt injection detection. |
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
 Both images are built for **linux/amd64** and **linux/arm64**.
@@ -107,6 +107,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Go toolchain | `GO_VERSION` + `GO_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | ProtectAI DeBERTa model | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
 | Claude Code | Official installer script | HTTPS only (no checksum, version floats) |
+| acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint | pip version pins | pip integrity check |
 
 GitHub Actions are pinned to full commit SHAs (not floating tags).

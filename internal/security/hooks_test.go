@@ -13,7 +13,7 @@ import (
 
 func TestGenerateClaudeSettings_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -52,7 +52,7 @@ func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -80,7 +80,7 @@ func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -93,7 +93,7 @@ func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
 
 func TestHookFiles_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	files := HookFiles(h)
+	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
 	assert.Len(t, files, 7) // 5 existing + canary_pretool + canary_posttool (tool_allowlist disabled by default)
 	assert.Contains(t, files, "tirith_check.py")
 	assert.Contains(t, files, "ssrf_pretool.py")
@@ -120,7 +120,7 @@ func TestHookFiles_SSRFDisabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(h)
+	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "ssrf_pretool.py")
 }
@@ -135,7 +135,7 @@ func TestHookFiles_UnicodeDisabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(h)
+	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "unicode_posttool.py")
 }
@@ -161,7 +161,7 @@ func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -187,7 +187,7 @@ func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -213,7 +213,7 @@ func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -231,7 +231,7 @@ func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
 
 func TestGenerateClaudeSettings_PostToolSanitizeHookOrder(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -275,7 +275,7 @@ func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -303,7 +303,7 @@ func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -328,7 +328,7 @@ func TestGenerateClaudeSettings_ToolAllowlistEnabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(h)
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -355,7 +355,7 @@ func TestHookFiles_ToolAllowlistEnabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(h)
+	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
 	assert.Len(t, files, 8) // 7 default + tool_allowlist
 	assert.Contains(t, files, "tool_allowlist_pretool.py")
 }
@@ -370,7 +370,7 @@ func TestHookFiles_ContextSuppressDisabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(h)
+	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "context_suppress_posttool.py")
 }

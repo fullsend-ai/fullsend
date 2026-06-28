@@ -2,16 +2,22 @@
 name: mint-enroll
 description: >
   SRE runbook for enrolling new GitHub orgs or repos into the fullsend token
-  mint service. Use when onboarding a new org, adding a per-repo WIF provider,
-  copying shared app PEM secrets, or updating mint Cloud Function env vars.
+  mint service using the fullsend CLI. Use when onboarding a new org, adding a
+  per-repo WIF provider, or re-enrolling after infrastructure changes.
 allowed-tools: Bash
+triggers:
+  - mint enroll
+  - onboard org
+  - enroll organization
+  - enroll repo
+  - mint onboarding
 ---
 
 # Mint Service Enrollment
 
-Enroll a new GitHub org or per-repo into the fullsend token mint. The mint is
-a stateless GCP Cloud Function that exchanges GitHub OIDC JWTs for scoped
-GitHub App installation tokens.
+Enroll a new GitHub org or per-repo into the fullsend token mint using the
+`fullsend mint` CLI. The mint is a stateless GCP Cloud Function that exchanges
+GitHub OIDC JWTs for scoped GitHub App installation tokens.
 
 Follow these steps in order. Do not skip steps.
 
@@ -21,53 +27,43 @@ wrong project.
 
 ## Setup
 
-Collect deployment-specific values. Never hardcode project names, IDs, or
-URLs — resolve them from the deployed resources.
+**STOP — ask the operator for these values before proceeding:**
 
-The operator needs these IAM roles on the GCP project: Secret Manager Admin,
-Workload Identity Pool Admin, Cloud Functions Developer, Cloud Run Admin.
+- `GCP_PROJECT` — the GCP project ID where the mint is deployed. Do not
+  infer from `gcloud config get-value project`.
+- `MINT_REGION` — the Cloud region (default: `us-central1`). Confirm with
+  the operator if unsure.
+- `TARGET` — the GitHub org (`acme`) or repo (`acme/widget`) to enroll.
 
 ```bash
-set -o pipefail
 GCP_PROJECT="<your-gcp-project-id>"
-MINT_FUNCTION="fullsend-mint"
-MINT_REGION="us-central1"
-WIF_POOL="fullsend-pool"
-SOURCE_ORG="fullsend-ai"
-SA_EMAIL="fullsend-mint@${GCP_PROJECT}.iam.gserviceaccount.com"
+MINT_REGION="us-central1"   # default; change if deployed elsewhere
+```
 
-GCP_PROJECT_NUMBER=$(gcloud projects describe "${GCP_PROJECT}" --format="value(projectNumber)") \
-  || { echo "ERROR: failed to resolve project number for ${GCP_PROJECT}" >&2; exit 1; }
-MINT_URL=$(gcloud functions describe "${MINT_FUNCTION}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" --gen2 \
-  --format="value(serviceConfig.uri)") \
-  || { echo "ERROR: failed to resolve mint URL" >&2; exit 1; }
-MINT_SERVICE_FULL=$(gcloud functions describe "${MINT_FUNCTION}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" --gen2 \
-  --format="value(serviceConfig.service)") \
-  || { echo "ERROR: failed to resolve mint service" >&2; exit 1; }
-MINT_SERVICE=$(basename "${MINT_SERVICE_FULL}")
-WIF_POOL_RESOURCE=$(gcloud iam workload-identity-pools describe "${WIF_POOL}" \
-  --project="${GCP_PROJECT}" --location=global \
-  --format="value(name)") \
-  || { echo "ERROR: WIF pool '${WIF_POOL}' not found in ${GCP_PROJECT}" >&2; exit 1; }
-WIF_POOL_LOCATION=$(echo "${WIF_POOL_RESOURCE}" | sed 's|.*/locations/\([^/]*\)/.*|\1|')
-if [ -z "${WIF_POOL_LOCATION}" ]; then
-  echo "ERROR: could not resolve WIF pool location from ${WIF_POOL_RESOURCE}" >&2; exit 1
-fi
+Verify the operator has the required IAM roles: Workload Identity Pool Admin,
+Cloud Functions Viewer, Cloud Run Admin. Secret Manager Admin is only needed
+for initial PEM bootstrap (`mint deploy --pem-dir`), not for enrollment.
+Per-repo enrollment additionally requires Project IAM Admin (to grant
+`roles/aiplatform.user` to the repo WIF principal).
+
+Verify credentials and that the fullsend CLI is available:
+
+```bash
+gcloud auth list --filter=status:ACTIVE --format="value(account)"
+fullsend --version
 ```
 
 ## Constraints
 
-- **NEVER use `--set-env-vars`** — always `--update-env-vars` (set replaces ALL env vars).
-- **NEVER remove entries** — only add/merge. Removal is a separate deliberate operation (see Rollback).
-- **No concurrent enrollment** — two operators reading and writing env vars simultaneously will race. Coordinate enrollment operations serially.
-- **Always check before create** — read current state, show diff, then apply.
-- **Dual audiences on per-repo WIF providers** — always include both `fullsend-mint` AND the full IAM URL. Exception: orgs using external inference (e.g., agentshed) only need `fullsend-mint`.
-- **PEM secret naming** — `fullsend-{org}--{role}-app-pem` (double-dash separator).
-- **WIF provider ID** — `gh-{owner}-{repo}` (lowercase, max 32 chars, no trailing hyphen). Non-alphanumeric characters are replaced with hyphens. Long names are truncated at 32 chars with trailing hyphens stripped. Consecutive hyphens are NOT collapsed (matches Go code) — verify the generated ID is unique.
-- **Use `gcloud run services update` for env var changes** — `gcloud functions deploy --update-env-vars` triggers a full rebuild. Update the underlying Cloud Run service (`MINT_SERVICE`) directly to apply env vars without rebuilding.
-- **Use `^|^` delimiter for `--update-env-vars`** — ROLE_APP_IDS is JSON containing commas, which conflicts with gcloud's default comma separator.
+- **No concurrent enrollment** — two operators enrolling simultaneously will
+  race on env var reads/writes. Coordinate enrollment operations serially.
+- **Always verify app installation** — the mint cannot produce tokens for
+  GitHub Apps that are not installed on the target org. Confirm installation
+  before the repo admin triggers a workflow.
+- **Use `--dry-run` first** — especially for new operators or unfamiliar
+  environments. Dry run previews all changes without applying them.
+- **Do not enroll `.fullsend` repos** — `.fullsend` repos use the shared
+  per-org WIF provider. Enroll the org instead.
 
 ## Shared App Model
 
@@ -77,752 +73,296 @@ The fullsend-ai org maintains public GitHub Apps shared across orgs.
 |------|----------|-------|
 | fullsend | fullsend-ai-fullsend | Dispatch/admin. Per-org only — excluded from per-repo installs. |
 | triage | fullsend-ai-triage | |
-| coder | fullsend-ai-coder | `fix` role shares this app and PEM but has distinct token permissions (no `checks:read`). No separate enrollment needed. |
+| coder | fullsend-ai-coder | `fix` role shares this app and PEM but has distinct token permissions. |
 | review | fullsend-ai-review | |
 | retro | fullsend-ai-retro | |
 | prioritize | fullsend-ai-prioritize | |
 
-PEM keys are tied to the app, not the org. Enrolling a new org copies PEMs
-from a source org (e.g., `fullsend-ai`).
+PEM keys and app IDs are tied to the role, not the org. Secrets use role-only naming
+(`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the
+mint. `ROLE_APP_IDS` uses the same model: one GitHub App ID per role (e.g.,
+`coder` → `123456`), shared by all enrolled orgs. PEMs and app IDs must already
+exist (from `mint deploy --pem-dir` or `fullsend admin install`); enrollment
+does not create, copy, or modify PEM secrets or app ID mappings.
 
 Apps must be installed on the target org before the mint can produce tokens.
 An org admin installs via `https://github.com/apps/{slug}/installations/new`
 or by running `fullsend admin install`.
 
+## Enrollment Steps
+
 ### 1. Triage
 
-Determine enrollment type and set variables. Choose one — per-org or per-repo:
+Determine enrollment type and target. Choose one:
 
 ```bash
-# Per-org (set ORG only, leave REPO unset)
-ORG="<github-org>"
-unset REPO
-ROLES="fullsend,triage,coder,review,retro,prioritize"
+# Per-org enrollment
+TARGET="<github-org>"
 
-# Per-repo (set both ORG and REPO)
-ORG="<github-org>"
-REPO="<repo-name>"
-ROLES="triage,coder,review,retro,prioritize"
+# Per-repo enrollment
+TARGET="<github-org>/<repo-name>"
 ```
 
-Validate and normalize inputs:
+Validate the target is a valid GitHub org or owner/repo name before
+proceeding.
+
+### 2. Pre-check current state
+
+Run `mint status` to see the current mint state, enrolled orgs, Cloud Run
+revision info, and PEM health:
 
 ```bash
-ORG=$(echo "${ORG}" | tr '[:upper:]' '[:lower:]')
-if [ -n "${REPO}" ]; then
-  REPO=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
-fi
-
-# GitHub org names: alphanumeric and hyphens only, no consecutive hyphens,
-# no leading/trailing hyphens, max 39 chars (matches Go githubOrgPattern)
-if [ -z "${ORG}" ] || [[ "${ORG}" =~ $'\n' ]] \
-  || ! [[ "${ORG}" =~ ^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$ ]] \
-  || [[ "${ORG}" == *--* ]]; then
-  echo "ERROR: ORG must be a valid GitHub org name (alphanumeric/hyphens, no consecutive hyphens, max 39 chars)" >&2; exit 1
-fi
-if [ -n "${REPO}" ]; then
-  # GitHub repo names: alphanumeric, hyphens, dots, underscores; no .git suffix
-  if [[ "${REPO}" =~ $'\n' ]] \
-    || ! [[ "${REPO}" =~ ^[a-z0-9._][a-z0-9._-]{0,99}$ ]] \
-    || [[ "${REPO}" == "." ]] || [[ "${REPO}" == ".." ]] \
-    || [[ "${REPO}" == *..* ]] \
-    || [[ "${REPO}" == *.git ]]; then
-    echo "ERROR: REPO must be a valid GitHub repo name" >&2; exit 1
-  fi
-  if [ "${REPO}" = ".fullsend" ]; then
-    echo "ERROR: .fullsend repos use the shared per-org provider — enroll the org instead" >&2; exit 1
-  fi
-fi
-
-# Validate ROLES against allowlist
-VALID_ROLES="fullsend,triage,coder,review,retro,prioritize"
-for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
-  if ! echo ",${VALID_ROLES}," | grep -Fq ",${ROLE},"; then
-    echo "ERROR: role '${ROLE}' is not in allowlist: ${VALID_ROLES}" >&2; exit 1
-  fi
-done
+fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
-Pre-flight check for per-repo WIF provider ID collision (before any
-mutating steps):
+If the mint is not deployed yet, deploy it first:
 
 ```bash
-if [ -n "${REPO}" ]; then
-  PROVIDER_ID="gh-${ORG}-${REPO}"
-  PROVIDER_ID=$(echo "${PROVIDER_ID}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-32 | sed 's/-*$//')
-  echo "Computed WIF provider ID: ${PROVIDER_ID} (${#PROVIDER_ID} chars)"
-  PREFLIGHT_COND=$(gcloud iam workload-identity-pools providers describe "${PROVIDER_ID}" \
-    --project="${GCP_PROJECT}" \
-    --workload-identity-pool="${WIF_POOL}" \
-    --location="${WIF_POOL_LOCATION}" \
-    --format="value(attributeCondition)" 2>/dev/null) || true
-  if [ -n "${PREFLIGHT_COND}" ] && [ "${PREFLIGHT_COND}" != "assertion.repository == '${ORG}/${REPO}'" ]; then
-    echo "ERROR: Provider ID collision — ${PROVIDER_ID} belongs to a different repo:" >&2
-    echo "  Existing: ${PREFLIGHT_COND}" >&2
-    echo "Aborting before any mutations." >&2
-    exit 1
-  fi
-fi
+fullsend mint deploy --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
-### 2. Verify prerequisites
+Check the status output for:
 
-Confirm correct GCP project and active credentials. If `gcloud config
-get-value project` does not match `GCP_PROJECT`, the commands still
-target the right project via explicit `--project` flags — but run
-`gcloud config set project "${GCP_PROJECT}"` to avoid confusion.
+- **Health**: should be "healthy" or "degraded" (not "not-installed")
+- **Template divergence**: if the service template diverges from the
+  traffic-serving revision, enrollment will fix this (the CLI uses
+  REVISION-pinned traffic routing)
+- **Existing enrollment**: if the target org is already listed, re-enrollment
+  is safe — the CLI merges entries idempotently
+
+For per-org drill-down into PEM status (accepts org name only, not
+`owner/repo` — for per-repo enrollment, use just the org portion):
 
 ```bash
-gcloud config get-value project
-gcloud auth list --filter=status:ACTIVE --format="value(account)"
+fullsend mint status "<github-org>" --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
-### 3. Audit current state
+**STOP — show the status output to the operator.** Confirm the mint is
+healthy and the enrollment target is correct before proceeding.
 
-Run ALL of these before making any changes.
+### 3. Enroll
+
+Preview the enrollment first with `--dry-run`:
 
 ```bash
-# ALLOWED_ORGS
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_ORGS).value)"
-
-# ROLE_APP_IDS (JSON)
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ROLE_APP_IDS).value)"
-
-# PER_REPO_WIF_REPOS (per-repo only)
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=PER_REPO_WIF_REPOS).value)"
-
-# ALLOWED_ROLES
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_ROLES).value)"
-
-# ALLOWED_WORKFLOW_FILES (must not be empty)
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_WORKFLOW_FILES).value)"
-
-# PEM secrets for the org
-gcloud secrets list --project="${GCP_PROJECT}" \
-  --filter="name:fullsend-${ORG}--" \
-  --format="table(name,createTime)"
-
-# WIF providers
-gcloud iam workload-identity-pools providers list \
-  --project="${GCP_PROJECT}" \
-  --workload-identity-pool="${WIF_POOL}" \
-  --location="${WIF_POOL_LOCATION}" \
-  --format="table(name.basename(),state,disabled)"
+fullsend mint enroll "$TARGET" \
+  --project="$GCP_PROJECT" \
+  --region="$MINT_REGION" \
+  --dry-run
 ```
 
-### 4. Copy PEM secrets
+**STOP — show the dry-run output to the operator and wait for explicit
+confirmation before running the actual enrollment.**
 
-For shared apps, copy the PEM from the source org. Pipes directly to
-avoid holding PEM material in shell variables.
+If the preview looks correct and the operator confirms, run the actual
+enrollment:
 
 ```bash
-set -o pipefail
-for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
-  SECRET_ID="fullsend-${ORG}--${ROLE}-app-pem"
-
-  if gcloud secrets describe "${SECRET_ID}" --project="${GCP_PROJECT}" 2>/dev/null; then
-    VERSION_COUNT=$(gcloud secrets versions list "${SECRET_ID}" \
-      --project="${GCP_PROJECT}" --filter="state=ENABLED" \
-      --format="value(name)" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "${VERSION_COUNT}" -gt 0 ]; then
-      echo "SKIP: ${SECRET_ID} already exists with ${VERSION_COUNT} active version(s)"
-      continue
-    fi
-    echo "WARN: ${SECRET_ID} exists but has no active versions — re-adding"
-  fi
-
-  SOURCE_SECRET="fullsend-${SOURCE_ORG}--${ROLE}-app-pem"
-
-  if ! gcloud secrets describe "${SOURCE_SECRET}" --project="${GCP_PROJECT}" >/dev/null 2>&1; then
-    echo "ERROR: source secret ${SOURCE_SECRET} not found" >&2
-    exit 1
-  fi
-
-  if ! gcloud secrets describe "${SECRET_ID}" --project="${GCP_PROJECT}" 2>/dev/null; then
-    gcloud secrets create "${SECRET_ID}" \
-      --project="${GCP_PROJECT}" --replication-policy=automatic \
-      || { echo "ERROR: failed to create secret ${SECRET_ID}" >&2; exit 1; }
-  fi
-
-  SOURCE_VERSION_STATE=$(gcloud secrets versions describe latest \
-    --secret="${SOURCE_SECRET}" --project="${GCP_PROJECT}" \
-    --format="value(state)" 2>/dev/null)
-  if [ "${SOURCE_VERSION_STATE}" != "ENABLED" ]; then
-    echo "ERROR: source secret ${SOURCE_SECRET} latest version is not ENABLED (got: ${SOURCE_VERSION_STATE:-empty})" >&2
-    exit 1
-  fi
-
-  gcloud secrets versions access latest \
-    --secret="${SOURCE_SECRET}" --project="${GCP_PROJECT}" \
-    | gcloud secrets versions add "${SECRET_ID}" \
-    --project="${GCP_PROJECT}" --data-file=- \
-    || { echo "ERROR: failed to copy PEM from ${SOURCE_SECRET} to ${SECRET_ID}" >&2; exit 1; }
-
-  gcloud secrets add-iam-policy-binding "${SECRET_ID}" \
-    --project="${GCP_PROJECT}" \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/secretmanager.secretAccessor" \
-    || { echo "ERROR: failed to bind IAM policy on ${SECRET_ID}" >&2; exit 1; }
-
-  echo "DONE: ${SECRET_ID}"
-done
-
-# fix role reuses coder app — create fix PEM as a copy of coder PEM
-if echo ",${ROLES}," | grep -Fq ",coder,"; then
-  FIX_SECRET="fullsend-${ORG}--fix-app-pem"
-  CODER_SECRET="fullsend-${ORG}--coder-app-pem"
-  if gcloud secrets describe "${FIX_SECRET}" --project="${GCP_PROJECT}" 2>/dev/null; then
-    FIX_VERSION_COUNT=$(gcloud secrets versions list "${FIX_SECRET}" \
-      --project="${GCP_PROJECT}" --filter="state=ENABLED" \
-      --format="value(name)" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "${FIX_VERSION_COUNT}" -gt 0 ]; then
-      echo "SKIP: ${FIX_SECRET} already exists"
-    else
-      echo "WARN: ${FIX_SECRET} exists but has no active versions — re-adding from coder"
-      gcloud secrets versions access latest \
-        --secret="${CODER_SECRET}" --project="${GCP_PROJECT}" \
-        | gcloud secrets versions add "${FIX_SECRET}" \
-        --project="${GCP_PROJECT}" --data-file=- \
-        || { echo "ERROR: failed to copy PEM to ${FIX_SECRET}" >&2; exit 1; }
-    fi
-  else
-    gcloud secrets create "${FIX_SECRET}" \
-      --project="${GCP_PROJECT}" --replication-policy=automatic \
-      || { echo "ERROR: failed to create secret ${FIX_SECRET}" >&2; exit 1; }
-    gcloud secrets versions access latest \
-      --secret="${CODER_SECRET}" --project="${GCP_PROJECT}" \
-      | gcloud secrets versions add "${FIX_SECRET}" \
-      --project="${GCP_PROJECT}" --data-file=- \
-      || { echo "ERROR: failed to copy PEM to ${FIX_SECRET}" >&2; exit 1; }
-  fi
-  gcloud secrets add-iam-policy-binding "${FIX_SECRET}" \
-    --project="${GCP_PROJECT}" \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/secretmanager.secretAccessor" \
-    || { echo "ERROR: failed to bind IAM policy on ${FIX_SECRET}" >&2; exit 1; }
-  echo "DONE: ${FIX_SECRET} (fix role, copied from coder)"
-fi
+fullsend mint enroll "$TARGET" \
+  --project="$GCP_PROJECT" \
+  --region="$MINT_REGION"
 ```
 
-### 5. Update mint env vars
+The CLI performs the following automatically:
 
-Read current values, merge new entries, apply via `gcloud run services update`.
+1. Discovers the existing mint infrastructure and verifies shared role→app-id mappings exist
+2. Updates Cloud Run service env var `ALLOWED_ORGS` using REVISION-pinned traffic routing
+3. Runs post-enrollment verification
+4. Configures WIF provider (shared for per-org, dedicated for per-repo)
+
+### 4. Verify
+
+The CLI runs post-enrollment verification automatically. Check its output for:
+
+- **Revision state**: confirms which Cloud Run revision is serving traffic
+  and whether it matches the latest template
+- **ALLOWED_ORGS**: confirms the enrolled org is present in the
+  traffic-serving revision's env vars
+- **ROLE_APP_IDS**: confirms shared role keys (e.g., `coder`, `review`) are configured on the mint
+
+If the CLI reports "Post-write verification FAILED", run `mint status` to
+diagnose:
 
 ```bash
-set -o pipefail
-CURRENT_ALLOWED_ORGS=$(gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_ORGS).value)") \
-  || { echo "ERROR: failed to read ALLOWED_ORGS" >&2; exit 1; }
-
-CURRENT_ROLE_APP_IDS=$(gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ROLE_APP_IDS).value)") \
-  || { echo "ERROR: failed to read ROLE_APP_IDS" >&2; exit 1; }
-
-# Check if org already in ALLOWED_ORGS
-if echo ",${CURRENT_ALLOWED_ORGS}," | grep -Fq ",${ORG},"; then
-  echo "SKIP: ${ORG} already in ALLOWED_ORGS"
-  NEW_ALLOWED_ORGS="${CURRENT_ALLOWED_ORGS}"
-elif [ -z "${CURRENT_ALLOWED_ORGS}" ]; then
-  NEW_ALLOWED_ORGS="${ORG}"
-else
-  NEW_ALLOWED_ORGS="${CURRENT_ALLOWED_ORGS},${ORG}"
-fi
-
-# Merge new entries into ROLE_APP_IDS (pin lookup to SOURCE_ORG)
-NEW_ROLE_APP_IDS=$(echo "${CURRENT_ROLE_APP_IDS}" | \
-  ORG="${ORG}" ROLES="${ROLES}" SOURCE_ORG="${SOURCE_ORG}" python3 -c "
-import json, sys, os
-raw = sys.stdin.read().strip()
-try:
-    data = json.loads(raw) if raw else {}
-except json.JSONDecodeError as e:
-    print(f'FATAL: ROLE_APP_IDS is not valid JSON: {e}', file=sys.stderr)
-    sys.exit(1)
-org = os.environ['ORG'].lower()
-roles_csv = os.environ['ROLES']
-source_org = os.environ['SOURCE_ORG'].lower()
-for role in (r.strip() for r in roles_csv.split(',')):
-    key = f'{org}/{role}'
-    source_key = f'{source_org}/{role}'
-    if key in data:
-        print(f'SKIP: {key} already exists', file=sys.stderr)
-    elif source_key in data:
-        data[key] = data[source_key]
-        print(f'ADDING: {key} = {data[source_key]}', file=sys.stderr)
-    else:
-        print(f'ERROR: no app ID found for {source_key}', file=sys.stderr)
-        sys.exit(1)
-# fix role reuses coder app ID — auto-derive if coder was enrolled
-fix_key = f'{org}/fix'
-coder_key = f'{org}/coder'
-if fix_key not in data and coder_key in data:
-    data[fix_key] = data[coder_key]
-    print(f'ADDING: {fix_key} = {data[coder_key]} (derived from coder)', file=sys.stderr)
-print(json.dumps(data, sort_keys=True))
-") || { echo "ERROR: failed to merge ROLE_APP_IDS — see above" >&2; exit 1; }
-
-# Validate merged JSON
-echo "${NEW_ROLE_APP_IDS}" | python3 -c "import json,sys; json.loads(sys.stdin.read())" \
-  || { echo "ERROR: merged ROLE_APP_IDS is not valid JSON — aborting" >&2; exit 1; }
-
-# Derive ALLOWED_ROLES
-NEW_ALLOWED_ROLES=$(echo "${NEW_ROLE_APP_IDS}" | python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-roles = sorted(set(k.split('/', 1)[1] for k in data if '/' in k))
-print(','.join(roles))
-") || { echo "ERROR: failed to derive ALLOWED_ROLES" >&2; exit 1; }
+fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
-For per-repo, also add to PER_REPO_WIF_REPOS:
+Common causes of verification failure:
 
-```bash
-if [ -n "${REPO}" ]; then
-  CURRENT_PER_REPO=$(gcloud run services describe "${MINT_SERVICE}" \
-    --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-    --format="value(spec.template.spec.containers[0].env.filter(name=PER_REPO_WIF_REPOS).value)") \
-    || { echo "ERROR: failed to read PER_REPO_WIF_REPOS" >&2; exit 1; }
+- **Template/traffic divergence** — traffic routing step didn't complete.
+  Re-run enrollment to trigger a new revision cycle.
+- **Missing shared app IDs** — the mint has no role-keyed `ROLE_APP_IDS` entries.
+  Run `mint deploy --pem-dir` or `fullsend admin install` on the mint project first.
 
-  REPO_FULL="${ORG}/${REPO}"
-  if echo ",${CURRENT_PER_REPO}," | grep -Fq ",${REPO_FULL},"; then
-    echo "SKIP: ${REPO_FULL} already in PER_REPO_WIF_REPOS"
-    NEW_PER_REPO="${CURRENT_PER_REPO}"
-  elif [ -z "${CURRENT_PER_REPO}" ]; then
-    NEW_PER_REPO="${REPO_FULL}"
-  else
-    NEW_PER_REPO="${CURRENT_PER_REPO},${REPO_FULL}"
-  fi
-fi
-```
-
-Show diff before applying:
-
-```bash
-CURRENT_ALLOWED_ROLES=$(gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_ROLES).value)" 2>/dev/null)
-
-echo "=== ALLOWED_ORGS ==="
-echo "  OLD: ${CURRENT_ALLOWED_ORGS}"
-echo "  NEW: ${NEW_ALLOWED_ORGS}"
-echo "=== ROLE_APP_IDS ==="
-echo "  OLD: ${CURRENT_ROLE_APP_IDS}"
-echo "  NEW: ${NEW_ROLE_APP_IDS}"
-echo "=== ALLOWED_ROLES ==="
-echo "  OLD: ${CURRENT_ALLOWED_ROLES}"
-echo "  NEW: ${NEW_ALLOWED_ROLES}"
-if [ -n "${REPO}" ]; then
-  echo "=== PER_REPO_WIF_REPOS ==="
-  echo "  OLD: ${CURRENT_PER_REPO}"
-  echo "  NEW: ${NEW_PER_REPO}"
-fi
-```
-
-Abort if any computed value is empty — this prevents wiping existing
-configuration:
-
-```bash
-if [ -z "${NEW_ALLOWED_ORGS}" ]; then
-  echo "ERROR: NEW_ALLOWED_ORGS is empty — aborting to prevent config wipe" >&2
-  exit 1
-fi
-if [ -z "${NEW_ROLE_APP_IDS}" ] || [ "${NEW_ROLE_APP_IDS}" = "{}" ]; then
-  echo "ERROR: NEW_ROLE_APP_IDS is empty or has no entries — aborting" >&2
-  exit 1
-fi
-if [ -z "${NEW_ALLOWED_ROLES}" ]; then
-  echo "ERROR: NEW_ALLOWED_ROLES is empty — aborting to prevent config wipe" >&2
-  exit 1
-fi
-if [ -n "${REPO}" ] && [ -z "${NEW_PER_REPO}" ]; then
-  echo "ERROR: NEW_PER_REPO is empty — aborting to prevent config wipe" >&2
-  exit 1
-fi
-```
-
-Apply using `gcloud run services update` with `^|^` delimiter to avoid
-comma conflicts with JSON in ROLE_APP_IDS:
-
-```bash
-if [ -z "${REPO}" ]; then
-  # Per-org
-  gcloud run services update "${MINT_SERVICE}" \
-    --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-    --update-env-vars="^|^ALLOWED_ORGS=${NEW_ALLOWED_ORGS}|ROLE_APP_IDS=${NEW_ROLE_APP_IDS}|ALLOWED_ROLES=${NEW_ALLOWED_ROLES}" \
-    || { echo "ERROR: failed to update mint env vars" >&2; exit 1; }
-else
-  # Per-repo (also include PER_REPO_WIF_REPOS)
-  gcloud run services update "${MINT_SERVICE}" \
-    --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-    --update-env-vars="^|^ALLOWED_ORGS=${NEW_ALLOWED_ORGS}|ROLE_APP_IDS=${NEW_ROLE_APP_IDS}|ALLOWED_ROLES=${NEW_ALLOWED_ROLES}|PER_REPO_WIF_REPOS=${NEW_PER_REPO}" \
-    || { echo "ERROR: failed to update mint env vars" >&2; exit 1; }
-fi
-```
-
-### 6. Configure WIF provider
-
-Per-repo repos get a dedicated provider. Per-org repos use the shared
-`github-oidc` provider — its `attributeCondition` must include the new org.
-
-```bash
-set -o pipefail
-if [ -z "${REPO}" ]; then
-  # Per-org: update the shared provider's attribute condition to include the new org
-  DEFAULT_PROVIDER="github-oidc"
-  EXISTING_CONDITION=$(gcloud iam workload-identity-pools providers describe "${DEFAULT_PROVIDER}" \
-      --project="${GCP_PROJECT}" \
-      --workload-identity-pool="${WIF_POOL}" \
-      --location="${WIF_POOL_LOCATION}" \
-      --format="value(attributeCondition)") \
-      || { echo "ERROR: shared provider '${DEFAULT_PROVIDER}' not found — run 'mint deploy' first" >&2; exit 1; }
-
-  if echo "${EXISTING_CONDITION}" | grep -qF "'${ORG}'"; then
-    echo "SKIP: ${ORG} already in shared provider condition"
-  else
-    # Parse existing orgs, add new one, rebuild condition (uses python3 for portability)
-    NEW_CONDITION=$(echo "${EXISTING_CONDITION}" | ORG="${ORG}" python3 -c "
-import re, sys, os
-cond = sys.stdin.read().strip()
-orgs = set(re.findall(r\"'([a-z0-9][a-z0-9._-]*?)'\", cond))
-orgs.add(os.environ['ORG'])
-orgs = sorted(orgs)
-if len(orgs) == 1:
-    print(f\"assertion.repository_owner == '{orgs[0]}'\")
-else:
-    quoted = ', '.join(f\"'{o}'\" for o in orgs)
-    print(f'assertion.repository_owner in [{quoted}]')
-") || { echo "ERROR: failed to rebuild WIF condition" >&2; exit 1; }
-    echo "=== WIF Condition ==="
-    echo "  OLD: ${EXISTING_CONDITION}"
-    echo "  NEW: ${NEW_CONDITION}"
-    FULL_IAM_AUDIENCE="https://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/${WIF_POOL_LOCATION}/workloadIdentityPools/${WIF_POOL}/providers/${DEFAULT_PROVIDER}"
-    gcloud iam workload-identity-pools providers update-oidc "${DEFAULT_PROVIDER}" \
-      --project="${GCP_PROJECT}" \
-      --workload-identity-pool="${WIF_POOL}" \
-      --location="${WIF_POOL_LOCATION}" \
-      --attribute-condition="${NEW_CONDITION}" \
-      --allowed-audiences="fullsend-mint,${FULL_IAM_AUDIENCE}" \
-      || { echo "ERROR: failed to update shared WIF provider" >&2; exit 1; }
-  fi
-else
-  PROVIDER_ID="gh-${ORG}-${REPO}"
-  # Lowercase, replace non-alphanumeric with hyphens, truncate, strip trailing hyphens
-  PROVIDER_ID=$(echo "${PROVIDER_ID}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-32 | sed 's/-*$//')
-  FULL_IAM_AUDIENCE="https://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/${WIF_POOL_LOCATION}/workloadIdentityPools/${WIF_POOL}/providers/${PROVIDER_ID}"
-
-  echo "Provider ID: ${PROVIDER_ID} (${#PROVIDER_ID} chars)"
-
-  EXPECTED_CONDITION="assertion.repository == '${ORG}/${REPO}'"
-  DESCRIBE_ERR=$(mktemp)
-  EXISTING_CONDITION=$(gcloud iam workload-identity-pools providers describe "${PROVIDER_ID}" \
-      --project="${GCP_PROJECT}" \
-      --workload-identity-pool="${WIF_POOL}" \
-      --location="${WIF_POOL_LOCATION}" \
-      --format="value(attributeCondition)" 2>"${DESCRIBE_ERR}") || true
-  if [ -s "${DESCRIBE_ERR}" ] && ! grep -q "NOT_FOUND" "${DESCRIBE_ERR}"; then
-    echo "ERROR: failed to describe provider ${PROVIDER_ID}:" >&2
-    cat "${DESCRIBE_ERR}" >&2
-    rm -f "${DESCRIBE_ERR}"
-    exit 1
-  fi
-  rm -f "${DESCRIBE_ERR}"
-
-  if [ -n "${EXISTING_CONDITION}" ]; then
-    if [ "${EXISTING_CONDITION}" != "${EXPECTED_CONDITION}" ]; then
-      echo "ERROR: Provider ID collision — ${PROVIDER_ID} belongs to a different repo:" >&2
-      echo "  Existing: ${EXISTING_CONDITION}" >&2
-      echo "  Expected: ${EXPECTED_CONDITION}" >&2
-      exit 1
-    fi
-    echo "Provider exists for this repo — updating"
-    gcloud iam workload-identity-pools providers update-oidc "${PROVIDER_ID}" \
-      --project="${GCP_PROJECT}" \
-      --workload-identity-pool="${WIF_POOL}" \
-      --location="${WIF_POOL_LOCATION}" \
-      --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.actor=assertion.actor" \
-      --attribute-condition="assertion.repository == '${ORG}/${REPO}'" \
-      --allowed-audiences="fullsend-mint,${FULL_IAM_AUDIENCE}" \
-      || { echo "ERROR: failed to update WIF provider ${PROVIDER_ID}" >&2; exit 1; }
-  else
-    gcloud iam workload-identity-pools providers create-oidc "${PROVIDER_ID}" \
-      --project="${GCP_PROJECT}" \
-      --workload-identity-pool="${WIF_POOL}" \
-      --location="${WIF_POOL_LOCATION}" \
-      --issuer-uri="https://token.actions.githubusercontent.com" \
-      --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.actor=assertion.actor" \
-      --attribute-condition="assertion.repository == '${ORG}/${REPO}'" \
-      --allowed-audiences="fullsend-mint,${FULL_IAM_AUDIENCE}" \
-      || { echo "ERROR: failed to create WIF provider ${PROVIDER_ID}" >&2; exit 1; }
-  fi
-fi
-```
-
-### 7. Handoff to repo admin
+### 5. Handoff to repo admin
 
 The mint SRE does not configure target repos. Inform the repo admin that
-mint-side enrollment is complete and provide these details:
+mint-side enrollment is complete and provide:
 
-- **Mint URL:** `${MINT_URL}` (resolved in Setup)
+- **Mint URL**: shown in `mint status` output
+- GitHub Actions org variable `FULLSEND_MINT_URL` (set by `fullsend admin install` or manually)
 - `.github/workflows/fullsend.yaml` shim workflow in the target repo
-- GitHub Actions org variable: `FULLSEND_MINT_URL` (set by `fullsend admin install` or manually)
 
 For per-repo enrollments, also provide:
-- **WIF Provider ID:** the computed provider ID from Step 6 (needed for
-  the `google-github-actions/auth` step in the shim workflow)
+
+- **WIF Provider ID**: shown in the enrollment output (needed for the
+  `google-github-actions/auth` step)
 
 For per-org, the `repo-maintenance` workflow in `.fullsend` handles shim
-deployment. For per-repo, the admin runs `fullsend admin install --repo`
-or configures manually.
+deployment. For per-repo, the admin runs
+`fullsend admin install <owner/repo>` or configures manually.
 
 Verify that all required GitHub Apps are installed on the target org
-before the admin triggers a workflow — the mint cannot produce tokens
-for apps that are not installed (see Shared App Model above).
-
-### 8. Verify
-
-Confirm mint infrastructure is ready:
-
-```bash
-set -o pipefail
-VERIFY_FAILED=0
-
-# ALLOWED_WORKFLOW_FILES must not be empty (mint rejects all requests if unset).
-# This is set during mint deploy, not during enrollment — if empty, re-run mint deploy.
-ALLOWED_WF=$(gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_WORKFLOW_FILES).value)")
-if [ -n "${ALLOWED_WF}" ]; then
-  echo "OK: ALLOWED_WORKFLOW_FILES = ${ALLOWED_WF}"
-else
-  echo "FAIL: ALLOWED_WORKFLOW_FILES is empty — mint will reject ALL token requests (set during 'mint deploy', not enrollment)"
-  VERIFY_FAILED=1
-fi
-
-# Org in ALLOWED_ORGS
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_ORGS).value)" \
-  | tr ',' '\n' | grep -Fxq "${ORG}" \
-  && echo "OK: ${ORG} in ALLOWED_ORGS" || { echo "FAIL: ${ORG} not in ALLOWED_ORGS"; VERIFY_FAILED=1; }
-
-# Org roles in ROLE_APP_IDS
-gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ROLE_APP_IDS).value)" \
-  | ORG="${ORG}" ROLES="${ROLES}" python3 -c "
-import json, sys, os
-data = json.loads(sys.stdin.read())
-org = os.environ['ORG']
-roles = os.environ['ROLES'].split(',')
-ok = True
-for role in roles:
-    key = f'{org}/{role.strip()}'
-    if key in data:
-        print(f'OK: {key} = {data[key]}')
-    else:
-        print(f'FAIL: {key} not found')
-        ok = False
-# fix role should also be present if coder is enrolled, with matching app ID
-fix_key = f'{org}/fix'
-coder_key = f'{org}/coder'
-if fix_key in data and coder_key in data:
-    if data[fix_key] == data[coder_key]:
-        print(f'OK: {fix_key} = {data[fix_key]} (matches coder)')
-    else:
-        print(f'FAIL: {fix_key} = {data[fix_key]} but coder = {data[coder_key]} — must match')
-        ok = False
-elif fix_key in data:
-    print(f'OK: {fix_key} = {data[fix_key]}')
-elif coder_key in data:
-    print(f'FAIL: {fix_key} not found (should be derived from coder)')
-    ok = False
-sys.exit(0 if ok else 1)
-" || VERIFY_FAILED=1
-
-# ALLOWED_ROLES contains all expected roles
-CURRENT_ALLOWED_ROLES=$(gcloud run services describe "${MINT_SERVICE}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-  --format="value(spec.template.spec.containers[0].env.filter(name=ALLOWED_ROLES).value)" 2>/dev/null)
-for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
-  if echo ",${CURRENT_ALLOWED_ROLES}," | grep -Fq ",${ROLE},"; then
-    echo "OK: ${ROLE} in ALLOWED_ROLES"
-  else
-    echo "FAIL: ${ROLE} not in ALLOWED_ROLES"; VERIFY_FAILED=1
-  fi
-done
-if echo ",${ROLES}," | grep -Fq ",coder,"; then
-  if echo ",${CURRENT_ALLOWED_ROLES}," | grep -Fq ",fix,"; then
-    echo "OK: fix in ALLOWED_ROLES (derived from coder)"
-  else
-    echo "FAIL: fix not in ALLOWED_ROLES (should be derived from coder)"; VERIFY_FAILED=1
-  fi
-fi
-
-# PEM secrets accessible (metadata check — does not read PEM content)
-for ROLE in $(echo "${ROLES}" | tr ',' ' '); do
-  SECRET_ID="fullsend-${ORG}--${ROLE}-app-pem"
-  gcloud secrets versions describe latest \
-    --secret="${SECRET_ID}" \
-    --project="${GCP_PROJECT}" --format="value(state)" 2>/dev/null \
-    | grep -q "ENABLED" \
-    && echo "OK: ${ROLE} secret" || { echo "FAIL: ${ROLE} secret"; VERIFY_FAILED=1; }
-  gcloud secrets get-iam-policy "${SECRET_ID}" --project="${GCP_PROJECT}" \
-    --format="value(bindings.members)" 2>/dev/null \
-    | grep -q "serviceAccount:${SA_EMAIL}" \
-    && echo "OK: ${ROLE} IAM binding" || { echo "FAIL: ${ROLE} IAM binding"; VERIFY_FAILED=1; }
-done
-# fix role PEM (if coder was enrolled)
-if echo ",${ROLES}," | grep -Fq ",coder,"; then
-  FIX_SECRET="fullsend-${ORG}--fix-app-pem"
-  gcloud secrets versions describe latest \
-    --secret="${FIX_SECRET}" \
-    --project="${GCP_PROJECT}" --format="value(state)" 2>/dev/null \
-    | grep -q "ENABLED" \
-    && echo "OK: fix secret" || { echo "FAIL: fix secret"; VERIFY_FAILED=1; }
-  gcloud secrets get-iam-policy "${FIX_SECRET}" --project="${GCP_PROJECT}" \
-    --format="value(bindings.members)" 2>/dev/null \
-    | grep -q "serviceAccount:${SA_EMAIL}" \
-    && echo "OK: fix IAM binding" || { echo "FAIL: fix IAM binding"; VERIFY_FAILED=1; }
-fi
-
-# WIF provider verification
-if [ -z "${REPO}" ]; then
-  # Per-org: verify shared provider condition includes the org
-  DEFAULT_PROVIDER="github-oidc"
-  SHARED_CONDITION=$(gcloud iam workload-identity-pools providers describe "${DEFAULT_PROVIDER}" \
-    --project="${GCP_PROJECT}" \
-    --workload-identity-pool="${WIF_POOL}" \
-    --location="${WIF_POOL_LOCATION}" \
-    --format="value(attributeCondition)" 2>/dev/null) \
-    || { echo "FAIL: shared WIF provider ${DEFAULT_PROVIDER} not found"; VERIFY_FAILED=1; }
-  if [ -n "${SHARED_CONDITION}" ]; then
-    if echo "${SHARED_CONDITION}" | grep -qF "'${ORG}'"; then
-      echo "OK: ${ORG} in shared WIF provider condition"
-    else
-      echo "FAIL: ${ORG} not in shared WIF provider condition"; VERIFY_FAILED=1
-      echo "  Condition: ${SHARED_CONDITION}"
-    fi
-    # Verify audiences on shared provider
-    SHARED_AUDIENCES=$(gcloud iam workload-identity-pools providers describe "${DEFAULT_PROVIDER}" \
-      --project="${GCP_PROJECT}" \
-      --workload-identity-pool="${WIF_POOL}" \
-      --location="${WIF_POOL_LOCATION}" \
-      --format="value(oidc.allowedAudiences)" 2>/dev/null)
-    SHARED_IAM_AUDIENCE="https://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/${WIF_POOL_LOCATION}/workloadIdentityPools/${WIF_POOL}/providers/${DEFAULT_PROVIDER}"
-    if echo "${SHARED_AUDIENCES}" | grep -qF "fullsend-mint"; then
-      echo "OK: shared provider has fullsend-mint audience"
-    else
-      echo "FAIL: shared provider missing fullsend-mint audience"; VERIFY_FAILED=1
-    fi
-    if echo "${SHARED_AUDIENCES}" | grep -qF "${SHARED_IAM_AUDIENCE}"; then
-      echo "OK: shared provider has IAM audience URL"
-    else
-      echo "WARN: shared provider missing IAM audience URL"
-    fi
-  fi
-fi
-
-# Per-repo: verify repo in PER_REPO_WIF_REPOS and WIF provider
-if [ -n "${REPO}" ]; then
-  gcloud run services describe "${MINT_SERVICE}" \
-    --project="${GCP_PROJECT}" --region="${MINT_REGION}" \
-    --format="value(spec.template.spec.containers[0].env.filter(name=PER_REPO_WIF_REPOS).value)" \
-    | tr ',' '\n' | grep -Fxq "${ORG}/${REPO}" \
-    && echo "OK: ${ORG}/${REPO} in PER_REPO_WIF_REPOS" \
-    || { echo "FAIL: ${ORG}/${REPO} not in PER_REPO_WIF_REPOS"; VERIFY_FAILED=1; }
-
-  PROVIDER_ID=$(echo "gh-${ORG}-${REPO}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-32 | sed 's/-*$//')
-  PROVIDER_JSON=$(gcloud iam workload-identity-pools providers describe "${PROVIDER_ID}" \
-    --project="${GCP_PROJECT}" \
-    --workload-identity-pool="${WIF_POOL}" \
-    --location="${WIF_POOL_LOCATION}" \
-    --format="json(oidc.allowedAudiences,attributeCondition,state)" 2>/dev/null) \
-    || { echo "FAIL: WIF provider ${PROVIDER_ID} not found"; VERIFY_FAILED=1; }
-  if [ -n "${PROVIDER_JSON}" ]; then
-    FULL_IAM_AUDIENCE="https://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/${WIF_POOL_LOCATION}/workloadIdentityPools/${WIF_POOL}/providers/${PROVIDER_ID}"
-    echo "${PROVIDER_JSON}" | \
-      EXPECTED_COND="assertion.repository == '${ORG}/${REPO}'" \
-      EXPECTED_IAM_AUD="${FULL_IAM_AUDIENCE}" \
-      python3 -c "
-import json, sys, os
-data = json.loads(sys.stdin.read())
-state = data.get('state', '')
-cond = data.get('attributeCondition', '')
-auds = data.get('oidc', {}).get('allowedAudiences', [])
-expected_cond = os.environ['EXPECTED_COND']
-expected_iam_aud = os.environ['EXPECTED_IAM_AUD']
-ok = True
-if state == 'ACTIVE':
-    print(f'OK: provider state = {state}')
-else:
-    print(f'FAIL: provider state = {state} (expected ACTIVE)')
-    ok = False
-if cond == expected_cond:
-    print(f'OK: attributeCondition matches expected')
-else:
-    print(f'FAIL: attributeCondition mismatch')
-    print(f'  Expected: {expected_cond}')
-    print(f'  Actual:   {cond}')
-    ok = False
-if 'fullsend-mint' in auds:
-    print('OK: audience fullsend-mint present')
-else:
-    print('FAIL: audience fullsend-mint missing')
-    ok = False
-if expected_iam_aud in auds:
-    print('OK: IAM audience URL present')
-else:
-    print(f'WARN: IAM audience URL missing — expected {expected_iam_aud}')
-sys.exit(0 if ok else 1)
-" || VERIFY_FAILED=1
-  fi
-fi
-
-exit "${VERIFY_FAILED}"
-```
-
-After the repo admin triggers a workflow, check mint logs:
-
-```bash
-gcloud functions logs read "${MINT_FUNCTION}" \
-  --project="${GCP_PROJECT}" --region="${MINT_REGION}" --gen2 --limit=50 \
-  --format="table(timecreated,severity,textPayload)" \
-  | grep -i "${ORG}"
-```
+before the admin triggers a workflow.
 
 ## Rollback
 
-Rollback is a **separate deliberate operation** — do not execute without
-explicit approval from the mint service owner. This section is reference
-only; no commands are provided to prevent accidental execution.
+**STOP — unenroll is a destructive operation that removes an org or repo
+from the mint. Always run `--dry-run` first and confirm with the operator
+before proceeding.**
 
-Rollback order (reverse of enrollment):
+Use the CLI to unenroll:
 
-1. **WIF provider** — for per-repo, disable then delete the dedicated
-   provider after confirming no workflows depend on it (deletion is
-   irreversible). For per-org, re-read the shared `github-oidc`
-   provider's `attributeCondition`, remove the org from the list,
-   rebuild the condition, and update with `update-oidc`. Verify other
-   orgs in the condition are preserved.
-2. **PER_REPO_WIF_REPOS** (per-repo only) — remove `{org}/{repo}` from
-   the comma-separated list via `gcloud run services update`.
-3. **Mint env vars** — re-read current values, remove `{org}/*` entries
-   (including `{org}/fix`) from ROLE_APP_IDS, remove `{org}` from
-   ALLOWED_ORGS, re-derive ALLOWED_ROLES, apply with `--update-env-vars`.
-   Verify no other org shares the same app IDs before removing.
-4. **PEM secrets** — disable the latest version (reversible) rather than
-   deleting the secret. Include `fullsend-{org}--fix-app-pem` when
-   rolling back coder. Only delete after a bake period confirms no
-   workflows need the secret.
+```bash
+# Dry-run first
+fullsend mint unenroll "$TARGET" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" --dry-run
+
+# Actual unenroll (after operator confirms dry-run output)
+fullsend mint unenroll "$TARGET" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION"
+```
+
+Unenroll is interactive — it requires typing the target name to confirm.
+Use `--yolo` to skip confirmation in automated contexts.
+
+Org-scoped unenroll removes the org from mint env vars and the shared WIF
+provider's attribute condition. Role PEM secrets are shared across orgs and
+are not modified. Repo-scoped unenroll disables the repo-specific WIF
+provider — it does not touch PEM secrets.
+
+To permanently delete a repo-scoped WIF provider instead of disabling it,
+add `--delete-provider` to the unenroll command:
+
+```bash
+# Preview permanent WIF provider deletion first (repo-scoped only)
+fullsend mint unenroll "$TARGET" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider --dry-run
+
+# Permanently delete WIF provider (repo-scoped only, after dry-run confirms)
+fullsend mint unenroll "$TARGET" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider
+```
+
+Only use `--delete-provider` after confirming no workflows depend on the
+provider.
+
+## Troubleshooting
+
+When the CLI output is insufficient, use `gcloud` to inspect the Cloud Run
+service directly. The commands below are **read-only** — they do not
+modify the mint.
+
+**DANGER — never use `--set-env-vars` to modify the mint service.** The
+`--set-env-vars` flag **replaces all** env vars, wiping out every other
+variable (ALLOWED_ORGS, ROLE_APP_IDS, PEM secret references, etc.). If
+you need to fix an env var manually, use `--update-env-vars` which
+**merges** the provided values into the existing set:
+
+```bash
+# SAFE — merges into existing env vars
+gcloud run services update "$MINT_SERVICE" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --update-env-vars="KEY=value"
+
+# DANGEROUS — replaces ALL env vars, destroying every other variable
+# gcloud run services update "$MINT_SERVICE" --set-env-vars="KEY=value"
+```
+
+Prefer `fullsend mint enroll` over manual `gcloud` env var edits — the
+CLI handles read-merge-write with REVISION-pinned traffic routing.
+
+Set these variables for the commands below:
+
+```bash
+MINT_SERVICE="fullsend-mint"
+ORG="<github-org>"           # the org you are troubleshooting
+WIF_POOL="fullsend-pool"
+```
+
+### Read env vars from the traffic-serving revision
+
+The traffic-serving revision may differ from the service template. To see
+what the mint is actually serving:
+
+```bash
+# Get the traffic-serving revision name
+TRAFFIC_REV=$(gcloud run services describe "$MINT_SERVICE" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --format="value(status.traffic[0].revisionName)")
+
+# Read its env vars
+gcloud run revisions describe "$TRAFFIC_REV" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --format="yaml(spec.containers[0].env)"
+```
+
+### Compare template vs traffic revision
+
+```bash
+# Template env vars (what new revisions would get)
+gcloud run services describe "$MINT_SERVICE" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --format="yaml(spec.template.spec.containers[0].env)"
+
+# List recent revisions
+gcloud run revisions list \
+  --service="$MINT_SERVICE" \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --limit=5
+```
+
+### Check PEM secrets
+
+```bash
+# List role PEM secrets (shared across orgs on the mint)
+gcloud secrets list --project="$GCP_PROJECT" \
+  --filter="name:fullsend- AND name:-app-pem" \
+  --format="table(name,createTime)"
+
+# Check if a specific role secret has an enabled version
+gcloud secrets versions describe latest \
+  --secret="fullsend-coder-app-pem" \
+  --project="$GCP_PROJECT" --format="value(state)"
+```
+
+### Check WIF provider state
+
+```bash
+# List all WIF providers
+gcloud iam workload-identity-pools providers list \
+  --project="$GCP_PROJECT" \
+  --workload-identity-pool="$WIF_POOL" \
+  --location=global \
+  --format="table(name.basename(),state,disabled)"
+
+# Check the shared provider's attribute condition
+gcloud iam workload-identity-pools providers describe github-oidc \
+  --project="$GCP_PROJECT" \
+  --workload-identity-pool="$WIF_POOL" \
+  --location=global \
+  --format="value(attributeCondition)"
+```
+
+### Read mint logs
+
+```bash
+gcloud functions logs read fullsend-mint \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" --gen2 --limit=50 \
+  --format="table(timecreated,severity,textPayload)" \
+  | grep -i "$ORG"
+```
+
+For more troubleshooting scenarios, see the
+[mint administration guide](../../docs/guides/infrastructure/mint-administration.md)
+in the mint administration guide.

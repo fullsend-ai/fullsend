@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 // DeployMode controls Cloud Function deployment behavior.
@@ -41,16 +42,27 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
 // triggering Go's module boundary detection) to their real names for the
 // Cloud Function deployment zip.
 var embeddedMintFiles = map[string]string{
-	"go.mod.embed":  "go.mod",
-	"go.sum.embed":  "go.sum",
-	"main.go.embed": "main.go",
+	"go.mod.embed":                    "go.mod",
+	"go.sum.embed":                    "go.sum",
+	"main.go.embed":                   "main.go",
+	"mintcore/go.mod.embed":           "mintcore/go.mod",
+	"mintcore/go.sum.embed":           "mintcore/go.sum",
+	"mintcore/gcp_pem.go.embed":       "mintcore/gcp_pem.go",
+	"mintcore/github.go.embed":        "mintcore/github.go",
+	"mintcore/handler.go.embed":       "mintcore/handler.go",
+	"mintcore/interfaces.go.embed":    "mintcore/interfaces.go",
+	"mintcore/jwks_verifier.go.embed": "mintcore/jwks_verifier.go",
+	"mintcore/claims.go.embed":        "mintcore/claims.go",
+	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
+	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
+	"mintcore/wif.go.embed":           "mintcore/wif.go",
 }
 
 // Compile-time check that Provisioner implements dispatch.Dispatcher.
@@ -62,10 +74,6 @@ func DefaultFunctionSourceDir() string {
 	return filepath.Join("internal", "mint")
 }
 
-// githubOrgPattern validates GitHub organization names: alphanumeric or single
-// hyphens, cannot start or end with a hyphen, max 39 characters.
-var githubOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`)
-
 // githubRepoSlugPattern validates a single GitHub repository name component.
 var githubRepoSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,100}$`)
 
@@ -75,9 +83,6 @@ var gcpProjectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 // gcpRegionPattern validates GCP region names (e.g. us-central1, europe-west4).
 var gcpRegionPattern = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+$`)
 
-// rolePattern validates agent role names (must match Secret Manager ID constraints).
-var rolePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
-
 const (
 	saName          = "fullsend-mint"
 	defaultPool     = "fullsend-pool"
@@ -86,6 +91,11 @@ const (
 	oidcIssuer      = "https://token.actions.githubusercontent.com"
 	oidcAudience    = "fullsend-mint"
 	functionName    = "fullsend-mint"
+
+	// DefaultInferencePool is the WIF pool used by inference commands.
+	// Separate from the mint pool (defaultPool) so that mint and inference
+	// lifecycle operations don't interfere with each other.
+	DefaultInferencePool = "fullsend-inference"
 )
 
 // Config holds the inputs for GCF mint provisioning.
@@ -149,16 +159,14 @@ func (p *Provisioner) OrgVariableNames() []string {
 	return []string{"FULLSEND_MINT_URL"}
 }
 
-// secretID returns the Secret Manager secret ID for the given org and role.
-// Uses "--" as separator between org and role because GitHub org names
-// cannot contain consecutive hyphens.
-func secretID(org, role string) string {
-	return fmt.Sprintf("fullsend-%s--%s-app-pem", org, role)
+// secretID returns the Secret Manager secret ID for the given role.
+func secretID(role string) string {
+	return fmt.Sprintf("fullsend-%s-app-pem", mintcore.PemSecretRole(role))
 }
 
-// SecretExists checks whether the Secret Manager secret for the given org and role exists.
-func (p *Provisioner) SecretExists(ctx context.Context, org, role string) (bool, error) {
-	sid := secretID(org, role)
+// SecretExists checks whether the Secret Manager secret for the given role exists.
+func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, error) {
+	sid := secretID(role)
 	err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid)
 	if err == nil {
 		return true, nil
@@ -169,20 +177,27 @@ func (p *Provisioner) SecretExists(ctx context.Context, org, role string) (bool,
 	return false, fmt.Errorf("checking secret %s: %w", sid, err)
 }
 
-// StoreAgentPEM persists a single org/role's PEM in Secret Manager.
+// EnsureMintServiceAccount creates the mint service account if it does not
+// already exist. Call this before StoreAgentPEM so the IAM binding on
+// secrets can reference the service account.
+func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
+	if p.cfg.ProjectID == "" {
+		return fmt.Errorf("project ID is required")
+	}
+	return p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, saName, "Fullsend token mint Cloud Function")
+}
+
+// StoreAgentPEM persists a role's PEM in Secret Manager.
 // Called during App setup so each PEM is stored immediately after creation.
-func (p *Provisioner) StoreAgentPEM(ctx context.Context, org, role string, pemData []byte) error {
+func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []byte) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
 	}
-	if !githubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
-		return fmt.Errorf("invalid org name %q", org)
-	}
-	if !rolePattern.MatchString(role) || strings.Contains(role, "--") {
-		return fmt.Errorf("invalid role name %q: must match %s", role, rolePattern.String())
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
 	}
 
-	sid := secretID(org, role)
+	sid := secretID(role)
 
 	secretErr := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid)
 	if secretErr != nil {
@@ -208,56 +223,104 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, org, role string, pemDa
 	return nil
 }
 
-// CopyAgentPEM copies a PEM secret from one org to another.
-// Used when the same public GitHub App is installed in multiple orgs —
-// the PEM is the same (tied to the app), just needs a secret under the
-// target org's naming convention.
-func (p *Provisioner) CopyAgentPEM(ctx context.Context, srcOrg, dstOrg, role string) error {
+// DeleteAgentPEM permanently deletes the Secret Manager secret for the given role.
+func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
 	}
-	for _, org := range []string{srcOrg, dstOrg} {
-		if !githubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
-			return fmt.Errorf("invalid org name %q", org)
-		}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
 	}
-	if !rolePattern.MatchString(role) || strings.Contains(role, "--") {
-		return fmt.Errorf("invalid role name %q: must match %s", role, rolePattern.String())
+	sid := secretID(role)
+	if err := p.gcpAPI.DeleteSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+		return fmt.Errorf("deleting secret %s: %w", sid, err)
 	}
-
-	dstID := secretID(dstOrg, role)
-	if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, dstID); err == nil {
-		// Secret exists — still ensure the mint SA has access,
-		// since older installs may have granted a different SA.
-		return p.ensureSecretIAM(ctx, dstID)
-	} else if !errors.Is(err, ErrSecretNotFound) {
-		return fmt.Errorf("checking destination secret %s: %w", dstID, err)
-	}
-
-	srcID := secretID(srcOrg, role)
-	pemData, err := p.gcpAPI.AccessSecretVersion(ctx, p.cfg.ProjectID, srcID)
-	if err != nil {
-		return fmt.Errorf("reading source secret %s: %w", srcID, err)
-	}
-
-	return p.StoreAgentPEM(ctx, dstOrg, role, pemData)
+	return nil
 }
 
-func (p *Provisioner) ensureSecretIAM(ctx context.Context, secretName string) error {
-	saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
-	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, secretName)
-	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
-		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
-		return fmt.Errorf("granting secret access for %s: %w", secretName, err)
+// AddRoleToMint registers a role's app ID in ROLE_APP_IDS and updates ALLOWED_ROLES
+// on the traffic-serving Cloud Run revision.
+func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) error {
+	if p.cfg.ProjectID == "" {
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+	if appID == "" {
+		return fmt.Errorf("app ID is required for role %q", role)
+	}
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+
+	merged, err := mergeRoleAppIDsJSON(updated["ROLE_APP_IDS"], map[string]string{role: appID})
+	if err != nil {
+		return fmt.Errorf("merging ROLE_APP_IDS: %w", err)
+	}
+	updated["ROLE_APP_IDS"] = merged
+	updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("updating mint env vars: %w", err)
+	}
+	return nil
+}
+
+// RemoveRoleFromMint removes a role-only entry from ROLE_APP_IDS and updates
+// ALLOWED_ROLES on the traffic-serving Cloud Run revision.
+func (p *Provisioner) RemoveRoleFromMint(ctx context.Context, role string) error {
+	if p.cfg.ProjectID == "" {
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+
+	pruned, err := removeRoleFromAppIDsJSON(updated["ROLE_APP_IDS"], role)
+	if err != nil {
+		return fmt.Errorf("pruning ROLE_APP_IDS: %w", err)
+	}
+	updated["ROLE_APP_IDS"] = pruned
+	updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("updating mint env vars: %w", err)
 	}
 	return nil
 }
 
 // MintDiscovery holds the results of a single GetFunction call, providing
-// both the URL and existing role-to-app-ID mappings.
+// the URL, existing role-to-app-ID mappings, and per-repo WIF repos.
 type MintDiscovery struct {
-	URL        string
-	RoleAppIDs map[string]string
+	URL             string
+	RoleAppIDs      map[string]string
+	PerRepoWIFRepos []string
 }
 
 // DiscoverMint fetches the mint function once and returns its URL and
@@ -282,6 +345,15 @@ func (p *Provisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) 
 			} else {
 				result.RoleAppIDs = m
 			}
+		}
+		if raw := fn.EnvVars["PER_REPO_WIF_REPOS"]; raw != "" {
+			for _, entry := range strings.Split(raw, ",") {
+				entry = strings.TrimSpace(entry)
+				if entry != "" {
+					result.PerRepoWIFRepos = append(result.PerRepoWIFRepos, entry)
+				}
+			}
+			sort.Strings(result.PerRepoWIFRepos)
 		}
 	}
 	return result, nil
@@ -310,14 +382,14 @@ func (p *Provisioner) GetExistingRoleAppIDs(ctx context.Context) (map[string]str
 }
 
 // EnsureOrgInMint validates that a mint function exists at expectedURL and
-// that the given org is registered in ALLOWED_ORGS and ROLE_APP_IDS. If the
-// org is missing, it updates the function's env vars to include it.
+// that the given org is registered in ALLOWED_ORGS. If the org is missing,
+// it updates the function's env vars to include it.
 //
 // WARNING: read-modify-write without locking — concurrent calls from
 // parallel per-repo installs sharing the same mint can race, causing one
 // update to overwrite the other. Run installs sequentially when sharing
 // a mint, or accept that a lost update will be corrected on the next run.
-func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, org string, roleAppIDs map[string]string) error {
+func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
 	org = strings.ToLower(org)
 
 	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
@@ -332,10 +404,12 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, fn.URI)
 	}
 
-	needsUpdate := false
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
 
-	// Check ALLOWED_ORGS.
-	allowedOrgs := fn.EnvVars["ALLOWED_ORGS"]
+	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
 	orgPresent := false
 	for _, o := range strings.Split(allowedOrgs, ",") {
 		if strings.EqualFold(strings.TrimSpace(o), org) {
@@ -343,64 +417,34 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 			break
 		}
 	}
-	if !orgPresent {
-		needsUpdate = true
-	}
-
-	// Check ROLE_APP_IDS.
-	existingRoleAppIDs := make(map[string]string)
-	if raw := fn.EnvVars["ROLE_APP_IDS"]; raw != "" {
-		if err := json.Unmarshal([]byte(raw), &existingRoleAppIDs); err != nil {
-			return fmt.Errorf("parsing existing ROLE_APP_IDS: %w", err)
-		}
-	}
-	for key, val := range roleAppIDs {
-		if existing, ok := existingRoleAppIDs[key]; !ok || existing != val {
-			needsUpdate = true
-			break
-		}
-	}
-
-	if !needsUpdate {
+	if orgPresent {
 		return nil
 	}
 
-	// Build updated env vars from existing function state.
-	updated := make(map[string]string, len(fn.EnvVars))
-	for k, v := range fn.EnvVars {
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
 		updated[k] = v
 	}
 
-	// Build desired ALLOWED_ORGS including the new org.
 	desired := map[string]string{
 		"ALLOWED_ORGS": org,
 	}
 	mergeAllowedOrgs(updated, desired)
-	updated["ALLOWED_ORGS"] = desired["ALLOWED_ORGS"]
+	updated["ALLOWED_ORGS"] = stripPlaceholderOrg(desired["ALLOWED_ORGS"])
 
-	// Build desired ROLE_APP_IDS including the new entries.
-	newRoleAppIDs, err := json.Marshal(roleAppIDs)
-	if err != nil {
-		return fmt.Errorf("marshaling role app IDs: %w", err)
+	if updated["ALLOWED_ROLES"] == "" {
+		updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
 	}
-	desired["ROLE_APP_IDS"] = string(newRoleAppIDs)
-	mergeRoleAppIDs(updated, desired)
-	updated["ROLE_APP_IDS"] = desired["ROLE_APP_IDS"]
-
-	// Recompute ALLOWED_ROLES from the merged ROLE_APP_IDS.
-	updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
-
 	if updated["ALLOWED_WORKFLOW_FILES"] == "" {
 		updated["ALLOWED_WORKFLOW_FILES"] = "*"
 	}
 
-	opName, err := p.gcpAPI.UpdateFunctionEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
 	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
 		return fmt.Errorf("updating mint env vars: %w", err)
-	}
-
-	if err := p.gcpAPI.WaitForOperation(ctx, opName); err != nil {
-		return fmt.Errorf("waiting for mint env vars update: %w", err)
 	}
 
 	return nil
@@ -427,20 +471,24 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 	if fn == nil {
 		return fmt.Errorf("mint function not found")
 	}
-	if fn.EnvVars == nil {
-		fn.EnvVars = make(map[string]string)
+
+	// Read env vars from the traffic-serving revision to avoid stale data
+	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
 	repo = strings.ToLower(repo)
-	existing := fn.EnvVars["PER_REPO_WIF_REPOS"]
+	existing := trafficEnvVars["PER_REPO_WIF_REPOS"]
 	for _, entry := range strings.Split(existing, ",") {
 		if strings.ToLower(strings.TrimSpace(entry)) == repo {
 			return nil
 		}
 	}
 
-	updated := make(map[string]string, len(fn.EnvVars))
-	for k, v := range fn.EnvVars {
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
 		updated[k] = v
 	}
 	if existing == "" {
@@ -449,11 +497,14 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 		updated["PER_REPO_WIF_REPOS"] = existing + "," + repo
 	}
 
-	opName, err := p.gcpAPI.UpdateFunctionEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
 	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating PER_REPO_WIF_REPOS (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
 		return fmt.Errorf("updating PER_REPO_WIF_REPOS: %w", err)
 	}
-	return p.gcpAPI.WaitForOperation(ctx, opName)
+	return nil
 }
 
 // Provision creates the GCP infrastructure for the token mint.
@@ -462,7 +513,7 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 //  1. Look up project number
 //  2. Create/verify service account
 //  3. Create/verify WIF pool + provider
-//  4. Grant Vertex AI access to each org's WIF principalSet (direct WIF)
+//  4. Grant Agent Platform access to each org's WIF principalSet (direct WIF)
 //  5. Store all agent PEMs in Secret Manager
 //  6. Grant SA access to all role secrets
 //  7. Deploy Cloud Function
@@ -479,7 +530,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	}
 	seen := make(map[string]bool)
 	for i, org := range p.cfg.GitHubOrgs {
-		if !githubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
+		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
 			return nil, fmt.Errorf("invalid GitHub org name: %q", org)
 		}
 		lower := strings.ToLower(org)
@@ -490,13 +541,13 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		p.cfg.GitHubOrgs[i] = lower
 	}
 	for role := range p.cfg.AgentPEMs {
-		if !rolePattern.MatchString(role) {
-			return nil, fmt.Errorf("invalid role name %q: must match %s", role, rolePattern.String())
+		if !mintcore.RolePattern.MatchString(role) {
+			return nil, fmt.Errorf("invalid role name %q: must match %s", role, mintcore.RolePattern.String())
 		}
 	}
 	for role := range p.cfg.AgentAppIDs {
-		if !rolePattern.MatchString(role) {
-			return nil, fmt.Errorf("invalid role name %q: must match %s", role, rolePattern.String())
+		if !mintcore.RolePattern.MatchString(role) {
+			return nil, fmt.Errorf("invalid role name %q: must match %s", role, mintcore.RolePattern.String())
 		}
 	}
 
@@ -524,81 +575,31 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 		return nil, fmt.Errorf("MintURL %q must be a valid Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
 	}
 
-	// Fetch existing role/app ID mappings once for PEM auto-copy decisions.
-	var existingIDs map[string]string
-	existingIDsErr := error(nil)
-	needsCopy := false
+	// Store new PEMs once per role (shared across orgs on the mint).
+	for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
+		if err := p.StoreAgentPEM(ctx, role, p.cfg.AgentPEMs[role]); err != nil {
+			return nil, fmt.Errorf("storing PEM for role %s: %w", role, err)
+		}
+	}
+
+	// Verify secrets exist for roles without fresh PEMs (re-install).
 	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
-		if _, hasPEM := p.cfg.AgentPEMs[role]; !hasPEM {
-			needsCopy = true
-			break
+		if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
+			continue
+		}
+		sid := secretID(role)
+		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+			if errors.Is(err, ErrSecretNotFound) {
+				return nil, fmt.Errorf("role %q has no PEM and secret %s not found in project %s",
+					role, sid, p.cfg.ProjectID)
+			}
+			return nil, fmt.Errorf("checking secret %s for role %q: %w", sid, role, err)
 		}
 	}
-	if needsCopy {
-		existingIDs, existingIDsErr = p.GetExistingRoleAppIDs(ctx)
-	}
 
+	// Register installing orgs in ALLOWED_ORGS (app IDs are shared per role).
 	for _, org := range p.cfg.GitHubOrgs {
-		// Store new PEMs (per-org with fresh apps).
-		for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
-			if err := p.StoreAgentPEM(ctx, org, role, p.cfg.AgentPEMs[role]); err != nil {
-				return nil, fmt.Errorf("storing PEM for %s/%s: %w", org, role, err)
-			}
-		}
-
-		// Check and auto-copy PEMs for roles without fresh PEMs.
-		for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
-			if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
-				continue
-			}
-			exists, err := p.SecretExists(ctx, org, role)
-			if err != nil {
-				return nil, fmt.Errorf("checking PEM for %s/%s: %w", org, role, err)
-			}
-			if exists {
-				continue
-			}
-			if existingIDsErr != nil {
-				return nil, fmt.Errorf("reading existing role app IDs for PEM auto-copy: %w", existingIDsErr)
-			}
-			// PEM doesn't exist — try to copy from another org that has the
-			// same app (matched by app ID) for this role.
-			copied := false
-			var lastCopyErr error
-			for _, key := range sortedStringMapKeys(existingIDs) {
-				parts := strings.SplitN(key, "/", 2)
-				if len(parts) != 2 || parts[1] != role || parts[0] == org {
-					continue
-				}
-				if p.cfg.AgentAppIDs[role] != "" && existingIDs[key] != p.cfg.AgentAppIDs[role] {
-					continue
-				}
-				if copyErr := p.CopyAgentPEM(ctx, parts[0], org, role); copyErr == nil {
-					log.Printf("copied PEM for %s/%s from %s", org, role, parts[0])
-					copied = true
-					break
-				} else {
-					log.Printf("failed to copy PEM for %s/%s from %s: %v", org, role, parts[0], copyErr)
-					lastCopyErr = copyErr
-				}
-			}
-			if !copied {
-				msg := fmt.Sprintf("role %q: no PEM provided and no existing PEM found to copy for %s", role, org)
-				if lastCopyErr != nil {
-					msg += fmt.Sprintf(" (last error: %v)", lastCopyErr)
-				}
-				return nil, fmt.Errorf("%s", msg)
-			}
-		}
-	}
-
-	// Register org env vars via EnsureOrgInMint (additive, no-op if already present).
-	for _, org := range p.cfg.GitHubOrgs {
-		perOrgAppIDs := make(map[string]string, len(p.cfg.AgentAppIDs))
-		for role, appID := range p.cfg.AgentAppIDs {
-			perOrgAppIDs[org+"/"+role] = appID
-		}
-		if err := p.EnsureOrgInMint(ctx, p.cfg.MintURL, org, perOrgAppIDs); err != nil {
+		if err := p.EnsureOrgInMint(ctx, p.cfg.MintURL, org); err != nil {
 			return nil, fmt.Errorf("registering org %s in mint: %w", org, err)
 		}
 	}
@@ -626,7 +627,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	if !gcpRegionPattern.MatchString(p.cfg.Region) {
 		return nil, fmt.Errorf("invalid GCP region: %q", p.cfg.Region)
 	}
-	if len(p.cfg.AgentAppIDs) == 0 {
+	if len(p.cfg.AgentAppIDs) == 0 && !onlyPlaceholderOrgs(p.cfg.GitHubOrgs) {
 		return nil, fmt.Errorf("at least one agent App ID is required")
 	}
 	for role := range p.cfg.AgentPEMs {
@@ -671,17 +672,20 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	projectNumber := wifResult.projectNumber
 	allOrgs := wifResult.allOrgs
 
-	// Step 3: Grant Vertex AI access to each installing org's .fullsend repo
+	// Step 3: Grant Agent Platform access to each installing org's .fullsend repo
 	// at the project level (direct WIF — no intermediate service account).
 	// IAM policy changes can take up to 7 minutes to propagate.
+	iamGrantCount := 0
 	for _, org := range installingOrgs {
-		principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s/.fullsend",
-			projectNumber, p.cfg.WIFPoolName, org)
-		if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
-			return nil, fmt.Errorf("granting Vertex AI access for org %s: %w", org, err)
+		if org == PlaceholderOrg {
+			continue
 		}
+		if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
+			return nil, err
+		}
+		iamGrantCount++
 	}
-	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(installingOrgs))
+	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", iamGrantCount)
 
 	// Determine if code deployment is needed. When the function already
 	// exists and is active with the same source hash, skip the code deploy
@@ -727,44 +731,30 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		}
 	}
 
-	// Step 5a: Store new agent PEMs only for installing orgs.
-	for _, org := range installingOrgs {
-		for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
-			if err := p.StoreAgentPEM(ctx, org, role, p.cfg.AgentPEMs[role]); err != nil {
-				return nil, fmt.Errorf("storing PEM for %s/%s: %w", org, role, err)
-			}
+	// Step 5a: Store new agent PEMs once per role.
+	for _, role := range sortedByteMapKeys(p.cfg.AgentPEMs) {
+		if err := p.StoreAgentPEM(ctx, role, p.cfg.AgentPEMs[role]); err != nil {
+			return nil, fmt.Errorf("storing PEM for role %s: %w", role, err)
 		}
 	}
 
-	// Step 5b: Verify secrets exist for roles without PEMs (re-install,
-	// only for installing orgs).
-	for _, org := range installingOrgs {
-		for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
-			if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
-				continue
+	// Step 5b: Verify secrets exist for roles without PEMs (re-install).
+	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
+		if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
+			continue
+		}
+		sid := secretID(role)
+		if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+			if errors.Is(err, ErrSecretNotFound) {
+				return nil, fmt.Errorf("role %q has no PEM and secret %s not found in project %s",
+					role, sid, p.cfg.ProjectID)
 			}
-			sid := secretID(org, role)
-			if err := p.gcpAPI.GetSecret(ctx, p.cfg.ProjectID, sid); err != nil {
-				if errors.Is(err, ErrSecretNotFound) {
-					return nil, fmt.Errorf("role %q has no PEM and secret %s not found in project %s",
-						role, sid, p.cfg.ProjectID)
-				}
-				return nil, fmt.Errorf("checking secret %s for role %q: %w", sid, role, err)
-			}
+			return nil, fmt.Errorf("checking secret %s for role %q: %w", sid, role, err)
 		}
 	}
 
-	// Step 6: Build org-scoped env vars and deploy Cloud Function.
-	// Only create entries for installing orgs; existing orgs' entries are
-	// preserved by EnsureOrgInMint's merge logic.
-	orgScopedAppIDs := make(map[string]string)
-	for _, org := range installingOrgs {
-		for role, appID := range p.cfg.AgentAppIDs {
-			orgScopedAppIDs[org+"/"+role] = appID
-		}
-	}
-
-	roleAppIDsJSON, err := json.Marshal(orgScopedAppIDs)
+	// Step 6: Build env vars and deploy Cloud Function.
+	roleAppIDsJSON, err := marshalRoleAppIDs(p.cfg.AgentAppIDs)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling role app IDs: %w", err)
 	}
@@ -775,7 +765,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		"WIF_PROVIDER_NAME":  p.cfg.WIFProvider,
 		"ALLOWED_ORGS":       strings.Join(allOrgs, ","),
 		"OIDC_AUDIENCE":      oidcAudience,
-		"ROLE_APP_IDS":       string(roleAppIDsJSON),
+		"ROLE_APP_IDS":       roleAppIDsJSON,
 	}
 
 	// Step 6b: Code deployment — only when source hash changes.
@@ -833,6 +823,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 				deployEnvVars[k] = v
 			}
 		}
+		if len(p.cfg.AgentAppIDs) > 0 {
+			merged, mergeErr := mergeRoleAppIDsJSON(deployEnvVars["ROLE_APP_IDS"], p.cfg.AgentAppIDs)
+			if mergeErr != nil {
+				return nil, fmt.Errorf("merging role app IDs: %w", mergeErr)
+			}
+			deployEnvVars["ROLE_APP_IDS"] = merged
+		}
 		deployEnvVars["ALLOWED_ROLES"] = deriveAllowedRoles(deployEnvVars["ROLE_APP_IDS"])
 		if deployEnvVars["ALLOWED_WORKFLOW_FILES"] == "" {
 			deployEnvVars["ALLOWED_WORKFLOW_FILES"] = "*"
@@ -875,13 +872,9 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 	mintURL := existing.URI
 
-	// Register org env vars via EnsureOrgInMint (additive, no-op if already present).
+	// Register installing orgs in ALLOWED_ORGS.
 	for _, org := range installingOrgs {
-		perOrgAppIDs := make(map[string]string, len(p.cfg.AgentAppIDs))
-		for role, appID := range p.cfg.AgentAppIDs {
-			perOrgAppIDs[org+"/"+role] = appID
-		}
-		if err := p.EnsureOrgInMint(ctx, mintURL, org, perOrgAppIDs); err != nil {
+		if err := p.EnsureOrgInMint(ctx, mintURL, org); err != nil {
 			return nil, fmt.Errorf("registering org %s in mint: %w", org, err)
 		}
 	}
@@ -914,11 +907,11 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 // mergeAllowedOrgs reads ALLOWED_ORGS from existing env vars and unions
 // with the desired env vars. Result is sorted and deduplicated.
+// An empty existing value is treated as an empty set (not a skip) so that
+// the desired orgs are always preserved — silently returning on empty
+// existing data would mask data loss when the source has diverged.
 func mergeAllowedOrgs(existing, desired map[string]string) {
 	prev := existing["ALLOWED_ORGS"]
-	if prev == "" {
-		return
-	}
 	seen := make(map[string]bool)
 	var merged []string
 	for _, org := range strings.Split(desired["ALLOWED_ORGS"], ",") {
@@ -939,43 +932,75 @@ func mergeAllowedOrgs(existing, desired map[string]string) {
 	desired["ALLOWED_ORGS"] = strings.Join(merged, ",")
 }
 
-// mergeRoleAppIDs reads ROLE_APP_IDS from existing env vars and merges with
-// desired. New org's entries are added; same org re-installing overwrites
-// its own entries.
-func mergeRoleAppIDs(existing, desired map[string]string) {
-	prev := existing["ROLE_APP_IDS"]
-	if prev == "" {
-		return
-	}
-	var prevMap map[string]string
-	if err := json.Unmarshal([]byte(prev), &prevMap); err != nil {
-		return
-	}
-	var desiredMap map[string]string
-	if err := json.Unmarshal([]byte(desired["ROLE_APP_IDS"]), &desiredMap); err != nil {
-		return
-	}
-	for key, appID := range prevMap {
-		if _, exists := desiredMap[key]; !exists {
-			desiredMap[key] = appID
+// removeRoleFromAppIDsJSON removes a role-only key from ROLE_APP_IDS JSON.
+// Legacy org/role keys are preserved.
+func removeRoleFromAppIDsJSON(existingJSON, role string) (string, error) {
+	prevMap := make(map[string]string)
+	if existingJSON != "" {
+		if err := json.Unmarshal([]byte(existingJSON), &prevMap); err != nil {
+			return "", err
 		}
 	}
-	merged, _ := json.Marshal(desiredMap)
-	desired["ROLE_APP_IDS"] = string(merged)
+	delete(prevMap, role)
+	merged, err := json.Marshal(prevMap)
+	if err != nil {
+		return "", err
+	}
+	return string(merged), nil
 }
 
-// deriveAllowedRoles extracts unique role names from org-scoped ROLE_APP_IDS
-// keys (format: "org/role") and returns them as a sorted comma-separated string.
+// mergeRoleAppIDsJSON merges role-only app IDs into existing ROLE_APP_IDS JSON.
+// Legacy org/role keys in the existing map are preserved for migration windows.
+func mergeRoleAppIDsJSON(existingJSON string, newIDs map[string]string) (string, error) {
+	prevMap := make(map[string]string)
+	if existingJSON != "" {
+		if err := json.Unmarshal([]byte(existingJSON), &prevMap); err != nil {
+			return "", err
+		}
+	}
+	for role, appID := range newIDs {
+		prevMap[role] = appID
+	}
+	merged, err := json.Marshal(prevMap)
+	if err != nil {
+		return "", err
+	}
+	return string(merged), nil
+}
+
+func marshalRoleAppIDs(ids map[string]string) (string, error) {
+	if len(ids) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func onlyPlaceholderOrgs(orgs []string) bool {
+	if len(orgs) == 0 {
+		return false
+	}
+	for _, org := range orgs {
+		if org != PlaceholderOrg {
+			return false
+		}
+	}
+	return true
+}
+
+// deriveAllowedRoles extracts unique role names from role-only ROLE_APP_IDS
+// keys. Legacy org/role keys are ignored.
 func deriveAllowedRoles(roleAppIDsJSON string) string {
 	var m map[string]string
 	if err := json.Unmarshal([]byte(roleAppIDsJSON), &m); err != nil {
 		return ""
 	}
 	roleSet := make(map[string]bool)
-	for key := range m {
-		if idx := strings.Index(key, "/"); idx >= 0 {
-			roleSet[key[idx+1:]] = true
-		}
+	for key := range mintcore.RoleOnlyAppIDs(m) {
+		roleSet[key] = true
 	}
 	roles := make([]string, 0, len(roleSet))
 	for role := range roleSet {
@@ -985,22 +1010,24 @@ func deriveAllowedRoles(roleAppIDsJSON string) string {
 	return strings.Join(roles, ",")
 }
 
-// BuildRepoProviderID generates a GCP WIF provider ID scoped to a single repo.
-// GCP requires 4-32 chars, [a-z][a-z0-9-]*, no trailing hyphen.
-func BuildRepoProviderID(owner, repo string) string {
-	raw := fmt.Sprintf("gh-%s-%s", owner, repo)
-	raw = strings.ToLower(raw)
-	raw = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			return r
+// PlaceholderOrg is the deploy-time placeholder used in the WIF condition
+// and env vars before any real orgs are enrolled. Must pass mintcore.GitHubOrgPattern
+// validation (used by Provision), but should not collide with any real
+// GitHub org. The CLI rejects this value at enrollment time.
+const PlaceholderOrg = "x0fullsend0placeholder"
+
+// stripPlaceholderOrg removes the deploy-time placeholder org from a
+// comma-separated ALLOWED_ORGS value. Called during enrollment so the
+// placeholder doesn't persist after real orgs are added.
+func stripPlaceholderOrg(orgs string) string {
+	var filtered []string
+	for _, o := range strings.Split(orgs, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" && o != PlaceholderOrg {
+			filtered = append(filtered, o)
 		}
-		return '-'
-	}, raw)
-	if len(raw) > 32 {
-		raw = raw[:32]
 	}
-	raw = strings.TrimRight(raw, "-")
-	return raw
+	return strings.Join(filtered, ",")
 }
 
 // buildAttributeCondition constructs a WIF CEL condition scoped to the
@@ -1024,7 +1051,7 @@ const fullsendRepoSuffix = "/.fullsend"
 // Supports both the current org-scoped ("assertion.repository_owner == 'org'")
 // and legacy repo-scoped ("assertion.repository == 'org/.fullsend'") formats.
 //
-// The parser splits on single quotes and filters with githubOrgPattern, so it
+// The parser splits on single quotes and filters with mintcore.GitHubOrgPattern, so it
 // assumes conditions contain only org names as quoted values. If conditions are
 // ever extended with additional CEL clauses containing non-org quoted values,
 // this parser must be updated to avoid false-positive extraction.
@@ -1037,10 +1064,10 @@ func parseConditionOrgs(condition string) []string {
 		}
 		if strings.HasSuffix(part, fullsendRepoSuffix) {
 			org := strings.TrimSuffix(part, fullsendRepoSuffix)
-			if githubOrgPattern.MatchString(org) {
+			if mintcore.GitHubOrgPattern.MatchString(org) {
 				orgs = append(orgs, strings.ToLower(org))
 			}
-		} else if githubOrgPattern.MatchString(part) {
+		} else if mintcore.GitHubOrgPattern.MatchString(part) {
 			orgs = append(orgs, strings.ToLower(part))
 		}
 	}
@@ -1086,13 +1113,21 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		existingOrgs := parseConditionOrgs(existingProvider.AttributeCondition)
 		merged := make(map[string]bool)
 		for _, org := range allOrgs {
-			merged[org] = true
-		}
-		for _, org := range existingOrgs {
-			if !merged[org] {
-				allOrgs = append(allOrgs, org)
+			if org != PlaceholderOrg {
 				merged[org] = true
 			}
+		}
+		for _, org := range existingOrgs {
+			if org != PlaceholderOrg && !merged[org] {
+				merged[org] = true
+			}
+		}
+		allOrgs = make([]string, 0, len(merged))
+		for org := range merged {
+			allOrgs = append(allOrgs, org)
+		}
+		if len(allOrgs) == 0 {
+			allOrgs = []string{PlaceholderOrg}
 		}
 	}
 	sort.Strings(allOrgs)
@@ -1108,6 +1143,130 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 	}
 
 	return &wifMergeResult{projectNumber: projectNumber, allOrgs: allOrgs}, nil
+}
+
+// GrantOrgVertexAIAccess grants roles/aiplatform.user to an org's .fullsend
+// repo principal so that enrolled org workflows can call Agent Platform.
+func (p *Provisioner) GrantOrgVertexAIAccess(ctx context.Context, org string) error {
+	org = strings.ToLower(org)
+
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+
+	return p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org)
+}
+
+func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, projectNumber, org string) error {
+	org = strings.ToLower(org)
+	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s/.fullsend",
+		projectNumber, p.cfg.WIFPoolName, org)
+	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
+		return fmt.Errorf("granting Agent Platform access for org %s: %w", org, err)
+	}
+	return nil
+}
+
+func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, projectNumber, repo string) error {
+	repo = strings.ToLower(repo)
+	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
+		projectNumber, p.cfg.WIFPoolName, repo)
+	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
+		return fmt.Errorf("granting Agent Platform access for repo %s: %w", repo, err)
+	}
+	return nil
+}
+
+// EnsureOrgInWIFCondition adds an org to the org-level WIF provider's
+// attribute condition. Reads the existing condition, merges, and updates.
+// Strips the deploy-time placeholder (PlaceholderOrg) if present.
+// WARNING: read-modify-write without locking — concurrent calls may race.
+func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) error {
+	org = strings.ToLower(org)
+
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+
+	existing, err := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+	if err != nil {
+		return fmt.Errorf("reading WIF provider: %w", err)
+	}
+	if existing == nil {
+		return fmt.Errorf("WIF provider %s not found — run 'inference provision' or 'mint deploy' first", p.cfg.WIFProvider)
+	}
+
+	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
+	merged := make(map[string]bool)
+	for _, o := range existingOrgs {
+		if o != PlaceholderOrg {
+			merged[o] = true
+		}
+	}
+	merged[org] = true
+
+	allOrgs := make([]string, 0, len(merged))
+	for o := range merged {
+		allOrgs = append(allOrgs, o)
+	}
+	sort.Strings(allOrgs)
+
+	newCondition := buildAttributeCondition(allOrgs)
+	if newCondition == existing.AttributeCondition {
+		return nil
+	}
+
+	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+		AttributeCondition: newCondition,
+		AllowedAudiences:   audiences,
+	})
+}
+
+// RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's
+// attribute condition.
+// WARNING: read-modify-write without locking — concurrent calls may race.
+func (p *Provisioner) RemoveOrgFromWIFCondition(ctx context.Context, org string) error {
+	org = strings.ToLower(org)
+
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+
+	existing, err := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+	if err != nil {
+		return fmt.Errorf("reading WIF provider: %w", err)
+	}
+	if existing == nil {
+		return nil
+	}
+
+	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
+	var filtered []string
+	for _, o := range existingOrgs {
+		if o != org {
+			filtered = append(filtered, o)
+		}
+	}
+
+	if len(filtered) == len(existingOrgs) {
+		return nil
+	}
+
+	if len(filtered) == 0 {
+		filtered = []string{PlaceholderOrg}
+	}
+	sort.Strings(filtered)
+
+	newCondition := buildAttributeCondition(filtered)
+	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+		AttributeCondition: newCondition,
+		AllowedAudiences:   audiences,
+	})
 }
 
 // waitForReady polls the function until it responds with 200 OK, ensuring
@@ -1176,7 +1335,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	orgs := make([]string, len(p.cfg.GitHubOrgs))
 	seen := make(map[string]bool)
 	for i, org := range p.cfg.GitHubOrgs {
-		if !githubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
+		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
 			return "", fmt.Errorf("invalid GitHub org name: %q", org)
 		}
 		lower := strings.ToLower(org)
@@ -1199,7 +1358,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
 		}
-		if !githubOrgPattern.MatchString(parts[0]) || strings.Contains(parts[0], "--") {
+		if !mintcore.GitHubOrgPattern.MatchString(parts[0]) || strings.Contains(parts[0], "--") {
 			return "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", origParts[0])
 		}
 		if !githubRepoSlugPattern.MatchString(parts[1]) {
@@ -1219,7 +1378,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
 			return "", fmt.Errorf("creating WIF pool: %w", err)
 		}
-		providerID = BuildRepoProviderID(parts[0], parts[1])
+		providerID = mintcore.BuildRepoProviderID(parts[0], parts[1])
 		attrCondition := fmt.Sprintf("assertion.repository == '%s'", repo)
 		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
 		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
@@ -1238,21 +1397,15 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		projectNumber = wifResult.projectNumber
 	}
 
-	// IAM policy changes can take up to 7 minutes to propagate.
-	// Workflows that rely on these bindings may fail during that window.
 	if p.cfg.Repo != "" {
-		principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
-			projectNumber, p.cfg.WIFPoolName, repo)
-		if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
-			return "", fmt.Errorf("granting Vertex AI access for repo %s: %w", repo, err)
+		if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, repo); err != nil {
+			return "", err
 		}
 		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", repo)
 	} else {
 		for _, org := range orgs {
-			principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s/.fullsend",
-				projectNumber, p.cfg.WIFPoolName, org)
-			if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
-				return "", fmt.Errorf("granting Vertex AI access for org %s: %w", org, err)
+			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
+				return "", err
 			}
 		}
 		log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(orgs))
@@ -1262,6 +1415,152 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		projectNumber, p.cfg.WIFPoolName, providerID)
 
 	return wifProvider, nil
+}
+
+// ValidateProjectID checks if a string is a valid GCP project ID.
+func ValidateProjectID(id string) bool {
+	return gcpProjectIDPattern.MatchString(id)
+}
+
+// ValidateRegion checks if a string is a valid GCP region.
+func ValidateRegion(region string) bool {
+	return gcpRegionPattern.MatchString(region)
+}
+
+// ValidateRepoSlug checks if a string is a valid GitHub repository name.
+func ValidateRepoSlug(slug string) bool {
+	if !githubRepoSlugPattern.MatchString(slug) {
+		return false
+	}
+	if strings.HasPrefix(slug, ".") {
+		return false
+	}
+	if strings.HasSuffix(slug, ".git") {
+		return false
+	}
+	return true
+}
+
+// RemoveOrgFromMint removes an org from ALLOWED_ORGS. Role app IDs are shared
+// across orgs and are not modified. Uses read-modify-write via
+// UpdateServiceEnvVars (Cloud Run API, no rebuild).
+func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
+	org = strings.ToLower(org)
+
+	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("getting mint function: %w", err)
+	}
+	if fn == nil {
+		return fmt.Errorf("mint function %q not found in project %s region %s", functionName, p.cfg.ProjectID, p.cfg.Region)
+	}
+
+	// Read env vars from the traffic-serving revision to avoid stale data
+	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+
+	// Remove org from ALLOWED_ORGS.
+	var filteredOrgs []string
+	for _, o := range strings.Split(trafficEnvVars["ALLOWED_ORGS"], ",") {
+		o = strings.TrimSpace(o)
+		if o != "" && !strings.EqualFold(o, org) {
+			filteredOrgs = append(filteredOrgs, o)
+		}
+	}
+	sort.Strings(filteredOrgs)
+	updated["ALLOWED_ORGS"] = strings.Join(filteredOrgs, ",")
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("removing org from mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("removing org from mint env vars: %w", err)
+	}
+	return nil
+}
+
+// RemoveRepoFromMint removes a repo from PER_REPO_WIF_REPOS.
+// Uses read-modify-write via UpdateServiceEnvVars.
+func (p *Provisioner) RemoveRepoFromMint(ctx context.Context, repo string) error {
+	repo = strings.ToLower(repo)
+
+	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("getting mint function: %w", err)
+	}
+	if fn == nil {
+		return fmt.Errorf("mint function not found")
+	}
+
+	// Read env vars from the traffic-serving revision to avoid stale data
+	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	existing := trafficEnvVars["PER_REPO_WIF_REPOS"]
+	var filtered []string
+	for _, entry := range strings.Split(existing, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" && strings.ToLower(entry) != repo {
+			filtered = append(filtered, entry)
+		}
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+	updated["PER_REPO_WIF_REPOS"] = strings.Join(filtered, ",")
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("removing repo from mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("removing repo from mint env vars: %w", err)
+	}
+	return nil
+}
+
+// DisableWIFProvider sets a WIF provider's disabled field to true.
+func (p *Provisioner) DisableWIFProvider(ctx context.Context, providerID string) error {
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+	return p.gcpAPI.DisableWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID)
+}
+
+// DeleteWIFProvider permanently deletes a WIF provider.
+func (p *Provisioner) DeleteWIFProvider(ctx context.Context, providerID string) error {
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+	return p.gcpAPI.DeleteWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID)
+}
+
+// GetServiceRevisionInfo queries the Cloud Run service for revision details
+// including traffic routing, template divergence, and recent revision history.
+func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevisionInfo, error) {
+	return p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+}
+
+// GetServiceTrafficEnvVars reads env vars from the traffic-serving Cloud Run
+// revision. This is a convenience wrapper around the GCFClient method.
+func (p *Provisioner) GetServiceTrafficEnvVars(ctx context.Context) (map[string]string, error) {
+	return p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 }
 
 func (p *Provisioner) zeroPEMs() {
@@ -1325,6 +1624,19 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading file %s: %w", entry.Name(), err)
 		}
+
+		// Rewrite replace directive for deployment: the local source uses
+		// ../mintcore (sibling dir) but the zip layout nests mintcore inside.
+		// Regex handles variable whitespace from `go mod tidy` reformatting.
+		if entry.Name() == "go.mod" {
+			original := string(data)
+			rewritten := mintcoreReplaceRe.ReplaceAllString(original, "=> ./mintcore")
+			if rewritten == original {
+				return nil, fmt.Errorf("go.mod missing expected replace directive '=> ../mintcore'")
+			}
+			data = []byte(rewritten)
+		}
+
 		f, err := w.Create(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("creating zip entry %s: %w", entry.Name(), err)
@@ -1338,6 +1650,13 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 		}
 	}
 
+	// Include the mintcore module as a subdirectory (sibling on disk,
+	// nested in the zip so the replace ./mintcore directive resolves).
+	mintcoreDir := filepath.Join(dir, "..", "mintcore")
+	if err := addDirToZip(w, mintcoreDir, "mintcore"); err != nil {
+		return nil, fmt.Errorf("bundling mintcore: %w", err)
+	}
+
 	if fileCount == 0 {
 		return nil, fmt.Errorf("no deployable source files found in %s", dir)
 	}
@@ -1349,6 +1668,61 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 		return nil, fmt.Errorf("closing zip: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+var mintcoreReplaceRe = regexp.MustCompile(`=>\s+\.\./mintcore\b`)
+
+var mintcoreAllowedExts = map[string]bool{
+	".go": true, ".mod": true, ".sum": true,
+}
+
+func addDirToZip(w *zip.Writer, srcDir, zipPrefix string) error {
+	absRoot, err := filepath.Abs(srcDir)
+	if err != nil {
+		return fmt.Errorf("resolving source directory: %w", err)
+	}
+	return addDirToZipRooted(w, absRoot, srcDir, zipPrefix)
+}
+
+func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fmt.Errorf("reading directory %s: %w", srcDir, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		fullPath := filepath.Join(srcDir, entry.Name())
+		absPath, err := filepath.Abs(fullPath)
+		if err != nil || !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
+			continue
+		}
+		if entry.IsDir() {
+			if err := addDirToZipRooted(w, absRoot, fullPath, zipPrefix+"/"+entry.Name()); err != nil {
+				return err
+			}
+			continue
+		}
+		if !mintcoreAllowedExts[filepath.Ext(entry.Name())] {
+			continue
+		}
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", entry.Name(), err)
+		}
+		f, err := w.Create(zipPrefix + "/" + entry.Name())
+		if err != nil {
+			return fmt.Errorf("creating zip entry %s/%s: %w", zipPrefix, entry.Name(), err)
+		}
+		if _, err := f.Write(data); err != nil {
+			return fmt.Errorf("writing zip entry %s/%s: %w", zipPrefix, entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 // bundleEmbeddedMintSource creates a zip archive from the mint source files

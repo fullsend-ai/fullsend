@@ -123,6 +123,35 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
 done
 
 echo ""
+echo "Checking for ### Variables subsection..."
+echo "================================================"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    if [[ -z "$doc_value" ]]; then
+        continue
+    fi
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        continue
+    fi
+    doc_basename="$(basename "$doc_value")"
+
+    # Only check docs that have the Configuration section
+    if ! awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## Configuration and extension/{found=1} END{exit !found}' "$doc_path"; then
+        continue
+    fi
+
+    # Look for ### Variables under ## Configuration and extension (not just anywhere)
+    if ! awk 'BEGIN{f=0;c=0} /^```/{f=1-f;next} f{next} /^## Configuration and extension/{c=1;next} /^## /{c=0} c && /^### Variables/{found=1} END{exit !found}' "$doc_path"; then
+        echo "  $doc_basename: missing \"### Variables\" subsection under \"## Configuration and extension\""
+        errors=$((errors + 1))
+    else
+        echo "  $doc_basename: OK"
+    fi
+done
+
+echo ""
 echo "================================================"
 if [[ $errors -gt 0 ]]; then
     echo "FAILED: $errors error(s) found"
