@@ -61,10 +61,12 @@ in portable expressions over a forge-neutral **`NormalizedEvent`**
 
 Adopt **Option C**.
 
-- **`NormalizedEvent`:** forge-neutral routing input
+- **`NormalizedEvent`:** routing input with forge-neutral field names
   ([`docs/normative/normalized-event/v1/`](../normative/normalized-event/v1/),
-  [ADR 0015](0015-normative-specifications-directory.md)). Examples and
-  projection rules live in the normative tree — not duplicated here.
+  [ADR 0015](0015-normative-specifications-directory.md)). **v1 normative scope
+  is GitHub Actions** (`gha-event` driver); other forges are documented as
+  future illustrations only. Examples and projection rules live in the normative
+  tree — not duplicated here.
 - **Authorization:** `fullsend dispatch` enforces
   [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) as a
   **platform-level gate** after the input driver normalizes the event and
@@ -92,7 +94,9 @@ Adopt **Option C**.
 - Authorization remains centralized per ADR 0054; CEL triggers express routing
   only, not permission policy.
 - Routing is unit-testable via `NormalizedEvent` fixtures without GitHub
-  Actions; only input drivers are forge-specific.
+  Actions; input adapters own forge-specific mapping including comment
+  `command`/`instruction` extraction (from downstream workflow steps such as
+  `reusable-fix.yml`).
 - CEL linting, documentation, and eval fixtures are required
   ([testing-agents.md](../problems/testing-agents.md)); sequential multi-agent
   chaining remains out of scope ([ADR 0018](0018-scripted-pipeline-for-multi-agent-orchestration.md)).

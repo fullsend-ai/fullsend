@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
   "title": "NormalizedEvent",
-  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0055).",
+  "description": "GitHub-oriented routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0055). v1 targets GitHub Actions; other forges are out of scope until a future schema version.",
   "type": "object",
   "additionalProperties": false,
   "required": ["repo", "entity", "transition", "actor", "state", "source"],
@@ -26,13 +26,54 @@
       "$ref": "#/$defs/source"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "kind": { "const": "change_proposal" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": { "linked_change_proposal": false }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "kind": { "const": "work_item" } },
+            "required": ["kind"]
+          },
+          "state": {
+            "required": ["change_proposal"]
+          }
+        },
+        "required": ["entity", "state"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "required": ["linked_change_proposal"]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "repo_path": {
       "type": "string",
-      "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$",
+      "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
       "minLength": 3,
       "maxLength": 512,
-      "description": "Target enrolled repository. Two segments for GitHub (owner/repo); nested groups for GitLab (group/subgroup/project)."
+      "description": "GitHub repository slug (owner/repo)."
     },
     "entity": {
       "type": "object",
@@ -54,7 +95,7 @@
           "format": "uri",
           "minLength": 1,
           "maxLength": 2048,
-          "description": "Canonical forge URL for the entity (native form for source.system)."
+          "description": "Canonical GitHub URL for the entity."
         },
         "linked_change_proposal": {
           "type": "object",
@@ -282,7 +323,7 @@
               "type": "boolean"
             }
           },
-          "description": "Required when the matched harness needs change-proposal execution context (review, fix, retro on a PR/MR). id MUST match entity.id or entity.linked_change_proposal.id when those are present. Adapters must populate branch and repo fields so dispatch can project event_payload without API round-trips."
+          "description": "Required when the matched harness needs change-proposal execution context (review, fix, retro on a PR). id MUST match entity.id or entity.linked_change_proposal.id when those are present. Adapters must populate branch and repo fields so dispatch can project event_payload without API round-trips."
         }
       }
     },
@@ -293,13 +334,14 @@
       "properties": {
         "system": {
           "type": "string",
-          "enum": ["github", "gitlab", "manual", "schedule"]
+          "enum": ["github", "manual", "schedule"],
+          "description": "Event provenance. v1 adapters emit github, manual, or schedule only."
         },
         "raw_type": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "description": "Native event type (e.g. issue_comment, merge_request_event)."
+          "description": "Native GitHub event type (e.g. issues, issue_comment, pull_request_target)."
         },
         "raw_action": {
           "type": "string",
