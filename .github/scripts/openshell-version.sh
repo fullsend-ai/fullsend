@@ -9,8 +9,8 @@
 #   source .github/scripts/openshell-version.sh
 
 # renovate: datasource=github-tags depName=NVIDIA/OpenShell
-OPENSHELL_VERSION=0.0.63
-OPENSHELL_SHA=ec197a43ef349e36c3fff04e9aaea9599fb83b31
+OPENSHELL_VERSION=0.0.71
+OPENSHELL_SHA=a242f84bb367d6df7d4d133e95a93857406c67f7
 
 export OPENSHELL_VERSION OPENSHELL_SHA
 
