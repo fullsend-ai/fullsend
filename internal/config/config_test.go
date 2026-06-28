@@ -60,7 +60,10 @@ func TestNewOrgConfig(t *testing.T) {
 	assert.False(t, cfg.Repos["repo-b"].Enabled)
 	assert.True(t, cfg.Repos["repo-c"].Enabled)
 
-	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}, cfg.AllowedRemoteResources)
+	assert.Equal(t, []string{
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/triage-agent/",
+	}, cfg.AllowedRemoteResources)
 }
 
 func TestOrgConfigMarshal(t *testing.T) {
