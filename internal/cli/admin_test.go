@@ -60,6 +60,10 @@ func TestInstallCmd_Flags(t *testing.T) {
 	require.NotNil(t, vendorFlag, "expected --vendor flag")
 	assert.Equal(t, "false", vendorFlag.DefValue)
 
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
 
@@ -581,7 +585,7 @@ func setupTestConfig(repos map[string]bool) *config.OrgConfig {
 	// Sort to ensure deterministic order despite map iteration being non-deterministic.
 	sort.Strings(repoNames)
 	sort.Strings(enabledRepos)
-	return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, nil, "", "")
+	return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, "", "")
 }
 
 func setupTestClient(org string, cfg *config.OrgConfig, orgRepos []string) *forge.FakeClient {
@@ -1084,7 +1088,6 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		[]string{"repo-a", "repo-b"},
 		nil, // nil enabledRepos → all repos are disabled in cfg
 		[]string{"triage"},
-		nil,
 		"",
 		"",
 	)
@@ -1093,6 +1096,7 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 	// When enabledRepos is nil (user chose not to change enrollment),
 	// buildLayerStack must NOT pass disabled repos to the enrollment layer.
 	stack := buildLayerStack(
+		context.Background(),
 		"test-org", nil, cfg, printer, "user",
 		false, // privateRepo
 		nil,   // enabledRepos (nil = no change)
@@ -1105,6 +1109,7 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		"",    // analyzeFullsendSource
 		nil,   // dispatcher
 		"dev", // commitSHA
+		false, // direct
 	)
 
 	// The enrollment layer (last in the stack) should have no repos to
@@ -1129,17 +1134,18 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 		[]string{"repo-a", "repo-b"},
 		[]string{}, // explicitly empty → all repos are disabled
 		[]string{"triage"},
-		nil,
 		"",
 		"",
 	)
 	printer := ui.New(&discardWriter{})
 
 	stack := buildLayerStack(
+		context.Background(),
 		"test-org", nil, cfg, printer, "user",
 		false,
 		[]string{}, // explicitly empty (not nil)
 		nil, nil, nil, false, nil, nil, "", nil, "dev",
+		false, // direct
 	)
 
 	// The enrollment layer should have disabled repos to reconcile.
@@ -1813,7 +1819,7 @@ func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
 		"https://mint.example.com/v1/token",
-		false,
+		false, false,
 		discovered,
 	)
 	require.Error(t, err)
@@ -1828,7 +1834,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1839,7 +1845,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
 		"https://mint.example.com/v1/token",
-		true,
+		true, false,
 		client.Repos,
 	)
 	require.NoError(t, err)
@@ -1853,7 +1859,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1865,7 +1871,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
 		"https://mint.example.com/v1/token",
-		true,
+		true, false,
 		nil,
 	)
 	require.NoError(t, err)
@@ -1886,7 +1892,7 @@ func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
 		"https://mint.example.com/v1/token",
-		true,
+		true, false,
 		discovered,
 	)
 	require.Error(t, err)
@@ -1901,7 +1907,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
 		agentCreds = append(agentCreds, layers.AgentCredentials{
-			AgentEntry: config.AgentEntry{Role: role},
+			Role: role,
 		})
 	}
 
@@ -1913,7 +1919,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 		true, "", "",
 		"gcf", "test-project", "us-central1", "", true,
 		"https://mint.example.com/v1/token",
-		true,
+		true, false,
 		client.Repos,
 	)
 	require.NoError(t, err)
@@ -2191,17 +2197,18 @@ func TestRunUninstall_UsesHarnessDiscovery(t *testing.T) {
 	assert.NotContains(t, output, "agents: block")
 }
 
-func TestRunUninstall_FallsBackToAgentsBlockWithWarning(t *testing.T) {
+func TestRunUninstall_NoHarnessFiles_FallsBackToDefaultNaming(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
 
-	// Provide config.yaml with agents: block but no harness directory.
+	// Provide config.yaml but no harness directory — discoverAgentSlugs
+	// returns nil, and runUninstall falls back to default naming.
 	client.FileContents = map[string][]byte{
-		"test-org/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: cfg-triage\n"),
+		"test-org/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\n"),
 	}
 
 	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "cfg-triage"},
+		{ID: 1, AppSlug: "fullsend-ai-triage"},
 	}
 
 	var buf strings.Builder
@@ -2211,8 +2218,7 @@ func TestRunUninstall_FallsBackToAgentsBlockWithWarning(t *testing.T) {
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "cfg-triage")
-	assert.Contains(t, output, "agents: block")
+	assert.Contains(t, output, "fullsend-ai-triage")
 }
 
 func TestAwaitRepoMaintenance_Success(t *testing.T) {
@@ -2329,13 +2335,15 @@ func TestApplyPerRepoScaffold(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, repoVars, repoSecrets)
+		"acme", "widget", files, repoVars, repoSecrets, false)
 	require.NoError(t, err)
 
-	require.Len(t, client.CommittedFiles, 1)
-	assert.Equal(t, "acme", client.CommittedFiles[0].Owner)
-	assert.Equal(t, "widget", client.CommittedFiles[0].Repo)
-	assert.Len(t, client.CommittedFiles[0].Files, 2)
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	assert.Equal(t, "acme", client.CommittedFilesToBranch[0].Owner)
+	assert.Equal(t, "widget", client.CommittedFilesToBranch[0].Repo)
+	assert.Len(t, client.CommittedFilesToBranch[0].Files, 2)
+
+	require.NotEmpty(t, client.CreatedProposals, "expected scaffold PR to be created")
 
 	varNames := make(map[string]string)
 	for _, v := range client.Variables {
@@ -2359,7 +2367,7 @@ func TestApplyPerRepoScaffold_GetRepoError(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", nil, nil, nil)
+		"acme", "widget", nil, nil, nil, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting repo info")
 }
@@ -2375,7 +2383,7 @@ func TestApplyPerRepoScaffold_CommitFilesError(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing scaffold files")
 	assert.Empty(t, client.CreatedBranches, "should not attempt fallback for generic error")
@@ -2387,6 +2395,9 @@ func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	noChange := false
 	client.CommitFilesChanged = &noChange
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrAlreadyExists),
+	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
@@ -2395,11 +2406,30 @@ func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, map[string]string{"K": "V"}, map[string]string{"S": "secret"})
+		"acme", "widget", files, map[string]string{"K": "V"}, map[string]string{"S": "secret"}, false)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "up to date")
 	assert.Len(t, client.Variables, 1, "variables should still be set even when files are unchanged")
 	assert.Len(t, client.CreatedSecrets, 1, "secrets should still be set even when files are unchanged")
+}
+
+func TestApplyPerRepoScaffold_DefaultPR_NoChanges(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	files := []forge.TreeFile{
+		{Path: ".fullsend/config.yaml", Content: []byte("cfg"), Mode: "100644"},
+	}
+
+	err := applyPerRepoScaffold(context.Background(), client, printer,
+		"acme", "widget", files, map[string]string{"K": "V"}, nil, false)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "up to date")
 }
 
 func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
@@ -2413,7 +2443,7 @@ func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "acme/widget (develop branch)")
 	assert.Contains(t, buf.String(), "Pushed 1 file to develop")
@@ -2428,7 +2458,7 @@ func TestApplyPerRepoScaffold_CreateVariableError(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", nil, map[string]string{"K": "V"}, nil)
+		"acme", "widget", nil, map[string]string{"K": "V"}, nil, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setting repo variable")
 }
@@ -2442,7 +2472,7 @@ func TestApplyPerRepoScaffold_CreateSecretError(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", nil, nil, map[string]string{"S": "V"})
+		"acme", "widget", nil, nil, map[string]string{"S": "V"}, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setting repo secret")
 }
@@ -2461,7 +2491,7 @@ func TestApplyPerRepoScaffold_ProtectedBranchFallback(t *testing.T) {
 	repoSecrets := map[string]string{"S": "secret"}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, repoVars, repoSecrets)
+		"acme", "widget", files, repoVars, repoSecrets, true)
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedBranches, 1)
@@ -2493,7 +2523,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.NoError(t, err)
 
 	require.Len(t, client.CommittedFilesToBranch, 1, "should proceed despite branch existing")
@@ -2513,7 +2543,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_StillSetsVarsAndSecrets(t *testing
 	repoSecrets := map[string]string{"FULLSEND_GCP_PROJECT_ID": "my-project"}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, repoVars, repoSecrets)
+		"acme", "widget", files, repoVars, repoSecrets, true)
 	require.NoError(t, err)
 
 	assert.Len(t, client.Variables, 1, "variables should be set even with PR fallback")
@@ -2532,7 +2562,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreateBranchFails(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating scaffold branch")
 }
@@ -2549,7 +2579,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CommitToBranchFails(t *testing.T) 
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing scaffold files to branch")
 }
@@ -2566,7 +2596,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *tes
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "scaffold branch")
 	assert.Contains(t, err.Error(), "configure branch protection")
@@ -2584,7 +2614,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreatePRFails(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating scaffold PR")
 }
@@ -2602,7 +2632,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -2610,7 +2640,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	assert.Contains(t, output, "Merge the PR")
 }
 
-func TestLoadKnownSlugs_HarnessFilesPreferred(t *testing.T) {
+func TestLoadKnownSlugs_HarnessFiles(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.DirContents["myorg/.fullsend/harness@HEAD"] = []forge.DirectoryEntry{
 		{Path: "harness/triage.yaml", Type: "file"},
@@ -2619,14 +2649,6 @@ func TestLoadKnownSlugs_HarnessFilesPreferred(t *testing.T) {
 	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("role: triage\nslug: fullsend-ai-triage\n")
 	client.FileContentsRef["myorg/.fullsend/harness/coder.yaml@HEAD"] = []byte("role: coder\nslug: fullsend-ai-coder\n")
 
-	// Also set up config.yaml agents: block — should NOT be used.
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: old-triage-slug
-    name: old-triage
-`)
-
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
@@ -2635,69 +2657,30 @@ agents:
 		"triage": "fullsend-ai-triage",
 		"coder":  "fullsend-ai-coder",
 	}, slugs)
-	assert.NotContains(t, buf.String(), "agents: block")
 }
 
-func TestLoadKnownSlugs_FallbackToAgentsBlock(t *testing.T) {
+func TestLoadKnownSlugs_NoHarnessFiles_ReturnsNil(t *testing.T) {
 	client := forge.NewFakeClient()
-	// No harness/ directory → ErrNotFound from DirContents.
-
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-  - role: coder
-    slug: fullsend-ai-coder
-    name: fullsend-ai-coder
-`)
-
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
-
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-		"coder":  "fullsend-ai-coder",
-	}, slugs)
-	assert.Contains(t, buf.String(), "agents: block")
-}
-
-func TestLoadKnownSlugs_HarnessFilesWithoutRoleSlug_FallsBack(t *testing.T) {
-	client := forge.NewFakeClient()
-	// Harness files exist but lack role/slug (legacy format).
-	client.DirContents["myorg/.fullsend/harness@HEAD"] = []forge.DirectoryEntry{
-		{Path: "harness/triage.yaml", Type: "file"},
-	}
-	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("agent: agents/triage.md\nmodel: opus\n")
-
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-`)
-
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
-
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-	}, slugs)
-	assert.Contains(t, buf.String(), "agents: block")
-}
-
-func TestLoadKnownSlugs_NeitherSource_ReturnsNil(t *testing.T) {
-	client := forge.NewFakeClient()
-	// No harness/ dir, no config.yaml.
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
 	assert.Nil(t, slugs)
-	assert.NotContains(t, buf.String(), "agents: block")
+}
+
+func TestLoadKnownSlugs_HarnessFilesWithoutRoleSlug_ReturnsNil(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.DirContents["myorg/.fullsend/harness@HEAD"] = []forge.DirectoryEntry{
+		{Path: "harness/triage.yaml", Type: "file"},
+	}
+	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("agent: agents/triage.md\nmodel: opus\n")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
+
+	assert.Nil(t, slugs)
 }
 
 func TestLoadKnownSlugs_DuplicateRoles_FirstWins(t *testing.T) {
@@ -2747,55 +2730,24 @@ func TestLoadKnownSlugs_RoleWithoutSlug_WarnsAndSkips(t *testing.T) {
 	}
 	client.FileContentsRef["myorg/.fullsend/harness/triage.yaml@HEAD"] = []byte("role: triage\n")
 
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-`)
-
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-	}, slugs)
+	assert.Nil(t, slugs)
 	assert.Contains(t, buf.String(), "both must be set")
 }
 
-func TestLoadKnownSlugs_HardError_ZeroAgents_FallsBack(t *testing.T) {
+func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["ListDirectoryContents"] = fmt.Errorf("network timeout")
-
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte(`version: "1"
-agents:
-  - role: triage
-    slug: fullsend-ai-triage
-    name: fullsend-ai-triage
-`)
-
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
-
-	assert.Equal(t, map[string]string{
-		"triage": "fullsend-ai-triage",
-	}, slugs)
-	assert.Contains(t, buf.String(), "harness discovery")
-	assert.Contains(t, buf.String(), "deprecated")
-}
-
-func TestLoadKnownSlugs_MalformedConfig_ReturnsNil(t *testing.T) {
-	client := forge.NewFakeClient()
-	// No harness/ dir, malformed config.yaml.
-	client.FileContents["myorg/.fullsend/config.yaml"] = []byte("not: valid: yaml: [")
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	slugs := loadKnownSlugs(context.Background(), client, "myorg", forge.ConfigRepoName, "HEAD", printer)
 
 	assert.Nil(t, slugs)
+	assert.Contains(t, buf.String(), "harness discovery")
 }
 
 func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
@@ -2813,8 +2765,27 @@ func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil)
+		"acme", "widget", files, nil, nil, true)
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "up to date")
+}
+
+func TestToAgentCredentials(t *testing.T) {
+	ac := &appsetup.AppCredentials{
+		AppID:    42,
+		Slug:     "test-slug",
+		Name:     "test-name",
+		PEM:      "pem-data",
+		ClientID: "client-id",
+	}
+
+	cred := toAgentCredentials("triage", ac)
+
+	assert.Equal(t, "triage", cred.Role)
+	assert.Equal(t, "test-name", cred.Name)
+	assert.Equal(t, "test-slug", cred.Slug)
+	assert.Equal(t, "pem-data", cred.PEM)
+	assert.Equal(t, "client-id", cred.ClientID)
+	assert.Equal(t, 42, cred.AppID)
 }

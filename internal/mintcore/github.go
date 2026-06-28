@@ -64,6 +64,12 @@ var canonicalRolePermissions = map[string]map[string]string{
 	"retro":      {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
 	"prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
 	"fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+	"e2e": {
+		"actions": "write", "actions_variables": "read", "administration": "write",
+		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
+		"organization_administration": "write", "pull_requests": "write",
+		"secrets": "write", "workflows": "write",
+	},
 }
 
 // RolePermissions returns a deep copy of the role-to-permissions map,

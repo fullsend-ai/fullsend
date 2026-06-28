@@ -42,7 +42,9 @@ plugins:
 # Environment variables available to pre/post scripts on the runner.
 # These are expanded from the runner environment and NEVER enter the sandbox.
 runner_env:
-  TARGET_BRANCH: "${TARGET_BRANCH}"
+  CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/code-result.schema.json
+  FULLSEND_OUTPUT_FILE: code-result.json
 
 timeout_minutes: 35
 

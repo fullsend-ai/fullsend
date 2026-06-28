@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 func TestDefaultAgentRoles(t *testing.T) {
@@ -100,6 +102,82 @@ func TestAgentAppConfig_Retro(t *testing.T) {
 
 	// Retro is triggered via workflow_dispatch, no webhook events.
 	assert.Empty(t, cfg.Events)
+}
+
+func TestAgentAppConfig_E2e(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "e2e", "fullsend-ai")
+
+	assert.Equal(t, "fullsend-ai-e2e", cfg.Name)
+	assert.Equal(t, "write", cfg.Permissions.Actions)
+	assert.Equal(t, "read", cfg.Permissions.Variables)
+	assert.Equal(t, "write", cfg.Permissions.Administration)
+	assert.Equal(t, "write", cfg.Permissions.Contents)
+	assert.Equal(t, "write", cfg.Permissions.Issues)
+	assert.Equal(t, "write", cfg.Permissions.Members)
+	assert.Equal(t, "write", cfg.Permissions.OrganizationAdministration)
+	assert.Equal(t, "write", cfg.Permissions.PullRequests)
+	assert.Equal(t, "write", cfg.Permissions.Secrets)
+	assert.Equal(t, "write", cfg.Permissions.Workflows)
+	assert.Empty(t, cfg.Events)
+}
+
+// appPermissionsAsMap converts manifest permissions to GitHub API permission names.
+func appPermissionsAsMap(p AppPermissions) map[string]string {
+	out := make(map[string]string)
+	if p.Actions != "" {
+		out["actions"] = p.Actions
+	}
+	if p.Issues != "" {
+		out["issues"] = p.Issues
+	}
+	if p.PullRequests != "" {
+		out["pull_requests"] = p.PullRequests
+	}
+	if p.Checks != "" {
+		out["checks"] = p.Checks
+	}
+	if p.Contents != "" {
+		out["contents"] = p.Contents
+	}
+	if p.Variables != "" {
+		out["actions_variables"] = p.Variables
+	}
+	if p.Workflows != "" {
+		out["workflows"] = p.Workflows
+	}
+	if p.Administration != "" {
+		out["administration"] = p.Administration
+	}
+	if p.Members != "" {
+		out["members"] = p.Members
+	}
+	if p.OrganizationProjects != "" {
+		out["organization_projects"] = p.OrganizationProjects
+	}
+	if p.OrganizationAdministration != "" {
+		out["organization_administration"] = p.OrganizationAdministration
+	}
+	if p.Secrets != "" {
+		out["secrets"] = p.Secrets
+	}
+	return out
+}
+
+func TestAgentAppConfig_E2eMatchesMintcorePermissions(t *testing.T) {
+	canonical := mintcore.RolePermissionsFor("e2e")
+	require.NotNil(t, canonical)
+
+	manifest := appPermissionsAsMap(AgentAppConfig("myorg", "e2e", "fullsend-ai").Permissions)
+
+	// metadata is added at mint token time; GitHub App manifests omit it explicitly.
+	for key, want := range canonical {
+		if key == "metadata" {
+			continue
+		}
+		got, ok := manifest[key]
+		assert.True(t, ok, "AgentAppConfig(e2e) missing permission %q from mintcore canonicalRolePermissions", key)
+		assert.Equal(t, want, got, "permission %q mismatch between AgentAppConfig and mintcore", key)
+	}
 }
 
 func TestAgentAppConfig_UnknownRole(t *testing.T) {

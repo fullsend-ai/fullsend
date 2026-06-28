@@ -52,6 +52,12 @@ git log --oneline -10 -- <test-file-path>
 - Read any security-sensitive files related to the change (auth
   middleware, RBAC configuration, sandboxing code) even if they are not
   directly modified.
+- **Cross-file verification:** If you intend to reference a file's
+  contents in a finding — even a file not in the diff — you MUST read
+  that file first. Never claim a file contains specific text without
+  having read it in this session. If you cannot read the file (e.g., it
+  is in another repository or inaccessible), state that you were unable
+  to verify the contents rather than assuming what they contain.
 
 ### 3. Evaluate each dimension
 
@@ -214,6 +220,13 @@ For each issue identified, record:
   items that can be fixed independently after merge. Use `false` for
   observations, praise, broad suggestions, and anything already handled
   by the PR.
+
+**Cross-file finding self-check:** Before recording any finding that
+asserts what a specific file contains, verify that you read that file
+during step 2. If you did not read it, read it now before finalizing
+the finding. If the file is unreadable, reframe the finding to state
+that the contents could not be verified — do not assert unverified
+contents as fact.
 
 #### Severity anchoring (re-reviews)
 

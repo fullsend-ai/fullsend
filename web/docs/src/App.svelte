@@ -137,6 +137,7 @@
   function syncRouteFromLocation(): void {
     const legacy = legacyPathnameDocRest();
     if (legacy !== null) {
+      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- imperative one-shot, not reactive state
       const u = new URL(window.location.href);
       u.pathname = "/docs/";
       u.hash = formatDocHash(legacy);
@@ -499,6 +500,7 @@
               class="doc-body"
               data-frontmatter={JSON.stringify(page.frontmatter)}
             >
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -- rendered markdown from build-time pipeline -->
               {@html page.html}
             </article>
           {:else if pageRouteKey && loading}

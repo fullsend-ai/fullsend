@@ -130,10 +130,10 @@ case "${ACTION}" in
 
     # Read the allowlist from config.yaml. The config repo is checked out
     # at $GITHUB_WORKSPACE by the reusable workflow.
-    CONFIG_FILE="${GITHUB_WORKSPACE}/config.yaml"
+    CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/config.yaml"
     if [[ ! -f "${CONFIG_FILE}" ]]; then
       # Per-repo mode: config is under .fullsend/
-      CONFIG_FILE="${GITHUB_WORKSPACE}/.fullsend/config.yaml"
+      CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/.fullsend/config.yaml"
     fi
 
     ALLOWED_ORGS=""

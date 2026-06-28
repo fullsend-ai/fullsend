@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -45,8 +46,10 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("creating runtime config dirs: %w", err)
 	}
 
-	if err := sandbox.Upload(sandboxName, agentPath,
-		fmt.Sprintf("%s/agents/", configDir)); err != nil {
+	agentDest := agentDestName(input.AgentName(), agentPath)
+
+	if err := sandbox.UploadFile(sandboxName, agentPath,
+		fmt.Sprintf("%s/agents/%s", configDir, agentDest)); err != nil {
 		return fmt.Errorf("copying agent definition: %w", err)
 	}
 
@@ -58,7 +61,7 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 			fmt.Sprintf("%s/skills/", configDir)); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
 		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", filepath.Base(skillPath))
+		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	var pluginDirs []string
@@ -190,6 +193,22 @@ func (ClaudeRuntime) ParseTranscriptErrors(transcriptDir string) []TranscriptErr
 
 func (ClaudeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 	emitTranscriptErrors(w, summaries)
+}
+
+// resolveSkillDisplayName returns a human-friendly name for a skill directory.
+// It reads the SKILL.md frontmatter name if available, falling back to
+// filepath.Base for local skills where the directory name is already correct.
+func resolveSkillDisplayName(skillPath string) string {
+	base := filepath.Base(skillPath)
+	data, err := os.ReadFile(filepath.Join(skillPath, "SKILL.md"))
+	if err != nil {
+		return base
+	}
+	meta, err := skill.ParseFrontmatter(data)
+	if err != nil || meta == nil || meta.Name == "" {
+		return base
+	}
+	return meta.Name
 }
 
 func buildRunCommand(params RunParams) string {
@@ -429,6 +448,17 @@ func buildPluginConfigs(plugins []string, pluginsBase, mktBase, marketplace, ver
 		result = append(result, pluginConfigEntry{path: entry.path, data: data})
 	}
 	return result, nil
+}
+
+// agentDestName returns the sandbox filename for the agent definition.
+// When agentName is non-empty it produces {name}.md; otherwise it falls
+// back to the source file's basename (the cache basename "content" has
+// no .md extension, so the fallback only works for local files).
+func agentDestName(agentName, agentPath string) string {
+	if agentName != "" {
+		return strings.TrimSuffix(agentName, ".md") + ".md"
+	}
+	return filepath.Base(agentPath)
 }
 
 // Ensure ClaudeRuntime implements Runtime and TranscriptHandler.

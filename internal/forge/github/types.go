@@ -4,16 +4,18 @@ import "fmt"
 
 // AppPermissions defines the permissions for a GitHub App.
 type AppPermissions struct {
-	Actions              string `json:"actions,omitempty"`
-	Issues               string `json:"issues,omitempty"`
-	PullRequests         string `json:"pull_requests,omitempty"`
-	Checks               string `json:"checks,omitempty"`
-	Contents             string `json:"contents,omitempty"`
-	Variables            string `json:"actions_variables,omitempty"`
-	Workflows            string `json:"workflows,omitempty"`
-	Administration       string `json:"administration,omitempty"`
-	Members              string `json:"members,omitempty"`
-	OrganizationProjects string `json:"organization_projects,omitempty"`
+	Actions                    string `json:"actions,omitempty"`
+	Issues                     string `json:"issues,omitempty"`
+	PullRequests               string `json:"pull_requests,omitempty"`
+	Checks                     string `json:"checks,omitempty"`
+	Contents                   string `json:"contents,omitempty"`
+	Variables                  string `json:"actions_variables,omitempty"`
+	Workflows                  string `json:"workflows,omitempty"`
+	Administration             string `json:"administration,omitempty"`
+	Members                    string `json:"members,omitempty"`
+	OrganizationProjects       string `json:"organization_projects,omitempty"`
+	OrganizationAdministration string `json:"organization_administration,omitempty"`
+	Secrets                    string `json:"secrets,omitempty"`
 }
 
 // HookAttributes configures the webhook for a GitHub App.
@@ -137,6 +139,23 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 			Issues:       "write",
 		}
 		// No webhook events — triggered via workflow_dispatch from other agents.
+		base.Events = []string{}
+
+	case "e2e":
+		base.Description = fmt.Sprintf("Fullsend e2e pool testing for %s", org)
+		base.Permissions = AppPermissions{
+			Actions:                    "write",
+			Variables:                  "read",
+			Administration:             "write",
+			Contents:                   "write",
+			Issues:                     "write",
+			Members:                    "write",
+			OrganizationAdministration: "write",
+			PullRequests:               "write",
+			Secrets:                    "write",
+			Workflows:                  "write",
+		}
+		// Pool tests are API/mint driven; no webhook events required.
 		base.Events = []string{}
 
 	default:

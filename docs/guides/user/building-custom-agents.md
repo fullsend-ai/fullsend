@@ -146,7 +146,7 @@ post_script: customized/scripts/post-my-agent.sh
 runner_env:
   MY_VAR: "${MY_VAR}"
   ISSUE_KEY: "${ISSUE_KEY}"
-  GH_TOKEN: "${GH_TOKEN}"
+  GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
   FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
 
 timeout_minutes: 20
@@ -370,7 +370,7 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository for harness reading
         uses: actions/checkout@v6
@@ -492,7 +492,7 @@ jobs:
     if: >-
       github.event.comment.user.type != 'Bot'
       && startsWith(github.event.comment.body, '/my-command')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Dispatch
         env:

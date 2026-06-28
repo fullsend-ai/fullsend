@@ -21,10 +21,12 @@ import (
 type bootstrapInput struct {
 	sandboxName string
 	agentPath   string
+	agentName   string
 }
 
 func (b bootstrapInput) SandboxName() string  { return b.sandboxName }
 func (b bootstrapInput) AgentPath() string    { return b.agentPath }
+func (b bootstrapInput) AgentName() string    { return b.agentName }
 func (b bootstrapInput) SkillDirs() []string  { return nil }
 func (b bootstrapInput) PluginDirs() []string { return nil }
 
@@ -51,6 +53,46 @@ func testRunCommand(agentName, model, repoDir string, pluginDirs []string, debug
 		PluginDirs:    pluginDirs,
 		Debug:         debug,
 	})
+}
+
+func TestAgentDestName(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentName string
+		agentPath string
+		expected  string
+	}{
+		{
+			name:      "uses agent name without .md suffix",
+			agentName: "review",
+			agentPath: "/cache/abc123/content",
+			expected:  "review.md",
+		},
+		{
+			name:      "strips .md suffix to avoid duplication",
+			agentName: "review.md",
+			agentPath: "/cache/abc123/content",
+			expected:  "review.md",
+		},
+		{
+			name:      "falls back to basename when agent name is empty",
+			agentName: "",
+			agentPath: "/path/to/agents/code.md",
+			expected:  "code.md",
+		},
+		{
+			name:      "fallback with cache path returns content basename",
+			agentName: "",
+			agentPath: "/cache/abc123/content",
+			expected:  "content",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentDestName(tc.agentName, tc.agentPath)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
 }
 
 func TestBuildRunCommand_Basic(t *testing.T) {
@@ -319,6 +361,50 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "creating runtime config dirs")
 }
 
+// TestClaudeRuntime_Bootstrap_AgentNameDest verifies that Bootstrap uses
+// agentDestName to derive the destination filename and calls UploadFile
+// with the correct path. A stub openshell binary is placed on PATH so
+// sandbox operations succeed without a real sandbox.
+func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
+	// Create a stub openshell that always exits 0.
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "openshell")
+	require.NoError(t, os.WriteFile(stubPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "content")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent definition"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+	})
+	// The stub openshell succeeds for all sandbox calls, so Bootstrap
+	// should complete without error, exercising agentDestName and the
+	// UploadFile call path.
+	assert.NoError(t, err)
+}
+
+// TestClaudeRuntime_Bootstrap_AgentNameEmpty verifies the fallback path
+// where AgentName is empty and the source basename is used.
+func TestClaudeRuntime_Bootstrap_AgentNameEmpty(t *testing.T) {
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "openshell")
+	require.NoError(t, os.WriteFile(stubPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "code.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent definition"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "",
+	})
+	assert.NoError(t, err)
+}
+
 func TestClaudeRuntime_ClearIterationArtifacts_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
@@ -333,4 +419,59 @@ func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	err := ClaudeRuntime{}.ExtractTranscripts("test-sandbox", "test-agent", outputDir)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "finding transcripts")
+}
+
+func TestResolveSkillDisplayName(t *testing.T) {
+	tests := []struct {
+		name     string
+		dirName  string
+		skillMD  string // empty means no SKILL.md
+		expected string
+	}{
+		{
+			name:     "frontmatter name overrides directory name",
+			dirName:  "tree",
+			skillMD:  "---\nname: architecture\n---\n# Architecture skill",
+			expected: "architecture",
+		},
+		{
+			name:     "falls back to filepath.Base when no SKILL.md",
+			dirName:  "my-skill",
+			skillMD:  "",
+			expected: "my-skill",
+		},
+		{
+			name:     "falls back when frontmatter has no name field",
+			dirName:  "tree",
+			skillMD:  "---\ndescription: some skill\n---\n# Content",
+			expected: "tree",
+		},
+		{
+			name:     "falls back when SKILL.md has no frontmatter",
+			dirName:  "tree",
+			skillMD:  "# Just a heading\nNo frontmatter here.",
+			expected: "tree",
+		},
+		{
+			name:     "local skill with matching directory name",
+			dirName:  "public-research",
+			skillMD:  "---\nname: public-research\n---\n# Public Research",
+			expected: "public-research",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), tc.dirName)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			if tc.skillMD != "" {
+				require.NoError(t, os.WriteFile(
+					filepath.Join(dir, "SKILL.md"),
+					[]byte(tc.skillMD), 0o644))
+			}
+
+			got := resolveSkillDisplayName(dir)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
 }

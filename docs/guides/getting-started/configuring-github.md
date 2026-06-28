@@ -1,9 +1,14 @@
+---
+order: 3
+---
+
 # Configuring GitHub For Fullsend
 
 The goal of this document is that you configure Fullsend for your GitHub repository.
 
 ## Prerequisites
 
+* Your org or repo is enrolled in a fullsend token mint service (see [Getting Started](README.md) step 1).
 * You have your WIF provider URL from [Getting Inference](getting-inference.md).
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
@@ -22,6 +27,12 @@ and provide them permissions to the repository you want to install Fullsend to.
 | retro | <https://github.com/apps/fullsend-ai-retro/installations/new> |
 | prioritize | <https://github.com/apps/fullsend-ai-prioritize/installations/new> |
 
+> **Note:** Installing a subset of GitHub Apps does **not** automatically
+> limit which agents are active. You must also pass the `--agents` flag
+> (see below) to match the set of apps you installed. For example, if you
+> only install the triage and review apps, pass `--agents triage,review`
+> when running setup.
+
 ## Configuring GitHub
 
 Run the command:
@@ -37,6 +48,25 @@ for, `<gcp-project>` is your GCP project name, and `<wif-provider-url>` is the W
 created at [Getting Inference](getting-inference.md).
 
 The command creates files, secrets and variables in your repository.
+
+### Enabling a subset of agents
+
+By default, the setup command configures all available agent roles. To enable
+only specific agents, pass the `--agents` flag with a comma-separated list of
+roles:
+
+```bash
+fullsend github setup <org>/<repo> \
+  --inference-project "<gcp-project>" \
+  --inference-wif-provider "<wif-provider-url>" \
+  --agents triage,review
+```
+
+Only the listed agents will be configured. Make sure you have installed the
+corresponding GitHub Apps for each agent you enable (see the table above).
+
+For the full list of setup flags, see the
+[GitHub setup reference](../../reference/github-setup.md#setup-flags).
 
 ## Testing Fullsend
 

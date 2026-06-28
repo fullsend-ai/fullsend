@@ -11,10 +11,7 @@ import { RequestError } from "@octokit/request-error";
  */
 
 /** Lowercase header names as returned by Octokit. */
-function headerGet(
-  headers: Record<string, string> | undefined,
-  name: string,
-): string | undefined {
+function headerGet(headers: Record<string, string> | undefined, name: string): string | undefined {
   if (!headers) return undefined;
   const direct = headers[name];
   if (direct !== undefined) return direct;
@@ -57,9 +54,7 @@ function github403BodyLooksLikeRateLimit(apiMsg: string | undefined): boolean {
   );
 }
 
-function rateLimitRemainingIsZero(
-  headers: Record<string, string> | undefined,
-): boolean {
+function rateLimitRemainingIsZero(headers: Record<string, string> | undefined): boolean {
   const raw = headerGet(headers, "x-ratelimit-remaining");
   if (raw === undefined) return false;
   return String(raw).trim() === "0";

@@ -7,6 +7,7 @@
 #
 # Security layers (defense-in-depth):
 #   - Authoritative secret scan — final gate before any push
+#   - Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
 #   - Authoritative pre-commit — run repo hooks on changed files
 #   - Branch validation — refuse to push main/master
 #   - Token isolation — PUSH_TOKEN never enters the sandbox
@@ -18,13 +19,12 @@
 # Steps:
 #   0. Check for agent commits
 #   1. Authoritative secret scan
-#   2. Install lychee
-#   3. Install uv and uvx
-#   4. Authoritative pre-commit check
-#   5. Push branch
-#   6. Process structured output
-#   7. Iteration-cap warning label
-#   8. Summary
+#   2. Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
+#   3. Authoritative pre-commit check
+#   4. Push branch
+#   5. Process structured output
+#   6. Iteration-cap warning label
+#   7. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -59,11 +59,6 @@ is_bot_user() {
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-LYCHEE_VERSION="0.24.2"
-LYCHEE_SHA256_AMD64="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
-LYCHEE_SHA256_ARM64="91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
-UV_VERSION="0.11.14"
-UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -181,45 +176,34 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Install lychee (for pre-commit markdown link checking)
+# 2. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-if ! command -v lychee >/dev/null 2>&1; then
-  echo "Installing lychee v${LYCHEE_VERSION}..."
-  mkdir -p "${HOME}/.local/bin"
-  case "$(uname -m)" in
-    x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
-    aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
-    *) echo "::error::Unsupported architecture for lychee: $(uname -m)" >&2; exit 1 ;;
-  esac
-  curl -fsSL \
-    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
-    -o /tmp/lychee.tar.gz \
-    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C /tmp \
-    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" "${HOME}/.local/bin/" \
-    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
-  export PATH="${HOME}/.local/bin:${PATH}"
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
+
+if [ -f .pre-commit-config.yaml ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  MANIFEST="$(mktemp)"
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=(".")
+  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
+export PATH="${HOME}/.local/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
-# 3. Install uv and uvx (for pre-commit Python tooling)
-# ---------------------------------------------------------------------------
-if ! command -v uvx >/dev/null 2>&1; then
-  echo "Installing uv v${UV_VERSION} (includes uvx)..."
-  mkdir -p "${HOME}/.local/bin"
-  curl -fsSL \
-    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
-    -o /tmp/uv.tar.gz \
-    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/uv.tar.gz -C /tmp \
-    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
-    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
-    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
-  export PATH="${HOME}/.local/bin:${PATH}"
-fi
-
-# ---------------------------------------------------------------------------
-# 4. Authoritative pre-commit check (only if pushing)
+# 3. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -245,22 +229,37 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Push branch (only if we have commits)
+# 4. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
-  # Plain push (no --force-with-lease). Agents always create new
-  # commits (amend is in disallowedTools), so force-push is unnecessary
-  # and plain push is safer (refuses diverged branches).
+  # Plain push first. Falls back to --force-with-lease when the push
+  # is rejected (non-fast-forward), which happens after a rebase — the
+  # agent rewrote history so the remote branch diverged. force-with-lease
+  # is safe: it still rejects if someone else pushed in the meantime.
   echo "Pushing branch ${BRANCH}..."
-  git push -u origin -- "${BRANCH}" 2>&1
+  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  echo "${PUSH_OUTPUT}"
+
+  if [ "${PUSH_RC}" -ne 0 ]; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+      echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+      if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
+        echo "::error::Force-with-lease push also failed"
+        exit 1
+      fi
+    else
+      echo "::error::Push failed with unexpected error"
+      exit 1
+    fi
+  fi
   echo "Branch ${BRANCH} pushed successfully"
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Process structured output (fix-result.json)
+# 5. Process structured output (fix-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -313,7 +312,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Iteration-cap warning label
+# 6. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -332,7 +331,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Summary
+# 7. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"

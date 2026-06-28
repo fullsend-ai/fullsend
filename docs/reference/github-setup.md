@@ -121,6 +121,7 @@ fullsend github setup acme-corp \
 | `--vendor` | No | `false` | Vendor binary, reusable workflows, actions, and agent content (see [Vendored vs layered installs](#vendored-vs-layered-installs)) |
 | `--fullsend-source` | No | | Fullsend source checkout for content and cross-compile (requires `--vendor`) |
 | `--fullsend-binary` | No | | Path to a Linux fullsend binary when vendoring (skips auto-resolution) |
+| `--direct` | No | `false` | Push scaffold files directly to the default branch instead of creating a PR (falls back to PR if branch protection blocks the push) |
 | `--dry-run` | No | `false` | Preview changes without making them |
 
 ### Vendored vs layered installs

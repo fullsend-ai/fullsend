@@ -20,6 +20,7 @@ type scanBootstrap struct {
 
 func (b scanBootstrap) SandboxName() string  { return b.sandboxName }
 func (b scanBootstrap) AgentPath() string    { return b.agentPath }
+func (b scanBootstrap) AgentName() string    { return "" }
 func (b scanBootstrap) SkillDirs() []string  { return b.skillDirs }
 func (b scanBootstrap) PluginDirs() []string { return b.pluginDirs }
 

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -154,7 +155,7 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -178,7 +179,7 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
@@ -216,7 +217,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -247,7 +248,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -273,7 +274,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\nrole: test\n", agentHash)),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -299,7 +300,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\nrole: test\n", agentHash)),
 		0o644,
 	))
 
@@ -313,11 +314,12 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 
 func TestRunAgent_WithURLBase(t *testing.T) {
 	// Harness with a URL base — exercises the baseDeps logging loop.
-	baseContent := []byte("agent: agents/shared.md\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -331,7 +333,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\n", srv.URL, baseHash)),
+		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\nrole: test\n", srv.URL, baseHash)),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -1661,6 +1663,33 @@ func TestSetupStatusNotifier_FactoryMintError(t *testing.T) {
 	assert.Nil(t, client)
 }
 
+func TestSetupStatusNotifier_FactoryRejectsMalformedToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "not-a-valid-token-format!"}, nil
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "coder", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
+	assert.Nil(t, client)
+}
+
 func TestRunCommand_StatusTokenFlagRemoved(t *testing.T) {
 	cmd := newRunCmd()
 	f := cmd.Flags().Lookup("status-token")
@@ -1796,9 +1825,8 @@ func TestEmitDiagnosticWithContext(t *testing.T) {
 	assert.Contains(t, output, "role")
 }
 
-func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
-	// Verifies that runAgent emits a lint warning when harness has no role,
-	// but the command still proceeds (fails later at sandbox availability).
+func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
+	// Verifies that runAgent fails with a hard error when harness has no role.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -1821,18 +1849,469 @@ func TestRunAgent_LintWarningOnMissingRole(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 
-	// Command fails later (no openshell), but lint warning should be emitted
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
-
-	// Verify lint warning was printed
-	output := buf.String()
-	assert.Contains(t, output, "role")
-	assert.Contains(t, output, "warning")
+	assert.Contains(t, err.Error(), "invalid harness: role field is required")
 }
 
-func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
-	// Verifies that runAgent does NOT emit a lint warning when harness has role set.
+func TestWriteMetricsJSON(t *testing.T) {
+	dir := t.TempDir()
+	m := aggregateMetrics{
+		NumTurns:     12,
+		TotalCostUSD: 0.58,
+		Iterations:   2,
+		ToolCalls:    34,
+	}
+	m.TokenUsage.Input = 18000
+	m.TokenUsage.Output = 5200
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "metrics.json"))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	if got.NumTurns != 12 {
+		t.Errorf("num_turns = %d, want 12", got.NumTurns)
+	}
+	if got.TotalCostUSD != 0.58 {
+		t.Errorf("total_cost_usd = %f, want 0.58", got.TotalCostUSD)
+	}
+	if got.TokenUsage.Input != 18000 {
+		t.Errorf("token_usage.input = %d, want 18000", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 5200 {
+		t.Errorf("token_usage.output = %d, want 5200", got.TokenUsage.Output)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 34 {
+		t.Errorf("tool_calls = %d, want 34", got.ToolCalls)
+	}
+}
+
+// --- mintAgentToken tests ---
+
+func TestMintAgentToken_SkipsWhenNoMintURL(t *testing.T) {
+	printer := ui.New(io.Discard)
+	minted, _, err := mintAgentToken(context.Background(), "coder", "", printer)
+	require.NoError(t, err)
+	assert.False(t, minted)
+}
+
+func TestMintAgentToken_SkipsWhenNoRole(t *testing.T) {
+	printer := ui.New(io.Discard)
+	minted, _, err := mintAgentToken(context.Background(), "", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.False(t, minted)
+}
+
+func TestMintAgentToken_CoderRole(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "https://mint.example.com", req.MintURL)
+		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, []string{"my-repo"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_coder_token", os.Getenv("PUSH_TOKEN"))
+	assert.Equal(t, "github-app", os.Getenv("PUSH_TOKEN_SOURCE"))
+
+	cleanup()
+	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup should restore GH_TOKEN to original empty value")
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup should restore PUSH_TOKEN to original empty value")
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE to original empty value")
+
+	output := buf.String()
+	assert.Contains(t, output, "Minting agent token (role: coder)")
+	assert.Contains(t, output, "Agent token minted")
+}
+
+func TestMintAgentToken_ReviewRole(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "review", req.Role)
+		return &mintclient.MintResult{Token: "ghs_review_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("REVIEW_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "review", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_review_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_review_token", os.Getenv("REVIEW_TOKEN"))
+}
+
+func TestMintAgentToken_RetroRole_NoExtras(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "retro", req.Role)
+		assert.Equal(t, []string{"my-repo", ".fullsend"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_retro_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("MINT_REPOS", "my-repo,.fullsend")
+	t.Setenv("GH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "retro", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_retro_token", os.Getenv("GH_TOKEN"))
+}
+
+func TestMintAgentToken_ResolvesAliases(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role, "code should resolve to coder")
+		return &mintclient.MintResult{Token: "ghs_alias_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "code", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_alias_token", os.Getenv("PUSH_TOKEN"))
+}
+
+func TestMintAgentToken_TriageRole_NoExtras(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "triage", req.Role)
+		return &mintclient.MintResult{Token: "ghs_triage_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "should-not-change")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_triage_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "should-not-change", os.Getenv("PUSH_TOKEN"), "triage should not set PUSH_TOKEN")
+}
+
+func TestMintAgentToken_MintError(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC exchange failed")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "minting agent token for role coder")
+}
+
+func TestMintAgentToken_RepoResolutionError(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	// No REPO_FULL_NAME and no MINT_REPOS set
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving mint repos for role coder")
+}
+
+func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
+}
+
+func TestMintAgentToken_MasksTokenInGitHubActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_maskable", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	assert.True(t, minted)
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	assert.Contains(t, buf.String(), "::add-mask::ghs_maskable")
+}
+
+// --- resolveMintRepos tests ---
+
+func TestResolveMintRepos_FromMINT_REPOS(t *testing.T) {
+	t.Setenv("MINT_REPOS", "repo-a,repo-b")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo-a", "repo-b"}, repos)
+}
+
+func TestResolveMintRepos_TrimsWhitespace(t *testing.T) {
+	t.Setenv("MINT_REPOS", " repo-a , repo-b ")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo-a", "repo-b"}, repos)
+}
+
+func TestResolveMintRepos_FromREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-repo"}, repos)
+}
+
+func TestResolveMintRepos_MINT_REPOS_TakesPrecedence(t *testing.T) {
+	t.Setenv("MINT_REPOS", "override-repo")
+	t.Setenv("REPO_FULL_NAME", "org/other-repo")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"override-repo"}, repos)
+}
+
+func TestResolveMintRepos_NeitherSet(t *testing.T) {
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MINT_REPOS or REPO_FULL_NAME must be set")
+}
+
+func TestResolveMintRepos_InvalidREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "no-slash")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo format")
+}
+
+func TestResolveMintRepos_EmptyRepoInREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "org/")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo format")
+}
+
+func TestResolveMintRepos_EmptyMINT_REPOS_FallsBack(t *testing.T) {
+	t.Setenv("MINT_REPOS", ",,,")
+	t.Setenv("REPO_FULL_NAME", "org/fallback-repo")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fallback-repo"}, repos)
+}
+
+func TestMintAgentToken_SanitizesExpiresAt(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{
+			Token:     "ghs_safe_token",
+			ExpiresAt: "2026-06-15T12:00:00Z::warning::injected",
+		}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	output := buf.String()
+	assert.NotContains(t, output, "::warning::")
+	assert.Contains(t, output, "2026-06-15T12:00:00Z")
+}
+
+func TestMintAgentToken_SanitizesExpiresAt_FractionalSeconds(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{
+			Token:     "ghs_safe_token",
+			ExpiresAt: "2026-06-15T12:00:00.123Z",
+		}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	output := buf.String()
+	assert.Contains(t, output, "2026-06-15T12:00:00.123Z")
+}
+
+func TestMintAgentToken_RejectsInvalidRole(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called for invalid role")
+		return nil, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "INVALID--ROLE", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role")
+}
+
+func TestResolveMintRepos_InvalidRepoInMINT_REPOS(t *testing.T) {
+	t.Setenv("MINT_REPOS", "valid-repo,invalid repo!@#")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+	assert.Contains(t, err.Error(), "MINT_REPOS")
+}
+
+func TestResolveMintRepos_InvalidRepoInREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "org/invalid repo!@#")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+	assert.Contains(t, err.Error(), "REPO_FULL_NAME")
+}
+
+func TestRoleTokenVars_Coverage(t *testing.T) {
+	assert.Equal(t, []tokenVar{{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}}, roleTokenVars["coder"])
+	assert.Equal(t, []tokenVar{{Name: "REVIEW_TOKEN"}}, roleTokenVars["review"])
+	_, hasRetro := roleTokenVars["retro"]
+	assert.False(t, hasRetro, "retro should not have extra token vars (RETRO_SANDBOX_TOKEN removed in #2412)")
+	_, hasTriage := roleTokenVars["triage"]
+	assert.False(t, hasTriage, "triage should not have extra token vars")
+	_, hasPrioritize := roleTokenVars["prioritize"]
+	assert.False(t, hasPrioritize, "prioritize should not have extra token vars")
+}
+
+func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_new_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "ghp_original_pat")
+	t.Setenv("PUSH_TOKEN", "ghp_original_push")
+	t.Setenv("PUSH_TOKEN_SOURCE", "manual")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+
+	assert.Equal(t, "ghs_new_token", os.Getenv("GH_TOKEN"))
+
+	cleanup()
+	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
+	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
+	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
+}
+
+func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -1842,12 +2321,27 @@ func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
 		[]byte("You are a coding agent."),
 		0o644,
 	))
-	// Harness with role field
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-env.example.com", req.MintURL)
+		return &mintclient.MintResult{Token: "ghs_env_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
 
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -1855,11 +2349,125 @@ func TestRunAgent_NoLintWarningWithRole(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 
-	// Command fails later (no openshell)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
+}
 
-	// Verify no lint warning about role
-	output := buf.String()
-	assert.NotContains(t, output, "role is not set")
+func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called when no mint URL is available")
+		return nil, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "skipping token minting")
+}
+
+func TestRunAgent_MintTokenError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC token exchange failed")
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed")
+}
+
+func TestRunAgent_StatusNotifierSetup(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{
+		statusRepo: "org/my-repo",
+		statusNum:  42,
+		mintURL:    "https://mint.example.com",
+	}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, sOpts, printer, false)
+
+	// Will error downstream (openshell not available), but status notifier setup should succeed
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
 }

@@ -11,6 +11,9 @@
 #   3. Branch validation — refuse to push main/master
 #   4. Token isolation — PUSH_TOKEN never enters the sandbox
 #
+# Pre-commit tool deps are auto-installed from .pre-commit-tools.yaml
+# before step 2 to ensure hooks have the binaries they need.
+#
 # Protected-path enforcement lives in post-review.sh: the review agent
 # cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
 # agents/). The code agent is free to propose changes to any path.
@@ -24,6 +27,10 @@
 #
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
+#   CODE_ALLOWED_TARGET_BRANCHES
+#                     — comma-separated list of branches the agent may target,
+#                       or "*" for any. When unset, only the repo's default
+#                       branch is allowed. (default: auto-detected)
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
@@ -35,16 +42,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-LYCHEE_VERSION="0.24.2"
-LYCHEE_SHA256_AMD64="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
-LYCHEE_SHA256_ARM64="91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
-UV_VERSION="0.11.14"
-UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
 REPO_DIR="${REPO_DIR:-repo}"
+RUN_DIR="$(pwd)"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -57,7 +60,45 @@ fi
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
-TARGET_BRANCH="${TARGET_BRANCH:-main}"
+# ---------------------------------------------------------------------------
+# Resolve target branch (ADR 0053)
+#
+# Priority: agent output > allowed-list validation > auto-detect default
+# The agent writes its chosen branch to code-result.json. The post-script
+# validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
+# or "*" for any). When unset, only the auto-detected default branch is
+# allowed. Falls back to "main" if the API call fails.
+# ---------------------------------------------------------------------------
+AGENT_TARGET=""
+RESULT_FILE=""
+for dir in "${RUN_DIR}"/iteration-*/output; do
+  if [ -f "${dir}/code-result.json" ]; then
+    RESULT_FILE="${dir}/code-result.json"
+  fi
+done
+if [ -n "${RESULT_FILE}" ]; then
+  AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+fi
+if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+  echo "Error: invalid branch name from agent output: '${AGENT_TARGET}'"
+  exit 1
+fi
+
+DEFAULT_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo 'main')"
+
+if [ -n "${AGENT_TARGET}" ]; then
+  ALLOWED="${CODE_ALLOWED_TARGET_BRANCHES:-${DEFAULT_BRANCH}}"
+  if [ "${ALLOWED}" = "*" ] || echo ",${ALLOWED}," | grep -qF ",${AGENT_TARGET},"; then
+    TARGET_BRANCH="${AGENT_TARGET}"
+    echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
+  else
+    echo "Error: agent requested branch '${AGENT_TARGET}' but allowed branches are: ${ALLOWED}"
+    exit 1
+  fi
+else
+  TARGET_BRANCH="${DEFAULT_BRANCH}"
+  echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
+fi
 
 echo "::add-mask::${PUSH_TOKEN}"
 
@@ -223,45 +264,34 @@ fi
 echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 4. Install lychee (for pre-commit markdown link checking)
+# 4. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-if ! command -v lychee >/dev/null 2>&1; then
-  echo "Installing lychee v${LYCHEE_VERSION}..."
-  mkdir -p "${HOME}/.local/bin"
-  case "$(uname -m)" in
-    x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
-    aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
-    *) echo "::error::Unsupported architecture for lychee: $(uname -m)" >&2; exit 1 ;;
-  esac
-  curl -fsSL \
-    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
-    -o /tmp/lychee.tar.gz \
-    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C /tmp \
-    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" "${HOME}/.local/bin/" \
-    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
-  export PATH="${HOME}/.local/bin:${PATH}"
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
+
+if [ -f .pre-commit-config.yaml ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  MANIFEST="$(mktemp)"
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=(".")
+  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
+export PATH="${HOME}/.local/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
-# 5. Install uv and uvx (for pre-commit Python tooling)
-# ---------------------------------------------------------------------------
-if ! command -v uvx >/dev/null 2>&1; then
-  echo "Installing uv v${UV_VERSION} (includes uvx)..."
-  mkdir -p "${HOME}/.local/bin"
-  curl -fsSL \
-    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
-    -o /tmp/uv.tar.gz \
-    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/uv.tar.gz -C /tmp \
-    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
-    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
-    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
-  export PATH="${HOME}/.local/bin:${PATH}"
-fi
-
-# ---------------------------------------------------------------------------
-# 6. Authoritative pre-commit check
+# 5. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
 if [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -293,7 +323,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Push branch
+# 6. Push branch
 # ---------------------------------------------------------------------------
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
@@ -332,7 +362,10 @@ echo "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
-    git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+    if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
+      echo "::error::Force-with-lease push also failed"
+      exit 1
+    fi
   else
     echo "::error::Push failed with unexpected error (git push origin ${BRANCH})" >&2
     echo "::error::Push output: ${PUSH_OUTPUT}" >&2

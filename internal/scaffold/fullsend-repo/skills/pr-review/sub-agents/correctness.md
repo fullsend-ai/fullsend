@@ -73,3 +73,15 @@ When reviewing technical documentation, verify:
 - **Edge case correctness** — Are described edge cases (depth/breadth
   limits, zero values, error conditions) handled correctly in the
   described logic?
+
+### Cross-file verification
+
+When a finding depends on the contents of a file not in the PR diff
+(e.g., claiming a Dockerfile contains a specific flag, or a config file
+uses a particular setting), you MUST read that file before asserting
+what it contains. Do not reason about what a file "probably" contains
+based on common patterns — read it.
+
+If the file cannot be read (e.g., it is in another repository or
+inaccessible), state that you were unable to verify the contents.
+Never present unverified file contents as fact in a finding.

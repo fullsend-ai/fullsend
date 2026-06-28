@@ -27,6 +27,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -41,13 +42,19 @@ const (
 	// files. Shared between host-side (scanRepoContextFiles) and sandbox-side
 	// (buildScanContextCommand) scans to ensure parity.
 	maxContextScanDepth = 5
+
+	// metricsFile is the filename written to the run directory with behavioral metrics.
+	metricsFile = "metrics.json"
 )
+
+// statusMintToken is the test seam for minting tokens. Shared by both
+// setupStatusNotifier (status comment tokens) and mintAgentToken (agent
+// runtime tokens). Tests that override it affect both paths.
+var statusMintToken = mintclient.MintToken
 
 // agentWorkingDirExcludes lists directory patterns that agents may create
 // during execution but must never commit. These are added to
 // .git/info/exclude before the agent runs so git ignores them entirely.
-var statusMintToken = mintclient.MintToken
-
 var agentWorkingDirExcludes = []string{
 	".agentready/",
 	".fullsend-workspace/",
@@ -67,6 +74,26 @@ type statusOpts struct {
 	statusRepo string
 	statusNum  int
 	mintURL    string
+}
+
+// aggregateMetrics holds accumulated behavioral metrics across retry iterations.
+type aggregateMetrics struct {
+	NumTurns     int     `json:"num_turns"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	TokenUsage   struct {
+		Input  int `json:"input"`
+		Output int `json:"output"`
+	} `json:"token_usage"`
+	Iterations int `json:"iterations"`
+	ToolCalls  int `json:"tool_calls"`
+}
+
+func writeMetricsJSON(dir string, m aggregateMetrics) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
 }
 
 func newRunCmd() *cobra.Command {
@@ -183,12 +210,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	var composeForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		composeForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		composeForgeClient = gh.New(token)
+	}
+
 	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
 		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 		ForgePlatform: forgePlatform,
 		OrgAllowlist:  orgAllowlist,
+		ForgeClient:   composeForgeClient,
 	})
 	if err != nil {
 		printer.StepFail("Failed to load harness")
@@ -200,6 +235,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepInfo(fmt.Sprintf("Base: %s (cache hit)", dep.URL))
 		} else {
 			printer.StepInfo(fmt.Sprintf("Base: %s (fetched)", dep.URL))
+		}
+		if dep.Warning != "" {
+			printer.StepWarn(fmt.Sprintf("Base: %s", dep.Warning))
 		}
 	}
 
@@ -299,6 +337,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
+	}
+
+	// Mint agent token when a mint URL and harness role are both available.
+	// Runs before env expansion so minted tokens flow into RunnerEnv and
+	// host_files via os.Getenv automatically.
+	mintURL := sOpts.mintURL
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, printer)
+	if err != nil {
+		return fmt.Errorf("agent token minting failed: %w", err)
+	}
+	if mintCleanup != nil {
+		defer mintCleanup()
+	}
+	if !minted && mintURL == "" {
+		printer.StepWarn("No --mint-url provided; skipping token minting for role " + h.Role)
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
@@ -408,7 +464,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script — and can report cancellation/failure even when the
 	// sandbox never starts. See #1859.
 	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
-		notifier, notifyErr := setupStatusNotifier(absFullsendDir, agentName, sOpts, printer)
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, sOpts, printer)
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
@@ -607,7 +663,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
 	printer.StepStart("Bootstrapping sandbox")
-	boot := newHarnessBootstrap(h, sandboxName)
+	boot := newHarnessBootstrap(h, sandboxName, agentName)
 	if h.SecurityEnabled() {
 		// Scan all runtime content before upload so warnings surface together.
 		// Host files could change between scan and upload; the runner owns the host FS here.
@@ -810,6 +866,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	var lastExitCode int
 	var runCount int
+	var aggMetrics aggregateMetrics
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
@@ -855,8 +912,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
+		// Accumulate behavioral metrics across iterations.
+		aggMetrics.NumTurns += metrics.NumTurns
+		aggMetrics.TotalCostUSD += metrics.TotalCostUSD
+		aggMetrics.TokenUsage.Input += metrics.InputTokens
+		aggMetrics.TokenUsage.Output += metrics.OutputTokens
+		aggMetrics.ToolCalls += int(metrics.ToolCalls.Load())
+		aggMetrics.Iterations = iteration
+
 		if runErr != nil {
 			printer.StepFail("Agent execution failed")
+			// Write partial metrics before returning so downstream judges
+			// (e.g., max_turns, max_cost) can inspect what happened.
+			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+				printer.StepWarn("Failed to write metrics.json: " + err.Error())
+			}
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
@@ -948,6 +1018,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Write aggregated behavioral metrics.
+	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+		printer.StepWarn("Failed to write metrics.json: " + err.Error())
+	}
+
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
 	// When the agent exits non-zero, parse transcript JSONL files and emit
 	// ::error:: annotations so operators can diagnose failures without
@@ -976,6 +1051,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepInfo("No sandbox security findings to extract")
 			} else {
 				printer.StepDone("Security findings extracted")
+			}
+		}
+
+		findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
+		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
+			cv, verifyErr := security.VerifyChain(findingsJSONL)
+			if verifyErr != nil {
+				printer.StepWarn("Audit log verification error: " + verifyErr.Error())
+			} else if !cv.Valid {
+				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
+				return fmt.Errorf("audit log integrity check failed: %s", cv.BrokenMsg)
+			} else if cv.Entries > 0 {
+				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
 			}
 		}
 	}
@@ -1898,7 +1986,10 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
-func setupStatusNotifier(fullsendDir string, agentName string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+// setupStatusNotifier creates a status comment notifier. The role parameter
+// accepts either a raw harness role (e.g. "code") or a canonical role
+// (e.g. "coder"); it is resolved via resolveRole internally.
+func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
@@ -1943,17 +2034,20 @@ func setupStatusNotifier(fullsendDir string, agentName string, sOpts statusOpts,
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
-	role := resolveRole(agentName)
+	canonRole := resolveRole(role)
 	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
 		result, err := statusMintToken(ctx, mintclient.MintRequest{
 			MintURL: mintURL,
-			Role:    role,
+			Role:    canonRole,
 			Repos:   []string{repo},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("minting status token: %w", err)
 		}
-		if os.Getenv("GITHUB_ACTIONS") == "true" && mintTokenPattern.MatchString(result.Token) {
+		if !mintTokenPattern.MatchString(result.Token) {
+			return nil, fmt.Errorf("minted status token contains unexpected characters")
+		}
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 		}
 		return gh.New(result.Token), nil
@@ -2018,4 +2112,141 @@ func emitDiagnosticWithContext(printer *ui.Printer, context string, diag harness
 	default:
 		printer.StepWarn(msg)
 	}
+}
+
+type tokenVar struct {
+	Name  string
+	Value string // empty = use minted token
+}
+
+// roleTokenVars maps canonical role names to the additional env vars they
+// require beyond GH_TOKEN. These match the vars declared in
+// forge.github.runner_env across the harness YAML files.
+var roleTokenVars = map[string][]tokenVar{
+	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
+	"review": {{Name: "REVIEW_TOKEN"}},
+}
+
+// mintAgentToken mints a GitHub App installation token for the agent's role
+// and sets the appropriate env vars so RunnerEnv expansion and host_files
+// expansion pick them up. Returns (minted bool, cleanup func, err).
+// The caller should defer cleanup() to clear tokens from the process env.
+func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Printer) (bool, func(), error) {
+	if mintURL == "" || role == "" {
+		return false, func() {}, nil
+	}
+
+	repos, err := resolveMintRepos()
+	if err != nil {
+		return false, nil, fmt.Errorf("resolving mint repos for role %s: %w", role, err)
+	}
+
+	role = resolveRole(role)
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return false, nil, fmt.Errorf("invalid role: %w", err)
+	}
+	printer.StepStart("Minting agent token (role: " + role + ")")
+
+	result, err := statusMintToken(ctx, mintclient.MintRequest{
+		MintURL: mintURL,
+		Role:    role,
+		Repos:   repos,
+	})
+	if err != nil {
+		return false, nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
+	}
+
+	if !mintTokenPattern.MatchString(result.Token) {
+		return false, nil, fmt.Errorf("minted agent token contains unexpected characters for role %s", role)
+	}
+
+	// TODO(ADR-0045 R22): use forge platform context instead of raw env check.
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+	}
+
+	// NOTE: os.Setenv is not goroutine-safe. Minting MUST complete
+	// before any goroutines that read env vars (sandbox streaming,
+	// post-script execution) are launched.
+	originals := make(map[string]string)
+	envVars := []string{"GH_TOKEN"}
+	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
+		originals["GH_TOKEN"] = v
+	}
+	os.Setenv("GH_TOKEN", result.Token)
+
+	for _, tv := range roleTokenVars[role] {
+		if v, ok := os.LookupEnv(tv.Name); ok {
+			originals[tv.Name] = v
+		}
+		if tv.Value != "" {
+			os.Setenv(tv.Name, tv.Value)
+		} else {
+			os.Setenv(tv.Name, result.Token)
+		}
+		envVars = append(envVars, tv.Name)
+	}
+
+	cleanup := func() {
+		for _, v := range envVars {
+			if orig, ok := originals[v]; ok {
+				os.Setenv(v, orig)
+			} else {
+				os.Unsetenv(v)
+			}
+		}
+	}
+
+	expiresAt := strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || r == '-' || r == ':' || r == 'T' || r == 'Z' || r == '+' || r == '.' {
+			return r
+		}
+		return -1
+	}, result.ExpiresAt)
+	printer.StepDone("Agent token minted (expires " + expiresAt + ")")
+	return true, cleanup, nil
+}
+
+// resolveMintRepos determines which repos to request token access for.
+// MINT_REPOS (comma-separated) takes precedence, falling back to extracting
+// the repo name from REPO_FULL_NAME (owner/repo → repo).
+func resolveMintRepos() ([]string, error) {
+	if v := os.Getenv("MINT_REPOS"); v != "" {
+		var repos []string
+		for _, r := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(r); trimmed != "" {
+				repos = append(repos, trimmed)
+			}
+		}
+		if len(repos) > 0 {
+			if err := validateRepoNames(repos); err != nil {
+				return nil, err
+			}
+			return repos, nil
+		}
+	}
+
+	fullName := os.Getenv("REPO_FULL_NAME")
+	if fullName == "" {
+		return nil, fmt.Errorf("MINT_REPOS or REPO_FULL_NAME must be set for token minting")
+	}
+
+	parts := strings.SplitN(fullName, "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return nil, fmt.Errorf("REPO_FULL_NAME must be in owner/repo format, got %q", fullName)
+	}
+	repo := parts[1]
+	if !mintcore.RepoNamePattern.MatchString(repo) {
+		return nil, fmt.Errorf("invalid repo name %q from REPO_FULL_NAME: must match %s", repo, mintcore.RepoNamePattern.String())
+	}
+	return []string{repo}, nil
+}
+
+func validateRepoNames(repos []string) error {
+	for _, r := range repos {
+		if !mintcore.RepoNamePattern.MatchString(r) {
+			return fmt.Errorf("invalid repo name %q in MINT_REPOS: must match %s", r, mintcore.RepoNamePattern.String())
+		}
+	}
+	return nil
 }

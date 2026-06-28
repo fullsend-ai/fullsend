@@ -249,6 +249,15 @@ run_test_stdout "prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
 
+# Verify prerequisites handler works without GITHUB_WORKSPACE set (local execution).
+# Temporarily unset GITHUB_WORKSPACE to exercise the :-/tmp fallback guard (#2458).
+# The script must not crash with an unbound variable error under set -u.
+unset GITHUB_WORKSPACE
+run_test "prerequisites-no-github-workspace-fallback" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+export GITHUB_WORKSPACE="${WORKSPACE}"
+
 run_test "question-posts-comment" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported.\n\nDid this answer your question, or would you like to open a feature request for Python 4 support?"}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"

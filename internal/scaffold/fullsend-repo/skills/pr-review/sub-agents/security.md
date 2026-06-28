@@ -83,6 +83,18 @@ Calibrate investigation to the diff size and security surface area.
   to verify permission scope.
 - Trace call sites of changed functions to check for fail-open paths.
 
+### Cross-file verification
+
+When a finding depends on the contents of a file not in the PR diff
+(e.g., claiming a workflow file contains a specific permission scope, or
+an IAM policy grants a particular role), you MUST read that file before
+asserting what it contains. Do not reason about what a file "probably"
+contains based on common patterns — read it.
+
+If the file cannot be read (e.g., it is in another repository or
+inaccessible), state that you were unable to verify the contents.
+Never present unverified file contents as fact in a finding.
+
 ## Fail-open / fail-closed evaluation
 
 **Category:** Use `fail-open` for all findings in this section.

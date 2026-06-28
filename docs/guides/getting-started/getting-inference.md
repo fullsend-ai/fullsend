@@ -1,3 +1,7 @@
+---
+order: 2
+---
+
 # Getting Inference For Fullsend
 
 The goal of this document is that you acquire a WIF provider URL to pass to the next step

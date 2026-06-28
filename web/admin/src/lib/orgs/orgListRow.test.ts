@@ -11,17 +11,10 @@ import {
 } from "./orgListRow";
 
 function preflightAllGranted() {
-  return computePreflight([...deployRequiredOAuthScopes()], [
-    "repo",
-    "workflow",
-    "admin:org",
-  ]);
+  return computePreflight([...deployRequiredOAuthScopes()], ["repo", "workflow", "admin:org"]);
 }
 
-function rep(
-  name: string,
-  status: LayerReport["status"],
-): LayerReport {
+function rep(name: string, status: LayerReport["status"]): LayerReport {
   return {
     name,
     status,
@@ -120,9 +113,7 @@ describe("orgListRowFromAnalysis", () => {
     const row = orgListRowFromAnalysis(notInstalledOk, pf, ready);
     expect(row.kind).toBe("cannot_deploy");
     if (row.kind === "cannot_deploy") {
-      expect(row.missingInstallRequirements).toEqual([
-        "Organisation-level GitHub Actions secrets",
-      ]);
+      expect(row.missingInstallRequirements).toEqual(["Organisation-level GitHub Actions secrets"]);
       expect(row.helpBullets?.length).toBeGreaterThan(0);
     }
   });
@@ -132,9 +123,7 @@ describe("orgListRowFromAnalysis", () => {
     const row = orgListRowFromAnalysis(notInstalledOk, pf);
     expect(row.kind).toBe("cannot_deploy");
     if (row.kind === "cannot_deploy") {
-      expect(
-        row.missingInstallRequirements?.some((s) => s.includes("GitHub Actions")),
-      ).toBe(true);
+      expect(row.missingInstallRequirements?.some((s) => s.includes("GitHub Actions"))).toBe(true);
       expect(row.helpBullets?.length).toBeGreaterThanOrEqual(2);
     }
   });
@@ -202,8 +191,8 @@ describe("orgListRowFromAnalysis", () => {
       ],
     };
     const pf = buildDeployPreflight(null);
-    expect(
-      orgListRowFromAnalysis(ok, pf, { ok: false, missing: ["should be ignored"] }),
-    ).toEqual({ kind: "configure" });
+    expect(orgListRowFromAnalysis(ok, pf, { ok: false, missing: ["should be ignored"] })).toEqual({
+      kind: "configure",
+    });
   });
 });

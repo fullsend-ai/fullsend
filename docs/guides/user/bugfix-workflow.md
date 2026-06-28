@@ -46,7 +46,7 @@ These labels track where an issue is in the pipeline:
 | `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
 | `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
 | `ready-to-code` | Triage passed (bug, docs, performance) | Code agent picks it up |
-| `ready-for-review` | PR ready for review (manual trigger) | Review agents evaluate the PR |
+| `ready-for-review` | PR ready for review | Per-repo: triggers review when applied to a PR; also runs automatically via PR events |
 | `ready-for-merge` | All reviewers unanimously approved | PR can be merged per governance policy |
 | `requires-manual-review` | Reviewers disagreed or flagged security concerns | Human must decide |
 
@@ -64,6 +64,11 @@ You can control the pipeline from issue or PR comments:
 | `/fs-fix` | PR comment | Triggers the [fix agent](../../agents/fix.md) on the PR; accepts optional free-text instruction |
 | `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
+
+All slash commands require write-level repository permission (admin,
+maintain, or write), verified via the collaborator permission API.
+Bot-to-bot agent handoffs are not affected because they use label-based
+triggers, not slash commands.
 
 ### What to expect from agent PRs
 
@@ -124,7 +129,7 @@ The code agent:
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` command, or `ready-for-review` label.
+**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two).
 
 The review swarm:
 

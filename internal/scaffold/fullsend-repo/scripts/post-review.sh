@@ -326,10 +326,10 @@ if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
   REDISPATCH_MARKER="<!-- fullsend:stale-head-redispatch -->"
   RECENT_REDISPATCH=$(gh api \
     "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
-    --paginate --jq \
-    "[.[] | select(.body | contains(\"${REDISPATCH_MARKER}\"))
+    --paginate 2>/dev/null \
+    | jq -s "add // [] | [.[] | select(.body | contains(\"${REDISPATCH_MARKER}\"))
           | select(.created_at > (now - 300 | strftime(\"%Y-%m-%dT%H:%M:%SZ\")))]
-     | length" 2>/dev/null || echo "0")
+     | length") || RECENT_REDISPATCH=0
 
   if [ "${RECENT_REDISPATCH}" -gt 0 ]; then
     echo "Recent stale-head re-dispatch already exists — skipping"

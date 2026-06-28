@@ -68,9 +68,7 @@ describe("fetchGitHubUser", () => {
   });
 
   it("throws GitHubUserRequestError when response is not ok", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      new Response("forbidden body", { status: 403 }),
-    );
+    vi.mocked(fetch).mockResolvedValueOnce(new Response("forbidden body", { status: 403 }));
 
     const err = await fetchGitHubUser("t").catch((e) => e);
     expect(err).toBeInstanceOf(GitHubUserRequestError);

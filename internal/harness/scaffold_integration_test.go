@@ -301,7 +301,7 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 		},
 		{
 			file:            "code.yaml",
-			topLevelKeys:    []string{"TARGET_BRANCH"},
+			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
 			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "ISSUE_NUMBER", "REPO_DIR"},
 		},
 		{

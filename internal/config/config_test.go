@@ -6,11 +6,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 func TestValidRoles(t *testing.T) {
 	roles := ValidRoles()
-	assert.Len(t, roles, 7)
+	assert.Len(t, roles, 8)
 	assert.Contains(t, roles, "fullsend")
 	assert.Contains(t, roles, "triage")
 	assert.Contains(t, roles, "coder")
@@ -18,6 +20,14 @@ func TestValidRoles(t *testing.T) {
 	assert.Contains(t, roles, "fix")
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
+	assert.Contains(t, roles, "e2e")
+}
+
+func TestValidRoles_RecognizedByMintcore(t *testing.T) {
+	for _, role := range ValidRoles() {
+		assert.True(t, mintcore.HasRole(role),
+			"ValidRoles() contains %q but mintcore.HasRole is false — role lists may have drifted (see issue tracking consolidation)", role)
+	}
 }
 
 func TestPerRepoDefaultRoles(t *testing.T) {
@@ -37,11 +47,8 @@ func TestNewOrgConfig(t *testing.T) {
 	allRepos := []string{"repo-a", "repo-b", "repo-c"}
 	enabledRepos := []string{"repo-a", "repo-c"}
 	roles := []string{"fullsend", "triage", "coder", "review"}
-	agents := []AgentEntry{
-		{Role: "fullsend", Name: "test", Slug: "test-slug"},
-	}
 
-	cfg := NewOrgConfig(allRepos, enabledRepos, roles, agents, "", "")
+	cfg := NewOrgConfig(allRepos, enabledRepos, roles, "", "")
 
 	assert.Equal(t, "1", cfg.Version)
 	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
@@ -52,11 +59,6 @@ func TestNewOrgConfig(t *testing.T) {
 	assert.True(t, cfg.Repos["repo-a"].Enabled)
 	assert.False(t, cfg.Repos["repo-b"].Enabled)
 	assert.True(t, cfg.Repos["repo-c"].Enabled)
-
-	assert.Len(t, cfg.Agents, 1)
-	assert.Equal(t, "fullsend", cfg.Agents[0].Role)
-	assert.Equal(t, "test", cfg.Agents[0].Name)
-	assert.Equal(t, "test-slug", cfg.Agents[0].Slug)
 
 	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}, cfg.AllowedRemoteResources)
 }
@@ -71,9 +73,6 @@ func TestOrgConfigMarshal(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 			AutoMerge:                false,
-		},
-		Agents: []AgentEntry{
-			{Role: "fullsend", Name: "test-app", Slug: "test-app-slug"},
 		},
 		Repos: map[string]RepoConfig{
 			"my-repo": {Enabled: true},
@@ -221,20 +220,6 @@ func TestOrgConfigDisabledRepos(t *testing.T) {
 	assert.Equal(t, []string{"alpha", "gamma"}, disabled)
 }
 
-func TestOrgConfigAgentSlugs(t *testing.T) {
-	cfg := &OrgConfig{
-		Agents: []AgentEntry{
-			{Role: "fullsend", Name: "app1", Slug: "slug-1"},
-			{Role: "coder", Name: "app2", Slug: "slug-2"},
-		},
-	}
-
-	slugs := cfg.AgentSlugs()
-	assert.Equal(t, "slug-1", slugs["fullsend"])
-	assert.Equal(t, "slug-2", slugs["coder"])
-	assert.Len(t, slugs, 2)
-}
-
 func TestOrgConfigDefaultRoles(t *testing.T) {
 	cfg := &OrgConfig{
 		Defaults: RepoDefaults{
@@ -257,10 +242,6 @@ defaults:
     - coder
   max_implementation_retries: 3
   auto_merge: true
-agents:
-  - role: fullsend
-    name: my-app
-    slug: my-app-slug
 repos:
   repo-x:
     enabled: true
@@ -276,21 +257,37 @@ repos:
 	assert.Equal(t, 3, cfg.Defaults.MaxImplementationRetries)
 	assert.True(t, cfg.Defaults.AutoMerge)
 	assert.Equal(t, []string{"fullsend", "coder"}, cfg.Defaults.Roles)
-	assert.Len(t, cfg.Agents, 1)
-	assert.Equal(t, "fullsend", cfg.Agents[0].Role)
-	assert.Equal(t, "my-app", cfg.Agents[0].Name)
-	assert.Equal(t, "my-app-slug", cfg.Agents[0].Slug)
 	assert.True(t, cfg.Repos["repo-x"].Enabled)
 	assert.False(t, cfg.Repos["repo-y"].Enabled)
 }
 
+func TestParseOrgConfig_IgnoresLegacyAgentsBlock(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+agents:
+  - role: fullsend
+    name: my-app
+    slug: my-app-slug
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	assert.Equal(t, "1", cfg.Version)
+}
+
 func TestNewOrgConfig_WithInferenceProvider(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, nil, nil, "vertex", "")
+	cfg := NewOrgConfig(nil, nil, nil, "vertex", "")
 	assert.Equal(t, "vertex", cfg.Inference.Provider)
 }
 
 func TestNewOrgConfig_WithoutInferenceProvider(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, nil, nil, "", "")
+	cfg := NewOrgConfig(nil, nil, nil, "", "")
 	assert.Empty(t, cfg.Inference.Provider)
 }
 
@@ -365,8 +362,7 @@ func TestOrgConfigMarshal_WithInference(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 
 	data, err := cfg.Marshal()
@@ -424,8 +420,7 @@ func TestOrgConfigMarshal_KillSwitch(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 
 	data, err := cfg.Marshal()
@@ -447,7 +442,7 @@ func TestOrgConfigValidate_FixRole(t *testing.T) {
 }
 
 func TestNewOrgConfig_KillSwitchDefaultFalse(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, nil, "", "")
+	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, "", "")
 	assert.False(t, cfg.KillSwitch)
 }
 
@@ -459,8 +454,7 @@ func TestOrgConfigMarshal_KillSwitchOmitEmpty(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 
 	data, err := cfg.Marshal()
@@ -552,8 +546,7 @@ func TestOrgConfigMarshal_WithDispatchMode(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 
 	data, err := cfg.Marshal()
@@ -728,7 +721,6 @@ repos: {}
 				Roles:                    []string{"fullsend"},
 				MaxImplementationRetries: 2,
 			},
-			Agents:                 []AgentEntry{},
 			Repos:                  map[string]RepoConfig{},
 			AllowedRemoteResources: []string{"https://example.com/skills/"},
 		}
@@ -746,8 +738,7 @@ repos: {}
 				Roles:                    []string{"fullsend"},
 				MaxImplementationRetries: 2,
 			},
-			Agents: []AgentEntry{},
-			Repos:  map[string]RepoConfig{},
+			Repos: map[string]RepoConfig{},
 		}
 		data, err := cfg.Marshal()
 		require.NoError(t, err)
@@ -857,8 +848,7 @@ func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
 				Comment: CommentNotificationConfig{Start: "enabled"},
 			},
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
@@ -874,8 +864,7 @@ func TestOrgConfigMarshal_WithoutStatusNotifications(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
@@ -918,8 +907,7 @@ func TestOrgConfig_CreateIssues_OmittedWhenEmpty(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 	}
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
@@ -934,8 +922,7 @@ func TestOrgConfig_CreateIssues_Marshal(t *testing.T) {
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
 		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
+		Repos: map[string]RepoConfig{},
 		CreateIssues: &CreateIssuesConfig{
 			AllowTargets: AllowTargets{
 				Orgs:  []string{"my-org"},
@@ -1043,103 +1030,8 @@ func TestOrgConfigValidate_CreateIssues_Nil(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// --- Agents optional (ADR-0045 Phase 3) ---
-
-func TestParseOrgConfig_WithoutAgentsBlock(t *testing.T) {
-	yamlData := `
-version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles:
-    - fullsend
-  max_implementation_retries: 2
-repos: {}
-`
-	cfg, err := ParseOrgConfig([]byte(yamlData))
-	require.NoError(t, err)
-	assert.Nil(t, cfg.Agents)
-	assert.Empty(t, cfg.AgentSlugs())
-}
-
-func TestParseOrgConfig_EmptyAgentsList(t *testing.T) {
-	yamlData := `
-version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles:
-    - fullsend
-  max_implementation_retries: 2
-agents: []
-repos: {}
-`
-	cfg, err := ParseOrgConfig([]byte(yamlData))
-	require.NoError(t, err)
-	assert.Empty(t, cfg.AgentSlugs())
-}
-
-func TestHasAgentsBlock(t *testing.T) {
-	t.Run("returns true when agents has entries", func(t *testing.T) {
-		cfg := &OrgConfig{
-			Agents: []AgentEntry{
-				{Role: "fullsend", Name: "app", Slug: "slug"},
-			},
-		}
-		assert.True(t, cfg.HasAgentsBlock())
-	})
-
-	t.Run("returns false when agents is nil", func(t *testing.T) {
-		cfg := &OrgConfig{Agents: nil}
-		assert.False(t, cfg.HasAgentsBlock())
-	})
-
-	t.Run("returns false when agents is empty slice", func(t *testing.T) {
-		cfg := &OrgConfig{Agents: []AgentEntry{}}
-		assert.False(t, cfg.HasAgentsBlock())
-	})
-}
-
-func TestOrgConfigMarshal_NilAgentsOmitted(t *testing.T) {
-	cfg := &OrgConfig{
-		Version:  "1",
-		Dispatch: DispatchConfig{Platform: "github-actions"},
-		Defaults: RepoDefaults{
-			Roles:                    []string{"fullsend"},
-			MaxImplementationRetries: 2,
-		},
-		Agents: nil,
-		Repos:  map[string]RepoConfig{},
-	}
-
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
-	assert.NotContains(t, string(data), "agents:")
-}
-
-func TestOrgConfigMarshal_EmptyAgentsOmitted(t *testing.T) {
-	// yaml.v3 treats empty (non-nil) slices the same as nil for omitempty:
-	// both are considered "zero" and omitted. This test locks in that behavior.
-	cfg := &OrgConfig{
-		Version:  "1",
-		Dispatch: DispatchConfig{Platform: "github-actions"},
-		Defaults: RepoDefaults{
-			Roles:                    []string{"fullsend"},
-			MaxImplementationRetries: 2,
-		},
-		Agents: []AgentEntry{},
-		Repos:  map[string]RepoConfig{},
-	}
-
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
-	// yaml.v3 omitempty uses Len()==0 for slices, so empty non-nil slices
-	// are also omitted — same as nil.
-	assert.NotContains(t, string(data), "agents:")
-}
-
 func TestNewOrgConfig_CreateIssuesDefaults(t *testing.T) {
-	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, nil, "", "my-org")
+	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, "", "my-org")
 	require.NotNil(t, cfg.CreateIssues)
 	assert.Equal(t, []string{"my-org"}, cfg.CreateIssues.AllowTargets.Orgs)
 	assert.Equal(t, []string{"fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)

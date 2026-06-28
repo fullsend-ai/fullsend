@@ -106,7 +106,7 @@
                 </svg>
               {/if}
             </span>
-            <span class="doc-tree-folder-label">{#each highlightSegments(node.name, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
+            <span class="doc-tree-folder-label">{#each highlightSegments(node.name, filterQuery) as seg, i (i)}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
           </button>
           {#if expanded}
             <div id={subId} class="doc-tree-folder-children">
@@ -138,7 +138,7 @@
               />
             </svg>
           </span>
-          <span class="doc-tree-link-text">{#each highlightSegments(node.title, filterQuery) as seg}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
+          <span class="doc-tree-link-text">{#each highlightSegments(node.title, filterQuery) as seg, i (i)}{#if seg.highlight}<mark class="doc-tree-match">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
         </a>
       {/if}
     </li>

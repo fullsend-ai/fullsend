@@ -53,9 +53,10 @@ func (l *HarnessWrappersLayer) RequiredScopes(op Operation) []string {
 // harnessesForRole returns the harness filename(s) for a given agent role.
 // The coder role maps to both code and fix harnesses (fix reuses the coder app).
 // The fullsend role is the org-level app and has no harness.
+// The e2e role is a pool/CI mint role and is not installed as an agent app.
 func harnessesForRole(role string) []string {
 	switch role {
-	case "fullsend":
+	case "fullsend", "e2e":
 		return nil
 	case "coder":
 		return []string{"code", "fix"}

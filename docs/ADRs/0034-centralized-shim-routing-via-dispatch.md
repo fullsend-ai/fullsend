@@ -102,11 +102,15 @@ a stage name:
 - `issue_comment` with `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
   commands → corresponding stage
 - `issue_comment` on `needs-info` issue from non-bot → `triage`
-- `issues` + `labeled` with `ready-to-code` or `ready-for-review` → `code`
-  or `review`
+- `issues` + `labeled` with `ready-to-code` → `code`
 - `pull_request_target` opened/synchronize/ready_for_review → `review`
 - `pull_request_target` closed → `retro`
 - `pull_request_review` with bot `changes_requested` → `fix`
+
+> **Note (2026-06):** Per-repo `reusable-dispatch.yml` now requires PR context for
+> review label and slash-command triggers (`ready-for-review`, `/fs-review` gated
+> on `issue.pull_request`). Per-org `dispatch.yml` is unchanged pending follow-up.
+> Fix dispatch was already PR-only via `pull_request_review` and PR-gated `/fs-fix`.
 
 If no stage matches, `dispatch.yml` exits early with no fan-out. The existing
 kill switch, role enablement, and `# fullsend-stage:` marker scanning
@@ -162,3 +166,8 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   the same routing script. Per-org shims could also adopt
   `reusable-fullsend.yml` directly, eliminating `dispatch.yml` as a
   routing layer entirely — see ADR 0033 Open Questions.
+
+## Implementation note (#981)
+
+Per-role dispatch concurrency is configured in repository workflows; the routing
+model in this ADR is unchanged.

@@ -22,6 +22,7 @@ func TestLoadWithBase_BackwardCompat(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "simple.yaml", `
 agent: agents/test.md
+role: test
 timeout_minutes: 5
 `)
 
@@ -32,7 +33,7 @@ timeout_minutes: 5
 	assert.Equal(t, 5, h.TimeoutMinutes)
 	assert.Empty(t, h.Base, "base field should be empty (no base)")
 	assert.Nil(t, deps, "baseDeps should be nil when no base is used")
-	assert.Empty(t, h.Role)
+	assert.Equal(t, "test", h.Role)
 	assert.Empty(t, h.Slug)
 	assert.Nil(t, h.Forge)
 }
@@ -45,6 +46,7 @@ func TestLoadWithBase_BaseWithForgeAndIdentity(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/shared.md
+role: test
 model: sonnet
 skills:
   - base-skill-1
@@ -118,6 +120,7 @@ func TestLoadWithBase_BaseWithForgeSkillsConcatenation(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 skills:
   - base-s1
 forge:
@@ -161,6 +164,7 @@ func TestLoadWithBase_NoBaseIdenticalToLoadWithOpts(t *testing.T) {
 
 	content := `
 agent: agents/test.md
+role: test
 model: opus
 skills:
   - skill-a

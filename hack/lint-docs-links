@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# lint-docs-links - Reject relative links in docs/ that resolve outside the repo root
+#
+# Accepts a list of markdown files as arguments (passed by pre-commit).
+# Absolute URLs (http/https/mailto) and anchor-only links (#section) are ignored.
+# Only relative filesystem links are checked.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+error() { echo "ERROR: $1" >&2; }
+success() { echo "OK: $1"; }
+
+escaped_links=()
+
+for mdfile in "$@"; do
+    # pre-commit passes paths relative to repo root
+    [[ "$mdfile" = /* ]] || mdfile="$REPO_ROOT/$mdfile"
+    file_dir="$(dirname "$mdfile")"
+    rel_file="${mdfile#"$REPO_ROOT/"}"
+    while IFS= read -r target; do
+        [[ "$target" =~ ^https?:// || "$target" =~ ^mailto: || "$target" =~ ^# ]] && continue
+        path="${target%%#*}"
+        [[ -z "$path" ]] && continue
+        resolved="$(cd "$file_dir" && realpath -m "$path")"
+        if [[ "$resolved" != "$REPO_ROOT/"* && "$resolved" != "$REPO_ROOT" ]]; then
+            escaped_links+=("$rel_file: $target")
+        fi
+    done < <(grep -oP '(?<=\])\(\K[^)]+' "$mdfile" || true)
+done
+
+if [[ ${#escaped_links[@]} -eq 0 ]]; then
+    success "No docs/ links escape the repository root"
+    exit 0
+fi
+
+echo "========================"
+echo "docs/ links that escape the repository root:"
+echo "========================"
+for link in "${escaped_links[@]}"; do
+    error "$link"
+done
+echo "========================"
+error "${#escaped_links[@]} escaping link(s) found — docs/ links must stay within the repository"
+echo ""
+echo "  Relative links in docs/ must resolve to a path within the repository."
+echo "  To link an external resource, use an absolute URL."
+exit 1

@@ -71,7 +71,10 @@ finalized, this is a no-op.`,
 			if err != nil {
 				return fmt.Errorf("minting status token: %w", err)
 			}
-			if os.Getenv("GITHUB_ACTIONS") == "true" && mintTokenPattern.MatchString(result.Token) {
+			if !mintTokenPattern.MatchString(result.Token) {
+				return fmt.Errorf("minted status token contains unexpected characters")
+			}
+			if os.Getenv("GITHUB_ACTIONS") == "true" {
 				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 			}
 			client := reconcileNewForgeClient(result.Token)

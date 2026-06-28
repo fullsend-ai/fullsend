@@ -32,11 +32,12 @@ const (
 // which creates PRs with shim workflows in response to config.yaml changes.
 // This layer dispatches that workflow and reports the results.
 type EnrollmentLayer struct {
-	org           string
-	client        forge.Client
-	enabledRepos  []string
-	disabledRepos []string
-	ui            *ui.Printer
+	org             string
+	client          forge.Client
+	enabledRepos    []string
+	disabledRepos   []string
+	ui              *ui.Printer
+	scaffoldPending bool
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
@@ -51,6 +52,14 @@ func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledR
 		disabledRepos: disabledRepos,
 		ui:            printer,
 	}
+}
+
+// WithScaffoldPending marks that scaffold files were delivered via PR and
+// have not yet been merged to the default branch. Enrollment is deferred
+// until the scaffold PR is merged and repo-maintenance triggers on push.
+func (l *EnrollmentLayer) WithScaffoldPending() *EnrollmentLayer {
+	l.scaffoldPending = true
+	return l
 }
 
 func (l *EnrollmentLayer) Name() string {
@@ -80,6 +89,11 @@ func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 func (l *EnrollmentLayer) Install(ctx context.Context) error {
 	if len(l.enabledRepos) == 0 && len(l.disabledRepos) == 0 {
 		l.ui.StepInfo("no repositories to reconcile")
+		return nil
+	}
+
+	if l.scaffoldPending {
+		l.ui.StepInfo("scaffold PR pending — enrollment will run automatically when the PR is merged")
 		return nil
 	}
 

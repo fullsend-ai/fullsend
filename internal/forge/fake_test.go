@@ -196,6 +196,27 @@ func TestFakeClient_GetAuthenticatedUser(t *testing.T) {
 	assert.Equal(t, "test-bot", user)
 }
 
+func TestFakeClient_GetAuthenticatedUserIdentity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns configured identity", func(t *testing.T) {
+		fc := &FakeClient{
+			AuthenticatedUserIdentity: &UserIdentity{Name: "Test User", Email: "test@example.com"},
+		}
+		id, err := fc.GetAuthenticatedUserIdentity(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "Test User", id.Name)
+		assert.Equal(t, "test@example.com", id.Email)
+	})
+
+	t.Run("returns ErrNotFound when not configured", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.GetAuthenticatedUserIdentity(ctx)
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
+}
+
 func TestFakeClient_Secrets(t *testing.T) {
 	ctx := context.Background()
 
@@ -453,6 +474,11 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"ListRepoPullRequests", func(fc *FakeClient) error { _, err := fc.ListRepoPullRequests(ctx, "o", "r"); return err }},
 		{"GetAuthenticatedUser", func(fc *FakeClient) error { _, err := fc.GetAuthenticatedUser(ctx); return err }},
+		{"GetAuthenticatedUserIdentity", func(fc *FakeClient) error {
+			fc.AuthenticatedUserIdentity = &UserIdentity{Name: "n", Email: "e"}
+			_, err := fc.GetAuthenticatedUserIdentity(ctx)
+			return err
+		}},
 		{"CreateRepoSecret", func(fc *FakeClient) error { return fc.CreateRepoSecret(ctx, "o", "r", "n", "v") }},
 		{"RepoSecretExists", func(fc *FakeClient) error { _, err := fc.RepoSecretExists(ctx, "o", "r", "n"); return err }},
 		{"CreateOrUpdateRepoVariable", func(fc *FakeClient) error {
@@ -561,6 +587,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
 			_, _ = fc.ListRepoPullRequests(ctx, "o", "r")
 			_, _ = fc.GetAuthenticatedUser(ctx)
+			_, _ = fc.GetAuthenticatedUserIdentity(ctx)
 			_ = fc.CreateRepoSecret(ctx, "o", "r", "n", "v")
 			_, _ = fc.RepoSecretExists(ctx, "o", "r", "secret")
 			_ = fc.CreateOrUpdateRepoVariable(ctx, "o", "r", "n", "v")

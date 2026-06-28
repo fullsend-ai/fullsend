@@ -146,6 +146,8 @@ Add to an env file:
 
 ```bash
 # fullsend-review.env
+# In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
+# For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
@@ -166,13 +168,15 @@ Add to an env file:
 
 ```bash
 # fullsend-code.env
+# In CI, GH_TOKEN and PUSH_TOKEN are auto-minted by the binary when --mint-url is provided.
+# For local runs, supply GitHub PATs manually:
 GH_TOKEN={github-pat}
 PUSH_TOKEN={github-pat}
-PUSH_TOKEN_SOURCE=github-app
+PUSH_TOKEN_SOURCE=pat
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 REPO_FULL_NAME={org}/{repo}
 ISSUE_NUMBER={issue_num}
-TARGET_BRANCH=main
+CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
 ```

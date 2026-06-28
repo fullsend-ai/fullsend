@@ -28,9 +28,7 @@ export class GitHubUserRequestError extends Error {
 }
 
 /** Same-origin BFF (Vite → Wrangler) — GitHub REST does not allow browser CORS for /user. */
-export async function fetchGitHubUser(
-  accessToken: string,
-): Promise<GitHubUser> {
+export async function fetchGitHubUser(accessToken: string): Promise<GitHubUser> {
   const res = await fetch("/api/github/user", {
     headers: {
       Accept: "application/vnd.github+json",
@@ -52,9 +50,7 @@ export async function fetchGitHubUser(
   }
   const name = typeof data.name === "string" ? data.name : null;
   const rawAvatar =
-    typeof data.avatar_url === "string" && data.avatar_url.length > 0
-      ? data.avatar_url
-      : null;
+    typeof data.avatar_url === "string" && data.avatar_url.length > 0 ? data.avatar_url : null;
   const avatarUrl = normalizeGithubAvatarUrl(rawAvatar);
   return { login, name, avatarUrl };
 }

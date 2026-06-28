@@ -2,14 +2,15 @@
 
 Part of the [cutting-releases](SKILL.md) skill.
 
-Run after the version tag is pushed, the `v0` tag is moved, and the
-CI workflows complete. Focus on the areas identified during pre-flight
+Run after the version tag is pushed and the CI workflows complete.
+The release workflow automatically moves the `v0` floating tag after
+GoReleaser succeeds (skipped for pre-release tags). Focus on the areas identified during pre-flight
 step F.
 
 ## A. Wait for CI workflows
 
 Wait for the Release workflow (triggered by the `v*` tag) and the
-Sandbox Images workflow (triggered by the `v0` tag move) to complete:
+Sandbox Images workflow (triggered by release workflow) to complete:
 
 ```
 gh run list --workflow=release.yml --limit=1
