@@ -2342,7 +2342,8 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 	// Sync org variable visibility so enrolled repos can read dispatch
 	// variables like FULLSEND_MINT_URL. Runs even when changed == 0 to
 	// reconcile a previously failed best-effort sync on re-run.
-	if cfg.Dispatch.Mode == "oidc-mint" {
+	// Skipped in PR mode — repo-maintenance reconciles on merge.
+	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
 		syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
 	}
 
@@ -2504,7 +2505,8 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 	}
 
 	// Sync org variable visibility to revoke access for disabled repos.
-	if cfg.Dispatch.Mode == "oidc-mint" {
+	// Skipped in PR mode — repo-maintenance reconciles on merge.
+	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
 		allOrgRepos, listErr := client.ListOrgRepos(ctx, org)
 		if listErr != nil {
 			printer.StepWarn(fmt.Sprintf("could not list org repos for variable sync: %v", listErr))
@@ -2568,7 +2570,6 @@ func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 	return cfg, nil
 }
 
-// saveRepoConfig marshals and commits the updated config, then triggers the repo-maintenance workflow.
 // saveRepoConfig marshals the config, commits it, and dispatches the
 // repo-maintenance workflow. It returns the dispatch time so callers can
 // watch the resulting workflow run. A zero time means the dispatch failed.
@@ -2611,9 +2612,8 @@ func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 	return dispatchTime, nil
 }
 
-// saveRepoConfigViaPR delivers config.yaml via a pull request. Uses the
-// same branch/PR pattern as scaffold PR delivery: a fixed branch name so
-// re-runs update the same PR rather than creating a new one.
+// saveRepoConfigViaPR delivers config.yaml via a pull request on a dedicated
+// branch, separate from the scaffold-install branch used by sync-scaffold.
 func saveRepoConfigViaPR(ctx context.Context, client forge.Client, printer *ui.Printer, org string, configData []byte, commitMsg string) (time.Time, error) {
 	cfgRepo, err := client.GetRepo(ctx, org, forge.ConfigRepoName)
 	if err != nil {
@@ -2627,14 +2627,13 @@ func saveRepoConfigViaPR(ctx context.Context, client forge.Client, printer *ui.P
 		Mode:    "100644",
 	}}
 
-	prTitle := "chore: update fullsend enrollment config"
 	prBody := "This PR updates `config.yaml` in the .fullsend config repo.\n\n" +
 		"Merge this PR to apply the enrollment changes. The repo-maintenance workflow will run automatically on merge."
 
-	printer.StepStart("Creating enrollment config PR")
-	_, prErr := layers.CommitScaffoldFiles(ctx, client, printer,
+	_, prErr := layers.CommitFilesViaPR(ctx, client, printer,
 		org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
-		commitMsg, prTitle, prBody, files, false)
+		"fullsend/enrollment-config",
+		commitMsg, commitMsg, prBody, files)
 	if prErr != nil {
 		return time.Time{}, prErr
 	}

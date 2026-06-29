@@ -2667,7 +2667,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *tes
 	err := applyPerRepoScaffold(context.Background(), client, printer,
 		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "scaffold branch")
+	assert.Contains(t, err.Error(), "is protected")
 	assert.Contains(t, err.Error(), "configure branch protection")
 }
 

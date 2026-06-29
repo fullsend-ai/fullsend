@@ -585,9 +585,9 @@ func TestRunGitHubSyncScaffold_InvalidConfig(t *testing.T) {
 func TestRunGitHubSyncScaffold_DefaultCreatesPR(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
+		{Name: ".fullsend", FullName: "acme/.fullsend", DefaultBranch: "main"},
 	}
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "acme"
 	printer := ui.New(&discardWriter{})
 
 	// direct=false means PR-based delivery (the default).
