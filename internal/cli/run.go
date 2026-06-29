@@ -241,7 +241,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
 	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "load environment variables from a dotenv file (repeatable)")
 	cmd.Flags().BoolVar(&noPostScript, "no-post-script", false, "skip post-script execution (agent still runs full inference)")
-	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox deletion after the run (useful for post-failure inspection)")
+	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox and download directory deletion after the run (useful for post-failure inspection)")
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable Claude Code debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
@@ -866,6 +866,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// ADR 0022's zero-trust model.
 	var validationPassed bool
 
+	// Download-dir cleanup is registered first so LIFO runs it last —
+	// after the post-script defer has finished using it.
+	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
+	defer func() {
+		if keepSandbox {
+			return
+		}
+		if err := os.RemoveAll(hostRepositoryDownloadDir); err != nil {
+			printer.StepWarn("Failed to remove download dir: " + err.Error())
+		} else {
+			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepositoryDownloadDir))
+		}
+	}()
+
 	// Post-script runs after sandbox cleanup (defers are LIFO).
 	// When a validation_loop is configured, the post-script only runs if
 	// validation passed (ADR 0022). When no validation_loop exists (e.g.,
@@ -895,6 +909,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
 			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
+			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
+			// location, but sandbox output is now extracted to a temp dir. exec uses
+			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
+			// remove REPO_DIR from RunnerEnv entirely once harnesses no longer set it.
+			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", hostRepositoryDownloadDir))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -1338,24 +1357,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		//
-		// Clear the contents of the directory rather than removing the directory
-		// itself. Removing the directory would invalidate the inode, which breaks
-		// any shell whose CWD points at it (the next command in that shell would
-		// fail with "getwd: no such file or directory").
-		printer.StepInfo(fmt.Sprintf("Clearing %s before extraction", hostRepositoryDir))
-		if clearErr := clearDirContents(hostRepositoryDir); clearErr != nil {
-			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDir, clearErr)
+		if clearErr := os.RemoveAll(hostRepositoryDownloadDir); clearErr != nil {
+			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
 		}
+
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDir); err != nil {
+		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
-		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDir, time.Since(repoExtractStart).Seconds()))
+		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
@@ -1366,7 +1380,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDir, runDir)...)
+		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1436,6 +1450,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Blank()
 	printer.Header("Results")
 	printer.KeyValue("Run directory", runDir)
+	if keepSandbox {
+		printer.KeyValue("Download directory", hostRepositoryDownloadDir)
+	} else {
+		printer.KeyValue("Download directory", hostRepositoryDownloadDir+" (removed after run; use --keep-sandbox to retain)")
+	}
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
 	printer.KeyValue("Trace ID", securityTraceID)
@@ -3051,22 +3070,6 @@ func containedLocalPath(baseDir, source string) (string, error) {
 		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
 	}
 	return real, nil
-}
-
-// clearDirContents removes all entries inside dir without removing dir itself.
-// This preserves the directory inode so that shells whose CWD points at dir
-// continue to work after the call.
-func clearDirContents(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // dedupResolvedProviders removes duplicate providers by Name, keeping the last
