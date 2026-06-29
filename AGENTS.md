@@ -103,6 +103,10 @@ These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full
 
 **When reviewing PRs:** Flag substantial rewrites to Context, Decision, or Consequences on Accepted ADRs already on `main` as a policy violation. Allow minor annotations (cross-references, short notes, typo fixes), status updates, and supersession links. For brand-new ADR files on the PR branch, evaluate whether the recorded decision matches the diff — do not treat **Accepted** on a new file as a mistake if the ADR is ready for human review at merge.
 
+## Documentation site
+
+When adding a new doc under `docs/`, check `website/.vitepress/config.ts` sidebar config. Sections using `getMarkdownFiles()` are auto-discovered. All other sections need a manual `{ text, link }` entry.
+
 ## Key design decisions made
 
 - **Autonomy model:** Binary per-repo, with CODEOWNERS enforcing human approval on specific paths
