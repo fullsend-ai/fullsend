@@ -474,6 +474,14 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.RunnerEnv = merged
 	}
 
+	// Env: merge sub-maps independently, child keys win (ADR 0055)
+	if base.Env != nil {
+		if child.Env == nil {
+			child.Env = &EnvConfig{}
+		}
+		child.Env.mergeEnvFrom(base.Env, false)
+	}
+
 	// Pointer structs: child replaces if non-nil
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
@@ -1091,6 +1099,14 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 				child.RunnerEnv[k] = v
 			}
 		}
+	}
+
+	// Env: merge sub-maps, child keys win (ADR 0055)
+	if base.Env != nil {
+		if child.Env == nil {
+			child.Env = &EnvConfig{}
+		}
+		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
 	// ValidationLoop: child replaces if non-nil

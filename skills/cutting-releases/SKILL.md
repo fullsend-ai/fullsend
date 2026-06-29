@@ -131,7 +131,7 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **Pre-releases:** Tags with `-rc.N`, `-alpha.N`, or `-beta.N` suffixes are
   automatically marked as pre-releases by GoReleaser.
 - **Never delete a published tag.** If a release is bad, cut a new patch or RC.
-- **The changelog** is auto-generated from conventional commit prefixes.
+- **The changelog** is auto-generated from PR titles (which must follow conventional commit format). GoReleaser uses `changelog.use: github` in `.goreleaser.yml`, so merged PR titles — not individual commit subjects — are the source of release-note entries.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).

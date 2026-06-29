@@ -386,6 +386,73 @@ func TestValidate_ForgeSkillURLWithHash(t *testing.T) {
 	require.NoError(t, h.Validate())
 }
 
+func TestResolveForge_MergesEnv(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner:  map[string]string{"SHARED": "base"},
+			Sandbox: map[string]string{"SHARED_SB": "base"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Env: &EnvConfig{
+					Runner:  map[string]string{"GH_TOKEN": "tok"},
+					Sandbox: map[string]string{"PR_URL": "url"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+
+	require.NotNil(t, h.Env)
+	assert.Equal(t, "base", h.Env.Runner["SHARED"])
+	assert.Equal(t, "tok", h.Env.Runner["GH_TOKEN"])
+	assert.Equal(t, "base", h.Env.Sandbox["SHARED_SB"])
+	assert.Equal(t, "url", h.Env.Sandbox["PR_URL"])
+}
+
+func TestResolveForge_EnvForgeOverridesTopLevel(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{"KEY": "top"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Env: &EnvConfig{
+					Runner: map[string]string{"KEY": "forge"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, "forge", h.Env.Runner["KEY"])
+}
+
+func TestResolveForge_EnvInheritedWhenForgeNil(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner:  map[string]string{"INHERITED": "yes"},
+			Sandbox: map[string]string{"ALSO": "inherited"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+
+	require.NotNil(t, h.Env)
+	assert.Equal(t, "yes", h.Env.Runner["INHERITED"])
+	assert.Equal(t, "inherited", h.Env.Sandbox["ALSO"])
+}
+
 func TestLoad_WithForgeSection(t *testing.T) {
 	content := `
 agent: agents/test.md
@@ -420,6 +487,26 @@ forge:
 	assert.Equal(t, []string{"skills/gh-specific"}, h.Forge["github"].Skills)
 	assert.Equal(t, "${GH_TOKEN}", h.Forge["github"].RunnerEnv["GH_TOKEN"])
 	assert.Equal(t, "scripts/pre-gl.sh", h.Forge["gitlab"].PreScript)
+}
+
+func TestForgeConfig_EnvParsesFromYAML(t *testing.T) {
+	yaml := `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    env:
+      runner:
+        GH_TOKEN: "${GH_TOKEN}"
+      sandbox:
+        GITHUB_PR_URL: "${GITHUB_PR_URL}"
+`
+	h, err := parseRaw([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, h.Forge["github"])
+	require.NotNil(t, h.Forge["github"].Env)
+	assert.Equal(t, map[string]string{"GH_TOKEN": "${GH_TOKEN}"}, h.Forge["github"].Env.Runner)
+	assert.Equal(t, map[string]string{"GITHUB_PR_URL": "${GITHUB_PR_URL}"}, h.Forge["github"].Env.Sandbox)
 }
 
 func TestLoad_WithoutForgeSection(t *testing.T) {

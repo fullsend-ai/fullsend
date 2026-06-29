@@ -17,8 +17,12 @@ mkdir -p "${MOCK_BIN}"
 
 PR_JSON="${TMPDIR}/pr.json"
 EVENTS_JSON="${TMPDIR}/events.json"
+COLLAB_ROLE="${TMPDIR}/collab_role"
 GH_LOG="${TMPDIR}/gh.log"
 GH_FAIL="false"
+
+# Default: no collaborator role configured (API returns failure)
+echo "" >"${COLLAB_ROLE}"
 
 write_pr() {
   local assoc="$1"
@@ -45,6 +49,14 @@ if [[ "\${GH_FAIL}" == "events" && "\$*" == *"/issues/"*"/events"* ]]; then
   exit 1
 fi
 case "\$*" in
+  *"/collaborators/"*"/permission"*)
+    role=\$(cat "${COLLAB_ROLE}")
+    if [[ -z "\${role}" ]]; then
+      echo "not a collaborator" >&2
+      exit 1
+    fi
+    echo "{\"role_name\": \"\${role}\"}"
+    ;;
   *"/issues/"*"/events"*)
     cat "${EVENTS_JSON}"
     ;;
@@ -66,7 +78,7 @@ export PATH="${MOCK_BIN}:${PATH}"
 export GH_TOKEN="test-token"
 export CHECK_E2E_AUTH_DRY_RUN="true"
 export GH_FAIL="false"
-unset EVENT_ACTION PR_UPDATED_AT
+unset EVENT_ACTION PR_UPDATED_AT PR_AUTHOR_LOGIN
 
 run_case() {
   local name="$1"
@@ -196,6 +208,65 @@ write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[]'
 export GH_FAIL="true"
 run_case "gh api failure on pull fetch returns error reason" "false" "error" "false"
+export GH_FAIL="false"
+
+# --- Collaborator permission API fallback tests ---
+
+# Private org member: event payload says CONTRIBUTOR, but collaborator API says write+
+unset EVENT_ACTION PR_UPDATED_AT
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="maruiz93"
+echo "admin" >"${COLLAB_ROLE}"
+write_pr "NONE" '[]'
+: >"${GH_LOG}"
+run_case "private org member: collaborator API fallback authorizes admin" "true" "trusted_author" "false"
+if ! grep -q '/collaborators/' "${GH_LOG}"; then
+  echo "FAIL: should have called collaborator permission API"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: called collaborator permission API for fallback"
+fi
+
+echo "write" >"${COLLAB_ROLE}"
+: >"${GH_LOG}"
+run_case "private org member: collaborator API fallback authorizes write" "true" "trusted_author" "false"
+
+echo "maintain" >"${COLLAB_ROLE}"
+: >"${GH_LOG}"
+run_case "private org member: collaborator API fallback authorizes maintain" "true" "trusted_author" "false"
+
+# Collaborator API says read — should NOT authorize
+echo "read" >"${COLLAB_ROLE}"
+write_pr "NONE" '[]'
+: >"${GH_LOG}"
+run_case "collaborator API read permission denied" "false" "unauthorized" "false"
+
+# Collaborator API fails — should fall through to ok-to-test label path
+echo "" >"${COLLAB_ROLE}"
+export EVENT_ACTION="synchronize"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
+write_pr "NONE" '[{"name":"ok-to-test"}]'
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
+: >"${GH_LOG}"
+run_case "collaborator API failure falls through to ok-to-test" "true" "ok_to_test" "false"
+
+# No PR_AUTHOR_LOGIN set — should skip collaborator API entirely
+unset PR_AUTHOR_LOGIN EVENT_ACTION PR_UPDATED_AT
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+echo "admin" >"${COLLAB_ROLE}"
+write_pr "NONE" '[]'
+: >"${GH_LOG}"
+run_case "no PR_AUTHOR_LOGIN skips collaborator API fallback" "false" "unauthorized" "false"
+if grep -q '/collaborators/' "${GH_LOG}"; then
+  echo "FAIL: should NOT have called collaborator API without PR_AUTHOR_LOGIN"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skipped collaborator API without PR_AUTHOR_LOGIN"
+fi
+
+# Clean up
+unset PR_AUTHOR_ASSOCIATION PR_AUTHOR_LOGIN
+echo "" >"${COLLAB_ROLE}"
 export GH_FAIL="false"
 
 if [[ "${FAILURES}" -gt 0 ]]; then
