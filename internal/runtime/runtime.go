@@ -43,6 +43,10 @@ type TranscriptError struct {
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.
 type Runtime interface {
 	Name() string
+	// System returns the OTEL GenAI `gen_ai.system` value (the model vendor) for
+	// this runtime, e.g. "anthropic". Kept on the runtime so telemetry stays
+	// runtime-agnostic rather than hardcoding a vendor in the CLI (ADR 0050).
+	System() string
 	ConfigDir() string
 	WorkspaceDir() string
 	EnvExports() []string

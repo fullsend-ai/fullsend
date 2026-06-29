@@ -295,6 +295,9 @@ func (r *Recorder) emit(rec eventRecord) {
 		r.disabled = true
 		return
 	}
+	// fsync per event is fine for L1's handful of spans per run; if L2/L3 raises
+	// span volume, batch or move to an async flush (fsync can be 5-15ms on slow/
+	// network filesystems).
 	_ = r.f.Sync()
 }
 

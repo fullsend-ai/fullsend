@@ -971,7 +971,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if runErr != nil {
 			agentStatus = "error"
 		}
-		rec.EndSpan(agentSpan, agentStatus, agentSpanEndAttrs(iteration, exitCode, &metrics))
+		rec.EndSpan(agentSpan, agentStatus, agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics))
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
@@ -1552,12 +1552,13 @@ func roundUSD(c float64) float64 { return math.Round(c*100) / 100 }
 
 // agentSpanEndAttrs builds the span_end attributes for one agent iteration,
 // using OTEL GenAI semconv names (gen_ai.*) so the later L2 OTLP transform is
-// ~1:1. Cost is rounded to cents for telemetry; metrics.json keeps full precision.
-func agentSpanEndAttrs(iteration, exitCode int, m *agentruntime.RunMetrics) map[string]any {
+// ~1:1. system is the runtime's gen_ai.system vendor (kept runtime-agnostic, not
+// hardcoded). Cost is rounded to cents; metrics.json keeps full precision.
+func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) map[string]any {
 	return map[string]any{
 		"iteration":                                iteration,
 		"exit_code":                                exitCode,
-		"gen_ai.system":                            "anthropic",
+		"gen_ai.system":                            system,
 		"gen_ai.request.model":                     m.Model,
 		"gen_ai.usage.input_tokens":                m.InputTokens,
 		"gen_ai.usage.output_tokens":               m.OutputTokens,

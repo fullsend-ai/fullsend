@@ -19,7 +19,7 @@ import (
 // would truncate it out from under the open handle; and both files are
 // metadata-only by construction, so they don't need redaction. A normal output
 // file must still be sanitized.
-func TestScanOutputFilesSkipsTelemetryArtifacts(t *testing.T) {
+func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	const secret = "Token: ghp_FAKEtesttoken000000000000000000000000\n"
 

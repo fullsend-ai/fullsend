@@ -475,3 +475,10 @@ func TestResolveSkillDisplayName(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeRuntimeSystem(t *testing.T) {
+	// gen_ai.system is the OTEL vendor value for the runtime's models; Claude
+	// Code runs Anthropic models. Sourcing it from the runtime (not hardcoding
+	// in the CLI) keeps telemetry runtime-agnostic per ADR 0050.
+	assert.Equal(t, "anthropic", ClaudeRuntime{}.System())
+}

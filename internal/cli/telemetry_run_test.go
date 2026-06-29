@@ -131,10 +131,10 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	m.TotalCostUSD = 0.335349
 	m.ToolCalls.Store(11)
 
-	a := agentSpanEndAttrs(2, 0, &m)
+	a := agentSpanEndAttrs(2, 0, "anthropic", &m)
 	assert.Equal(t, 2, a["iteration"])
 	assert.Equal(t, 0, a["exit_code"])
-	assert.Equal(t, "anthropic", a["gen_ai.system"])
+	assert.Equal(t, "anthropic", a["gen_ai.system"], "gen_ai.system is sourced from the runtime, not hardcoded")
 	assert.Equal(t, "claude-opus-4-6", a["gen_ai.request.model"])
 	assert.Equal(t, 11, a["gen_ai.usage.input_tokens"])
 	assert.Equal(t, 1505, a["gen_ai.usage.output_tokens"])
