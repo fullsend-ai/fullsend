@@ -73,7 +73,9 @@ validate "request-changes-with-label-actions" '{
       "severity": "high",
       "category": "security",
       "file": "main.go",
-      "description": "SQL injection vulnerability"
+      "description": "SQL injection vulnerability",
+      "verified_variables": [],
+      "unchecked_variables": []
     }
   ],
   "label_actions": {

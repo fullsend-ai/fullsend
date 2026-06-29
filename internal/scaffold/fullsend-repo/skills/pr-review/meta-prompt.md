@@ -19,7 +19,9 @@ For each finding, return a JSON array as follows
   "line": "<line number, optional>",
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
-  "actionable": true|false
+  "actionable": true|false,
+  "verified_variables": [],
+  "unchecked_variables": []
 }
 ```
 

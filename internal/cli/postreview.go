@@ -164,13 +164,15 @@ type ReviewResult struct {
 
 // ReviewFinding is the structured form emitted by the review agent.
 type ReviewFinding struct {
-	Severity    string `json:"severity"`
-	Category    string `json:"category"`
-	File        string `json:"file"`
-	Line        int    `json:"line,omitempty"`
-	Description string `json:"description"`
-	Remediation string `json:"remediation,omitempty"`
-	Actionable  bool   `json:"actionable,omitempty"`
+	Severity           string   `json:"severity"`
+	Category           string   `json:"category"`
+	File               string   `json:"file"`
+	Line               int      `json:"line,omitempty"`
+	Description        string   `json:"description"`
+	Remediation        string   `json:"remediation,omitempty"`
+	Actionable         bool     `json:"actionable,omitempty"`
+	VerifiedVariables  []string `json:"verified_variables"`
+	UncheckedVariables []string `json:"unchecked_variables"`
 }
 
 // reviewActionToEvent maps a ReviewResult action to a GitHub PR review event.

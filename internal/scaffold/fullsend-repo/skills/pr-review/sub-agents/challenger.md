@@ -54,6 +54,8 @@ Return a JSON object with two fields:
       "description": "<description, possibly amended>",
       "remediation": "<remediation, required for critical/high>",
       "actionable": true|false,
+      "verified_variables": [],
+      "unchecked_variables": [],
       "challenger_action": "kept|downgraded|merged|removed",
       "challenger_reason": "<why this finding was kept/changed/removed>"
     }
