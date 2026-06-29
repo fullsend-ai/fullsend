@@ -41,10 +41,16 @@ plugins:
 
 # Environment variables available to pre/post scripts on the runner.
 # These are expanded from the runner environment and NEVER enter the sandbox.
-runner_env:
-  CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/code-result.schema.json
-  FULLSEND_OUTPUT_FILE: code-result.json
+env:
+  runner:
+    CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/code-result.schema.json
+    FULLSEND_OUTPUT_FILE: code-result.json
+  sandbox:
+    MAX_RETRIES: "1"
+    TIMEOUT_SECONDS: "2100"
+    GOPATH: "/sandbox/go"
+    GOMODCACHE: "/sandbox/go/pkg/mod"
 
 timeout_minutes: 35
 
@@ -52,9 +58,18 @@ forge:
   github:
     pre_script: scripts/pre-code.sh
     post_script: scripts/post-code.sh
-    runner_env:
-      PUSH_TOKEN: "${PUSH_TOKEN}"
-      PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      ISSUE_NUMBER: "${ISSUE_NUMBER}"
-      REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+    env:
+      runner:
+        PUSH_TOKEN: "${PUSH_TOKEN}"
+        PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+      sandbox:
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
+        GH_TOKEN: "${GH_TOKEN}"
+        GIT_AUTHOR_NAME: "fullsend-code"
+        GIT_AUTHOR_EMAIL: "${GIT_BOT_EMAIL}"
+        GIT_COMMITTER_NAME: "fullsend-code"
+        GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"

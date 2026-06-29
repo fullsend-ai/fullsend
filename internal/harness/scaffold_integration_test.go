@@ -287,9 +287,9 @@ func TestLoadRaw_GeneratedWrapperFormat(t *testing.T) {
 }
 
 // TestResolveForge_ScaffoldRunnerEnvMerge verifies that forge resolution
-// produces the expected merged runner_env for each scaffold template, with
-// both top-level (platform-neutral) and forge.github (platform-specific)
-// keys present in the final merged state.
+// produces the expected merged runner_env / env.runner for each scaffold
+// template, with both top-level (platform-neutral) and forge.github
+// (platform-specific) keys present in the final merged state.
 func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 	dir := t.TempDir()
 	harnessDir := extractScaffoldHarnessDir(t, dir)
