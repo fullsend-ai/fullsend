@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Per-Org Mode
 
-> **Planned deprecation.** Per-org installation mode will be deprecated in favor of per-repo installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). New installations should use the [per-repo Getting Started guides](../getting-started/). Existing per-org installations continue to work and are fully supported during the transition.
+> **Planned deprecation.** Per-org installation mode will be deprecated in favor of per-repo installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). New installations should use the [per-repo Getting Started guides](README.md). Existing per-org installations continue to work and are fully supported during the transition.
 
 The goal of this document is that you install Fullsend for your whole
 GitHub organization, so different repositories share inference and infrastructure.
