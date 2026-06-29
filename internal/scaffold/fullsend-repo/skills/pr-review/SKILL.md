@@ -367,7 +367,8 @@ See #2096 for the motivating incident.
      uniform-attention behavior as a safe default.
    - If `security_critical_files` is empty but any changed files
      match the path patterns from the classification criteria (e.g.,
-     `**/auth/**`, `**/mint/**`, `**/token/**`), treat this as a
+     `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`,
+     `.github/**`, `agents/**`, `scripts/**`), treat this as a
      triage failure and apply the same fallback. An empty
      classification when path-pattern matches exist indicates the
      classifier missed obvious signals.

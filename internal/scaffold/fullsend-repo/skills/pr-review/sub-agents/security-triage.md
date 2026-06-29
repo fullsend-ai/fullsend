@@ -32,10 +32,34 @@ A file is **security-critical** if it matches ANY of the following:
 - `**/crypto/**` — cryptographic operations
 - `**/token/**` or `**/tokens/**` — token handling
 - `**/trust/**` — trust boundary definitions
-- `.github/workflows/*.yml` — workflow files (check for `permissions:`
-  blocks, `secrets:` inheritance, `pull_request_target` triggers)
 - `**/CODEOWNERS` — access control governance
 - `**/policies/**` — policy definitions
+
+### Governance and infrastructure paths
+
+These paths correspond to the orchestrator's protected-path list
+(step 6e). Files here control agent behavior, CI/CD, container
+builds, and access governance — changes can alter trust boundaries
+or weaken security controls. Classify as security-critical so they
+receive prioritized review context.
+
+- `.claude/**` — agent settings and configuration
+- `.cursor/**` — editor agent configuration
+- `.gitattributes` — file handling attributes
+- `.github/**` — CI, GitHub Actions, and repository configuration
+  (includes workflows, action definitions, and Dependabot config)
+- `.pre-commit-config.yaml` — pre-commit hook configuration
+- `AGENTS.md` — agent governance rules
+- `agents/**` — agent definitions
+- `api-servers/**` — API server configurations
+- `CLAUDE.md` — project-level agent instructions
+- `Containerfile` — container image definitions
+- `Dockerfile` — container image definitions
+- `harness/**` — harness definitions
+- `images/**` — container image build contexts
+- `plugins/**` — plugin definitions
+- `scripts/**` — pre/post scripts (CI and deployment)
+- `skills/**` — skill definitions
 
 ### Content heuristics (from diff summary)
 
