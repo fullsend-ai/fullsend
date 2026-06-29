@@ -241,7 +241,9 @@ jobs:
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
-                if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
+                if [[ "${TRIGGERING_LABEL}" == "ready-for-triage" ]]; then
+                  STAGE="triage"
+                elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then

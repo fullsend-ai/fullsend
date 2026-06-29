@@ -456,3 +456,14 @@ rm -f "${PR_CREATE_STDERR}"
 
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+# Apply ready-for-review label so the review agent is dispatched via the
+# issues.labeled path. The pull_request_target.opened event requires the PR
+# author to pass is_event_actor_authorized, which fails for bot accounts
+# (GitHub App bots have no collaborator role). The label-based path has no
+# explicit auth gate — label application itself requires write access.
+PR_NUMBER_FROM_URL="${PR_URL##*/}"
+gh issue edit "${PR_NUMBER_FROM_URL}" \
+  --repo "${REPO_FULL_NAME}" \
+  --add-label "ready-for-review" 2>/dev/null || \
+  echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"

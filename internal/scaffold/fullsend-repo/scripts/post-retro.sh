@@ -97,7 +97,8 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
   if ! ISSUE_URL=$(gh issue create \
     --repo "${TARGET_REPO}" \
     --title "${TITLE}" \
-    --body "${BODY}" 2>&1); then
+    --body "${BODY}" \
+    --label "ready-for-triage" 2>&1); then
     echo "ERROR: failed to create issue in ${TARGET_REPO} (gh issue create --repo ${TARGET_REPO}): ${ISSUE_URL}" >&2
     exit 1
   fi

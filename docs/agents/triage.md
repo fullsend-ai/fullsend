@@ -28,9 +28,11 @@ The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
 Triage also runs automatically when a new issue is opened or edited by a
-repository owner, member, or collaborator, and when someone comments on an
-issue labeled `needs-info` (to re-evaluate after the reporter provides
-clarification).
+repository owner, member, or collaborator, when the `ready-for-triage`
+label is applied to an issue (used by the [retro agent](retro.md) to
+route proposal issues into the triage pipeline), and when someone
+comments on an issue labeled `needs-info` (to re-evaluate after the
+reporter provides clarification).
 
 ## Control labels
 

@@ -214,6 +214,11 @@ run_test "happy-path-issue-created" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "gh issue create"
 
+# Verify that the happy-path applied the ready-for-triage label.
+run_test "happy-path-triage-label" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "ready-for-triage"
+
 # Happy path: no proposals, comment posted successfully.
 run_test "happy-path-no-proposals" \
   "${FIXTURE_NO_PROPOSALS}" \
