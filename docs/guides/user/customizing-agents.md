@@ -40,10 +40,11 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
 
-runner_env:
-  PUSH_TOKEN: "${PUSH_TOKEN}"  # auto-minted in CI when --mint-url is provided
-  REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+env:
+  runner:
+    PUSH_TOKEN: "${PUSH_TOKEN}"  # auto-minted in CI when --mint-url is provided
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
 **Optional fields** (all have secure defaults and can be omitted):
@@ -358,10 +359,11 @@ validation_loop:
   script: scripts/custom-validate.sh  # Changed script
   max_iterations: 5                   # Changed from: 2
 
-runner_env:
-  PUSH_TOKEN: "${PUSH_TOKEN}"
-  REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+env:
+  runner:
+    PUSH_TOKEN: "${PUSH_TOKEN}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
 Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.

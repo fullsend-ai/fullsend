@@ -143,11 +143,12 @@ validation_loop:
 
 post_script: customized/scripts/post-my-agent.sh
 
-runner_env:
-  MY_VAR: "${MY_VAR}"
-  ISSUE_KEY: "${ISSUE_KEY}"
-  GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
+env:
+  runner:
+    MY_VAR: "${MY_VAR}"
+    ISSUE_KEY: "${ISSUE_KEY}"
+    GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
 
 timeout_minutes: 20
 
@@ -462,7 +463,7 @@ jobs:
 
 5. **`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`** — must be in the workflow `env` block so the `gcp-vertex.env` file (copied into the sandbox with `expand: true`) resolves correctly.
 
-6. **All `runner_env` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
+6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
 
 ## Step 8: Trigger the agent
 
