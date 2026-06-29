@@ -151,3 +151,114 @@ func TestHasRole(t *testing.T) {
 	assert.True(t, HasRole("coder"))
 	assert.False(t, HasRole("nonexistent"))
 }
+
+func TestCustomRolePermissions(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	assert.False(t, HasRole("scanner"))
+	assert.Nil(t, RolePermissionsFor("scanner"))
+
+	require.NoError(t, RegisterCustomRolePermissions(map[string]map[string]string{
+		"scanner": {"contents": "read", "security_events": "write"},
+	}))
+
+	assert.True(t, HasRole("scanner"))
+	perms := RolePermissionsFor("scanner")
+	require.NotNil(t, perms)
+	assert.Equal(t, "read", perms["contents"])
+	assert.Equal(t, "write", perms["security_events"])
+
+	// Built-in roles still work
+	assert.True(t, HasRole("coder"))
+	assert.NotNil(t, RolePermissionsFor("coder"))
+
+	// RolePermissions() includes custom roles
+	allPerms := RolePermissions()
+	assert.Contains(t, allPerms, "scanner", "RolePermissions should include custom roles")
+	assert.Contains(t, allPerms, "coder", "RolePermissions should still include built-in roles")
+	assert.Equal(t, "write", allPerms["scanner"]["security_events"])
+}
+
+func TestCustomRolePermissions_RejectsBuiltinCollision(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	err := RegisterCustomRolePermissions(map[string]map[string]string{
+		"triage": {"contents": "write", "issues": "write"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collides with built-in role")
+}
+
+func TestCustomRolePermissions_RejectsInvalidName(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	err := RegisterCustomRolePermissions(map[string]map[string]string{
+		"Invalid-Role": {"contents": "read"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestCustomRolePermissions_DeepCopiesInput(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	input := map[string]map[string]string{
+		"scanner": {"contents": "read"},
+	}
+	require.NoError(t, RegisterCustomRolePermissions(input))
+
+	input["scanner"]["contents"] = "write"
+	perms := RolePermissionsFor("scanner")
+	assert.Equal(t, "read", perms["contents"], "stored permissions should not be affected by caller mutation")
+}
+
+func TestCustomRolePermissions_ReturnsCopy(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	require.NoError(t, RegisterCustomRolePermissions(map[string]map[string]string{
+		"scanner": {"contents": "read"},
+	}))
+
+	perms := RolePermissionsFor("scanner")
+	perms["contents"] = "write"
+	fresh := RolePermissionsFor("scanner")
+	assert.Equal(t, "read", fresh["contents"], "should return a copy")
+}
+
+func TestCustomRolePermissions_Clear(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	require.NoError(t, RegisterCustomRolePermissions(map[string]map[string]string{
+		"scanner": {"contents": "read"},
+	}))
+	assert.True(t, HasRole("scanner"))
+
+	require.NoError(t, RegisterCustomRolePermissions(nil))
+	assert.False(t, HasRole("scanner"))
+}
+
+func TestCreateInstallationToken_CustomRole(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	require.NoError(t, RegisterCustomRolePermissions(map[string]map[string]string{
+		"scanner": {"contents": "read", "security_events": "write"},
+	}))
+
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		perms := body["permissions"].(map[string]interface{})
+		assert.Equal(t, "read", perms["contents"])
+		assert.Equal(t, "write", perms["security_events"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(installationTokenResponse{
+			Token:     "ghs_custom_token",
+			ExpiresAt: "2099-01-01T00:00:00Z",
+		})
+	}))
+	defer mockGH.Close()
+
+	token, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "scanner", []string{"my-repo"})
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_custom_token", token)
+}

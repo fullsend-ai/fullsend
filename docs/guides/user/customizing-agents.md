@@ -283,7 +283,7 @@ Each agent role has its own identity, permissions, and purpose:
 │                                                             │
 │  App naming: {org}-{role}                                   │
 │  Bot naming: {org}-{role}[bot]                              │
-│  PEM storage: GCP Secret Manager                            │
+│  PEM storage: GCP Secret Manager or filesystem (standalone)  │
 │  Secret name: fullsend-{role}-app-pem                       │
 │                                                             │
 │  Note: "fix" role reuses the "coder" app and PEM — no       │
@@ -383,4 +383,5 @@ my-repo/
 
 - [Installation Guide](../../reference/installation.md) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
+- [Standalone Mint](../infrastructure/standalone-mint.md) - Running your own mint with custom agent roles
 - [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md)

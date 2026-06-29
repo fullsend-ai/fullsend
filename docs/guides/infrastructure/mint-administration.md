@@ -545,5 +545,6 @@ gcloud functions logs read fullsend-mint \
 
 - [Installing fullsend](../../reference/installation.md) — End-user setup (inference + GitHub)
 - [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup when GCP is already provisioned
+- [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
 - [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details

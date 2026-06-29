@@ -35,7 +35,7 @@ Your setup path depends on what GCP infrastructure is already in place and how m
 | **[GitHub-only setup](github-setup.md)** | Both GCP inference and mint are pre-provisioned | GitHub org access + GCP config values from your admin (no GCP credentials needed) |
 | **[All-in-one admin install](#all-in-one-admin-install)** | You manage everything — GCP mint, inference, and GitHub | Full GCP + GitHub access |
 
-> **Mint service note:** The token mint is fully self-hostable, but most users currently use the mint service hosted by the fullsend team. Work is in progress to offer this as a secure, trusted public service — reducing the need for per-org enrollment. See [Mint service administration](../guides/infrastructure/mint-administration.md) for self-hosting details.
+> **Mint service note:** The token mint is fully self-hostable, but most users currently use the mint service hosted by the fullsend team. Work is in progress to offer this as a secure, trusted public service — reducing the need for per-org enrollment. See [Mint service administration](../guides/infrastructure/mint-administration.md) for GCF-based self-hosting, or [Standalone mint](../guides/infrastructure/standalone-mint.md) for running a mint without GCP infrastructure.
 
 ---
 
