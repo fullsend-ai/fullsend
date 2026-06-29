@@ -615,6 +615,6 @@ func TestManagedVendoredContentPathsFromEmbed(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/code.md")
 	assert.Contains(t, paths, scaffold.VendoredMarkerPath())
 }

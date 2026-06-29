@@ -189,7 +189,7 @@ func TestEnumerateVendoredPathsWithoutCheckout(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, paths, ".defaults/action.yml")
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/code.md")
 }
 
 func TestEnumerateVendoredPathsMatchesCollectInCheckout(t *testing.T) {
@@ -267,10 +267,10 @@ func TestCollectVendoredAssetsUsesDefaultsMirror(t *testing.T) {
 	paths := PathsFromInstallFiles(files)
 	assert.Contains(t, paths, ".defaults/action.yml")
 	assert.Contains(t, paths, ".defaults/.github/actions/mint-token/action.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/code.md")
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
 	assert.NotContains(t, paths, "action.yml")
-	assert.NotContains(t, paths, "agents/triage.md")
+	assert.NotContains(t, paths, "agents/code.md")
 }
 
 func TestVendoredMarkerPath(t *testing.T) {

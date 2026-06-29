@@ -36,10 +36,10 @@ func TestLoadWithBase_WrapperMergesScaffold(t *testing.T) {
 	dir := t.TempDir()
 	harnessDir := extractScaffoldHarnessDir(t, dir)
 
-	wrapperPath := writeTestHarness(t, harnessDir, "wrapper-triage.yaml", `
-base: triage.yaml
-role: triage
-slug: test-triage
+	wrapperPath := writeTestHarness(t, harnessDir, "wrapper-code.yaml", `
+base: code.yaml
+role: coder
+slug: test-coder
 `)
 
 	h, deps, err := LoadWithBase(context.Background(), wrapperPath, ComposeOpts{
@@ -48,14 +48,14 @@ slug: test-triage
 	require.NoError(t, err)
 
 	// Role and slug come from wrapper (overrides base).
-	assert.Equal(t, "triage", h.Role)
-	assert.Equal(t, "test-triage", h.Slug)
+	assert.Equal(t, "coder", h.Role)
+	assert.Equal(t, "test-coder", h.Slug)
 
 	// Agent, model, image, policy inherited from base.
-	assert.Equal(t, "agents/triage.md", h.Agent)
+	assert.Equal(t, "agents/code.md", h.Agent)
 	assert.Equal(t, "opus", h.Model)
-	assert.Equal(t, "ghcr.io/fullsend-ai/fullsend-sandbox:latest", h.Image)
-	assert.Equal(t, "policies/triage.yaml", h.Policy)
+	assert.Equal(t, "ghcr.io/fullsend-ai/fullsend-code:latest", h.Image)
+	assert.Equal(t, "policies/code.yaml", h.Policy)
 
 	// PreScript and PostScript populated after forge.github resolution.
 	assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
@@ -63,12 +63,11 @@ slug: test-triage
 
 	// RunnerEnv contains both top-level keys and forge.github keys after merge.
 	assert.Contains(t, h.RunnerEnv, "FULLSEND_OUTPUT_SCHEMA", "should have top-level runner_env key")
-	assert.Contains(t, h.RunnerEnv, "GH_TOKEN", "should have forge.github runner_env key")
-	assert.Contains(t, h.RunnerEnv, "GITHUB_ISSUE_URL", "should have forge.github runner_env key")
+	assert.Contains(t, h.RunnerEnv, "PUSH_TOKEN", "should have forge.github runner_env key")
+	assert.Contains(t, h.RunnerEnv, "REPO_FULL_NAME", "should have forge.github runner_env key")
 
-	// Skills includes base top-level skills (forge skills are concatenated by ResolveForge,
-	// but the triage template has no forge-specific skills — only runner_env and scripts).
-	assert.Contains(t, h.Skills, "skills/issue-labels")
+	// Skills includes base top-level skills.
+	assert.Contains(t, h.Skills, "skills/code-implementation")
 
 	// Forge map is nil (consumed by ResolveForge).
 	assert.Nil(t, h.Forge)
@@ -78,11 +77,6 @@ slug: test-triage
 
 	// Local base -> no URL deps.
 	assert.Nil(t, deps)
-
-	// ValidationLoop inherited from base.
-	assert.NotNil(t, h.ValidationLoop)
-	assert.Equal(t, "scripts/validate-output-schema.sh", h.ValidationLoop.Script)
-	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
 }
 
 // TestLoadWithBase_WrapperOverridesBaseFields verifies that wrapper-level
@@ -123,6 +117,9 @@ func TestLoadWithOpts_ScaffoldTemplatesForgeResolution(t *testing.T) {
 
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
+			if scaffold.IsExternalAgent(name) {
+				t.Skip("external agent — not a full scaffold template")
+			}
 			path := filepath.Join(harnessDir, name+".yaml")
 
 			h, loadErr := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
@@ -151,6 +148,9 @@ func TestLoad_ScaffoldTemplatesBackwardCompat(t *testing.T) {
 
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
+			if scaffold.IsExternalAgent(name) {
+				t.Skip("external agent — not a full scaffold template")
+			}
 			path := filepath.Join(harnessDir, name+".yaml")
 
 			h, loadErr := Load(path)
@@ -177,8 +177,8 @@ func TestDiscoverAgents_ScaffoldDirectory(t *testing.T) {
 	agents, err := DiscoverAgents(harnessDir)
 	require.NoError(t, err)
 
-	// Expect all 6 scaffold harnesses discovered.
-	require.Len(t, agents, 6, "should discover all 6 scaffold harnesses")
+	// Expect 5 scaffold harnesses discovered (triage is external, not in embed).
+	require.Len(t, agents, 5, "should discover all 5 scaffold harnesses")
 
 	// Build a map of filename -> AgentInfo for easier assertion.
 	byFilename := make(map[string]AgentInfo, len(agents))
@@ -192,7 +192,6 @@ func TestDiscoverAgents_ScaffoldDirectory(t *testing.T) {
 		"prioritize.yaml": {"prioritize", "fullsend-ai-prioritize"},
 		"retro.yaml":      {"retro", "fullsend-ai-retro"},
 		"review.yaml":     {"review", "fullsend-ai-review"},
-		"triage.yaml":     {"triage", "fullsend-ai-triage"},
 	}
 
 	for filename, want := range expected {
@@ -230,6 +229,17 @@ func TestHarnessContentHash_MatchesEmbeddedContent(t *testing.T) {
 			hash, err := scaffold.HarnessContentHash(name)
 			require.NoError(t, err)
 			assert.Len(t, hash, 64, "SHA-256 hex digest should be 64 characters")
+
+			if scaffold.IsExternalAgent(name) {
+				// External agents return a pinned hash, not one computed from the embed.
+				fullURL, urlErr := scaffold.HarnessBaseURLWithHash(name, fakeCommitSHA)
+				require.NoError(t, urlErr)
+				assert.Contains(t, fullURL, name+".yaml")
+				assert.Contains(t, fullURL, "#sha256="+hash)
+				assert.NotContains(t, fullURL, fakeCommitSHA,
+					"external agent URL should use its own pinned SHA")
+				return
+			}
 
 			// Independently compute hash from the embedded file content.
 			content, err := scaffold.FullsendRepoFile("harness/" + name + ".yaml")
@@ -294,11 +304,6 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 		topLevelKeys    []string
 		forgeGithubKeys []string
 	}{
-		{
-			file:            "triage.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN"},
-		},
 		{
 			file:            "code.yaml",
 			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},

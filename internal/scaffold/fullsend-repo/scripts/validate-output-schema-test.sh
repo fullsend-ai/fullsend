@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATOR="${SCRIPT_DIR}/validate-output-schema.sh"
-SCHEMA="${SCRIPT_DIR}/../schemas/triage-result.schema.json"
+SCHEMA="${SCRIPT_DIR}/../schemas/prioritize-result.schema.json"
 FAILURES=0
 
 TMPDIR="$(mktemp -d)"
@@ -54,54 +54,40 @@ run_test() {
 
 # --- Valid inputs ---
 
-run_test "valid-insufficient" \
-  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
+run_test "valid-prioritize" \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"affects many users","impact":"moderate severity","confidence":"well understood","effort":"small change"}}' \
   "true"
 
-run_test "valid-sufficient" \
-  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete."}' \
+run_test "valid-prioritize-min-values" \
+  '{"reach":0.25,"impact":0.25,"confidence":0.1,"effort":0.25,"reasoning":{"reach":"minimal","impact":"minimal","confidence":"uncertain","effort":"minimal"}}' \
   "true"
 
-run_test "valid-duplicate" \
-  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"Duplicate of #10."}' \
+run_test "valid-prioritize-max-values" \
+  '{"reach":3,"impact":3,"confidence":1,"effort":3,"reasoning":{"reach":"all users","impact":"critical","confidence":"certain","effort":"major"}}' \
   "true"
 
-run_test "valid-question" \
-  '{"action":"question","reasoning":"this is a support question","comment":"Based on the docs, Python 4 is not supported. Would you like to open a feature request?"}' \
-  "true"
+# --- Required field failures ---
 
-run_test "valid-prerequisites-existing" \
-  '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"https://github.com/org/repo/issues/99"}],"create":[]},"comment":"Blocked on upstream."}' \
-  "true"
-
-run_test "valid-prerequisites-create" \
-  '{"action":"prerequisites","reasoning":"needs upstream issue","prerequisites":{"existing":[],"create":[{"repo":"org/upstream","title":"Add X","body":"Need X."}]},"comment":"Blocked on upstream."}' \
-  "true"
-
-# --- Conditional requirement failures ---
-
-run_test "insufficient-missing-clarity-scores" \
-  '{"action":"insufficient","reasoning":"missing info","comment":"Need more info."}' \
+run_test "missing-reach" \
+  '{"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"}}' \
   "false"
 
-run_test "duplicate-missing-duplicate-of" \
-  '{"action":"duplicate","reasoning":"dupe","comment":"Duplicate."}' \
+run_test "missing-reasoning" \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0}' \
   "false"
 
-run_test "sufficient-missing-triage-summary" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"comment":"Done."}' \
+run_test "missing-reasoning-subfield" \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c"}}' \
   "false"
 
-run_test "prerequisites-missing-prerequisites-field" \
-  '{"action":"prerequisites","reasoning":"upstream dependency","comment":"Blocked."}' \
+# --- Range violations ---
+
+run_test "reach-below-minimum" \
+  '{"reach":0.1,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"}}' \
   "false"
 
-run_test "prerequisites-both-arrays-empty" \
-  '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[],"create":[]},"comment":"Blocked."}' \
-  "false"
-
-run_test "prerequisites-malformed-url-in-existing" \
-  '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"not-a-url"}],"create":[]},"comment":"Blocked."}' \
+run_test "confidence-above-maximum" \
+  '{"reach":2.0,"impact":1.5,"confidence":1.5,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"}}' \
   "false"
 
 # --- FULLSEND_OUTPUT_FILE override ---
@@ -223,24 +209,12 @@ run_test_custom_filename_output "nested-additional-property-shows-allowed" \
 
 # --- Structural failures ---
 
-run_test "missing-action" \
-  '{"reasoning":"test","comment":"test"}' \
-  "false"
-
-run_test "missing-comment" \
-  '{"action":"sufficient","reasoning":"test"}' \
-  "false"
-
-run_test "invalid-action-value" \
-  '{"action":"not_a_bug","reasoning":"test","comment":"test"}' \
-  "false"
-
 run_test "invalid-json" \
   'not json at all' \
   "false"
 
 run_test "additional-properties-rejected" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"},"injected_field":"malicious"}' \
   "false"
 
 # --- Allowed-properties output tests ---
@@ -285,23 +259,19 @@ run_test_output() {
 }
 
 run_test_output "additional-properties-shows-allowed" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"},"injected_field":"malicious"}' \
   "false" \
   "allowed properties:"
 
 run_test_output "additional-properties-lists-known-keys" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"},"injected_field":"malicious"}' \
   "false" \
-  "action, clarity_scores, comment, duplicate_of, label_actions, prerequisites, reasoning, triage_summary"
+  "confidence, effort, impact, reach, reasoning"
 
 run_test_output "valid-output-no-allowed-line" \
-  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
+  '{"reach":2.0,"impact":1.5,"confidence":0.8,"effort":1.0,"reasoning":{"reach":"r","impact":"i","confidence":"c","effort":"e"}}' \
   "true" \
   ""
-
-run_test "invalid-category-rejected" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"invented-category","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done."}' \
-  "false"
 
 # --- fix-result.schema.json conditional allOf/if/then rules ---
 

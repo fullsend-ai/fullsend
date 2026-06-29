@@ -14,11 +14,19 @@ func TestHarnessBaseURL(t *testing.T) {
 	sha := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 
 	t.Run("valid inputs", func(t *testing.T) {
-		url, err := HarnessBaseURL("triage", sha)
+		url, err := HarnessBaseURL("code", sha)
 		require.NoError(t, err)
 		assert.Equal(t,
-			"https://raw.githubusercontent.com/fullsend-ai/fullsend/"+sha+"/internal/scaffold/fullsend-repo/harness/triage.yaml",
+			"https://raw.githubusercontent.com/fullsend-ai/fullsend/"+sha+"/internal/scaffold/fullsend-repo/harness/code.yaml",
 			url)
+	})
+
+	t.Run("external agent ignores commitSHA", func(t *testing.T) {
+		url, err := HarnessBaseURL("triage", sha)
+		require.NoError(t, err)
+		ext := externalAgents["triage"]
+		assert.Equal(t, ext.URLPrefix+ext.CommitSHA+"/"+ext.HarnessPath+"triage.yaml", url)
+		assert.NotContains(t, url, sha, "external agent URL should use its own pinned SHA")
 	})
 
 	t.Run("hyphenated name", func(t *testing.T) {
@@ -49,28 +57,34 @@ func TestHarnessBaseURL(t *testing.T) {
 	})
 
 	t.Run("invalid commit SHA too short", func(t *testing.T) {
-		_, err := HarnessBaseURL("triage", "abc123")
+		_, err := HarnessBaseURL("code", "abc123")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid commit SHA")
 	})
 
 	t.Run("invalid commit SHA uppercase", func(t *testing.T) {
-		_, err := HarnessBaseURL("triage", "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2")
+		_, err := HarnessBaseURL("code", "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2")
 		assert.Error(t, err)
 	})
 
 	t.Run("invalid commit SHA wrong length", func(t *testing.T) {
-		_, err := HarnessBaseURL("triage", strings.Repeat("a", 39))
+		_, err := HarnessBaseURL("code", strings.Repeat("a", 39))
 		assert.Error(t, err)
 	})
 }
 
 func TestHarnessContentHash(t *testing.T) {
 	t.Run("known harness returns 64-char hex", func(t *testing.T) {
-		hash, err := HarnessContentHash("triage")
+		hash, err := HarnessContentHash("code")
 		require.NoError(t, err)
 		assert.Len(t, hash, 64)
 		assert.Regexp(t, `^[0-9a-f]{64}$`, hash)
+	})
+
+	t.Run("external agent returns pinned hash", func(t *testing.T) {
+		hash, err := HarnessContentHash("triage")
+		require.NoError(t, err)
+		assert.Equal(t, externalAgents["triage"].ContentHash, hash)
 	})
 
 	t.Run("unknown harness errors", func(t *testing.T) {
@@ -86,12 +100,12 @@ func TestHarnessContentHash(t *testing.T) {
 	})
 
 	t.Run("hash matches manual computation", func(t *testing.T) {
-		data, err := content.ReadFile("fullsend-repo/harness/triage.yaml")
+		data, err := content.ReadFile("fullsend-repo/harness/code.yaml")
 		require.NoError(t, err)
 		sum := sha256.Sum256(data)
 		expected := hex.EncodeToString(sum[:])
 
-		hash, err := HarnessContentHash("triage")
+		hash, err := HarnessContentHash("code")
 		require.NoError(t, err)
 		assert.Equal(t, expected, hash)
 	})
@@ -115,7 +129,7 @@ func TestHarnessBaseURLWithHash(t *testing.T) {
 	sha := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 
 	t.Run("produces URL with hash fragment", func(t *testing.T) {
-		url, err := HarnessBaseURLWithHash("triage", sha)
+		url, err := HarnessBaseURLWithHash("code", sha)
 		require.NoError(t, err)
 		assert.Contains(t, url, "#sha256=")
 
@@ -123,6 +137,14 @@ func TestHarnessBaseURLWithHash(t *testing.T) {
 		require.Len(t, parts, 2)
 		assert.Len(t, parts[1], 64, "hash fragment should be 64 hex chars")
 		assert.Regexp(t, `^[0-9a-f]{64}$`, parts[1])
+	})
+
+	t.Run("external agent produces URL with hash fragment", func(t *testing.T) {
+		url, err := HarnessBaseURLWithHash("triage", sha)
+		require.NoError(t, err)
+		ext := externalAgents["triage"]
+		assert.Contains(t, url, ext.URLPrefix)
+		assert.True(t, strings.HasSuffix(url, "#sha256="+ext.ContentHash))
 	})
 
 	t.Run("hash fragment matches content hash", func(t *testing.T) {
@@ -147,7 +169,7 @@ func TestHarnessBaseURLWithHash(t *testing.T) {
 	})
 
 	t.Run("invalid commit SHA errors", func(t *testing.T) {
-		_, err := HarnessBaseURLWithHash("triage", "bad")
+		_, err := HarnessBaseURLWithHash("code", "bad")
 		assert.Error(t, err)
 	})
 }
@@ -167,6 +189,13 @@ func TestHarnessNames(t *testing.T) {
 				"names should be sorted: %q >= %q", names[i-1], names[i])
 		}
 	})
+}
+
+func TestIsExternalAgent(t *testing.T) {
+	assert.True(t, IsExternalAgent("triage"))
+	assert.False(t, IsExternalAgent("code"))
+	assert.False(t, IsExternalAgent("review"))
+	assert.False(t, IsExternalAgent("nonexistent"))
 }
 
 func TestHarnessBaseURLWithHashAllHarnesses(t *testing.T) {

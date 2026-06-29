@@ -58,19 +58,12 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		".github/workflows/fix.yml",
 		".github/workflows/repo-maintenance.yml",
 		".github/scripts/setup-agent-env.sh",
-		"agents/triage.md",
 		"agents/code.md",
 		"env/gcp-vertex.env",
-		"env/triage.env",
 		"env/code-agent.env",
-		"harness/triage.yaml",
 		"harness/code.yaml",
-		"policies/triage.yaml",
 		"plugins/gopls-lsp/plugin.json",
 		"policies/code.yaml",
-		"schemas/triage-result.schema.json",
-		"scripts/post-triage.sh",
-		"scripts/pre-triage.sh",
 		"scripts/scan-secrets",
 		"scripts/pre-code.sh",
 		"scripts/pre-review.sh",
@@ -561,25 +554,6 @@ func TestSetupAgentEnvContent(t *testing.T) {
 	assert.Contains(t, s, "GITHUB_ENV")
 }
 
-func TestTriageAgentPromptContent(t *testing.T) {
-	content, err := FullsendRepoFile("agents/triage.md")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "agent-result.json")
-	assert.Contains(t, s, "clarity_scores")
-	assert.Contains(t, s, "Anti-premature-resolution")
-}
-
-func TestTriageSchemaContent(t *testing.T) {
-	content, err := FullsendRepoFile("schemas/triage-result.schema.json")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "$schema")
-	assert.Contains(t, s, "insufficient")
-	assert.Contains(t, s, "duplicate")
-	assert.Contains(t, s, "sufficient")
-}
-
 func TestHarnessesLoadAndValidate(t *testing.T) {
 	// Extract the full scaffold to a temp dir so harness.Load can resolve
 	// relative paths and validate that referenced files exist. This catches
@@ -611,8 +585,6 @@ func TestHarnessesLoadAndValidate(t *testing.T) {
 				h, loadErr := harness.Load(harnessPath)
 				require.NoError(t, loadErr, "Load should succeed")
 
-				// Top-level pre/post scripts serve as defaults even
-				// without forge resolution (local dev without --forge).
 				assert.NotEmpty(t, h.PreScript, "PreScript should be set at top level as default")
 				assert.NotEmpty(t, h.PostScript, "PostScript should be set at top level as default")
 				assert.NotNil(t, h.Forge, "Forge map should be present")
@@ -662,11 +634,6 @@ func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
 		topLevelKeys    []string
 		forgeGithubKeys []string
 	}{
-		{
-			file:            "triage.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"GITHUB_ISSUE_URL", "GH_TOKEN"},
-		},
 		{
 			file:            "code.yaml",
 			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
@@ -938,9 +905,9 @@ func TestManagedHeader(t *testing.T) {
 		// .gitkeep files are skipped
 		{path: "customized/agents/.gitkeep", expect: ""},
 		// JSON files are skipped (no comment syntax)
-		{path: "schemas/triage-result.schema.json", expect: ""},
+		{path: "schemas/prioritize-result.schema.json", expect: ""},
 		// Shell scripts get a header
-		{path: "scripts/pre-triage.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/pre-triage.sh\n"},
+		{path: "scripts/pre-code.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/pre-code.sh\n"},
 	}
 
 	for _, tc := range tests {
@@ -954,8 +921,8 @@ func TestManagedHeader(t *testing.T) {
 func TestManagedHeaderPreservesShebang(t *testing.T) {
 	// When content starts with #!, the header should go after the shebang line
 	content := []byte("#!/bin/bash\nset -euo pipefail\n")
-	header := ManagedHeader("scripts/pre-triage.sh")
-	result := PrependManagedHeader("scripts/pre-triage.sh", content)
+	header := ManagedHeader("scripts/pre-code.sh")
+	result := PrependManagedHeader("scripts/pre-code.sh", content)
 
 	assert.True(t, strings.HasPrefix(string(result), "#!/bin/bash\n"))
 	assert.Contains(t, string(result), header)

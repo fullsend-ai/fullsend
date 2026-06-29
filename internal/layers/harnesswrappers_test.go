@@ -89,7 +89,7 @@ func TestHarnessWrappersLayer_Install_GeneratesWrappers(t *testing.T) {
 	assert.Contains(t, paths, "harness/triage.yaml")
 	assert.Contains(t, paths["harness/triage.yaml"], "role: triage")
 	assert.Contains(t, paths["harness/triage.yaml"], "slug: test-triage")
-	assert.Contains(t, paths["harness/triage.yaml"], "base: https://raw.githubusercontent.com/fullsend-ai/fullsend/")
+	assert.Contains(t, paths["harness/triage.yaml"], "base: https://raw.githubusercontent.com/fullsend-ai/agents/")
 
 	// review should have a wrapper
 	assert.Contains(t, paths, "harness/review.yaml")

@@ -166,4 +166,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/triage.yaml`](../../internal/scaffold/fullsend-repo/harness/triage.yaml)
+[`fullsend-ai/agents/harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml)

@@ -26,7 +26,7 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (post-triage, post-code, post-review, pre-fetch-prior-review, reconcile-repos, validate-output-schema)"
+	@echo "  script-test          - Run shell script tests (post-code, post-review, pre-fetch-prior-review, reconcile-repos, validate-output-schema)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
 	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_SESSION_FILE or E2E_GITHUB_USERNAME + E2E_GITHUB_PASSWORD)"
 	@echo "  e2e-export-session   - Login to GitHub and export a Playwright session file"
@@ -122,7 +122,6 @@ endef
 
 script-test:
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
-	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh)
