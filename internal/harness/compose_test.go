@@ -2672,6 +2672,58 @@ base: base.yaml
 	assert.Empty(t, h.AllowedRemoteResources)
 }
 
+func TestMergeBaseIntoChild_Env(t *testing.T) {
+	base := &Harness{
+		Env: &EnvConfig{
+			Runner:  map[string]string{"BASE_R": "r1"},
+			Sandbox: map[string]string{"BASE_S": "s1"},
+		},
+	}
+	child := &Harness{
+		Env: &EnvConfig{
+			Sandbox: map[string]string{"CHILD_S": "s2"},
+		},
+	}
+
+	mergeBaseIntoChild(base, child)
+
+	require.NotNil(t, child.Env)
+	assert.Equal(t, "r1", child.Env.Runner["BASE_R"])
+	assert.Equal(t, "s1", child.Env.Sandbox["BASE_S"])
+	assert.Equal(t, "s2", child.Env.Sandbox["CHILD_S"])
+}
+
+func TestMergeBaseIntoChild_EnvChildWins(t *testing.T) {
+	base := &Harness{
+		Env: &EnvConfig{
+			Runner: map[string]string{"KEY": "base"},
+		},
+	}
+	child := &Harness{
+		Env: &EnvConfig{
+			Runner: map[string]string{"KEY": "child"},
+		},
+	}
+
+	mergeBaseIntoChild(base, child)
+	assert.Equal(t, "child", child.Env.Runner["KEY"])
+}
+
+func TestMergeBaseIntoChild_EnvInheritedWhenChildNil(t *testing.T) {
+	base := &Harness{
+		Env: &EnvConfig{
+			Runner:  map[string]string{"R": "val"},
+			Sandbox: map[string]string{"S": "val"},
+		},
+	}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	require.NotNil(t, child.Env)
+	assert.Equal(t, "val", child.Env.Runner["R"])
+	assert.Equal(t, "val", child.Env.Sandbox["S"])
+}
 func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")

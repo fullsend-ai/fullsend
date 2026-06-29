@@ -17,6 +17,7 @@ type ForgeConfig struct {
 	Skills         []string          `yaml:"skills,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
+	Env            *EnvConfig        `yaml:"env,omitempty"`
 }
 
 var validForgeKeys = map[string]bool{
@@ -132,6 +133,14 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 
 	if fc.ValidationLoop != nil {
 		h.ValidationLoop = fc.ValidationLoop
+	}
+
+	// Env: merge sub-maps independently; forge keys win (ADR 0055)
+	if fc.Env != nil {
+		if h.Env == nil {
+			h.Env = &EnvConfig{}
+		}
+		h.Env.mergeEnvFrom(fc.Env, true)
 	}
 }
 

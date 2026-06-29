@@ -445,6 +445,59 @@ func TestValidateRunnerEnv_PartialExpansion(t *testing.T) {
 	assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_VAR_XYZ")
 }
 
+func TestValidateRunnerEnvWith_ChecksEnvRunner(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{"KEY": "${MISSING_VAR}"},
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_VAR")
+}
+
+func TestValidateRunnerEnvWith_ChecksEnvSandbox(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Sandbox: map[string]string{"KEY": "${ALSO_MISSING}"},
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ALSO_MISSING")
+}
+
+func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner:  map[string]string{"KEY": "${SET_VAR}"},
+			Sandbox: map[string]string{"KEY2": "literal"},
+		},
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "SET_VAR" {
+			return "val", true
+		}
+		return "", false
+	}
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.NoError(t, err)
+}
+
+func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test"}
+	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
+	require.NoError(t, err)
+}
+
 func TestValidate_AgentNameInvalid(t *testing.T) {
 	h := &Harness{Agent: "agents/test';echo hack;echo '.md"}
 	err := h.Validate()
@@ -1457,4 +1510,21 @@ func TestValidForgePlatform(t *testing.T) {
 	assert.True(t, ValidForgePlatform("gitlab"))
 	assert.False(t, ValidForgePlatform("bitbucket"))
 	assert.False(t, ValidForgePlatform(""))
+}
+
+func TestEnvConfig_ParsesFromYAML(t *testing.T) {
+	yaml := `
+agent: agents/test.md
+role: test
+env:
+  runner:
+    FOO: bar
+  sandbox:
+    BAZ: qux
+`
+	h, err := parseRaw([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, h.Env)
+	assert.Equal(t, map[string]string{"FOO": "bar"}, h.Env.Runner)
+	assert.Equal(t, map[string]string{"BAZ": "qux"}, h.Env.Sandbox)
 }

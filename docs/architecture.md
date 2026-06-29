@@ -92,10 +92,15 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   runner_env) from platform-neutral fields. Forge blocks inherit from
   top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
+- Unified env var delivery: a single `env:` key with `runner` and `sandbox`
+  sub-maps replaces `runner_env` and manual `.env` files. The runner generates
+  the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
+  deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
+  [ADR 0024](ADRs/0024-harness-definitions.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
-  naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via existing env var
-  mechanisms (`.env` files, `runner_env`). Each agent documents its config
-  vars in `docs/agents/<agent>.md`
+  naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
+  `env.sandbox` in the harness YAML. Each agent documents its config vars in
+  `docs/agents/<agent>.md`
   ([ADR 0049](ADRs/0049-agent-configuration-env-var-convention.md)).
 - Agent-driven branch targeting: the code agent writes its chosen target
   branch to structured output. The post-script validates the choice against

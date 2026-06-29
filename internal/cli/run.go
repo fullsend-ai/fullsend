@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -379,6 +380,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
+
+	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			h.Env.Runner[k] = os.Expand(v, expander)
+		}
+		for k, v := range h.Env.Sandbox {
+			h.Env.Sandbox[k] = os.Expand(v, expander)
+		}
+	}
+
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
@@ -395,10 +407,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
 
-	// Run lint checks and report any diagnostics (non-fatal).
+	// Run lint checks before merging env.runner into RunnerEnv so that
+	// Lint() sees the original YAML state and only warns when runner_env
+	// was actually declared (not when env.runner entries are merged in).
 	for _, diag := range h.Lint() {
 		emitDiagnostic(printer, diag)
 	}
+
+	// ADR 0055: build effective runner env — start with runner_env,
+	// overlay env.runner so the new field takes precedence.
+	effectiveRunnerEnv := make(map[string]string)
+	for k, v := range h.RunnerEnv {
+		effectiveRunnerEnv[k] = v
+	}
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			effectiveRunnerEnv[k] = v
+		}
+	}
+	// NOTE: after this point h.RunnerEnv contains the merged effective set
+	// (runner_env + env.runner), not just the declared runner_env entries.
+	h.RunnerEnv = effectiveRunnerEnv
 
 	// Print plan.
 	printer.KeyValue("Agent", h.Agent)
@@ -1247,6 +1276,66 @@ func setupFetchService(ctx context.Context, forgeClient forge.Client, h *harness
 	return fetchServiceEnv{addr: addr, token: token}, shutdown, nil
 }
 
+// validEnvKeyRe matches POSIX-portable environment variable names.
+// Keys that don't match are skipped to prevent shell injection.
+var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// reservedSandboxKeys are infrastructure env vars that env.sandbox must not
+// shadow. These are set by the runner in bootstrapEnv and overriding them
+// from harness YAML could break sandbox operation, or are security-sensitive
+// vars that could influence sandbox execution (e.g. shared library injection,
+// auto-sourced shell startup files).
+// NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
+var reservedSandboxKeys = map[string]bool{
+	"PATH":                     true,
+	"HOME":                     true,
+	"SHELL":                    true,
+	"LD_PRELOAD":               true,
+	"LD_LIBRARY_PATH":          true,
+	"BASH_ENV":                 true,
+	"ENV":                      true,
+	"FULLSEND_FETCH_URL":       true,
+	"FULLSEND_FETCH_TOKEN":     true,
+	"FULLSEND_OUTPUT_DIR":      true,
+	"FULLSEND_OUTPUT_SCHEMA":   true,
+	"FULLSEND_OUTPUT_FILE":     true,
+	"FULLSEND_TARGET_REPO_DIR": true,
+}
+
+// buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
+// Values have already been expanded by the caller. Each value is single-quoted
+// with internal single quotes escaped. Keys that are not valid shell identifiers
+// are silently skipped.
+func buildSandboxEnvLines(h *harness.Harness) []string {
+	if h.Env == nil || len(h.Env.Sandbox) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(h.Env.Sandbox))
+	for k := range h.Env.Sandbox {
+		if !validEnvKeyRe.MatchString(k) {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is not a valid POSIX identifier; skipping\n", k)
+			continue
+		}
+		if reservedSandboxKeys[k] {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved for runner infrastructure; skipping\n", k)
+			continue
+		}
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+
+	lines := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := h.Env.Sandbox[k]
+		escaped := strings.ReplaceAll(v, "'", "'\\''")
+		lines = append(lines, fmt.Sprintf("export %s='%s'", k, escaped))
+	}
+	return lines
+}
+
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
@@ -1296,6 +1385,11 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Source all env files from .env.d/ (populated by host_files with expand: true).
 	lines = append(lines, fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace))
+
+	// ADR 0055: export env.sandbox vars. Placed after .env.d sourcing so
+	// env.sandbox takes precedence on collision — the common use case is
+	// overriding a single var from a shared host_files .env file.
+	lines = append(lines, buildSandboxEnvLines(h)...)
 
 	content := strings.Join(lines, "\n") + "\n"
 
