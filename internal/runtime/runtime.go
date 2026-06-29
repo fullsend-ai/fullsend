@@ -10,11 +10,14 @@ import (
 
 // RunMetrics collects execution statistics from stream parsing.
 type RunMetrics struct {
-	ToolCalls    atomic.Int32
-	NumTurns     int     `json:"num_turns"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
+	ToolCalls                atomic.Int32
+	NumTurns                 int     `json:"num_turns"`
+	TotalCostUSD             float64 `json:"total_cost_usd"`
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	Model                    string  `json:"model"`
 }
 
 // RunParams configures a single agent invocation inside the sandbox.
