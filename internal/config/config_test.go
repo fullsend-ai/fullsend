@@ -62,7 +62,7 @@ func TestNewOrgConfig(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
-		"https://raw.githubusercontent.com/fullsend-ai/triage-agent/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}, cfg.AllowedRemoteResources)
 }
 

@@ -130,7 +130,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 		// Default allowlist for base: composition in harness wrappers (ADR-0045 Phase 2).
 		AllowedRemoteResources: []string{
 			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
-			"https://raw.githubusercontent.com/fullsend-ai/triage-agent/",
+			"https://raw.githubusercontent.com/fullsend-ai/agents/",
 		},
 	}
 	if inferenceProvider != "" {
