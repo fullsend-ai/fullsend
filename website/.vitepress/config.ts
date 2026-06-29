@@ -330,8 +330,9 @@ export default defineConfig({
         return defaultCodeInline(tokens, idx, options, env, self)
       }
 
-      // Rewrite README.md links to directory index (README→index rewrite),
-      // and convert relative links pointing outside docs/ to GitHub URLs.
+      // Rewrite relative links that escape the docs/ directory to GitHub
+      // source URLs, and rewrite README.md links to directory index paths
+      // (only for links that stay within docs/).
       md.core.ruler.push('rewrite-links', (state) => {
         for (const token of state.tokens) {
           if (!token.children) continue
@@ -340,23 +341,24 @@ export default defineConfig({
             const href = child.attrGet('href')
             if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:')) continue
 
-            if (/README\.md(#.*)?$/.test(href)) {
-              child.attrSet('href', href.replace(/README\.md(#.*)?$/, (_: string, anchor: string) => anchor || './'))
+            // Check if the link escapes docs/ (more ../  than directory depth)
+            const docPath = state.env?.relativePath || ''
+            const docDir = docPath.split('/').slice(0, -1)
+            const parts = href.split('#')
+            const linkPath = parts[0]
+            const anchor = parts[1] ? '#' + parts[1] : ''
+            const segments = linkPath.split('/')
+            let depth = 0
+            for (const s of segments) { if (s === '..') depth++; else break }
+            if (depth > docDir.length) {
+              const remainder = segments.slice(depth).join('/')
+              child.attrSet('href', 'https://github.com/fullsend-ai/fullsend/tree/main/' + remainder + anchor)
+              continue
             }
 
-            if (/\.\.\/(\.\.\/)*[^.][^/]*/.test(href)) {
-              const docPath = state.env?.relativePath || ''
-              const docDir = docPath.split('/').slice(0, -1)
-              const parts = href.split('#')
-              const linkPath = parts[0]
-              const anchor = parts[1] ? '#' + parts[1] : ''
-              const segments = linkPath.split('/')
-              let depth = 0
-              for (const s of segments) { if (s === '..') depth++; else break }
-              if (depth > docDir.length) {
-                const remainder = segments.slice(depth).join('/')
-                child.attrSet('href', 'https://github.com/fullsend-ai/fullsend/tree/main/' + remainder + anchor)
-              }
+            // For links staying within docs/, rewrite README.md to directory index
+            if (/README\.md(#.*)?$/.test(href)) {
+              child.attrSet('href', href.replace(/README\.md(#.*)?$/, (_: string, a: string) => a || './'))
             }
           }
         }
