@@ -296,8 +296,9 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 
 	tests := []struct {
 		file            string
-		topLevelKeys    []string
-		forgeGithubKeys []string
+		topLevelKeys    []string // keys expected in RunnerEnv (deprecated)
+		forgeGithubKeys []string // keys expected in RunnerEnv from forge (deprecated)
+		envRunnerKeys   []string // keys expected in Env.Runner (ADR 0055)
 	}{
 		{
 			file:            "triage.yaml",
@@ -321,8 +322,9 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 		},
 		{
 			file:            "retro.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"ORIGINATING_URL", "REPO_FULL_NAME", "GH_TOKEN"},
+			topLevelKeys:    []string{}, // migrated to env.runner (ADR 0055)
+			forgeGithubKeys: []string{}, // migrated to env.runner (ADR 0055)
+			envRunnerKeys:   []string{"FULLSEND_OUTPUT_SCHEMA", "ORIGINATING_URL", "REPO_FULL_NAME", "GH_TOKEN"},
 		},
 		{
 			file:            "prioritize.yaml",
@@ -354,6 +356,10 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 			}
 			for _, key := range tt.forgeGithubKeys {
 				assert.Contains(t, combined, key, "merged env should contain forge.github key %s", key)
+			}
+			for _, key := range tt.envRunnerKeys {
+				require.NotNil(t, h.Env, "Env should be non-nil for template with env.runner keys")
+				assert.Contains(t, h.Env.Runner, key, "merged Env.Runner should contain key %s", key)
 			}
 		})
 	}
