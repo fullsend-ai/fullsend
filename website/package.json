@@ -9,6 +9,7 @@
     "preview": "vitepress preview"
   },
   "dependencies": {
+    "mermaid": "~11.16.0",
     "vitepress": "^1.6.3",
     "vue": "^3.5.13"
   },

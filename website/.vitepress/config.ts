@@ -303,6 +303,9 @@ export default defineConfig({
       alias: {
         'vue/server-renderer': path.resolve(__dirname, '..', 'node_modules', 'vue', 'server-renderer', 'index.mjs'),
         'vue': path.resolve(__dirname, '..', 'node_modules', 'vue'),
+        // Use mermaid's pre-bundled ESM build; the default entry (mermaid.core.mjs)
+        // externalizes dayjs (CJS-only), which breaks under noExternal: [/./].
+        'mermaid': path.resolve(__dirname, '..', 'node_modules', 'mermaid', 'dist', 'mermaid.esm.mjs'),
       },
       // Prevent VitePress SSR from resolving CJS packages in the
       // repo-root node_modules (which causes ESM default-import
@@ -333,6 +336,16 @@ export default defineConfig({
         tokens[idx].attrSet('v-pre', '')
         return defaultCodeInline(tokens, idx, options, env, self)
       }
+
+      const defaultFence = md.renderer.rules.fence!.bind(md.renderer.rules)
+      md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+        if (tokens[idx].info.trim() === 'mermaid') {
+          const encoded = encodeURIComponent(tokens[idx].content)
+          return `<Mermaid id="mermaid-${idx}" graph="${encoded}" />`
+        }
+        return defaultFence(tokens, idx, options, env, self)
+      }
     },
   },
+
 })
