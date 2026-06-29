@@ -1,5 +1,5 @@
 ---
-title: "49. Semantic observability and improvement loop"
+title: "55. Semantic observability and improvement loop"
 status: Accepted
 relates_to:
   - operational-observability
@@ -11,7 +11,7 @@ topics:
   - evaluation
 ---
 
-# 49. Semantic observability and improvement loop
+# 55. Semantic observability and improvement loop
 
 Date: 2026-06-16
 
@@ -25,6 +25,11 @@ Accepted
 transcripts — the full prompt/completion/tool record. That is necessary for
 debugging and replay, but expensive to scan at factory scale and weak for
 trend questions: stuck agents, tool loops, phase drift, recurring failure modes.
+
+[ADR 0050](0050-distributed-tracing-instrumentation.md) decides how fullsend
+produces structured traces — local run telemetry, optional OTLP export, and
+W3C trace context across multi-agent pipelines. Derived signals and the
+observer defined here consume that tracing layer; they do not replace it.
 
 [operational-observability.md](../problems/operational-observability.md) calls
 for structured traces, human feedback, and replay; [testing-agents.md](../problems/testing-agents.md)
@@ -77,7 +82,8 @@ deferred to a follow-on decision. See
 
 ## Decision
 
-Adopt option C. Introduce four layered capabilities on top of JSONL extraction:
+Adopt option C. Introduce four layered capabilities on top of JSONL extraction
+and the traces produced by [ADR 0050](0050-distributed-tracing-instrumentation.md):
 
 ### 1. Derived signals
 
@@ -111,7 +117,7 @@ The observer is an analyst, not a fixer — consistent with the retro agent
 design ([#131](https://github.com/fullsend-ai/fullsend/issues/131)).
 
 CLI naming, harness wiring, and report format are implementation details
-deferred to [ADR 0024](0024-harness-definitions.md) or a follow-on ADR.
+deferred to a follow-on ADR.
 
 ### 3. Shadow mode for observer actions
 
@@ -136,14 +142,14 @@ as golden-set cases. Narrative retro issues remain; lessons are searchable,
 testable memory. Schema and storage location are deferred; git is the source
 of truth for reviewed lessons.
 
-### Rollout order
+### Rollout Order
 
 1. Derived-signal enricher + trace export
 2. Observer read-only report
 3. Shadow action log
 4. Lesson extraction wired to retro output
 
-### Non-goals
+### Non-Goals
 
 - Replacing JSONL traces or ADR 0021 security model
 - A bespoke trace store parallel to OTel-compatible backends
@@ -173,6 +179,5 @@ of truth for reviewed lessons.
 
 - ADR or design doc for trace-backend selection and export format
 - Harness layout for signal artifacts, shadow logs, and lesson files
-  ([ADR 0024](0024-harness-definitions.md))
 - Per-SIG dashboards and aggregation on trace scores and tags
 - Observer write tools and action allowlist policy
