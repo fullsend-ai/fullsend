@@ -259,7 +259,7 @@ func TestWorkflowsLayer_Install_PinnedSHA(t *testing.T) {
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 	assert.Contains(t, triageContent, "@abc123def456abc123def456abc123def456abcd")
 	assert.Contains(t, triageContent, "# v0.19.0")
-	assert.Contains(t, triageContent, "fullsend_ai_ref: abc123def456abc123def456abc123def456abcd # v0.19.0")
+	assert.NotContains(t, triageContent, "fullsend_ai_ref:")
 	assert.NotContains(t, triageContent, "@v0")
 }
 

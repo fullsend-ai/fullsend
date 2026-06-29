@@ -88,6 +88,8 @@ repos:
           - -ignore
           - property "workflow_repository" is not defined
           - -ignore
+          - property "workflow_sha" is not defined
+          - -ignore
           - SC2016
           - -ignore
           - '__REUSABLE_(WORKFLOW|DISPATCH)__'

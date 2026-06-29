@@ -173,7 +173,7 @@ func TestRenderThinCallerPinnedSHA(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@abc123def456")
 	assert.Contains(t, out, "# v0.19.0")
-	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
+	assert.NotContains(t, out, "fullsend_ai_ref:")
 	assertFreeOfRenderPlaceholders(t, out)
 }
 
@@ -190,7 +190,7 @@ func TestRenderPerRepoShimPinnedSHA(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123def456")
 	assert.Contains(t, out, "# v0.19.0")
-	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
+	assert.NotContains(t, out, "fullsend_ai_ref:")
 	assertFreeOfRenderPlaceholders(t, out)
 }
 
@@ -241,5 +241,5 @@ func TestRenderFallbackToDefaultRef(t *testing.T) {
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "@v0")
-	assert.Contains(t, out, "fullsend_ai_ref: v0")
+	assert.NotContains(t, out, "fullsend_ai_ref:")
 }

@@ -42,7 +42,6 @@ jobs:
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
       install_mode: per-org
-      fullsend_ai_ref: __FULLSEND_AI_REF__
       runner_image: __GH_RUNNER__
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
