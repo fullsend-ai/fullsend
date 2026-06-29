@@ -19,6 +19,9 @@ import (
 func newWorkflowsLayer(t *testing.T, client *forge.FakeClient, vendored bool) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
 	ensureFakeConfigRepo(client)
+	if client.AuthenticatedUser == "" {
+		client.AuthenticatedUser = "test-org"
+	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored).WithDirect(true)
@@ -91,6 +94,7 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 
 func TestWorkflowsLayer_Install_DefaultCreatesPR(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -161,7 +165,7 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 
 	raw, err := scaffold.FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)
-	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	rendered, err := scaffold.RenderTemplate(".github/workflows/triage.yml", raw, scaffold.RenderOptionsForInstall(false, false, "", ""))
 	require.NoError(t, err)
 	expected := string(scaffold.PrependManagedHeader(".github/workflows/triage.yml", rendered))
 	assert.Equal(t, expected, triageContent)
@@ -235,10 +239,32 @@ func TestWorkflowsLayer_Install_RepoMaintenanceContent(t *testing.T) {
 
 	raw, err := scaffold.FullsendRepoFile(".github/workflows/repo-maintenance.yml")
 	require.NoError(t, err)
-	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false))
+	rendered, err := scaffold.RenderTemplate(".github/workflows/repo-maintenance.yml", raw, scaffold.RenderOptionsForInstall(false, false, "", ""))
 	require.NoError(t, err)
 	expected := string(scaffold.PrependManagedHeader(".github/workflows/repo-maintenance.yml", rendered))
 	assert.Equal(t, expected, maintenanceContent)
+}
+
+func TestWorkflowsLayer_Install_PinnedSHA(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+	layer = layer.WithUpstreamRef("abc123def456abc123def456abc123def456abcd", "v0.19.0")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	var triageContent string
+	for _, f := range client.CommittedFiles[0].Files {
+		if f.Path == ".github/workflows/triage.yml" {
+			triageContent = string(f.Content)
+			break
+		}
+	}
+	require.NotEmpty(t, triageContent, "triage.yml should have been written")
+	assert.Contains(t, triageContent, "@abc123def456abc123def456abc123def456abcd")
+	assert.Contains(t, triageContent, "# v0.19.0")
+	assert.NotContains(t, triageContent, "fullsend_ai_ref:")
+	assert.NotContains(t, triageContent, "@v0")
 }
 
 func TestWorkflowsLayer_Install_ManagedHeaders(t *testing.T) {
@@ -380,6 +406,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_BranchUpToDate(t *testing.T) {
 
 func TestWorkflowsLayer_Install_DefaultPR_NoChanges(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	client.Errors = map[string]error{
 		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
@@ -537,6 +564,56 @@ func TestManagedPathsMatchLayeredScaffold(t *testing.T) {
 	for _, path := range scaffoldPaths {
 		assert.Contains(t, managed, path, "managed paths should include scaffold file %s", path)
 	}
+}
+
+func TestWorkflowsLayer_Install_SignOffTrailer(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
+	ensureFakeConfigRepo(client)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", false).
+		WithSignOff("Admin User", "admin@example.com")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	msg := client.CommittedFilesToBranch[0].Message
+	assert.Contains(t, msg, "Signed-off-by: Admin User <admin@example.com>",
+		"scaffold commit should include Signed-off-by trailer")
+}
+
+func TestWorkflowsLayer_Install_SignOff_DirectCommit(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+	layer = layer.WithSignOff("Admin User", "admin@example.com")
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFiles, 1)
+	msg := client.CommittedFiles[0].Message
+	assert.Contains(t, msg, "Signed-off-by: Admin User <admin@example.com>",
+		"direct commit should include Signed-off-by trailer")
+
+	// Activation commit should also have sign-off.
+	require.Len(t, client.CreatedFiles, 1)
+	assert.Contains(t, client.CreatedFiles[0].Message, "Signed-off-by: Admin User <admin@example.com>",
+		"activation commit should include Signed-off-by trailer")
+}
+
+func TestWorkflowsLayer_Install_NoSignOff_ByDefault(t *testing.T) {
+	client := forge.NewFakeClient()
+	layer, _ := newWorkflowsLayer(t, client, false)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFiles, 1)
+	msg := client.CommittedFiles[0].Message
+	assert.NotContains(t, msg, "Signed-off-by",
+		"commit should not contain Signed-off-by when WithSignOff is not called")
 }
 
 func TestManagedVendoredContentPathsFromEmbed(t *testing.T) {

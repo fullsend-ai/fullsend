@@ -12,7 +12,9 @@ const defaultsVendoredPrefix = ".defaults/"
 
 // CollectVendoredAssets gathers files for --vendor installs.
 // Upstream mirror content lives under .defaults/ (same layout as runtime sparse checkout).
-// Reusable workflows are written under workflowPrefix (.fullsend/ for per-repo, "" for per-org).
+// Reusable workflows are always written under .github/workflows/ because GitHub
+// Actions requires local reusable workflow references (./path) to live there.
+// Other vendored assets use workflowPrefix (.fullsend/ for per-repo, "" for per-org).
 func CollectVendoredAssets(root, workflowPrefix string) (InstallFiles, error) {
 	var files InstallFiles
 
@@ -23,7 +25,7 @@ func CollectVendoredAssets(root, workflowPrefix string) (InstallFiles, error) {
 				rendered = RenderDispatchPerRepoStagePaths(content)
 			}
 			files = append(files, InstallFile{
-				Path:    workflowPrefix + path,
+				Path:    path,
 				Content: rendered,
 				Mode:    "100644",
 			})
@@ -57,7 +59,7 @@ func CollectVendoredAssets(root, workflowPrefix string) (InstallFiles, error) {
 
 // ManagedVendoredContentPaths returns embed-derived paths for the current vendor layout.
 func ManagedVendoredContentPaths(workflowPrefix string) ([]string, error) {
-	return enumerateVendoredPaths(workflowPrefix)
+	return enumerateVendoredPaths()
 }
 
 // LegacyFlatVendoredPaths lists pre-.defaults flat layout paths for legacy cleanup.

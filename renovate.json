@@ -1,18 +1,36 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "automergeType": "pr",
+  "platformAutomerge": true,
   "prHourlyLimit": 1,
+  "packageRules": [
+    {
+      "description": "Automerge low-risk updates (patch bumps and pin updates)",
+      "matchUpdateTypes": ["patch", "pin"],
+      "automerge": true
+    },
+    {
+      "description": "Ignore fullsend self-references (own reusable workflows and actions)",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["/^fullsend-ai\\//"],
+      "enabled": false
+    }
+  ],
   "postUpdateOptions": ["gomodTidy"],
   "git-submodules": {
     "enabled": true
+  },
+  "github-actions": {
+    "managerFilePatterns": [
+      "/^internal/scaffold/.*\\.github/workflows/[^/]+\\.ya?ml$/"
+    ]
   },
   "customManagers": [
     {
       "customType": "regex",
       "description": "Track OpenShell version pin in openshell-version.sh",
-      "fileMatch": [
-        "^\\.github/scripts/openshell-version\\.sh$"
-      ],
+      "managerFilePatterns": ["/^\\.github/scripts/openshell-version\\.sh$/"],
       "matchStrings": [
         "OPENSHELL_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\nOPENSHELL_SHA=(?<currentDigest>[0-9a-f]{40})"
       ],

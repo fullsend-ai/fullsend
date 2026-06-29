@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -72,8 +73,53 @@ var canonicalRolePermissions = map[string]map[string]string{
 	},
 }
 
-// RolePermissions returns a deep copy of the role-to-permissions map,
-// preventing callers from mutating the canonical permission definitions.
+// customRoles stores user-defined role permissions. Written once at startup
+// via RegisterCustomRolePermissions, read concurrently by request handlers.
+// Lives in mintcore (not cmd/mint) so that RolePermissionsFor, HasRole, and
+// RolePermissions return a unified view — callers like CreateInstallationToken
+// need not distinguish built-in from custom roles.
+var customRoles atomic.Value // holds map[string]map[string]string
+
+func loadCustomRoles() map[string]map[string]string {
+	v := customRoles.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(map[string]map[string]string)
+}
+
+// RegisterCustomRolePermissions adds user-defined role permissions that are
+// checked alongside the canonical built-in permissions. Pass nil to clear.
+// Returns an error if any custom role name collides with a built-in role.
+// Used by cmd/mint (standalone mint) only; the GCF mint uses canonical roles.
+func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
+	if perms == nil {
+		customRoles.Store(map[string]map[string]string(nil))
+		return nil
+	}
+	safe := make(map[string]map[string]string, len(perms))
+	for role, p := range perms {
+		if err := ValidateRoleName(role); err != nil {
+			return fmt.Errorf("custom role name invalid: %w", err)
+		}
+		if _, ok := canonicalRolePermissions[role]; ok {
+			return fmt.Errorf("custom role %q collides with built-in role", role)
+		}
+		cp := make(map[string]string, len(p))
+		for k, v := range p {
+			if v != "read" && v != "write" {
+				return fmt.Errorf("custom role %q: permission %q has invalid level %q (must be read or write)", role, k, v)
+			}
+			cp[k] = v
+		}
+		safe[role] = cp
+	}
+	customRoles.Store(safe)
+	return nil
+}
+
+// RolePermissions returns a deep copy of the combined canonical and custom
+// role-to-permissions map. Custom roles are included alongside canonical ones.
 func RolePermissions() map[string]map[string]string {
 	out := make(map[string]map[string]string, len(canonicalRolePermissions))
 	for role, perms := range canonicalRolePermissions {
@@ -83,27 +129,55 @@ func RolePermissions() map[string]map[string]string {
 		}
 		out[role] = cp
 	}
+	if custom := loadCustomRoles(); len(custom) > 0 {
+		for role, perms := range custom {
+			cp := make(map[string]string, len(perms))
+			for k, v := range perms {
+				cp[k] = v
+			}
+			out[role] = cp
+		}
+	}
 	return out
 }
 
 // RolePermissionsFor returns the permissions for a specific role, or nil if
-// the role is not defined. The returned map is a copy.
+// the role is not defined. Canonical roles are checked first (avoids atomic
+// load on the hot path), then custom roles. Name collisions are rejected at
+// registration time so lookups are unambiguous. The returned map is a copy.
 func RolePermissionsFor(role string) map[string]string {
-	perms, ok := canonicalRolePermissions[role]
-	if !ok {
-		return nil
+	if perms, ok := canonicalRolePermissions[role]; ok {
+		cp := make(map[string]string, len(perms))
+		for k, v := range perms {
+			cp[k] = v
+		}
+		return cp
 	}
-	cp := make(map[string]string, len(perms))
-	for k, v := range perms {
-		cp[k] = v
+	if custom := loadCustomRoles(); custom != nil {
+		if perms, ok := custom[role]; ok {
+			cp := make(map[string]string, len(perms))
+			for k, v := range perms {
+				cp[k] = v
+			}
+			return cp
+		}
 	}
-	return cp
+	return nil
 }
 
-// HasRole reports whether the given role has a permissions entry.
+// HasRole reports whether the given role has a permissions entry,
+// checking canonical roles first (avoids atomic load on the hot path),
+// then custom roles.
 func HasRole(role string) bool {
-	_, ok := canonicalRolePermissions[role]
-	return ok
+	if _, ok := canonicalRolePermissions[role]; ok {
+		return true
+	}
+	if custom := loadCustomRoles(); custom != nil {
+		if _, ok := custom[role]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.

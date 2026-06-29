@@ -1,6 +1,6 @@
 # Triage Agent
 
-<img src="icons/triage.png" alt="Triage agent icon" width="80">
+![Triage agent icon](icons/triage.png)
 
 Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a structured triage decision that determines whether the issue is ready for implementation.
 
@@ -22,12 +22,17 @@ The agent runs in a read-only sandbox. It cannot modify issues, push code, or in
 |---------|-------|--------|
 | `/fs-triage` | Issue comment | Runs triage on the issue |
 
+Requires write-level repository permission (admin, maintain, or write).
+
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
-Triage also runs automatically when a new issue is opened, when an issue is
-edited, and when someone comments on an issue labeled `needs-info` (to
-re-evaluate after the reporter provides clarification).
+Triage also runs automatically when a new issue is opened or edited by a
+repository owner, member, or collaborator, when the `ready-for-triage`
+label is applied to an issue (used by the [retro agent](retro.md) to
+route proposal issues into the triage pipeline), and when someone
+comments on an issue labeled `needs-info` (to re-evaluate after the
+reporter provides clarification).
 
 ## Control labels
 

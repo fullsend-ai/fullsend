@@ -108,18 +108,28 @@ type FakeClient struct {
 	mu sync.Mutex
 
 	// Pre-populated data
-	Repos             []Repository
-	FileContents      map[string][]byte       // key: "owner/repo/path"
-	WorkflowRuns      map[string]*WorkflowRun // key: "owner/repo/workflow"
-	Workflows         map[string]*Workflow    // key: "owner/repo/workflow"
-	AuthenticatedUser string
-	OrgPlan           string // plan name returned by GetOrgPlan (default: "free")
-	Installations     []Installation
-	Secrets           map[string]bool             // key: "owner/repo/name"
-	PullRequests      map[string][]ChangeProposal // key: "owner/repo"
-	TokenScopes       []string                    // scopes returned by GetTokenScopes
-	VariablesExist    map[string]bool             // key: "owner/repo/name"
-	VariableValues    map[string]string           // key: "owner/repo/name"
+	Repos                     []Repository
+	FileContents              map[string][]byte       // key: "owner/repo/path"
+	WorkflowRuns              map[string]*WorkflowRun // key: "owner/repo/workflow"
+	Workflows                 map[string]*Workflow    // key: "owner/repo/workflow"
+	AuthenticatedUser         string                  // login returned by GetAuthenticatedUser
+	AuthenticatedUserIdentity *UserIdentity           // identity returned by GetAuthenticatedUserIdentity
+	OrgPlan                   string                  // plan name returned by GetOrgPlan (default: "free")
+	Installations             []Installation
+	Secrets                   map[string]bool             // key: "owner/repo/name"
+	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
+	TokenScopes               []string                    // scopes returned by GetTokenScopes
+	VariablesExist            map[string]bool             // key: "owner/repo/name"
+	VariableValues            map[string]string           // key: "owner/repo/name"
+
+	// ForkOwner controls the return value of CreateFork. When non-empty,
+	// CreateFork returns this value as the fork owner login. When empty,
+	// CreateFork uses AuthenticatedUser.
+	ForkOwner string
+
+	// ExistingForks maps "owner/repo" to the fork owner login returned
+	// by FindExistingFork. Entries simulate an already-existing fork.
+	ExistingForks map[string]string
 
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
@@ -141,6 +151,10 @@ type FakeClient struct {
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
+
+	// CreateBranchErrors injects per-repo errors for CreateBranch.
+	// Key is "owner/repo", checked before the generic Errors map.
+	CreateBranchErrors map[string]error
 
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
@@ -187,7 +201,8 @@ type FakeClient struct {
 	DismissedReviews       []DismissedReviewRecord
 	CommittedFiles         []CommitFilesRecord
 	CommittedFilesToBranch []CommitFilesToBranchRecord
-	DeletedComments        []int // comment IDs
+	CreatedForks           []string // "owner/repo"
+	DeletedComments        []int    // comment IDs
 
 	// internal counters
 	proposalCounter int
@@ -314,6 +329,38 @@ func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
 	}
 
 	return nil
+}
+
+func (f *FakeClient) FindExistingFork(_ context.Context, owner, repo string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("FindExistingFork"); e != nil {
+		return "", "", e
+	}
+
+	if f.ExistingForks != nil {
+		if forkOwner, ok := f.ExistingForks[owner+"/"+repo]; ok {
+			return forkOwner, repo, nil
+		}
+	}
+	return "", "", nil
+}
+
+func (f *FakeClient) CreateFork(_ context.Context, owner, repo string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateFork"); e != nil {
+		return "", "", e
+	}
+
+	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
+
+	if f.ForkOwner != "" {
+		return f.ForkOwner, repo, nil
+	}
+	return f.AuthenticatedUser, repo, nil
 }
 
 func (f *FakeClient) CreateFile(_ context.Context, owner, repo, path, message string, content []byte) error {
@@ -516,6 +563,11 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.CreateBranchErrors != nil {
+		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
 	if e := f.err("CreateBranch"); e != nil {
 		return e
 	}
@@ -580,6 +632,8 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", owner, repo, f.proposalCounter),
 		Title:  title,
 		Number: f.proposalCounter,
+		Head:   head,
+		Base:   base,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil
@@ -624,6 +678,20 @@ func (f *FakeClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 	}
 
 	return f.AuthenticatedUser, nil
+}
+
+func (f *FakeClient) GetAuthenticatedUserIdentity(_ context.Context) (*UserIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetAuthenticatedUserIdentity"); e != nil {
+		return nil, e
+	}
+
+	if f.AuthenticatedUserIdentity != nil {
+		return f.AuthenticatedUserIdentity, nil
+	}
+	return nil, fmt.Errorf("%w: no user identity configured", ErrNotFound)
 }
 
 func (f *FakeClient) GetTokenScopes(_ context.Context) ([]string, error) {

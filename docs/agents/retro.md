@@ -1,6 +1,6 @@
 # Retro Agent
 
-<img src="icons/retro.png" alt="Retro agent icon" width="80">
+![Retro agent icon](icons/retro.png)
 
 Performs retrospectives on agent workflows — analyzes what happened, identifies improvement opportunities, and proposes changes as structured GitHub issues.
 
@@ -27,6 +27,8 @@ When triggered via `/fs-retro`, the human's comment is passed to the agent as hi
 |---------|-------|--------|
 | `/fs-retro` | PR or issue comment | Triggers a retrospective analysis |
 
+Requires write-level repository permission (admin, maintain, or write).
+
 The `/fs-retro` command accepts optional free-text instructions after the
 command. The text is passed to the agent as high-signal direction about what
 to focus on:
@@ -39,7 +41,9 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 
 ## Control labels
 
-The retro agent does not apply or consume control labels.
+| Label | Meaning |
+|-------|---------|
+| `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. |
 
 ## Configuration and extension
 

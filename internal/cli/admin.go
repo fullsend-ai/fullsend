@@ -663,7 +663,8 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(vendor)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(vendor, upstreamRef, upstreamTag)
 	if err != nil {
 		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
 	}
@@ -1042,7 +1043,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		"Merge this PR to activate fullsend workflows."
 	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
-		commitMsg, "chore: initialize fullsend per-repo installation", prBody, files, direct); err != nil {
+		commitMsg, "chore: initialize fullsend per-repo installation", prBody, files, direct, os.Stdin); err != nil {
 		return err
 	}
 
@@ -1223,7 +1224,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
 	}
 	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, false)
+	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, false)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1550,7 +1551,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, commitSHA, direct)
+	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, commitSHA, direct)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1799,7 +1800,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, commitSHA, false)
+	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, commitSHA, false)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -1817,6 +1818,7 @@ func newVendorLayer(org string, client forge.Client, printer *ui.Printer, vendor
 }
 
 func buildLayerStack(
+	ctx context.Context,
 	org string,
 	client forge.Client,
 	cfg *config.OrgConfig,
@@ -1849,20 +1851,38 @@ func buildLayerStack(
 
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
-		workflowsLayer(org, client, printer, user, version, vendor, vendorCollect, direct),
+		workflowsLayer(ctx, org, client, printer, user, version, vendor, vendorCollect, direct),
 		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA),
 		vendorLayer(org, client, printer, vendor, vendorFn, vendorCollect, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
 		dispatchLayer,
-		layers.NewEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer),
+		newEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer, direct),
 	)
 }
 
-func workflowsLayer(org string, client forge.Client, printer *ui.Printer, user, version string, vendor bool, vendorCollect layers.VendorCollectFunc, direct bool) *layers.WorkflowsLayer {
-	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor).WithDirect(direct)
+func workflowsLayer(ctx context.Context, org string, client forge.Client, printer *ui.Printer, user, version string, vendor bool, vendorCollect layers.VendorCollectFunc, direct bool) *layers.WorkflowsLayer {
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	layer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendor).WithDirect(direct).WithUpstreamRef(upstreamRef, upstreamTag)
 	if vendorCollect != nil {
 		layer = layer.WithVendorCollect(vendorCollect)
+	}
+	// Append Signed-off-by trailer for human-driven CLI operations.
+	// GetAuthenticatedUserIdentity fails for GitHub App tokens (bot
+	// identity), which is correct — autonomous agent commits are
+	// exempt from DCO per project policy.
+	if client != nil {
+		if id, err := client.GetAuthenticatedUserIdentity(ctx); err == nil {
+			layer = layer.WithSignOff(id.Name, id.Email)
+		}
+	}
+	return layer
+}
+
+func newEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledRepos []string, printer *ui.Printer, direct bool) *layers.EnrollmentLayer {
+	layer := layers.NewEnrollmentLayer(org, client, enabledRepos, disabledRepos, printer)
+	if !direct {
+		layer = layer.WithScaffoldPending()
 	}
 	return layer
 }

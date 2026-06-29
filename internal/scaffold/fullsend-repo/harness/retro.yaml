@@ -25,6 +25,7 @@ skills:
   - skills/retro-analysis
   - skills/finding-agent-runs
   - skills/agent-scaffolding
+  - skills/autonomy-readiness
 
 pre_script: scripts/pre-retro.sh
 post_script: scripts/post-retro.sh

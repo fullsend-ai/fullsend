@@ -1,0 +1,338 @@
+import { defineConfig } from 'vitepress'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const docsDir = path.resolve(__dirname, '..', '..', 'docs')
+
+function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
+  const fullDir = path.resolve(docsDir, dir)
+  if (!fs.existsSync(fullDir)) return []
+  const items: { text: string; link: string }[] = []
+  for (const entry of fs.readdirSync(fullDir).sort()) {
+    const entryPath = path.resolve(fullDir, entry)
+    if (entry.endsWith('.md') && entry !== 'README.md') {
+      const slug = entry.replace(/\.md$/, '')
+      const content = fs.readFileSync(entryPath, 'utf-8')
+      const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m)
+      const titleMatch = content.match(/^#\s+(.+)$/m)
+      items.push({ text: fmTitleMatch?.[1] || titleMatch?.[1] || slug, link: `/${base}/${slug}` })
+    } else if (fs.statSync(entryPath).isDirectory()) {
+      const readme = path.resolve(entryPath, 'README.md')
+      if (fs.existsSync(readme)) {
+        const content = fs.readFileSync(readme, 'utf-8')
+        const titleMatch = content.match(/^#\s+(.+)$/m)
+        items.push({ text: titleMatch?.[1] || entry, link: `/${base}/${entry}/` })
+      }
+    }
+  }
+  return items
+}
+
+// Escape Vue-incompatible syntax ({ }, {{ }}, <non-HTML-tags>) in markdown
+// before markdown-it processes it. Code fence tracking uses backtick-count
+// matching per CommonMark spec to correctly handle nested fences.
+function escapeVueSyntax(src: string): string {
+  const lines = src.split('\n')
+  let fenceLen = 0
+  let fenceChar = ''
+  return lines.map(line => {
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (fenceMatch) {
+      const ch = fenceMatch[1][0]
+      const len = fenceMatch[1].length
+      if (fenceLen === 0) {
+        fenceLen = len
+        fenceChar = ch
+        return line
+      }
+      if (ch === fenceChar && len >= fenceLen && line.trim() === ch.repeat(len)) {
+        fenceLen = 0
+        fenceChar = ''
+        return line
+      }
+      return line
+    }
+    if (fenceLen > 0) return line
+    return escapeLine(line)
+  }).join('\n')
+}
+
+const KNOWN_TAGS = /^<\/?(?:a|abbr|address|area|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|menu|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|script|search|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr|svg|path|g|circle|rect|line|polyline|polygon|text|defs|use|symbol)[\s>\/!]/i
+
+function escapeLine(line: string): string {
+  let result = ''
+  let i = 0
+  while (i < line.length) {
+    if (line[i] === '`') {
+      let runLen = 0
+      while (i + runLen < line.length && line[i + runLen] === '`') runLen++
+      let found = -1
+      let j = i + runLen
+      while (j < line.length) {
+        if (line[j] === '`') {
+          let closeLen = 0
+          while (j + closeLen < line.length && line[j + closeLen] === '`') closeLen++
+          if (closeLen === runLen) { found = j; break }
+          j += closeLen
+        } else { j++ }
+      }
+      if (found !== -1) {
+        result += line.slice(i, found + runLen)
+        i = found + runLen
+      } else {
+        result += '`'.repeat(runLen)
+        i += runLen
+      }
+    } else if (line[i] === '{') {
+      result += '&#123;'
+      i++
+    } else if (line[i] === '}') {
+      result += '&#125;'
+      i++
+    } else if (line[i] === '<') {
+      const rest = line.slice(i)
+      if (KNOWN_TAGS.test(rest) || /^<!--/.test(rest)) {
+        result += '<'
+      } else {
+        result += '&lt;'
+      }
+      i++
+    } else {
+      result += line[i]
+      i++
+    }
+  }
+  return result
+}
+
+export default defineConfig({
+  title: 'Fullsend',
+  description: 'Autonomous SDLC agents for your codebase',
+
+  srcDir: '../docs',
+  outDir: './dist',
+  base: '/docs/',
+
+  rewrites: {
+    'README.md': 'index.md',
+    ':path(.*)/README.md': ':path/index.md',
+  },
+
+  head: [
+    // Redirect legacy Svelte SPA hash routes (#/path) to VitePress paths (/docs/path)
+    ['script', {}, `(function(){var h=location.hash;if(h&&h.startsWith('#/')){var r=h.slice(2),s=r.indexOf('::'),p,a;if(s!==-1){p=r.slice(0,s);a=r.slice(s+2)}else{p=r;a=''}p=p.replace(/\\.{2,}/g,'').replace(/^\\/+/,'');if(!p)return;var u=new URL('/docs/'+p+(a?'#'+a:''),location.origin);if(u.origin===location.origin)location.replace(u.href)}})();`],
+    ['link', { rel: 'icon', href: '/docs/img/favicon.png' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    ['link', {
+      rel: 'stylesheet',
+      href: 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap',
+    }],
+  ],
+
+  srcExclude: [
+    '**/agents/icons/**',
+    '**/testing/**',
+  ],
+
+  ignoreDeadLinks: true,
+
+  themeConfig: {
+    logo: '/img/logo.png',
+    logoLink: { link: 'https://fullsend.sh', target: '_self' },
+    siteTitle: 'Fullsend',
+
+    nav: [
+      { text: 'Docs', link: '/guides/getting-started/', activeMatch: '^/(?!cli/)' },
+      { text: 'CLI Reference', link: '/cli/', activeMatch: '/cli/' },
+    ],
+
+    sidebar: {
+      '/cli/': [
+        {
+          text: 'CLI Reference',
+          items: [
+            { text: 'Overview', link: '/cli/' },
+            { text: 'fullsend github', link: '/cli/github' },
+            { text: 'fullsend inference', link: '/cli/inference' },
+            { text: 'fullsend mint', link: '/cli/mint' },
+          ],
+        },
+      ],
+      '/': [
+        {
+          text: 'Getting Started',
+          collapsed: true,
+          link: '/guides/getting-started/',
+          items: [
+            { text: 'Getting Inference', link: '/guides/getting-started/getting-inference' },
+            { text: 'Configuring GitHub', link: '/guides/getting-started/configuring-github' },
+            { text: 'Org Mode', link: '/guides/getting-started/org-mode' },
+          ],
+        },
+        {
+          text: 'Agents',
+          collapsed: true,
+          link: '/agents/',
+          items: [
+            { text: 'Triage', link: '/agents/triage' },
+            { text: 'Code', link: '/agents/code' },
+            { text: 'Review', link: '/agents/review' },
+            { text: 'Fix', link: '/agents/fix' },
+            { text: 'Retro', link: '/agents/retro' },
+            { text: 'Prioritize', link: '/agents/prioritize' },
+          ],
+        },
+        {
+          text: 'User Guides',
+          collapsed: true,
+          link: '/guides/',
+          items: [
+            { text: 'Bugfix Workflow', link: '/guides/user/bugfix-workflow' },
+            { text: 'Customizing Agents', link: '/guides/user/customizing-agents' },
+            { text: 'Customizing with AGENTS.md', link: '/guides/user/customizing-with-agents-md' },
+            { text: 'Customizing with Skills', link: '/guides/user/customizing-with-skills' },
+            { text: 'Building Custom Agents', link: '/guides/user/building-custom-agents' },
+            { text: 'Running Agents Locally', link: '/guides/user/running-agents-locally' },
+          ],
+        },
+        {
+          text: 'Concepts',
+          collapsed: true,
+          items: [
+            { text: 'Vision', link: '/vision' },
+            { text: 'Architecture', link: '/architecture' },
+            { text: 'Runtimes', link: '/runtimes' },
+            { text: 'Glossary', link: '/glossary' },
+          ],
+        },
+        {
+          text: 'Reference',
+          collapsed: true,
+          link: '/reference/',
+          items: [
+            { text: 'Installation', link: '/reference/installation' },
+            { text: 'GitHub Setup', link: '/reference/github-setup' },
+          ],
+        },
+        {
+          text: 'Infrastructure',
+          collapsed: true,
+          items: [
+            { text: 'Infrastructure Reference', link: '/guides/infrastructure/infrastructure-reference' },
+            { text: 'Mint Administration', link: '/guides/infrastructure/mint-administration' },
+            { text: 'Standalone Mint', link: '/guides/infrastructure/standalone-mint' },
+            { text: 'Private Repositories', link: '/guides/infrastructure/private-repositories' },
+            { text: 'Distributed Tracing', link: '/guides/infrastructure/distributed-tracing' },
+          ],
+        },
+        {
+          text: 'Contributing',
+          collapsed: true,
+          items: [
+            {
+              text: 'Development',
+              collapsed: true,
+              items: [
+                { text: 'CLI Internals', link: '/guides/dev/cli-internals' },
+                { text: 'E2E Testing', link: '/guides/dev/e2e-testing' },
+                { text: 'Testing Workflows', link: '/guides/dev/testing-workflows' },
+              ],
+            },
+            { text: 'Roadmap', link: '/roadmap' },
+            { text: 'Landscape', link: '/landscape' },
+            { text: 'Site Deployment', link: '/site-deployment' },
+            {
+              text: 'Architecture Decisions',
+              collapsed: true,
+              items: getMarkdownFiles('ADRs', 'ADRs'),
+            },
+            {
+              text: 'Design Documents',
+              collapsed: true,
+              items: getMarkdownFiles('problems', 'problems'),
+            },
+          ],
+        },
+        {
+          text: 'Internals',
+          collapsed: true,
+          items: [
+            { text: 'Admin OAuth Worker', link: '/admin-oauth-worker' },
+            {
+              text: 'Specifications',
+              collapsed: true,
+              items: getMarkdownFiles('superpowers/specs', 'superpowers/specs'),
+            },
+            {
+              text: 'Implementation Plans',
+              collapsed: true,
+              items: [
+                ...getMarkdownFiles('superpowers/plans', 'superpowers/plans'),
+                ...getMarkdownFiles('plans', 'plans'),
+              ],
+            },
+            {
+              text: 'Experiments',
+              collapsed: true,
+              items: getMarkdownFiles('superpowers/experiments', 'superpowers/experiments'),
+            },
+          ],
+        },
+      ],
+    },
+
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/fullsend-ai/fullsend' },
+    ],
+
+    editLink: {
+      pattern: 'https://github.com/fullsend-ai/fullsend/edit/main/docs/:path',
+      text: 'Edit this page on GitHub',
+    },
+
+    search: {
+      provider: 'local',
+    },
+  },
+
+  vite: {
+    resolve: {
+      alias: {
+        'vue/server-renderer': path.resolve(__dirname, '..', 'node_modules', 'vue', 'server-renderer', 'index.mjs'),
+        'vue': path.resolve(__dirname, '..', 'node_modules', 'vue'),
+      },
+      // Prevent VitePress SSR from resolving CJS packages in the
+      // repo-root node_modules (which causes ESM default-import
+      // failures on Node 22 for packages like entities, estree-walker).
+      preserveSymlinks: true,
+    },
+    ssr: {
+      noExternal: [/./],
+    },
+  },
+
+  markdown: {
+    shikiSetup: async (shiki) => {
+      await shiki.loadLanguage('toml')
+    },
+    preConfig: (md) => {
+      const defaultParse = md.parse.bind(md)
+      md.parse = (src: string, env: any) => {
+        return defaultParse(escapeVueSyntax(src), env)
+      }
+    },
+    // Auto-add v-pre to inline code so `{{ }}` inside backticks is safe.
+    // Recommended by VitePress maintainer brc-dd:
+    // https://github.com/vuejs/vitepress/discussions/3724
+    config: (md) => {
+      const defaultCodeInline = md.renderer.rules.code_inline!
+      md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
+        tokens[idx].attrSet('v-pre', '')
+        return defaultCodeInline(tokens, idx, options, env, self)
+      }
+    },
+  },
+})

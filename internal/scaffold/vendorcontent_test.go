@@ -43,8 +43,9 @@ func TestCollectVendoredAssets_PerRepoPrefix(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
 	for _, f := range files {
-		if strings.HasPrefix(f.Path, ".github/workflows/") {
-			assert.True(t, strings.HasPrefix(f.Path, ".fullsend/.github/workflows/"), "workflows should use per-repo prefix: %s", f.Path)
+		if isVendoredReusableWorkflow(f.Path) {
+			assert.True(t, strings.HasPrefix(f.Path, ".github/workflows/"), "reusable workflows must be under .github/workflows/ for GitHub Actions: %s", f.Path)
+			assert.False(t, strings.HasPrefix(f.Path, ".fullsend/"), "reusable workflows must not use .fullsend/ prefix: %s", f.Path)
 		}
 	}
 }

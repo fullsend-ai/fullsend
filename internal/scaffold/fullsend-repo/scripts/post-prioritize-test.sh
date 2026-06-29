@@ -136,6 +136,7 @@ export ORG="test-org"
 export PROJECT_NUMBER="1"
 export GITHUB_CSMA_SLOT_MAX_MS=0
 export GITHUB_CSMA_BACKOFF_CAP_SEC=1
+export GITHUB_CSMA_SPREAD_MAX_SEC=0
 
 FIXTURE_JSON='{
   "reach": 3,

@@ -9,13 +9,12 @@ There are independent version reference inputs that control different parts of t
 | Input | Controls | Where set |
 |-------|----------|-----------|
 | `@<ref>` on `uses:` | Which reusable workflow YAML runs | The `uses:` line in the caller workflow |
-| `fullsend_ai_ref` | Which ref composite actions (`action.yml`) and defaults are loaded from at runtime | Passed as a `with:` input |
 | `fullsend_version` | Which fullsend CLI binary is installed | Passed as a `with:` input |
 
 When no release exists for `fullsend_version`, `action.yml` falls back to cloning
 and building from source at that ref (see the `install-method=source` path).
 
-If `uses:`, `fullsend_ai_ref` and `fullsend_version` diverge, the workflows, agents and harnesses, and
+If `uses:` and `fullsend_version` diverge, the workflows/agents and
 CLI diverge, potentially causing mismatch in behavior and failures.
 
 ## Vendored installs (recommended for PR testing)
@@ -65,7 +64,6 @@ jobs:
     uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@<YOUR_BRANCH>
     with:
       # [...]
-      fullsend_ai_ref: <YOUR_BRANCH>
       fullsend_version: <YOUR_BRANCH>
       # [...]
 ```
@@ -86,7 +84,6 @@ jobs:
     uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@<YOUR_BRANCH>
     with:
       # [...]
-      fullsend_ai_ref: <YOUR_BRANCH>
       fullsend_version: <YOUR_BRANCH>
       # [...]
 ```

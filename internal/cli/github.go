@@ -220,7 +220,8 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor, upstreamRef, upstreamTag)
 	if err != nil {
 		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
 	}
@@ -449,7 +450,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		vendorFn, vendorCollect = vendorStackArgs(true, cfg.fullsendBinary, cfg.fullsendSource)
 	}
 
-	stack := buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
+	stack := buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
 
 	if cfg.dryRun {
 		printer.Header("Dry run — analyzing what setup would do")
@@ -481,7 +482,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
 		orgCfg.Dispatch.Mode = "oidc-mint"
 
-		stack = buildLayerStack(org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
+		stack = buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
 	}
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
@@ -981,9 +982,13 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("reading config.yaml: %w", cfgErr)
 	}
 
-	workflowsLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(true)
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+	wfLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(true).WithUpstreamRef(upstreamRef, upstreamTag)
+	if id, idErr := client.GetAuthenticatedUserIdentity(ctx); idErr == nil {
+		wfLayer = wfLayer.WithSignOff(id.Name, id.Email)
+	}
 
-	if err := workflowsLayer.Install(ctx); err != nil {
+	if err := wfLayer.Install(ctx); err != nil {
 		return fmt.Errorf("syncing scaffold: %w", err)
 	}
 

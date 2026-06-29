@@ -1,6 +1,6 @@
 # Fix Agent
 
-<img src="icons/coder.png" alt="Fix agent icon" width="80">
+![Fix agent icon](icons/coder.png)
 
 Review-feedback specialist that reads review comments on open PRs, implements targeted fixes, runs tests and linters, and commits the result.
 
@@ -103,6 +103,8 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 |---------|-------|--------|
 | `/fs-fix` | PR comment | Triggers the fix agent on the PR |
 | `/fs-fix-stop` | PR comment | Disables the fix agent for this PR |
+
+Requires write-level repository permission (admin, maintain, or write).
 
 The `/fs-fix` command accepts optional free-text instructions after the
 command. The text is passed to the agent as a human instruction, giving you

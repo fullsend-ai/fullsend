@@ -394,6 +394,9 @@ SandboxWorkspace    = "/sandbox/workspace"
 SandboxClaudeConfig = "/sandbox/claude-config"
 ```
 
+For sandbox workspace layout, agent rule layering, and security scanning
+details, see [Agent runtimes](../../runtimes.md).
+
 ### Key Sandbox Operations
 
 | Operation | CLI Command | Purpose |
@@ -544,6 +547,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
+| `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |
 | `internal/mintcore/` | ~1425 | Shared mint library (handler, OIDC verifiers, GitHub API) |
 | `internal/dispatch/gcf/provisioner.go` | ~1959 | GCP infrastructure provisioner |
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |

@@ -62,7 +62,7 @@ Agent configuration environment variables follow a single convention:
 
 The agent name prefix prevents collisions when multiple agents share an
 execution environment or when env files are sourced together. Existing context
-vars (e.g., `PRIOR_REVIEW_SHA`) and credential vars (e.g., `FIX_GH_TOKEN`)
+vars (e.g., `PRIOR_REVIEW_SHA`) and credential vars (e.g., `GH_TOKEN`)
 already use agent-name prefixes — the `{AGENT}_` prefix alone does not
 distinguish config vars from those. The distinction is by purpose and
 documentation: config vars are behavioral knobs listed in

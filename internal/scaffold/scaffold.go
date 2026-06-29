@@ -42,6 +42,8 @@ var executableFiles = map[string]struct{}{
 	"scripts/fullsend-check-output":          {},
 	"scripts/validate-output-schema-test.sh": {},
 	"scripts/validate-source-repo.sh":        {},
+	"scripts/install-precommit-tools.sh":     {},
+	"scripts/resolve-precommit-tools.py":     {},
 }
 
 // FileMode returns the Git tree mode for a scaffold file.

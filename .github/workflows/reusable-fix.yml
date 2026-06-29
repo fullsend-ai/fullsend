@@ -1,5 +1,8 @@
-# Reusable fix agent workflow. Called by thin callers in .fullsend repos
-# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+# Reusable fix agent workflow. Called by dispatch workflows via workflow_call.
+# Runs in the caller's repo context (secrets, checkout).
+#
+# Concurrency: agent-scoped cancel-in-progress group (distinct from dispatch/thin
+# caller groups so workflow_call parent runs are not cancelled).
 name: Fix Agent
 
 on:
@@ -41,20 +44,34 @@ on:
         type: string
         default: "per-org"
       fullsend_ai_ref:
-        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        description: "Deprecated: upstream defaults now use job.workflow_sha. Kept for per-org caller compatibility."
         type: string
         required: false
         default: v0
+      runner_image:
+        description: GitHub Actions runner image for agent jobs.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
 
+concurrency:
+  group: >-
+    fullsend-fix-agent-${{ inputs.source_repo }}-${{
+      fromJSON(inputs.event_payload).pull_request.number
+      || fromJSON(inputs.event_payload).issue.number
+      || inputs.pr_number
+    }}
+  cancel-in-progress: true
+
 jobs:
   fix:
     name: Fix
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
       contents: write
@@ -65,14 +82,14 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: fullsend-ai/fullsend
-          ref: ${{ inputs.fullsend_ai_ref }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -291,7 +308,7 @@ jobs:
           fi
 
       - name: Checkout target repository at PR HEAD
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.source_repo }}
           token: ${{ steps.app-token.outputs.token }}
@@ -353,7 +370,6 @@ jobs:
       - name: Setup agent environment
         env:
           AGENT_PREFIX: FIX_
-          FIX_GH_TOKEN: ${{ steps.app-token.outputs.token }}
           FIX_TARGET_REPO_DIR: target-repo
           FIX_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           FIX_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
@@ -369,8 +385,6 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
-          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PUSH_TOKEN_SOURCE: github-app
           TARGET_BRANCH: ${{ steps.context.outputs.base_ref }}
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
