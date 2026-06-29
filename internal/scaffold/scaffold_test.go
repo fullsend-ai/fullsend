@@ -530,7 +530,7 @@ func TestCodeHarnessContent(t *testing.T) {
 	assert.Contains(t, s, "agents/code.md")
 	assert.Contains(t, s, "pre_script")
 	assert.Contains(t, s, "post_script")
-	assert.Contains(t, s, "runner_env")
+	assert.Contains(t, s, "env:")
 	assert.Contains(t, s, "PUSH_TOKEN")
 }
 
