@@ -23,9 +23,6 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
-  - src: env/review.env
-    dest: /sandbox/workspace/.env.d/review.env
-    expand: true
   - src: ${PRIOR_REVIEW_FILE}
     dest: /sandbox/workspace/prior-review.txt
     optional: true
@@ -37,8 +34,13 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
 
-runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/review-result.schema.json
+env:
+  runner:
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/review-result.schema.json
+  sandbox:
+    PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
+    PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+    REVIEW_FINDING_SEVERITY_THRESHOLD: "${REVIEW_FINDING_SEVERITY_THRESHOLD}"
 
 timeout_minutes: 20
 
@@ -46,8 +48,14 @@ forge:
   github:
     pre_script: scripts/pre-review.sh
     post_script: scripts/post-review.sh
-    runner_env:
-      REVIEW_TOKEN: "${REVIEW_TOKEN}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      PR_NUMBER: "${PR_NUMBER}"
-      GITHUB_PR_URL: "${GITHUB_PR_URL}"
+    env:
+      runner:
+        REVIEW_TOKEN: "${REVIEW_TOKEN}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        PR_NUMBER: "${PR_NUMBER}"
+        GITHUB_PR_URL: "${GITHUB_PR_URL}"
+      sandbox:
+        GITHUB_PR_URL: "${GITHUB_PR_URL}"
+        GH_TOKEN: "${GH_TOKEN}"
+        PR_NUMBER: "${PR_NUMBER}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"

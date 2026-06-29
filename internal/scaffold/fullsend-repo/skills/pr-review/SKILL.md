@@ -166,7 +166,7 @@ If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
 changed since the prior review:
 
 ```bash
-# REPO_FULL_NAME and PR_NUMBER are set in env/review.env
+# REPO_FULL_NAME and PR_NUMBER are set via env.sandbox in harness/review.yaml
 head_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" --jq '.head.sha')
 COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
 TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
