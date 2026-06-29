@@ -826,7 +826,7 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	// watches the repo-maintenance workflow to completion before returning,
 	// so the removal PR should already exist when this returns.
 	output := runCLI(t, env.binary, env.token,
-		"admin", "disable", "repos", env.org, testRepo, "--yolo")
+		"admin", "disable", "repos", env.org, testRepo, "--yolo", "--direct")
 	t.Logf("Disable repos output:\n%s", output)
 
 	// Always capture the repo-maintenance run's logs. Even when the run

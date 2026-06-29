@@ -2144,13 +2144,16 @@ func newDisableCmd() *cobra.Command {
 }
 
 // reposRunFunc is the signature for repo enable/disable operations.
-type reposRunFunc func(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error
+type reposRunFunc func(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool, pr bool) error
 
 // newReposSubcommand creates a repos enable or disable subcommand with shared setup logic.
 // If withYolo is true, the --yolo flag is added to skip confirmation prompts.
+// By default, changes are delivered via a pull request. Use --direct to push
+// changes directly to the default branch instead.
 func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc, withYolo bool) *cobra.Command {
 	var all bool
 	var yolo bool
+	var directFlag bool
 
 	cmd := &cobra.Command{
 		Use:   use,
@@ -2186,11 +2189,15 @@ func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			return runFn(ctx, client, printer, org, repos, all, yolo)
+			// Default is PR delivery; --direct overrides to direct push.
+			usePR := !directFlag
+
+			return runFn(ctx, client, printer, org, repos, all, yolo, usePR)
 		},
 	}
 
 	cmd.Flags().BoolVar(&all, "all", false, allFlagHelp)
+	cmd.Flags().BoolVar(&directFlag, "direct", false, "push changes directly to the default branch instead of creating a PR")
 	if withYolo {
 		cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
 	}
@@ -2223,7 +2230,7 @@ func newDisableReposCmd() *cobra.Command {
 // runEnableRepos enables the specified repositories for fullsend enrollment.
 // The yolo parameter is accepted for signature compatibility with reposRunFunc but is unused
 // since enable has no destructive operations that require confirmation.
-func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error {
+func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool, pr bool) error {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Enabling repositories for " + org)
@@ -2326,7 +2333,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		// Save updated config.
 		commitMsg := fmt.Sprintf("chore: enable %d repositories for fullsend enrollment", changed)
 		var err error
-		dispatchTime, err = saveRepoConfig(ctx, client, printer, org, cfg, commitMsg)
+		dispatchTime, err = saveRepoConfig(ctx, client, printer, org, cfg, commitMsg, pr)
 		if err != nil {
 			return err
 		}
@@ -2335,7 +2342,8 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 	// Sync org variable visibility so enrolled repos can read dispatch
 	// variables like FULLSEND_MINT_URL. Runs even when changed == 0 to
 	// reconcile a previously failed best-effort sync on re-run.
-	if cfg.Dispatch.Mode == "oidc-mint" {
+	// Skipped in PR mode — repo-maintenance reconciles on merge.
+	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
 		syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
 	}
 
@@ -2403,7 +2411,7 @@ func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer
 }
 
 // runDisableRepos disables the specified repositories from fullsend enrollment.
-func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool) error {
+func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Printer, org string, repos []string, all bool, yolo bool, pr bool) error {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Disabling repositories for " + org)
@@ -2491,13 +2499,14 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 
 	// Save updated config.
 	commitMsg := fmt.Sprintf("chore: disable %d repositories from fullsend enrollment", changed)
-	dispatchTime, err := saveRepoConfig(ctx, client, printer, org, cfg, commitMsg)
+	dispatchTime, err := saveRepoConfig(ctx, client, printer, org, cfg, commitMsg, pr)
 	if err != nil {
 		return err
 	}
 
 	// Sync org variable visibility to revoke access for disabled repos.
-	if cfg.Dispatch.Mode == "oidc-mint" {
+	// Skipped in PR mode — repo-maintenance reconciles on merge.
+	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
 		allOrgRepos, listErr := client.ListOrgRepos(ctx, org)
 		if listErr != nil {
 			printer.StepWarn(fmt.Sprintf("could not list org repos for variable sync: %v", listErr))
@@ -2561,16 +2570,23 @@ func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 	return cfg, nil
 }
 
-// saveRepoConfig marshals and commits the updated config, then triggers the repo-maintenance workflow.
 // saveRepoConfig marshals the config, commits it, and dispatches the
 // repo-maintenance workflow. It returns the dispatch time so callers can
 // watch the resulting workflow run. A zero time means the dispatch failed.
-func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, commitMsg string) (time.Time, error) {
+//
+// When pr is true, config.yaml is delivered via a pull request instead of
+// being pushed directly to the default branch. The repo-maintenance
+// workflow is not dispatched in PR mode — it will run when the PR is merged.
+func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, commitMsg string, pr bool) (time.Time, error) {
 	// Marshal updated config.
 	updatedConfigData, err := cfg.Marshal()
 	if err != nil {
 		printer.StepFail("Failed to marshal config.yaml")
 		return time.Time{}, fmt.Errorf("marshaling config.yaml: %w", err)
+	}
+
+	if pr {
+		return saveRepoConfigViaPR(ctx, client, printer, org, updatedConfigData, commitMsg)
 	}
 
 	// Commit and push changes.
@@ -2594,6 +2610,36 @@ func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 	printer.StepDone("Triggered repo-maintenance workflow")
 
 	return dispatchTime, nil
+}
+
+// saveRepoConfigViaPR delivers config.yaml via a pull request on a dedicated
+// branch, separate from the scaffold-install branch used by sync-scaffold.
+func saveRepoConfigViaPR(ctx context.Context, client forge.Client, printer *ui.Printer, org string, configData []byte, commitMsg string) (time.Time, error) {
+	cfgRepo, err := client.GetRepo(ctx, org, forge.ConfigRepoName)
+	if err != nil {
+		printer.StepFail("Failed to get .fullsend repo info")
+		return time.Time{}, fmt.Errorf("getting config repo info: %w", err)
+	}
+
+	files := []forge.TreeFile{{
+		Path:    "config.yaml",
+		Content: configData,
+		Mode:    "100644",
+	}}
+
+	prBody := "This PR updates `config.yaml` in the .fullsend config repo.\n\n" +
+		"Merge this PR to apply the enrollment changes. The repo-maintenance workflow will run automatically on merge."
+
+	_, prErr := layers.CommitFilesViaPR(ctx, client, printer,
+		org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
+		"fullsend/enrollment-config",
+		commitMsg, commitMsg, prBody, files)
+	if prErr != nil {
+		return time.Time{}, prErr
+	}
+
+	// No workflow dispatch in PR mode — repo-maintenance runs on merge.
+	return time.Time{}, nil
 }
 
 // awaitRepoMaintenance watches the repo-maintenance workflow run triggered by a

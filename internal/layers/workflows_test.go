@@ -357,7 +357,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_ScaffoldBranchAlsoProtected(t *t
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "scaffold branch")
+	assert.Contains(t, err.Error(), "is protected")
 	assert.Contains(t, err.Error(), "configure branch protection")
 }
 

@@ -35,14 +35,24 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 		owner, repo, defaultBranch, commitMsg, prTitle, prBody, files, in)
 }
 
+// CommitFilesViaPR delivers files via a pull request on the given branch.
+// Uses a fixed branch name so re-runs update the same PR.
+func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
+	owner, repo, defaultBranch, branch, commitMsg, prTitle, prBody string,
+	files []forge.TreeFile) (bool, error) {
+
+	return commitViaPR(ctx, client, printer,
+		owner, repo, defaultBranch, branch, commitMsg, prTitle, prBody, files)
+}
+
+const defaultScaffoldBranch = "fullsend/scaffold-install"
+
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
 // For non-owner users, it defaults to creating a fork and opening a cross-fork
 // PR rather than pushing directly to the upstream repository.
 func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, in io.Reader) (bool, error) {
-
-	const scaffoldBranch = "fullsend/scaffold-install"
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -52,7 +62,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	// Owner pushes directly to the repo — no fork needed.
 	if strings.EqualFold(user, owner) {
 		return commitBranchAndPR(ctx, client, printer,
-			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
+			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
@@ -65,7 +75,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	if forkOwner != "" {
 		printer.StepDone(fmt.Sprintf("Using existing fork %s/%s", forkOwner, forkRepo))
 		return commitViaFork(ctx, client, printer,
-			owner, repo, forkOwner, forkRepo, scaffoldBranch, defaultBranch,
+			owner, repo, forkOwner, forkRepo, defaultScaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
@@ -83,13 +93,13 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 
 	if useFork {
 		return forkAndCommit(ctx, client, printer,
-			owner, repo, scaffoldBranch, defaultBranch,
+			owner, repo, defaultScaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
 	// Upstream path: try to push directly, fail clearly on 403.
 	return commitBranchAndPR(ctx, client, printer,
-		owner, repo, owner, repo, scaffoldBranch, defaultBranch,
+		owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
 		commitMsg, prTitle, prBody, files)
 }
 
@@ -182,6 +192,59 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	} else {
 		printer.StepDone(fmt.Sprintf("Created PR #%d: %s", proposal.Number, proposal.URL))
 		printer.StepInfo("Merge the PR to activate fullsend workflows")
+	}
+	return false, nil
+}
+
+// commitViaPR creates a feature branch, commits files, and opens a PR.
+// Unlike commitBranchAndPR, this is a simpler pathway for same-owner PRs
+// (e.g., enrollment config updates) that don't need fork support.
+func commitViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
+	owner, repo, defaultBranch, branch, commitMsg, prTitle, prBody string,
+	files []forge.TreeFile) (bool, error) {
+
+	if branchErr := client.CreateBranch(ctx, owner, repo, branch); branchErr != nil {
+		if forge.IsForbidden(branchErr) {
+			printer.StepFail("Insufficient permissions to create branch")
+			return false, fmt.Errorf("cannot push to %s/%s (403 forbidden); check your token scopes: %w",
+				owner, repo, branchErr)
+		}
+		if !forge.IsAlreadyExists(branchErr) {
+			printer.StepFail("Failed to create feature branch")
+			return false, fmt.Errorf("creating feature branch: %w", branchErr)
+		}
+	}
+
+	branchCommitted, commitErr := client.CommitFilesToBranch(ctx, owner, repo, branch, commitMsg, files)
+	if commitErr != nil {
+		if forge.IsBranchProtected(commitErr) {
+			printer.StepFail("Feature branch is protected — cannot commit")
+			return false, fmt.Errorf("branch %q is protected; configure branch protection to allow pushes: %w", branch, commitErr)
+		}
+		printer.StepFail("Failed to commit files to branch")
+		return false, fmt.Errorf("committing files to branch: %w", commitErr)
+	}
+
+	proposal, prErr := client.CreateChangeProposal(ctx, owner, repo,
+		prTitle, prBody, branch, defaultBranch)
+	if prErr != nil {
+		if forge.IsNoChanges(prErr) {
+			printer.StepDone("Branch and PR up to date")
+			return false, nil
+		}
+		if !forge.IsAlreadyExists(prErr) {
+			printer.StepFail("Failed to create PR")
+			return false, fmt.Errorf("creating PR: %w", prErr)
+		}
+		if branchCommitted {
+			printer.StepDone("PR already exists — updated with new files")
+			printer.StepInfo("Merge the PR to apply changes")
+		} else {
+			printer.StepDone("Branch and PR up to date")
+		}
+	} else {
+		printer.StepDone(fmt.Sprintf("Created PR #%d: %s", proposal.Number, proposal.URL))
+		printer.StepInfo("Merge the PR to apply changes")
 	}
 	return false, nil
 }
