@@ -130,7 +130,8 @@ func TestLoadWithOpts_ScaffoldTemplatesForgeResolution(t *testing.T) {
 
 			assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
 			assert.NotEmpty(t, h.PostScript, "PostScript should be set after forge resolution")
-			assert.NotEmpty(t, h.RunnerEnv, "RunnerEnv should be non-empty after merge")
+			hasRunnerEnv := len(h.RunnerEnv) > 0 || (h.Env != nil && len(h.Env.Runner) > 0)
+			assert.True(t, hasRunnerEnv, "RunnerEnv or Env.Runner should be non-empty after merge")
 			assert.Nil(t, h.Forge, "Forge should be nil after resolution")
 			assert.NotEmpty(t, h.Role, "Role should be set in scaffold template")
 			assert.NotEmpty(t, h.Slug, "Slug should be set in scaffold template")
@@ -333,11 +334,22 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 			h, loadErr := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
 			require.NoError(t, loadErr)
 
+			// Build a combined env map from both legacy RunnerEnv and new Env.Runner.
+			combined := make(map[string]string)
+			for k, v := range h.RunnerEnv {
+				combined[k] = v
+			}
+			if h.Env != nil {
+				for k, v := range h.Env.Runner {
+					combined[k] = v
+				}
+			}
+
 			for _, key := range tt.topLevelKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain top-level key %s", key)
+				assert.Contains(t, combined, key, "merged env should contain top-level key %s", key)
 			}
 			for _, key := range tt.forgeGithubKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain forge.github key %s", key)
+				assert.Contains(t, combined, key, "merged env should contain forge.github key %s", key)
 			}
 		})
 	}
