@@ -1,0 +1,44 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "work_item",
+    "id": 99,
+    "url": "https://github.com/fullsend-ai/demo/issues/99",
+    "linked_change_proposal": {
+      "id": 99,
+      "url": "https://github.com/fullsend-ai/demo/pull/99"
+    }
+  },
+  "transition": {
+    "kind": "comment_added",
+    "comment": {
+      "command": "/fs-fix",
+      "body": "/fs-fix address the nil check in handler.go",
+      "instruction": "address the nil check in handler.go"
+    }
+  },
+  "actor": {
+    "id": "alice",
+    "kind": "human",
+    "role": "write",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": [],
+    "change_proposal": {
+      "id": 99,
+      "head_repo": "fullsend-ai/demo",
+      "base_repo": "fullsend-ai/demo",
+      "head_ref": "feature/nil-check",
+      "base_ref": "main",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "author_id": "fullsend-ai-coder[bot]",
+      "is_fork": false
+    }
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "issue_comment",
+    "raw_action": "created"
+  }
+}

@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
+  "title": "NormalizedEvent",
+  "description": "GitHub-oriented routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions; other forges are out of scope until a future schema version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "entity", "transition", "actor", "state", "source"],
+  "properties": {
+    "repo": {
+      "$ref": "#/$defs/repo_path"
+    },
+    "entity": {
+      "$ref": "#/$defs/entity"
+    },
+    "transition": {
+      "$ref": "#/$defs/transition"
+    },
+    "actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "kind": { "const": "change_proposal" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": { "linked_change_proposal": false }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "kind": { "const": "work_item" } },
+            "required": ["kind"]
+          },
+          "state": {
+            "required": ["change_proposal"]
+          }
+        },
+        "required": ["entity", "state"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "required": ["linked_change_proposal"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "repo_path": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
+      "minLength": 3,
+      "maxLength": 512,
+      "description": "GitHub repository slug (owner/repo)."
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "url"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["work_item", "change_proposal"],
+          "description": "Forge-neutral entity kind (issue vs PR/MR)."
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Entity number within repo."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "Canonical GitHub URL for the entity."
+        },
+        "linked_change_proposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "url"],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          "description": "When transition occurs on a work_item that is also a change proposal (e.g. GitHub PR comment events). When state.change_proposal is present, linked_change_proposal.id MUST equal state.change_proposal.id."
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "opened",
+            "reopened",
+            "edited",
+            "synchronized",
+            "updated",
+            "closed",
+            "marked_ready",
+            "label_changed",
+            "comment_added",
+            "review_submitted"
+          ],
+          "description": "Semantic lifecycle transition. Prefer edited/synchronized over updated; adapters MAY map reopened to opened when distinction is unnecessary."
+        },
+        "label": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "action"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "action": {
+              "type": "string",
+              "enum": ["added", "removed"]
+            }
+          }
+        },
+        "comment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["body"],
+          "properties": {
+            "command": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "First whitespace-delimited token of the first line (e.g. /fs-triage)."
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 4096,
+              "description": "Comment body truncated to 4096 Unicode code points for dispatch transport."
+            },
+            "instruction": {
+              "type": "string",
+              "maxLength": 4096,
+              "description": "Text after the command, extracted from the raw comment before body truncation (e.g. /fs-fix instruction)."
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reviewer_id"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "approved",
+                "changes_requested",
+                "commented",
+                "dismissed"
+              ]
+            },
+            "reviewer_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Forge login of the reviewer (bot accounts end with [bot] on GitHub)."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "label_changed" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["label"] },
+          "else": { "properties": { "label": false } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "comment_added" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["comment"] },
+          "else": { "properties": { "comment": false } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "review_submitted" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["review"] },
+          "else": { "properties": { "review": false } }
+        }
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "is_entity_author"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Forge login or service account identifier."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["human", "bot"]
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "admin",
+            "maintain",
+            "write",
+            "triage",
+            "read",
+            "none",
+            "external"
+          ],
+          "description": "Effective repository permission level (ADR 0054). Adapters populate from the forge collaborator permission API when available."
+        },
+        "is_entity_author": {
+          "type": "boolean",
+          "description": "True when actor.id is the author of the work item or change proposal."
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels"],
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": "Snapshot of label names on the entity at event time."
+        },
+        "change_proposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "head_repo",
+            "base_repo",
+            "head_ref",
+            "base_ref",
+            "author_id",
+            "is_fork"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "head_repo": {
+              "$ref": "#/$defs/repo_path"
+            },
+            "base_repo": {
+              "$ref": "#/$defs/repo_path"
+            },
+            "head_ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Head branch name (Git ref) for checkout and push."
+            },
+            "base_ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Base branch name (Git ref) the change proposal targets."
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$",
+              "description": "Commit SHA at the change-proposal head when known (optional; adapters should populate from webhooks when available)."
+            },
+            "author_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "is_fork": {
+              "type": "boolean"
+            }
+          },
+          "description": "Required when the matched harness needs change-proposal execution context (review, fix, retro on a PR). id MUST match entity.id or entity.linked_change_proposal.id when those are present. Adapters must populate branch and repo fields so dispatch can project event_payload without API round-trips."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "raw_type"],
+      "properties": {
+        "system": {
+          "type": "string",
+          "enum": ["github", "manual", "schedule"],
+          "description": "Event provenance. v1 adapters emit github, manual, or schedule only."
+        },
+        "raw_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Native GitHub event type (e.g. issues, issue_comment, pull_request_target)."
+        },
+        "raw_action": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Native action when applicable (e.g. created, labeled, synchronize)."
+        }
+      }
+    }
+  }
+}

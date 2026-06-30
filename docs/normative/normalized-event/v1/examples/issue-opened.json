@@ -1,0 +1,25 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "work_item",
+    "id": 42,
+    "url": "https://github.com/fullsend-ai/demo/issues/42"
+  },
+  "transition": {
+    "kind": "opened"
+  },
+  "actor": {
+    "id": "reporter",
+    "kind": "human",
+    "role": "none",
+    "is_entity_author": true
+  },
+  "state": {
+    "labels": []
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "issues",
+    "raw_action": "opened"
+  }
+}

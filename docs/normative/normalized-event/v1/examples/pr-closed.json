@@ -1,0 +1,35 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "change_proposal",
+    "id": 100,
+    "url": "https://github.com/fullsend-ai/demo/pull/100"
+  },
+  "transition": {
+    "kind": "closed"
+  },
+  "actor": {
+    "id": "maintainer",
+    "kind": "human",
+    "role": "maintain",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": ["fullsend-review"],
+    "change_proposal": {
+      "id": 100,
+      "head_repo": "fullsend-ai/demo",
+      "base_repo": "fullsend-ai/demo",
+      "head_ref": "feature/review-me",
+      "base_ref": "main",
+      "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "author_id": "contributor",
+      "is_fork": false
+    }
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "pull_request_target",
+    "raw_action": "closed"
+  }
+}

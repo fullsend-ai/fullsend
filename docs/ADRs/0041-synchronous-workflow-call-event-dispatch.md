@@ -17,7 +17,9 @@ Date: 2026-05-20
 
 ## Status
 
-Accepted
+Accepted (static stage routing partially superseded by
+[ADR 0061](0061-harness-cel-dispatch.md); synchronous `workflow_call` property
+preserved via dynamic matrix jobs)
 
 ## Context
 
