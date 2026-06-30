@@ -130,6 +130,7 @@ script-test:
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
+	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 
 test: lint-all go-test script-test lint-eval-cases
 
