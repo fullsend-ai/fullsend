@@ -38,6 +38,11 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── agent                                    # Manage agent registrations in config
+│   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
+│   ├── list                                  # List registered agents
+│   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
+│   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
