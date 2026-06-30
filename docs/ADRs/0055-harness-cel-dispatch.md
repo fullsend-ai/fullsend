@@ -79,11 +79,19 @@ Adopt **Option C**.
   project execution ref (unchanged `fullsend run` contract) → output driver
   (`gha-matrix`, `json`, etc.). Drivers are flagged or auto-detected
   (`GITHUB_EVENT_PATH` → `gha-event`).
-- **Workflow integration:** replace bash stage routing with
+- **Workflow integration:** installations may replace bash stage routing with
   `fullsend dispatch --output-driver gha-matrix` and a dynamic job matrix.
   Reintroduces dynamic agent discovery via CEL (superseding ADR 0041's static
   `workflow_call` stage list) while keeping synchronous matrix-job execution.
-  Deprecate `# fullsend-stage:` markers and duplicated bash routers.
+  Deprecate `# fullsend-stage:` markers and duplicated bash routers where
+  dynamic routing is adopted.
+- **Coexistence with explicit workflows:** implementing this ADR does not
+  preclude hand-written workflows that invoke a particular harness file directly
+  (today's per-agent or per-stage `workflow_call` pattern). CEL-based dispatch
+  and explicit harness invocation may run side by side in the same installation —
+  for example, default agents routed by `fullsend dispatch` while org-specific
+  agents remain on dedicated workflows that call `fullsend run` with a fixed
+  harness path.
 
 ## Consequences
 
