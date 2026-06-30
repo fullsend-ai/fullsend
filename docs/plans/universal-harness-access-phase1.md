@@ -26,7 +26,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 
 **Scope:** Pure utility functions with no callers. Zero risk to existing behavior.
 
-**Create `internal/harness/url.go`:**
+**Create `internal/harness/url.go`** (canonical implementations now in `internal/urlutil/urlutil.go`)**:**
 - `IsURL(s string) bool` — true for valid HTTPS URLs. Rejects empty host, userinfo, non-HTTPS schemes. Uses `net/url.Parse` with additional guards.
 - `IsAbsPath(s string) bool` — delegates to `filepath.IsAbs`.
 - `IsRelPath(s string) bool` — `!IsURL(s) && !IsAbsPath(s)`.
