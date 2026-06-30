@@ -1,6 +1,8 @@
 # These users have approval access to all resources (wildcard)
 * @fullsend-ai/core
 
-# Exempt dependency files from CODEOWNERS so any reviewer can approve
+# Exempt dependency files from CODEOWNERS so any reviewer (including
+# bots) can approve. Uses blank-owner entries per:
+# https://github.com/orgs/community/discussions/23064
 go.mod
 go.sum
