@@ -1,8 +1,10 @@
-# Default Agents
+# Agents
 
-Reference documentation for the default agents shipped by fullsend.
-All agents below are enabled by default. The set of default agents is defined by
-the YAML files in [`internal/scaffold/fullsend-repo/harness/`](../../internal/scaffold/fullsend-repo/harness/).
+Reference documentation for the agents shipped by fullsend.
+The default agents below are defined by the YAML files in
+[`internal/scaffold/fullsend-repo/harness/`](../../internal/scaffold/fullsend-repo/harness/).
+Custom agents can be registered via the `agents:` field in org or per-repo
+config (see [ADR 0058](../ADRs/0058-agent-registration.md)).
 
 | Agent | Summary |
 |-------|---------|
@@ -23,5 +25,9 @@ a specific agent performs a specific task. See
 
 ## Custom Agents
 
-Support for adding your own custom agents to the fullsend pipeline is coming
-soon.
+Custom agents can be added to the fullsend pipeline via the `agents:` field in
+your org-level or per-repo `config.yaml`. Each entry is either a local path
+(relative to the fullsend directory) or a pinned HTTPS URL with an integrity
+hash. Config-registered agents override scaffold defaults when names collide
+(case-insensitive). See [ADR 0058](../ADRs/0058-agent-registration.md) for
+details.

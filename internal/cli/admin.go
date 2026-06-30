@@ -1854,7 +1854,7 @@ func buildLayerStack(
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
 		workflowsLayer(ctx, org, client, printer, user, version, vendor, vendorCollect, direct),
-		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA),
+		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA, configAgentNames(cfg.Agents)),
 		vendorLayer(org, client, printer, vendor, vendorFn, vendorCollect, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),

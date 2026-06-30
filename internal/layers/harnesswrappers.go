@@ -15,25 +15,34 @@ const wrapperHeader = "# This file is managed by fullsend. Do not edit it direct
 // HarnessWrappersLayer generates thin harness wrapper files in the .fullsend
 // config repo. Each wrapper references an upstream scaffold harness via a
 // base: URL and sets role/slug locally, enabling orgs to customize by adding
-// override fields.
+// override fields. Config-driven agents (registered via the agents list in
+// config.yaml) are skipped — they are resolved at runtime by fullsend run.
 type HarnessWrappersLayer struct {
-	org       string
-	client    forge.Client
-	ui        *ui.Printer
-	agents    []AgentCredentials
-	commitSHA string
+	org              string
+	client           forge.Client
+	ui               *ui.Printer
+	agents           []AgentCredentials
+	commitSHA        string
+	configAgentNames map[string]bool
 }
 
 var _ Layer = (*HarnessWrappersLayer)(nil)
 
-// NewHarnessWrappersLayer creates a new HarnessWrappersLayer.
-func NewHarnessWrappersLayer(org string, client forge.Client, printer *ui.Printer, agents []AgentCredentials, commitSHA string) *HarnessWrappersLayer {
+// NewHarnessWrappersLayer creates a new HarnessWrappersLayer. configAgentNames
+// lists agent names registered in config; wrappers are not generated for these
+// because fullsend run resolves them at runtime from config sources.
+func NewHarnessWrappersLayer(org string, client forge.Client, printer *ui.Printer, agents []AgentCredentials, commitSHA string, configAgentNames []string) *HarnessWrappersLayer {
+	nameSet := make(map[string]bool, len(configAgentNames))
+	for _, n := range configAgentNames {
+		nameSet[strings.ToLower(n)] = true
+	}
 	return &HarnessWrappersLayer{
-		org:       org,
-		client:    client,
-		ui:        printer,
-		agents:    agents,
-		commitSHA: commitSHA,
+		org:              org,
+		client:           client,
+		ui:               printer,
+		agents:           agents,
+		commitSHA:        commitSHA,
+		configAgentNames: nameSet,
 	}
 }
 
@@ -92,6 +101,11 @@ func (l *HarnessWrappersLayer) Install(ctx context.Context) error {
 				continue
 			}
 			seen[path] = true
+
+			if l.configAgentNames[strings.ToLower(name)] {
+				l.ui.StepDone(fmt.Sprintf("Skipping %s (config-driven agent)", name))
+				continue
+			}
 
 			if content, exists := existing[path]; exists {
 				if !strings.HasPrefix(string(content), "# This file is managed by fullsend.") {
@@ -169,6 +183,9 @@ func (l *HarnessWrappersLayer) Analyze(ctx context.Context) (*LayerReport, error
 				continue
 			}
 			seen[path] = true
+			if l.configAgentNames[strings.ToLower(name)] {
+				continue
+			}
 			_, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, path)
 			if err != nil {
 				if forge.IsNotFound(err) {
